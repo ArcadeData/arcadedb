@@ -99,6 +99,19 @@ if [ -z "${ARCADEDB_OPTS_HEADERS+x}" ]; then
   fi
 fi
 
+# Directory the heap dump -XX:+HeapDumpOnOutOfMemoryError writes. Without a path the JVM writes into its working
+# directory, which in a container is the ephemeral root filesystem: the dump is lost with the pod, or fills the
+# ephemeral storage while it is being written. The log directory is a volume in the Docker image, so it is the
+# default. It goes on the command line BEFORE JAVA_OPTS, so a -XX:HeapDumpPath passed there still wins (the last
+# occurrence of a -XX flag is the one the JVM keeps). Set ARCADEDB_HEAP_DUMP_DIR to an empty value to opt out.
+if [ -z "${ARCADEDB_HEAP_DUMP_DIR+x}" ]; then
+  ARCADEDB_HEAP_DUMP_DIR="${ARCADEDB_LOG_DIR:-$ARCADEDB_HOME/log}"
+fi
+# A path that is not an existing directory is taken by the JVM as the dump's FILE name, so make sure it is one.
+if [ -n "$ARCADEDB_HEAP_DUMP_DIR" ]; then
+  mkdir -p "$ARCADEDB_HEAP_DUMP_DIR" 2>/dev/null
+fi
+
 if [ -z "$JAVA_OPTS_SCRIPT" ]; then
   JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError \
         --add-exports java.management/sun.management=ALL-UNNAMED \
@@ -130,7 +143,8 @@ echo $$ >$ARCADEDB_PID
 # The logging configuration path is anchored to ARCADEDB_HOME (not the current directory) so the
 # server picks up config/arcadedb-log.properties regardless of the directory the script is launched
 # from. It is passed as its own quoted argument so a home path containing spaces stays intact.
-exec "$JAVA" $JAVA_OPTS \
+exec "$JAVA" ${ARCADEDB_HEAP_DUMP_DIR:+"-XX:HeapDumpPath=$ARCADEDB_HEAP_DUMP_DIR"} \
+  $JAVA_OPTS \
   $ARCADEDB_OPTS_GC \
   $ARCADEDB_OPTS_HEADERS \
   $ARCADEDB_OPTS_MEMORY \

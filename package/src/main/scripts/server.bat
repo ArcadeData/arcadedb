@@ -93,6 +93,15 @@ rem Optional: relocate log files to a writable directory (e.g. read-only root fi
 rem ARCADEDB_LOG_DIR maps to arcadedb.server.logsDirectory used by config/arcadedb-log.properties.
 if not "%ARCADEDB_LOG_DIR%"=="" set JAVA_OPTS_SCRIPT=%JAVA_OPTS_SCRIPT% "-Darcadedb.server.logsDirectory=%ARCADEDB_LOG_DIR%"
 
+rem Directory the heap dump -XX:+HeapDumpOnOutOfMemoryError writes, instead of the working directory. Defaults to
+rem the log directory. It goes on the command line BEFORE JAVA_OPTS, so a -XX:HeapDumpPath passed there still wins
+rem (the last occurrence of a -XX flag is the one the JVM keeps). A path that is not an existing directory is taken
+rem by the JVM as the dump's FILE name, so the directory is created.
+if not defined ARCADEDB_HEAP_DUMP_DIR if defined ARCADEDB_LOG_DIR set "ARCADEDB_HEAP_DUMP_DIR=%ARCADEDB_LOG_DIR%"
+if not defined ARCADEDB_HEAP_DUMP_DIR set "ARCADEDB_HEAP_DUMP_DIR=%ARCADEDB_HOME%\log"
+if not exist "%ARCADEDB_HEAP_DUMP_DIR%\" mkdir "%ARCADEDB_HEAP_DUMP_DIR%" 2>nul
+set ARCADEDB_OPTS_HEAPDUMP="-XX:HeapDumpPath=%ARCADEDB_HEAP_DUMP_DIR%"
+
 rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G".
 rem
 rem Tip for low-footprint setups (e.g. arcadedb.profile=low-ram): prefer a small initial heap
@@ -121,7 +130,7 @@ rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044
 rem AND ATTACH TO THE CURRENT HOST, PORT 1044
 
 "%JAVACMD%" ^
- -server %JAVA_OPTS% ^
+ -server %ARCADEDB_OPTS_HEAPDUMP% %JAVA_OPTS% ^
  %ARCADEDB_OPTS_GC% ^
  %ARCADEDB_OPTS_MEMORY% ^
  %JAVA_OPTS_SCRIPT% ^
