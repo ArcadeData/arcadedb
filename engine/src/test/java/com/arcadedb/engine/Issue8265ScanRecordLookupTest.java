@@ -213,4 +213,41 @@ class Issue8265ScanRecordLookupTest extends TestHelper {
       database.getEvents().unregisterListener(listener);
     }
   }
+
+  /**
+   * A record an {@link AfterRecordReadListener} filters away must not survive into the result set of a parallel scan,
+   * even when nothing downstream ever asks for one of its properties. The row count below deliberately never calls
+   * {@code getProperty()} on any returned row for exactly that reason: the earlier
+   * {@link #parallelScanNotifiesAfterReadOncePerRecord()} test reads a column in its {@code WHERE}, which forces a
+   * check on the consumer side too and would hide {@code loadContent()}'s return value being discarded - the row
+   * would come back deleted-looking (no buffer) rather than simply not come back at all. Counting rows with nothing
+   * ever read from them isolates the producer-side filtering this method exists for.
+   */
+  @Test
+  void parallelScanDropsAfterReadFilteredRecords() {
+    database.getSchema().buildDocumentType().withName("Leak8265").withTotalBuckets(4).create();
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        database.newDocument("Leak8265").set("id", i).save();
+    });
+
+    // FILTERS AWAY EVERY 5TH RECORD, BY RETURNING null FROM THE LISTENER
+    final AfterRecordReadListener listener = record -> record.asDocument().get("id") instanceof Integer id && id % 5 == 0
+        ? null
+        : record;
+    database.getEvents().registerListener(listener);
+    try (final ResultSet rs = database.query("sql", "select from Leak8265")) {
+      assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("(parallel)");
+      int count = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        ++count;
+      }
+      // BEFORE THE FIX THIS WAS 1000: loadContent()'S RETURN VALUE WAS DISCARDED, SO A FILTERED RECORD STAYED IN THE
+      // BATCH AND REACHED THE CONSUMER, WHICH NEVER TOUCHED ANY PROPERTY OF IT HERE TO NOTICE
+      assertThat(count).as("rows returned by a parallel scan with 1 in 5 records filtered away").isEqualTo(800);
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
 }
