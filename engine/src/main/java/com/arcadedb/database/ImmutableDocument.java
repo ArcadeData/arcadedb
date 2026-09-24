@@ -78,6 +78,38 @@ public class ImmutableDocument extends BaseDocument {
     }
   }
 
+  /**
+   * One pass over the record header instead of the two {@link #has(String)} and {@link #get(String)} take (issue #8266).
+   */
+  @Override
+  public Object getIfPresent(final String propertyName, final Object absentValue) {
+    if (propertyName == null)
+      return absentValue;
+
+    checkForLazyLoading();
+    final Binary content = requireBuffer("read a property of");
+    try {
+      return database.getSerializer()
+          .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid,
+              absentValue);
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
+      return null;
+    }
+  }
+
+  /**
+   * Loads the record content now instead of on the first property access. The parallel scan calls it on its producer
+   * threads, so the load (and the after-read events) run there and not on the single thread consuming the scan
+   * (issue #8265). A record already loaded is left as it is.
+   *
+   * @return {@code false} if an after-read event filtered the record away, {@code true} otherwise
+   */
+  public boolean loadContent() {
+    checkForLazyLoading();
+    return buffer != null;
+  }
+
   @Override
   public MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
