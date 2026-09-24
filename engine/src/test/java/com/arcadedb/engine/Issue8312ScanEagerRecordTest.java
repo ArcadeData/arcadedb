@@ -18,7 +18,7 @@
  */
 package com.arcadedb.engine;
 
-import com.arcadedb.TestHelper;
+import com.arcadedb.database.BucketPageLayoutTestSupport;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -28,10 +28,12 @@ import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -45,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue8312ScanEagerRecordTest extends TestHelper {
+class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
   private static final int RECORDS = 10_000;
 
   @Override
@@ -178,45 +180,51 @@ class Issue8312ScanEagerRecordTest extends TestHelper {
 
   /**
    * An after-read listener that transforms the record (the shape of the encryption hook) applies to every record a scan
-   * returns, including one that moved to a placeholder after an update made it grow, and a multi-page one. A record the
-   * listener filters away is not returned.
+   * returns: one stored in its own slot, one that moved to a placeholder after an update made it grow, and a multi-page
+   * one. A record the listener filters away is not returned.
    */
   @Test
   void afterReadAppliesToEveryScannedRecordShape() {
+    // THE LAYOUT THAT FORCES A PLACEHOLDER (#6149): A TINY RECORD ON PAGE 0, PAGE 0 SEALED WITH NO FREE TAIL (ITS LAST
+    // RECORD SPILLS INTO CHUNKS: THE MULTI-PAGE ONE), THEN THE TINY RECORD GROWN PAST WHAT THE PAGE CAN HOST
+    final RID[] tiny = new RID[1];
     database.transaction(() -> {
-      for (int i = 0; i < 300; i++) {
-        final MutableDocument doc = database.newDocument("Doc8312").set("id", i).set("secret", "s" + i);
-        doc.save();
-      }
+      database.getSchema().createDocumentType("Shape8312", 1).createProperty("v", Type.STRING);
+      tiny[0] = database.newDocument("Shape8312").set("v", "p").save().getIdentity();
     });
+    final RID sealing = sealFirstPage("Shape8312");
+    database.transaction(() -> tiny[0].asDocument(true).modify().set("v", "b".repeat(20 * 1024)).save());
     database.transaction(() -> {
-      final Iterator<Record> it = database.iterateType("Doc8312", false);
-      int i = 0;
-      while (it.hasNext()) {
-        final Document doc = it.next().asDocument();
-        if (i % 10 == 0)
-          // GROWS PAST ITS SLOT (PLACEHOLDER), EVERY THIRD ONE PAST A PAGE (MULTI-PAGE)
-          doc.modify().set("payload", "x".repeat(i % 30 == 0 ? 200_000 : 5_000)).save();
-        ++i;
-      }
+      for (int i = 0; i < 10; i++)
+        database.newDocument("Shape8312").set("v", "small").set("hidden", i % 2 == 0).save();
     });
+
+    // THE FIXTURE MUST REALLY HOLD EVERY SHAPE, OR THIS TEST PROVES NOTHING ABOUT THE ONES IT LACKS
+    final Map<String, Object> layout = bucketStats("Shape8312");
+    assertThat((Long) layout.get("totalPlaceholderRecords")).as("placeholder records: %s", layout).isPositive();
+    assertThat((Long) layout.get("totalMultiPageRecords")).as("multi-page records: %s", layout).isPositive();
+    // EVERY RECORD OF THE TYPE, COUNTED BY A SCAN WITH NO LISTENER REGISTERED
+    int total = 0;
+    for (final Iterator<Record> all = database.iterateType("Shape8312", false); all.hasNext(); all.next())
+      ++total;
 
     final AfterRecordReadListener listener = record -> {
       final Document doc = record.asDocument();
-      if (doc.getInteger("id") % 7 == 0)
+      if (Boolean.TRUE.equals(doc.getBoolean("hidden")))
         return null;
       return doc.modify().set("secret", "decrypted");
     };
     database.getEvents().registerListener(listener);
     try {
-      final Set<Integer> ids = new HashSet<>();
-      final Iterator<Record> it = database.iterateType("Doc8312", false);
+      final Set<RID> seen = new HashSet<>();
+      final Iterator<Record> it = database.iterateType("Shape8312", false);
       while (it.hasNext()) {
         final Document doc = it.next().asDocument();
-        assertThat(doc.getString("secret")).as("record %s", doc.getInteger("id")).isEqualTo("decrypted");
-        assertThat(ids.add(doc.getInteger("id"))).isTrue();
+        assertThat(doc.getString("secret")).as("record %s", doc.getIdentity()).isEqualTo("decrypted");
+        assertThat(doc.getBoolean("hidden")).as("record %s", doc.getIdentity()).isNotEqualTo(Boolean.TRUE);
+        assertThat(seen.add(doc.getIdentity())).isTrue();
       }
-      assertThat(ids).hasSize(300 - 43).noneMatch(id -> id % 7 == 0);
+      assertThat(seen).hasSize(total - 5).contains(tiny[0], sealing);
     } finally {
       database.getEvents().unregisterListener(listener);
     }
@@ -231,5 +239,27 @@ class Issue8312ScanEagerRecordTest extends TestHelper {
     final RID rid = saved(() -> database.newDocument("Doc8312").set("id", 1).save());
     final Document scanned = database.iterateType("Doc8312", false).next().asDocument();
     assertThat(scanned.getDatabase()).isSameAs(database.lookupByRID(rid, true).getDatabase());
+  }
+
+  /**
+   * The scan no longer goes through lookupByRID(), which is what counted records into the readRecord statistic: it has
+   * to report them itself, one per scanned record.
+   */
+  @Test
+  void scannedRecordsAreCountedInTheReadRecordStatistic() {
+    database.transaction(() -> {
+      for (int i = 0; i < 3_000; i++)
+        database.newDocument("Doc8312").set("id", i).save();
+    });
+
+    final long before = ((Number) database.getStats().get("readRecord")).longValue();
+    int scanned = 0;
+    final Iterator<Record> it = database.iterateType("Doc8312", false);
+    while (it.hasNext()) {
+      it.next();
+      ++scanned;
+    }
+    assertThat(scanned).isEqualTo(3_000);
+    assertThat(((Number) database.getStats().get("readRecord")).longValue() - before).isEqualTo(3_000L);
   }
 }

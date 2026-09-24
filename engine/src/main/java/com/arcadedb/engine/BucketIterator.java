@@ -43,6 +43,8 @@ public class BucketIterator implements Iterator<Record> {
   // THE INSTANCE A RECORD LOOKED UP BY RID BELONGS TO (e.g. THE SERVER/HA WRAPPER), SO A SCANNED RECORD MODIFIES AND
   // SAVES THROUGH THE SAME ONE
   private final        DatabaseInternal recordDatabase;
+  // RESOLVED ONCE PER ITERATOR, NOT PER RECORD: A BUCKET MOVED TO ANOTHER TYPE (OR ITS TYPE DROPPED) WHILE A SCAN IS OPEN
+  // IS SEEN BY THE NEXT ITERATOR, NOT BY THIS ONE
   private final        DocumentType     type;
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
