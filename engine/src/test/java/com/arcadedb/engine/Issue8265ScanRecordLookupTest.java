@@ -30,12 +30,14 @@ import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -282,6 +284,32 @@ class Issue8265ScanRecordLookupTest extends TestHelper {
         }
       }
       assertThat(ids).hasSize(recordCount);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES,
+          GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES.getDefValue());
+    }
+  }
+
+  /**
+   * A non-positive byte bound disables it rather than admitting no row at all: taken literally as a limit it stopped every
+   * batch before its first row, and the producers spun forever handing over nothing.
+   */
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void parallelScanTreatsNonPositiveBatchBytesAsUnbounded() {
+    database.getSchema().buildDocumentType().withName("NoCap8265").withTotalBuckets(4).create();
+    database.transaction(() -> {
+      for (int i = 0; i < 2_000; i++)
+        database.newDocument("NoCap8265").set("id", i).save();
+    });
+
+    try {
+      for (final long cap : new long[] { 0L, -1L }) {
+        database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES, cap);
+        try (final ResultSet rs = database.query("sql", "select count(*) as n from NoCap8265 where id >= 0")) {
+          assertThat(rs.next().<Long>getProperty("n")).as("cap %d", cap).isEqualTo(2_000L);
+        }
+      }
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES,
           GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES.getDefValue());

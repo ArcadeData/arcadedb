@@ -898,7 +898,7 @@ public enum GlobalConfiguration {
       alone predicts. Once a batch's total loaded bytes reach this bound, the producer stops adding to it \
       early even if under 256 rows, and starts a new one. The queue holds several such batches (currently \
       4096 rows' worth) plus one per producer thread in flight, so this is the per-batch slice of that \
-      budget, not the whole of it""",
+      budget, not the whole of it. 0 or a negative value disables the byte bound (row count only)""",
       Long.class, 16L * 1024 * 1024),
 
   // CYPHER

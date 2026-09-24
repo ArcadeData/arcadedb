@@ -345,7 +345,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       // MEMORY BACKPRESSURE COMPLEMENTING SCAN_BATCH_SIZE (CodeRabbit, PR #8311): a producer now loads each row's
       // content before queuing it, so unlike the lazy shells the queue used to carry, a row-count-only bound does
       // not bound a batch's retained bytes for wide or multi-page records. See GlobalConfiguration's javadoc.
-      final long maxBatchBytes = db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES);
+      // 0 OR NEGATIVE DISABLES THE BYTE BOUND (ROW COUNT ONLY), LIKE 0 DISABLES PARALLEL_SCAN_ABANDONED_TIMEOUT. TAKEN AS A
+      // LIMIT IT WOULD NEVER ADMIT A ROW, AND EVERY PRODUCER WOULD SPIN FOREVER ON EMPTY BATCHES
+      final long configuredMaxBatchBytes = db.getConfiguration()
+          .getValueAsLong(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES);
+      final long maxBatchBytes = configuredMaxBatchBytes > 0 ? configuredMaxBatchBytes : Long.MAX_VALUE;
       // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
       // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
       // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
