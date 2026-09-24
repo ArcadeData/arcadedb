@@ -86,8 +86,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
-  // Queue capacity in batches: the same 4096 rows the queue held when it carried one row per entry.
-  private static final int PARALLEL_QUEUE_BATCHES = 4096 / SCAN_BATCH_SIZE;
+  // Queue capacity in batches, at least the same 4096-row equivalent the queue held when it carried one row per
+  // entry: ceiling division, not a plain 4096 / SCAN_BATCH_SIZE, so a future SCAN_BATCH_SIZE that does not evenly
+  // divide 4096 rounds the capacity UP instead of silently truncating it below the documented row count.
+  private static final int PARALLEL_QUEUE_BATCHES = (4096 + SCAN_BATCH_SIZE - 1) / SCAN_BATCH_SIZE;
 
   protected FetchFromTypeExecutionStep(final CommandContext context) {
     super(context);
