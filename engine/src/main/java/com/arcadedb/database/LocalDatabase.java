@@ -234,7 +234,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private final      CypherPlanCache                           cypherPlanCache;
   private final      GraphStatisticsCache                      graphStatisticsCache      = new GraphStatisticsCache();
   private final      File                                      configurationFile;
-  private            DatabaseInternal                          wrappedDatabaseInstance   = this;
+  // VOLATILE: the HA wrap installs the wrapper from the plugin's thread, and handles resolved before it
+  // (ServerDatabase.commit(), issue #8282) read it from connection threads with no lock in common
+  private volatile   DatabaseInternal                          wrappedDatabaseInstance   = this;
   private final      SecurityManager                           security;
   /**
    * Per-database attachments, keyed by name: the lazily built query engine of each language, and the server's
