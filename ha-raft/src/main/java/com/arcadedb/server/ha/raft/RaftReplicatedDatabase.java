@@ -3800,9 +3800,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   static long commandTimeoutWithHeadroom(final long commandTimeoutMs, final long quorumTimeoutMs,
       final long connectTimeoutMs) {
-    final long headroom = Math.max(quorumTimeoutMs, 0L) + Math.max(connectTimeoutMs, 0L);
-    final long deadline = commandTimeoutMs + headroom;
-    return deadline < commandTimeoutMs ? commandTimeoutMs : deadline;
+    try {
+      return Math.addExact(commandTimeoutMs, Math.addExact(Math.max(quorumTimeoutMs, 0L), Math.max(connectTimeoutMs, 0L)));
+    } catch (final ArithmeticException e) {
+      // Either sum overflowed: the budget is already effectively unbounded, so it is kept as it is.
+      return commandTimeoutMs;
+    }
   }
 
   /**

@@ -135,6 +135,9 @@ class Issue7737ForwardDeadlineHeadroomTest {
     assertThat(RaftReplicatedDatabase.commandTimeoutWithHeadroom(1_000L, -1L, 0L)).isEqualTo(1_000L);
     assertThat(RaftReplicatedDatabase.commandTimeoutWithHeadroom(Long.MAX_VALUE - 10, 10_000L, 5_000L))
         .isEqualTo(Long.MAX_VALUE - 10);
+    // The headroom's own sum overflowing must saturate too, not wrap into a shorter deadline.
+    assertThat(RaftReplicatedDatabase.commandTimeoutWithHeadroom(1_000L, Long.MAX_VALUE / 2 + 1, Long.MAX_VALUE / 2 + 1))
+        .isEqualTo(1_000L);
   }
 
   private static ContextConfiguration config() {
