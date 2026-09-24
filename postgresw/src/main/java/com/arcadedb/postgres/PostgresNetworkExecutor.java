@@ -1607,6 +1607,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (alias == null)
         return null;
 
+      // Empty on purpose: this path only runs when the row source has no discoverable schema (issue #6156), so a
+      // property reference inside the expression could never resolve anyway - only literals and count() can.
       final PostgresType inferred = inferComputedColumnType(item.getExpression(), Map.of());
       columns.put(alias, inferred != null ? inferred : PostgresType.VARCHAR);
     }
@@ -1782,7 +1784,7 @@ public class PostgresNetworkExecutor extends Thread {
    * @return the inferred type, or null when it cannot be decided statically - the caller then keeps its own
    * default ({@code varchar})
    */
-  private PostgresType inferComputedColumnType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+  private static PostgresType inferComputedColumnType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
     if (expression == null || expression.mathExpression == null)
       return null;
 
@@ -1808,7 +1810,7 @@ public class PostgresNetworkExecutor extends Thread {
     return inferFunctionType(call, sourceColumns);
   }
 
-  private PostgresType inferFunctionType(final FunctionCall call, final Map<String, PostgresType> sourceColumns) {
+  private static PostgresType inferFunctionType(final FunctionCall call, final Map<String, PostgresType> sourceColumns) {
     final String name = call.name.getStringValue();
     if (name == null)
       return null;
@@ -1833,7 +1835,7 @@ public class PostgresNetworkExecutor extends Thread {
    * type, or - for a nested aggregate/arithmetic operand such as {@code sum(a + b)} - resolved the same way a
    * top-level projected item would be.
    */
-  private PostgresType resolveOperandType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+  private static PostgresType resolveOperandType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
     if (expression == null)
       return null;
     if (expression.mathExpression instanceof BaseExpression base && base.getModifier() == null) {
@@ -1845,7 +1847,7 @@ public class PostgresNetworkExecutor extends Thread {
     return inferComputedColumnType(expression, sourceColumns);
   }
 
-  private PostgresType inferArithmeticType(final MathExpression math, final Map<String, PostgresType> sourceColumns) {
+  private static PostgresType inferArithmeticType(final MathExpression math, final Map<String, PostgresType> sourceColumns) {
     // SLASH is not statically typeable: MathExpression.Operator.SLASH returns the widest INTEGER/LONG operand
     // type only when the division happens to be exact, and a DOUBLE otherwise (Type#increment does the same for
     // NUMERIC) - which one depends on the row's values, not on the declared operand types.
@@ -1873,7 +1875,7 @@ public class PostgresNetworkExecutor extends Thread {
     return widest;
   }
 
-  private PostgresType childOperandType(final MathExpression child, final Map<String, PostgresType> sourceColumns) {
+  private static PostgresType childOperandType(final MathExpression child, final Map<String, PostgresType> sourceColumns) {
     if (!child.getOperators().isEmpty())
       return inferArithmeticType(child, sourceColumns);
     if (!(child instanceof BaseExpression base) || base.getModifier() != null)

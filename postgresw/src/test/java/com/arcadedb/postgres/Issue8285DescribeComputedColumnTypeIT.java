@@ -198,6 +198,30 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  void maxOfADecimalPropertyDescribesAsNumericBeforeExecution() throws Exception {
+    // min()/max() pass the operand's own type through unchanged (unlike sum(), which widens): symmetry check for
+    // the sum(DECIMAL) case above, since a NUMERIC-typed min()/max() had no coverage (review of #8285).
+    try (final Connection connection = openJdbcConnection()) {
+      try (final Statement statement = connection.createStatement()) {
+        statement.execute("CREATE DOCUMENT TYPE Items8285DecimalMinMax IF NOT EXISTS");
+        statement.execute("CREATE PROPERTY Items8285DecimalMinMax.amount IF NOT EXISTS DECIMAL");
+        statement.execute("INSERT INTO Items8285DecimalMinMax SET amount = 1.1");
+        statement.execute("INSERT INTO Items8285DecimalMinMax SET amount = 2.2");
+      }
+
+      try (final PreparedStatement statement = connection.prepareStatement(
+          "SELECT max(amount) AS m FROM Items8285DecimalMinMax")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isEqualTo("numeric");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getObject(1)).isInstanceOf(java.math.BigDecimal.class);
+        }
+      }
+    }
+  }
+
+  @Test
   void aPlainDeclaredPropertyIsUnaffected() throws Exception {
     try (final Connection connection = openJdbcConnection()) {
       createAndPopulateTestType(connection);
