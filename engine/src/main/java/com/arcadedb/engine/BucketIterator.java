@@ -273,7 +273,8 @@ public class BucketIterator implements Iterator<Record> {
                     }
                     if (!bucket.fireBeforeReadEvents(rid))
                       continue;
-                    loaded = bucket.getRecordInternal(new RID(bucket.fileId, placeholderTargetPosition), true);
+                    // THE EVENTS JUST RAN FOR THE RECORD ITSELF: NOT AGAIN FOR THE INTERNAL POSITION OF ITS CONTENT
+                  loaded = bucket.getRecordInternal(new RID(bucket.fileId, placeholderTargetPosition), true, false);
                   }
                 } catch (final BrokenChunkChainException e) {
                   // THE LOADER ITSELF SAYS SO (#6258): a chain the read could not parse, confirmed broken against the
