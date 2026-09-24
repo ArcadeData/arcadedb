@@ -62,6 +62,17 @@ import java.util.logging.Level;
  * Suppressing the replay instead would need the log index this process started from, which Ratis does not hand
  * the state machine before it starts applying.
  * <p>
+ * The converse is a known gap: the armed state is not persisted, so a joiner that restarts AFTER the entry that
+ * added it was compacted into a snapshot observes only configurations containing itself and comes back unarmed
+ * (issue #8329).
+ * <p>
+ * <b>Ordering between the two callers.</b> The monitor makes each observation atomic, not the two Ratis call
+ * sites ordered with respect to each other, so the snapshot-install callback can land a configuration older than
+ * one the apply loop has already delivered. That cannot produce a false arm on a static member, because no
+ * configuration it has ever been part of lacks it; and it cannot undo an arm, because arming latches. The worst
+ * it can do is let the second rule see "without me" last and arm on the next configuration that names this node -
+ * which is only ever true of a node that really was outside the configuration, i.e. a joiner.
+ * <p>
  * Never cleared. Once a node has joined at runtime the gate is armed for the rest of the process, and what
  * releases it is convergence (or the gate's own bounded window), not a later configuration.
  * <p>
