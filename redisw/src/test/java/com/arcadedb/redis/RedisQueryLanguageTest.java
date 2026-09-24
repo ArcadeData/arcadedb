@@ -20,6 +20,9 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
@@ -29,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -396,38 +400,6 @@ public class RedisQueryLanguageTest extends BaseRedisServerTest {
     super.endTest();
   }
 
-  /**
-   * Extracts the "value" property from the first result in the response.
-   * The response format is: {"result": [{"value": <result>}]}
-   */
-  private Object getResultValue(final JSONObject response) {
-    final JSONArray results = response.getJSONArray("result");
-    if (results.isEmpty()) {
-      return null;
-    }
-    final JSONObject firstResult = results.getJSONObject(0);
-    if (firstResult.isNull("value")) {
-      return null;
-    }
-    return firstResult.get("value");
-  }
-
-  private int getResultValueAsInt(final JSONObject response) {
-    final Object value = getResultValue(response);
-    if (value instanceof Number number) {
-      return number.intValue();
-    }
-    return Integer.parseInt(value.toString());
-  }
-
-  private long getResultValueAsLong(final JSONObject response) {
-    final Object value = getResultValue(response);
-    if (value instanceof Number number) {
-      return number.longValue();
-    }
-    return Long.parseLong(value.toString());
-  }
-
   @Test
   void hGetNoResultReturnsEmptyArray() throws Exception {
     // Issue #3470 comment: Redis HGET for non-existing key should return {"result":[]}
@@ -526,66 +498,119 @@ public class RedisQueryLanguageTest extends BaseRedisServerTest {
     assertThat(getResultValueAsInt(response)).isEqualTo(1);
   }
 
-  protected JSONObject executeQuery(final int serverIndex, final String language, final String command) throws Exception {
-    // Ask the server which port it actually bound (issue #6560), rather than assuming the 2480+serverIndex
-    // default: SERVER_HTTP_INCOMING_PORT is a range (2480-2489 by default) and binds the first free port in
-    // it, so with 2480 already held by anything else - another local ArcadeDB instance, an IDE debug session
-    // for a different project - this test's own server listens elsewhere. A port-less/wrong-port URL would
-    // then reach that foreign server instead, and every test in this class would fail with a confusing
-    // "403 Too many failed authentication attempts" / "User/Password not valid" that reads as an auth bug
-    // rather than a port collision. Same pattern as #6437's fix for ConsoleAsyncInsertTest.
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/query/" + getDatabaseName()).openConnection();
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-    connection.setRequestProperty("Content-Type", "application/json");
-    connection.setDoOutput(true);
+  /**
+   * Issue #8247: a newline-separated batch is executed line by line, so it has to be analyzed line by line. The
+   * engine used to classify the whole text by its FIRST verb, so a batch opening with a read was declared
+   * idempotent and read-only however many writes followed it, and the query endpoint's own refusal of a lone
+   * HDEL did not apply to the same HDEL behind a leading GET.
+   */
+  @Test
+  void batchIsAnalyzedByEveryCommandNotByItsFirst() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    final QueryEngine engine = database.getQueryEngine("redis");
 
-    final JSONObject request = new JSONObject();
-    request.put("language", language);
-    request.put("command", command);
+    final QueryEngine.AnalyzedQuery lone = engine.analyze("HDEL Person name alice");
+    assertThat(lone.isIdempotent()).isFalse();
+    assertThat(lone.getOperationTypes()).containsExactly(OperationType.DELETE);
 
-    try (OutputStream os = connection.getOutputStream()) {
-      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
-    }
+    final QueryEngine.AnalyzedQuery batch = engine.analyze("GET k\nSET k pwned\nHDEL #1:0");
+    assertThat(batch.isIdempotent()).isFalse();
+    assertThat(batch.getOperationTypes()).contains(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
 
-    final int responseCode = connection.getResponseCode();
-    if (responseCode != 200) {
-      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-      throw new RuntimeException("HTTP " + responseCode + ": " + error);
-    }
+    // Every separator the executor splits on (\R) is one the analysis splits on as well.
+    for (final String separator : new String[] { "\r\n", "\r", "\u2028", "\u0085" })
+      assertThat(engine.analyze("GET k" + separator + "INCR k").isIdempotent()).as("separator %s", separator.codePointAt(0))
+          .isFalse();
 
-    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    return new JSONObject(response);
+    // A write hidden after comment and blank lines is still found.
+    assertThat(engine.analyze("# read only, honest\n\nGET k\n// really\nGETDEL k").isIdempotent()).isFalse();
+
+    // A batch made only of reads stays a read, comments and blank lines included.
+    final QueryEngine.AnalyzedQuery reads = engine.analyze("# comment\nGET k\n\n// another\nHGET doc[id] 1\nPING");
+    assertThat(reads.isIdempotent()).isTrue();
+    assertThat(reads.getOperationTypes()).containsExactly(OperationType.READ);
+
+    // A MULTI/EXEC block exists to contain writes: it is never declared idempotent, even around reads.
+    assertThat(engine.analyze("MULTI\nGET k\nEXEC").isIdempotent()).isFalse();
+    assertThat(engine.analyze("MULTI\nSET k v\nDISCARD").isIdempotent()).isFalse();
   }
 
-  protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
-    // See the comment in executeQuery() above: ask the server for its actual bound port instead of assuming
-    // 2480+serverIndex (issue #6560).
+  /**
+   * Issue #8247, the engine's own gate: {@code query(...)} refuses a batch that writes behind a leading read, and
+   * nothing the batch contains has run.
+   */
+  @Test
+  void queryRefusesBatchWithWriteBehindLeadingRead() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE DOCUMENT TYPE Person8247");
+    database.command("sql", "CREATE PROPERTY Person8247.name STRING");
+    database.command("sql", "CREATE INDEX ON Person8247 (name) UNIQUE");
+    executeCommand(0, "redis", "HSET Person8247 {\"name\":\"alice\"}");
+    assertThat(database.countType("Person8247", false)).isEqualTo(1L);
+
+    final String batch = "GET k8247\nSET k8247 pwned\nHDEL Person8247[name] alice";
+
+    // Direct engine entry point (what GET/POST /api/v1/query call).
+    try (final ResultSet rs = database.query("redis", batch)) {
+      fail("A batch containing writes must be refused on query(): " + rs);
+    } catch (final CommandParsingException e) {
+      assertThat(e.getMessage()).contains("Non-idempotent Redis command");
+    }
+
+    // POST /api/v1/query.
+    try {
+      executeQuery(0, "redis", batch);
+      fail("A batch containing writes must be refused on the query endpoint");
+    } catch (final RuntimeException e) {
+      assertThat(e.getMessage()).contains("Non-idempotent Redis command");
+    }
+
+    // GET /api/v1/query/{db}/redis/{text}: a method every proxy treats as side-effect free.
+    final HttpURLConnection get = (HttpURLConnection) new URL(
+        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/query/" + getDatabaseName() + "/redis/"
+            + URLEncoder.encode(batch, StandardCharsets.UTF_8).replace("+", "%20")).openConnection();
+    get.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    assertThat(get.getResponseCode()).isNotEqualTo(200);
+    assertThat(new String(get.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)).contains("Non-idempotent Redis command");
+
+    // Nothing ran: the record survives and the RAM key was never written.
+    assertThat(database.countType("Person8247", false)).isEqualTo(1L);
+    assertThat(getResultValue(executeQuery(0, "redis", "GET k8247"))).isNull();
+
+    // A batch of reads is still accepted on the query endpoint.
+    final JSONObject reads = executeQuery(0, "redis", "GET k8247\nHEXISTS Person8247[name] alice");
+    final JSONArray values = (JSONArray) getResultValue(reads);
+    assertThat(values.length()).isEqualTo(2);
+    assertThat(values.getInt(1)).isEqualTo(1);
+  }
+
+  /**
+   * Issue #8247, the second gate: {@code AbstractQueryHandler.requireStreamableStatement} reads the same analysis
+   * to decide whether POST /api/v1/command may stream. A batch with a write behind a leading read must be refused
+   * the streaming encoding, not streamed.
+   */
+  @Test
+  void streamingRefusesBatchWithWriteBehindLeadingRead() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()).openConnection();
+        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     connection.setRequestProperty("Content-Type", "application/json");
+    connection.setRequestProperty("Accept", "application/x-ndjson");
     connection.setDoOutput(true);
 
     final JSONObject request = new JSONObject();
-    request.put("language", language);
-    request.put("command", command);
-
+    request.put("language", "redis");
+    request.put("command", "GET s8247\nSET s8247 streamed");
     try (OutputStream os = connection.getOutputStream()) {
       os.write(request.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    final int responseCode = connection.getResponseCode();
-    if (responseCode != 200) {
-      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-      throw new RuntimeException("HTTP " + responseCode + ": " + error);
-    }
-
-    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    return new JSONObject(response);
+    assertThat(connection.getResponseCode()).isEqualTo(400);
+    assertThat(new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)).contains(
+        "streaming encoding is available only for a read-only statement");
+    assertThat(getResultValue(executeQuery(0, "redis", "GET s8247"))).isNull();
   }
 }

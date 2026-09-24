@@ -38,14 +38,13 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
 import java.util.logging.Level;
@@ -77,6 +76,8 @@ public class RedisQueryEngine implements QueryEngine {
   private final DatabaseInternal database;
 
   // Pattern to parse Redis commands - handles quoted strings and JSON
+  // Batch separator: any line break, as the executor has always split on (String.split("\\R")).
+  private static final Pattern LINE_SEPARATOR = Pattern.compile("\\R");
   private static final Pattern COMMAND_PATTERN = Pattern.compile("(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})|\"([^\"]*)\"|'([^']*)'|(\\S+)");
 
   protected RedisQueryEngine(final DatabaseInternal database) {
@@ -88,35 +89,50 @@ public class RedisQueryEngine implements QueryEngine {
     return ENGINE_NAME;
   }
 
+  /**
+   * Classifies what {@link #executeRedisCommand(String)} will actually run. A newline-separated batch runs EVERY
+   * line, so it is analyzed line by line with the same split and the same skipped lines as the executor, and the
+   * answers are folded: idempotent only if every command is, operation types the union of all of them - the way
+   * {@code SQLScriptQueryEngine.analyze} folds a script. Classifying the whole text by its first verb declared a
+   * batch opening with a read idempotent and read-only however many writes followed it, which defeated both the
+   * query endpoint's refusal of writes and the streaming gate that reads this answer (issue #8247).
+   * <p>
+   * MULTI, EXEC and DISCARD are classified like any other verb outside the read list, so a transaction block is
+   * never idempotent: a block only exists to contain writes, and one that holds only reads loses nothing by being
+   * sent to the command endpoint.
+   */
   @Override
   public AnalyzedQuery analyze(final String query) {
-    final List<String> parts = parseCommand(query);
-    if (parts.isEmpty()) {
-      return new AnalyzedQuery() {
-        @Override
-        public boolean isIdempotent() {
-          return true;
-        }
-
-        @Override
-        public boolean isDDL() {
-          return false;
-        }
-
-        @Override
-        public Set<OperationType> getOperationTypes() {
-          return CollectionUtils.singletonSet(OperationType.READ);
-        }
-      };
+    final String[] lines = splitBatch(query);
+    if (lines.length <= 1) {
+      // Single command: the executor runs the text as-is, without the batch's comment skipping.
+      final List<String> parts = parseCommand(query);
+      if (parts.isEmpty())
+        return analyzed(true, CollectionUtils.singletonSet(OperationType.READ));
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      return analyzed(isIdempotentCommand(cmd), detectRedisOperationTypes(cmd));
     }
 
-    final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
-    final boolean isIdempotent = switch (cmd) {
-      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
-      default -> false;
-    };
-    final Set<OperationType> ops = detectRedisOperationTypes(cmd);
+    boolean idempotent = true;
+    final Set<OperationType> ops = EnumSet.noneOf(OperationType.class);
+    for (final String line : lines) {
+      final String trimmed = line.trim();
+      if (isSkippedBatchLine(trimmed))
+        continue;
+      final List<String> parts = parseCommand(trimmed);
+      if (parts.isEmpty())
+        continue;
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      idempotent &= isIdempotentCommand(cmd);
+      ops.addAll(detectRedisOperationTypes(cmd));
+    }
+    if (ops.isEmpty())
+      ops.add(OperationType.READ);
 
+    return analyzed(idempotent, Collections.unmodifiableSet(ops));
+  }
+
+  private static AnalyzedQuery analyzed(final boolean isIdempotent, final Set<OperationType> ops) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -132,6 +148,30 @@ public class RedisQueryEngine implements QueryEngine {
       public Set<OperationType> getOperationTypes() {
         return ops;
       }
+    };
+  }
+
+  /**
+   * Splits the text into the lines the executor runs. Shared by {@link #analyze(String)} and
+   * {@link #executeRedisCommand(String)} so the analysis cannot drift from what is executed: more than one element
+   * means batch execution.
+   */
+  private static String[] splitBatch(final String query) {
+    return LINE_SEPARATOR.split(query);
+  }
+
+  /**
+   * A batch line the executor does not run: blank, or a {@code #} / {@code //} comment. Only applies in batch
+   * mode; a single-line command is run as written.
+   */
+  private static boolean isSkippedBatchLine(final String trimmed) {
+    return trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("//");
+  }
+
+  private static boolean isIdempotentCommand(final String cmd) {
+    return switch (cmd) {
+      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
+      default -> false;
     };
   }
 
@@ -175,8 +215,9 @@ public class RedisQueryEngine implements QueryEngine {
 
   private ResultSet executeRedisCommand(final String query) {
     try {
-      // Check if this is a multi-command query (contains newlines)
-      final String[] lines = query.split("\\R");
+      // Check if this is a multi-command query (contains newlines). Same split as analyze(), which must see
+      // exactly the commands that run here (issue #8247).
+      final String[] lines = splitBatch(query);
       if (lines.length > 1) {
         return executeMultipleCommands(lines);
       }
@@ -211,9 +252,8 @@ public class RedisQueryEngine implements QueryEngine {
 
     for (final String line : lines) {
       final String trimmed = line.trim();
-      if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("//")) {
-        continue; // Skip empty lines and comments
-      }
+      if (isSkippedBatchLine(trimmed))
+        continue; // Skip empty lines and comments (analyze() skips the same ones)
 
       final String upperCmd = trimmed.toUpperCase(Locale.ENGLISH);
       if ("MULTI".equals(upperCmd)) {
@@ -398,53 +438,37 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * INCR/INCRBY/INCRBYFLOAT. The read, the addition and the write are ONE atomic operation on the key through
-   * {@link DatabaseInternal#computeGlobalVariable}, the primitive the RESP wire path uses too (issue #7776): this
-   * engine is cached per database and shared by every request thread, so a get followed by a set let two concurrent
-   * callers read the same value, both write their own successor and each be answered a count that never happened
-   * (issue #8248).
+   * #8271: THE ARITHMETIC AND VALIDATION ARE NOW THE SAME REMAPPING {@code RedisNetworkExecutor} (THE RESP WIRE
+   * PATH) USES, so the two surfaces cannot answer this command differently again - a 64-bit increment, a checked
+   * add that refuses to overflow silently, and real Redis' own error text. THE READ, THE ARITHMETIC AND THE WRITE
+   * ARE ALSO ONE ATOMIC OPERATION ON THE KEY, THE SAME databases.computeGlobalVariable PRIMITIVE #8248 GAVE THE
+   * WIRE PATH FOR THIS EXACT REASON - A GET FOLLOWED BY A SET LETS TWO CONCURRENT INCR CALLS BOTH READ THE SAME
+   * STARTING VALUE AND LOSE ONE OF THE TWO INCREMENTS.
    */
   private Number incrBy(final List<String> parts, final boolean decimal) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
     }
     final String key = parts.get(1);
-    final Number increment;
-    if (parts.size() > 2) {
-      increment = decimal ? Double.parseDouble(parts.get(2)) : Integer.parseInt(parts.get(2));
-    } else {
-      increment = 1;
+
+    if (decimal) {
+      final double increment = parts.size() > 2 ? Double.parseDouble(parts.get(2)) : 1D;
+      return (Number) database.computeGlobalVariable(key, RedisCounterOperations.incrementByFloat(increment));
     }
 
-    return (Number) database.computeGlobalVariable(key, current -> Type.increment(toNumber(key, current), increment));
+    final long increment = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
+    return (Number) database.computeGlobalVariable(key, RedisCounterOperations.incrementBy(increment));
   }
 
-  /**
-   * DECR/DECRBY, atomic for the same reason as {@link #incrBy}.
-   */
+  /** See {@link #incrBy}. */
   private Number decrBy(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
     }
     final String key = parts.get(1);
-    final int decrement = parts.size() > 2 ? Integer.parseInt(parts.get(2)) : 1;
+    final long decrement = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
 
-    return (Number) database.computeGlobalVariable(key, current -> Type.decrement(toNumber(key, current), decrement));
-  }
-
-  /**
-   * Normalizes the stored value INCR/DECR operate on: an absent key reads as {@code 0} and an integral string is
-   * parsed. Anything else is refused with a {@link RedisException}; since this runs inside
-   * {@link DatabaseInternal#computeGlobalVariable}'s remapping, the refusal leaves the key unchanged.
-   */
-  private static Number toNumber(final String key, final Object current) {
-    if (current == null)
-      return 0L;
-    if (current instanceof Number number)
-      return number;
-    if (NumberUtils.isIntegerNumber(current.toString()))
-      return Long.parseLong(current.toString());
-    throw new RedisException("Key '" + key + "' is not a number");
+    return (Number) database.computeGlobalVariable(key, RedisCounterOperations.decrementBy(decrement));
   }
 
   // --- Persistent Commands (database operations) ---

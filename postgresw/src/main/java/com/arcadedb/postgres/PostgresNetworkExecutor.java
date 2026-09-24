@@ -882,9 +882,7 @@ public class PostgresNetworkExecutor extends Thread {
     CatalogAnswer catalogAnswer = null;
     try {
       final long deserStart = System.nanoTime();
-      queryText = readString().trim();
-      if (queryText.endsWith(";"))
-        queryText = queryText.substring(0, queryText.length() - 1);
+      queryText = normalizeStatementText(readString());
 
       if (errorInTransaction) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
@@ -2605,7 +2603,15 @@ public class PostgresNetworkExecutor extends Thread {
       // PARSE
       final String portalName = readString();
 
-      final Query query = getLanguageAndQuery(readString());
+      // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
+      // #8245): isBeginStatement()/isCommitStatement()/isRollbackStatement() match by exact string equality, and
+      // getTag() reads portal.query for the command tag. The healthy transaction-control branch used to read the
+      // raw wire text, so "BEGIN;", "COMMIT;", "\nCOMMIT" or "COMMIT " fell through to sqlEngine.parse(), whose
+      // grammar accepts them (parse : statement SEMICOLON? EOF): the ENGINE began/committed/rolled back at
+      // Execute while the protocol's own block state - explicitTransactionStarted, errorInTransaction, the
+      // ReadyForQuery status byte - never moved, so a statement pipelined after a failure inside the block still
+      // ran and was committed. The same normalization queryCommand() applies to its own text.
+      final Query query = getLanguageAndQuery(normalizeStatementText(readString()));
 
       final PostgresPortal portal = new PostgresPortal(query.query, query.language);
       final int paramCount = channel.readShort();
@@ -2649,17 +2655,11 @@ public class PostgresNetworkExecutor extends Thread {
         // portal.language switch), this check runs regardless of portal.language - intentionally, matching
         // queryCommand()'s own aborted-transaction branch, which has no language gate either. No real client
         // sends a transaction-control statement under a non-"sql" language mid-session.
-        // isCommitStatement()/isRollbackStatement() match by exact string equality, so the text they see must
-        // be trimmed and stripped of a trailing ';' the same way queryCommand() strips it from its queryText
-        // before its own aborted-transaction check runs (issue #6548 review follow-up) - otherwise a client
-        // that sends "ROLLBACK;" (a real Postgres statement terminator many drivers append) falls through to
-        // the silent return below, reproducing this exact issue's "wedged forever" symptom via a trailing
-        // semicolon instead of via the missing dispatch. portal.query itself is left untouched here: the
-        // matched branch below overwrites it outright, and the unmatched branch discards this portal.
-        String abortedText = portal.query.trim();
-        if (abortedText.endsWith(";"))
-          abortedText = abortedText.substring(0, abortedText.length() - 1);
-        final String abortedUpperCaseText = abortedText.toUpperCase(Locale.ENGLISH);
+        // portal.query is already trimmed and stripped of a trailing ';' at the top of this method (issue #8245),
+        // which is what isCommitStatement()/isRollbackStatement()'s exact string equality needs here too - a
+        // client that sends "ROLLBACK;" must not fall through to the silent return below (issue #6548 review
+        // follow-up).
+        final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
         if (isTransactionEndStatement(abortedUpperCaseText)) {
           if (database.isTransactionActive())
             database.rollback();
@@ -2747,19 +2747,15 @@ public class PostgresNetworkExecutor extends Thread {
         writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       } else if (upperCaseText.startsWith("SET ")) {
-        // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
-        // queryText on the simple-query protocol - a Parse message keeps the terminator glued onto the
-        // text, which otherwise reaches parseSetCommand() attached to the value (issue #6701).
-        // portal.query itself is left untouched: nothing downstream needs the terminator removed.
+        // portal.query arrives here without its trailing ';' (normalized at the top of this method, issue #8245):
+        // a Parse message keeps the terminator glued onto the text, which otherwise reaches parseSetCommand()
+        // attached to the value (issue #6701).
         // Parsed here but APPLIED at Execute (issue #8135), the same split as BEGIN/COMMIT/ROLLBACK below: Parse
         // prepares a statement, it does not run one, so a SET that is only prepared must not change the session,
         // and every later Bind+Execute of the cached statement must apply it again rather than only answer it.
-        String setText = portal.query.trim();
-        if (setText.endsWith(";"))
-          setText = setText.substring(0, setText.length() - 1);
-        portal.setting = parseSetCommand(setText);
+        portal.setting = parseSetCommand(portal.query);
         if (portal.setting == null)
-          LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", setText);
+          LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", portal.query);
         portal.ignoreExecution = true;
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
@@ -3467,6 +3463,20 @@ public class PostgresNetworkExecutor extends Thread {
       resultSet.add(new ResultInternal(map));
     }
     return resultSet;
+  }
+
+  /**
+   * Trims a statement's text and strips ONE trailing {@code ';'} (and the whitespace in front of it), the form every
+   * statement matcher of this class expects: {@link #isBeginStatement}, {@link #isCommitStatement} and
+   * {@link #isRollbackStatement} match by exact string equality, and {@link #getTag} derives the command tag from the
+   * text. Shared by the simple-query and the extended-query protocol so the two cannot disagree on what a
+   * transaction-control statement looks like (issue #8245).
+   */
+  static String normalizeStatementText(final String text) {
+    String normalized = text.trim();
+    if (normalized.endsWith(";"))
+      normalized = normalized.substring(0, normalized.length() - 1).trim();
+    return normalized;
   }
 
   private Query getLanguageAndQuery(final String query) {

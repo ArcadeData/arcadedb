@@ -74,13 +74,18 @@ public class SelectWhereOperatorBlock {
 
   public SelectWhereAfterBlock isNull() {
     select.setOperator(SelectOperator.is_null);
-    select.propertyValue = Boolean.TRUE;
+    // #8256: LEFT null, NOT Boolean.TRUE - is_null.eval() NEVER LOOKS AT right, AND A NON-null PLACEHOLDER HERE MADE
+    // SelectTreeNode.toJSON() WRITE A THIRD, MEANINGLESS ELEMENT THAT THE JSON READER'S UNARY ARITY GATE (WHICH NOW
+    // COVERS is_null, NOT JUST `not`) WOULD OTHERWISE HAVE TO SPECIAL-CASE BACK OUT. null MATCHES THE CONVENTION
+    // EVERY IN-TREE `not` ALREADY USES
+    select.propertyValue = null;
     return new SelectWhereAfterBlock(select);
   }
 
   public SelectWhereAfterBlock isNotNull() {
     select.setOperator(SelectOperator.is_not_null);
-    select.propertyValue = Boolean.TRUE;
+    // #8256: see isNull() above.
+    select.propertyValue = null;
     return new SelectWhereAfterBlock(select);
   }
 }

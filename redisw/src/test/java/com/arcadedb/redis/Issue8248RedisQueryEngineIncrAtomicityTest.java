@@ -151,8 +151,8 @@ public class Issue8248RedisQueryEngineIncrAtomicityTest extends BaseRedisServerT
     final Database database = getServerDatabase(0, getDatabaseName());
     close(database.command("redis", "SET issue8248text not-a-number"));
 
-    assertThatThrownBy(() -> database.command("redis", "INCR issue8248text")).hasMessageContaining("is not a number");
-    assertThatThrownBy(() -> database.command("redis", "DECRBY issue8248text 2")).hasMessageContaining("is not a number");
+    assertThatThrownBy(() -> database.command("redis", "INCR issue8248text")).hasMessageContaining("value is not an integer or out of range");
+    assertThatThrownBy(() -> database.command("redis", "DECRBY issue8248text 2")).hasMessageContaining("value is not an integer or out of range");
     assertThat(database.command("redis", "GET issue8248text").next().<Object>getProperty("value")).isEqualTo("not-a-number");
   }
 
