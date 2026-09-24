@@ -129,8 +129,8 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
         ProtoUtils.toCommitInfoProto(leader, 5000L));
 
     assertThat(reportedCommitIndexOf(infos, leader.getId())).isEqualTo(5000L);
-    assertThat(reportedCommitIndexOf(infos, RaftPeerId.valueOf("absent"))).isEqualTo(-1L);
-    assertThat(reportedCommitIndexOf(null, leader.getId())).isEqualTo(-1L);
+    assertThat(reportedCommitIndexOf(infos, RaftPeerId.valueOf("absent"))).isEqualTo(RaftHAServer.NO_COMMIT_INFO);
+    assertThat(reportedCommitIndexOf(null, leader.getId())).isEqualTo(RaftHAServer.NO_COMMIT_INFO);
   }
 
   // ---- end to end through RaftHAServer ---------------------------------------------------------------------------
@@ -190,6 +190,48 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
     f.raft.refreshLeaderCommitIndex();
 
     assertThat(f.probes.get()).isZero();
+  }
+
+  @Test
+  void anUnreachableLeaderIsProbedWithBackoffNotOnEveryTick() throws Exception {
+    final Fixture f = new Fixture(true, 100L, 100L);
+    f.leaderCommit = -1L; // every call fails
+
+    for (int i = 0; i < 10; i++)
+      f.raft.refreshLeaderCommitIndex();
+
+    // Probe, skip 1, probe, skip 3, probe, skip 7 (partly): three calls in ten ticks.
+    assertThat(f.probes.get()).isEqualTo(3);
+  }
+
+  @Test
+  void aSuccessfulProbeAndALeaderChangeReArmTheBackoff() throws Exception {
+    final Fixture f = new Fixture(true, 100L, 100L);
+    f.leaderCommit = -1L;
+    f.raft.refreshLeaderCommitIndex(); // fails, skips the next tick
+    f.raft.refreshLeaderCommitIndex(); // skipped
+    assertThat(f.probes.get()).isEqualTo(1);
+
+    // A new leader is asked straight away, however many times the old one failed.
+    when(f.info.getLeaderId()).thenReturn(RaftPeerId.valueOf("third"));
+    f.leaderCommit = 5000L;
+    f.raft.refreshLeaderCommitIndex();
+    assertThat(f.probes.get()).isEqualTo(2);
+    assertThat(f.raft.getLeaderReportedCommitIndex()).isEqualTo(5000L);
+
+    // After a success, the next tick probes again.
+    f.raft.refreshLeaderCommitIndex();
+    assertThat(f.probes.get()).isEqualTo(3);
+  }
+
+  @Test
+  void theBackoffIsBounded() {
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(0)).isZero();
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(1)).isEqualTo(1);
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(2)).isEqualTo(3);
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(3)).isEqualTo(7);
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(4)).isEqualTo(RaftHAServer.LEADER_COMMIT_PROBE_MAX_SKIP_TICKS);
+    assertThat(RaftHAServer.leaderCommitProbeSkipTicksAfter(30)).isEqualTo(RaftHAServer.LEADER_COMMIT_PROBE_MAX_SKIP_TICKS);
   }
 
   @Test
@@ -283,7 +325,7 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
       smField.set(raft, stateMachine);
 
       raft.setLeaderCommitProber(target -> {
-        assertThat(target.getId()).isEqualTo(leader.getId());
+        assertThat(target.getId()).isEqualTo(info.getLeaderId());
         probes.incrementAndGet();
         return leaderCommit;
       });

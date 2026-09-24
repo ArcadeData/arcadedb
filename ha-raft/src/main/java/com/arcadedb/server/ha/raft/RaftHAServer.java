@@ -274,6 +274,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          RaftPeer                  leaderCommitProbeTarget;
   private          boolean                   leaderCommitProbeClosed;
   private final    Object                    leaderCommitProbeLock = new Object();
+  // Failure backoff of the probe above, so an unreachable leader does not stretch every health tick by the probe
+  // timeout for as long as it stays unreachable (review of PR #8322). Health-monitor thread only.
+  private          int                       leaderCommitProbeFailures;
+  private          int                       leaderCommitProbeSkipTicks;
+  private          RaftPeerId                leaderCommitProbeLastLeader;
   /**
    * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
    * a share of {@link #capabilityHttpsClients}: that one is asked by a single scheduled thread, sequentially, and
@@ -3333,6 +3338,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * sample is a commit index a leader really reported, so every sample is a safe lower bound, and replacing lets
    * a node that outlived a wholesale reset of the cluster's Raft state forget a figure from the old log. A failed
    * call keeps the previous value, which is still a lower bound.
+   * <p>
+   * The call runs on the health-monitor thread, so consecutive failures back off (skipping 1, 3, 7, then at most
+   * {@link #LEADER_COMMIT_PROBE_MAX_SKIP_TICKS} ticks between attempts) instead of adding the probe timeout to every
+   * tick while the leader stays unreachable; a success or a leader change re-arms it at once. The wedged channel
+   * this exists for is leader-to-follower, so the follower-to-leader call keeps succeeding there and never backs off.
+   * <p>
+   * Not the ReadIndex path {@link #fetchReadIndex} uses, although that also returns a leader's commit index: a
+   * ReadIndex makes the leader confirm its leadership with a heartbeat round to a majority, and it goes through the
+   * shared write client and its minute-long retry policy. This needs neither - any commit index a leader reports is
+   * a safe lower bound - so it uses the lighter group-info call on its own bounded client.
    */
   @Override
   public void refreshLeaderCommitIndex() {
@@ -3359,9 +3374,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
     if (leaderPeer == null)
       return;
+    if (!leaderPeer.getId().equals(leaderCommitProbeLastLeader)) {
+      // A new leader: whatever made the previous one unreachable says nothing about this one.
+      leaderCommitProbeLastLeader = leaderPeer.getId();
+      leaderCommitProbeFailures = 0;
+      leaderCommitProbeSkipTicks = 0;
+    }
+    if (leaderCommitProbeSkipTicks > 0) {
+      leaderCommitProbeSkipTicks--;
+      return;
+    }
     final long reported = leaderCommitProber.commitIndexOf(leaderPeer);
-    if (reported >= 0)
+    if (reported >= 0) {
       leaderReportedCommitIndex = reported;
+      leaderCommitProbeFailures = 0;
+    } else {
+      leaderCommitProbeFailures = Math.min(leaderCommitProbeFailures + 1, 30);
+      leaderCommitProbeSkipTicks = leaderCommitProbeSkipTicksAfter(leaderCommitProbeFailures);
+    }
+  }
+
+  /** Upper bound of the probe's failure backoff, in health ticks (issue #7619, review of PR #8322). */
+  static final int LEADER_COMMIT_PROBE_MAX_SKIP_TICKS = 8;
+
+  /** Ticks to skip after {@code failures} consecutive failed probes: 1, 3, 7, then {@link #LEADER_COMMIT_PROBE_MAX_SKIP_TICKS}. */
+  static int leaderCommitProbeSkipTicksAfter(final int failures) {
+    if (failures <= 0)
+      return 0;
+    return (int) Math.min(LEADER_COMMIT_PROBE_MAX_SKIP_TICKS, (1L << Math.min(failures, 4)) - 1);
   }
 
   /**
@@ -3385,7 +3425,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final var reply = leaderCommitProbeClient.getGroupManagementApi(leader.getId()).info(raftGroup.getGroupId());
         if (reply == null || !reply.isSuccess())
           return -1L;
-        return reportedCommitIndexOf(reply.getCommitInfos(), leader.getId());
+        final long reported = reportedCommitIndexOf(reply.getCommitInfos(), leader.getId());
+        return reported == NO_COMMIT_INFO ? -1L : reported;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Cannot read the commit index of leader %s", e, leader.getId());
         closeLeaderCommitProbeClientLocked();
@@ -3432,19 +3473,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
   }
 
+  /** What {@link #reportedCommitIndexOf} answers when the commit infos carry no entry for the server asked about. */
+  static final long NO_COMMIT_INFO = Long.MIN_VALUE;
+
   /**
-   * The commit index {@code serverId} reported for itself in a group-info reply's commit infos, or {@code -1}
-   * when the reply carries none for it. Package-private so the lookup can be tested without a Ratis server.
+   * The commit index {@code serverId} reported in a Ratis reply's commit infos, or {@link #NO_COMMIT_INFO} when
+   * they carry none for it. Shared by the ReadIndex path ({@link #extractLeaderCommitIndex}) and the readiness
+   * probe of issue #7619. Package-private so the lookup can be tested without a Ratis server.
    */
   static long reportedCommitIndexOf(final Collection<RaftProtos.CommitInfoProto> commitInfos,
       final RaftPeerId serverId) {
-    if (commitInfos == null)
-      return -1L;
+    if (commitInfos == null || serverId == null)
+      return NO_COMMIT_INFO;
     final ByteString id = serverId.toByteString();
     for (final RaftProtos.CommitInfoProto info : commitInfos)
-      if (info.getServer().getId().equals(id))
+      if (info.hasServer() && id.equals(info.getServer().getId()))
         return info.getCommitIndex();
-    return -1L;
+    return NO_COMMIT_INFO;
   }
 
   /** The member of {@code peers} whose id is {@code peerId}, or {@code null}. */
@@ -4183,14 +4228,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *                              re-introduce the stale-read bug).
    */
   private long extractLeaderCommitIndex(final RaftClientReply reply) {
-    final RaftPeerId replyServerId = reply.getServerId();
-    if (replyServerId != null && reply.getCommitInfos() != null) {
-      final var serverIdBytes = replyServerId.toByteString();
-      for (final RaftProtos.CommitInfoProto info : reply.getCommitInfos()) {
-        if (info.hasServer() && serverIdBytes.equals(info.getServer().getId()))
-          return info.getCommitIndex();
-      }
-    }
+    final long commitIndex = reportedCommitIndexOf(reply.getCommitInfos(), reply.getServerId());
+    if (commitIndex != NO_COMMIT_INFO)
+      return commitIndex;
     // The read succeeded but the leader's commit index is missing from the reply. We cannot
     // prove linearizability, so fail loudly rather than serve a possibly-stale read.
     throw new ReplicationException(
