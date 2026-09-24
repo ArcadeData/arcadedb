@@ -957,6 +957,30 @@ public class Console {
                     continue;
                 }
 
+                // #8275: THE ONLY OTHER REASONS TO KEEP ACCUMULATING USED TO BE THE TWO CHECKS ABOVE, SO A STATEMENT WRITTEN
+                // OVER SEVERAL LINES WITH NO BRACE IN IT RAN TRUNCATED AT THE END OF ITS FIRST LINE - `UPDATE Doc SET data =
+                // 'x'` ON ITS OWN LINE, THEN `WHERE id = 1;` AS A SEPARATE COMMAND. THE REAL TERMINATOR IS ';', SO KEEP
+                // ACCUMULATING WHILE parser'S TRAILING WORD - EVERYTHING SINCE THE LAST DELIMITER - STILL CARRIES REAL
+                // CONTENT. A BUFFER THAT ENDS CLEANLY AT A ';' (OR IS ONLY WHITESPACE/A DROPPED COMMENT) LEAVES THAT TRAILING
+                // WORD BLANK, SO A SCRIPT THAT TERMINATES EVERY STATEMENT WITH ';' - THE SAME CONTRACT mysql/psql/sqlite3
+                // .read REQUIRE - IS UNAFFECTED.
+                //
+                // THE CONTRACT CHANGE THIS DELIBERATELY MAKES (flagged in review): A SCRIPT THAT OMITTED ';' BETWEEN
+                // STATEMENTS AND RELIED ON THE LINE BREAK ALONE TO SEPARATE THEM - `CREATE DOCUMENT TYPE Doc` ON ONE LINE,
+                // `INSERT INTO Doc SET id = 1;` ON THE NEXT - USED TO RUN AS TWO COMMANDS AND NOW RUNS AS ONE, WHICH THE
+                // QUERY ENGINE THEN REFUSES AS A SYNTAX ERROR. THERE IS NO RELIABLE WAY TO TELL "A COMPLETE STATEMENT THAT
+                // HAPPENS TO OMIT ITS ';'" FROM "A STATEMENT THAT GENUINELY CONTINUES ON THE NEXT LINE" WITHOUT PARSING THE
+                // TARGET LANGUAGE'S GRAMMAR, WHICH THIS TOKENIZER DELIBERATELY DOES NOT DO FOR ANY OF THE LANGUAGES load
+                // CAN RUN (SQL, CYPHER, GREMLIN, MONGO) - SO ';' BETWEEN STATEMENTS IS NOW REQUIRED, EXACTLY AS THE ISSUE'S
+                // OWN SUGGESTED FIX PROPOSED. ONLY THE FILE'S LAST STATEMENT MAY STILL OMIT IT, FLUSHED BY THE EOF CHECK
+                // BELOW.
+                final List<String> words = parsedLine.words();
+                if (!words.isEmpty() && !words.getLast().isBlank()) {
+                    // THE LAST STATEMENT IN THE BUFFER IS NOT YET TERMINATED BY ';': IT CONTINUES ON THE NEXT LINE
+                    byteReadFromFile += line.length() + 1;
+                    continue;
+                }
+
                 pending.setLength(0);
                 execute(parsedLine, true, pendingStartLine - 1);
 
@@ -981,8 +1005,9 @@ public class Console {
         }
 
         if (!pending.isEmpty())
-            // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT OR JSON OBJECT: EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY
-            // UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
+            // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT, JSON OBJECT, OR (#8275) A STATEMENT WITH NO TRAILING ';':
+            // EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW
+            // REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
             execute(parser.parse(pending.toString(), 0), true, pendingStartLine - 1);
 
         elapsed = System.currentTimeMillis() - startedOn;
