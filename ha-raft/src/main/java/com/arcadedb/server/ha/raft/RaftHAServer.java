@@ -164,6 +164,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // (PostBatchHandler, LeaderCommandForwarder.Transport) already keep at one-per-server.
   private final    HttpClient              forwardHttpClient;
   private volatile ArcadeStateMachine      stateMachine;
+  /**
+   * Owned here, not by the state machine, so an in-place Ratis restart - which builds a new state machine - does
+   * not forget that this node joined at runtime (issue #7819). Initialized at declaration because the constructor
+   * builds the first state machine and hands it this instance.
+   */
+  private final    RuntimeJoinDetector     runtimeJoinDetector = new RuntimeJoinDetector();
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
   /**
@@ -1666,6 +1672,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(arcadeServer);
     sm.setRaftHAServer(this);
+    sm.setRuntimeJoinDetector(runtimeJoinDetector);
     return sm;
   }
 
@@ -2115,6 +2122,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
 
     LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
+  }
+
+  /**
+   * Whether this node was added to the Raft configuration by a change it applied while running, rather than being
+   * a member from the first configuration it observed (issue #7819). See {@link RuntimeJoinDetector}.
+   */
+  public boolean hasJoinedClusterAtRuntime() {
+    return runtimeJoinDetector.hasJoinedAtRuntime();
   }
 
   public ArcadeStateMachine getStateMachine() {

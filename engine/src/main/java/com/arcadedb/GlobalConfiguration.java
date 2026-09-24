@@ -2095,19 +2095,17 @@ public enum GlobalConfiguration {
 
   HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT("arcadedb.ha.securityConvergenceReadinessTimeout", SCOPE.SERVER,
       """
-      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that is a member of a \
-      multi-node cluster and has never installed any of the cluster's replicated security documents - \
-      server-users.jsonl, server-groups.json, server-api-tokens.json (issue #7532). Such a node enforces \
-      credentials from its own config directory rather than the cluster's, which is what a peer looks like \
-      between the moment its membership change commits and the moment the admission seed of issue #7521 lands, \
-      and what it stays like when that seed never lands at all. Requires \
-      arcadedb.server.readinessRequiresHA, and is bounded on purpose: when the window expires the node reports \
-      READY and logs, once, at SEVERE, exactly which documents never converged, so a rolling restart cannot \
-      stall behind a seed nobody is going to send. 0, the default, disables the wait entirely and leaves \
-      readiness exactly as it was - a cluster that has never replicated a security document has no node with \
-      one, so a non-zero default would hold every statically configured deployment's readiness for this window \
-      on every start.""",
-      Long.class, 0L),
+      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that was added to the cluster \
+      while running - by POST /api/v1/cluster/peer, 'connect cluster' or a Kubernetes auto-join - and has not yet \
+      installed all of the cluster's replicated security documents: server-users.jsonl, server-groups.json, \
+      server-api-tokens.json (issues #7532, #7819). Until they land such a node enforces credentials from its own \
+      config directory rather than the cluster's. A node that has been a member since the first configuration \
+      it observed - a statically configured cluster, restarted or not - is never held, even when its cluster has \
+      never replicated a security document. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
+      purpose: when the window expires the node reports READY and logs, once, at SEVERE, exactly which documents \
+      never converged, so a scale-up or a rolling restart cannot stall behind a seed nobody is going to send. 0 \
+      disables the wait entirely.""",
+      Long.class, 30_000L),
 
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
