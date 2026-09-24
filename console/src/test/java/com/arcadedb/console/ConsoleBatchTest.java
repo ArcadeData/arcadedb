@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -74,6 +75,39 @@ class ConsoleBatchTest {
     final Database db = new DatabaseFactory("./target/databases/console").open();
     assertThat(db.getSchema().existsType("Batchtest")).isTrue();
     db.drop();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/8246: the brace closing a map literal, followed by a new line, used to
+   * end the command there. The UPDATE ran with no WHERE and overwrote every record, then `WHERE id = 1` failed on its own.
+   */
+  @Test
+  void batchMultiLineUpdateWithAMapLiteralKeepsItsWhere() throws Exception {
+    Console.execute(new String[] { "-b",
+        """
+        create database console;
+        create document type Doc;
+        insert into Doc set id = 1, data = 'keep-me';
+        insert into Doc set id = 2, data = 'keep-me-too';
+        UPDATE Doc SET data = {"a": 1}
+        WHERE id = 1;
+        INSERT INTO Doc CONTENT {
+          "id": 3,
+          "data": "inserted"
+        }
+        RETURN @rid;
+        """ });
+
+    assertThat(Console.isErrored()).isFalse();
+
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    try {
+      assertThat(db.query("sql", "select data from Doc where id = 2").next().<Object>getProperty("data")).isEqualTo("keep-me-too");
+      assertThat(db.query("sql", "select data from Doc where id = 1").next().<Object>getProperty("data")).isInstanceOf(Map.class);
+      assertThat(db.query("sql", "select data from Doc where id = 3").next().<Object>getProperty("data")).isEqualTo("inserted");
+    } finally {
+      db.drop();
+    }
   }
 
   @Test
