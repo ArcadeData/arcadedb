@@ -517,6 +517,8 @@ public final class LeaderCommandForwarder {
     ExecutionResponse stream(final HttpClient dialClient, final HttpRequest request, final String leaderHttpAddress,
         final boolean longRunningCommand, final StreamTarget target) throws IOException {
       final long deadlineMs = deadlineOf(request, longRunningCommand);
+      // Captured BEFORE the wait for the headers on purpose: the headers and the body share this one budget, as they
+      // do in send(). Taking it after await() would hand the body a second full deadline.
       final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMs);
 
       final Awaited<Flow.Publisher<List<ByteBuffer>>> awaited = await(dialClient,

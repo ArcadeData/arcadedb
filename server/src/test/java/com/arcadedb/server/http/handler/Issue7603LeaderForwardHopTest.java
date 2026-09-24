@@ -229,6 +229,26 @@ class Issue7603LeaderForwardHopTest {
   }
 
   /**
+   * A leader whose buffered answer to a stream request breaks part-way - it declares a length and closes the
+   * connection short of it - fails the forward as an I/O error, exactly as the {@code ofString()} relay did, rather
+   * than relaying a truncated body as if it were whole.
+   */
+  @Test
+  void aBufferedAnswerThatBreaksPartWayFailsTheForwardInsteadOfRelayingATruncatedBody() {
+    leader.answerTruncatedJson();
+    final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(30_000L)));
+    forwarder.streamTargetFactory = exchange -> contentType -> {
+      throw new AssertionError("a JSON answer must not start a stream");
+    };
+    final HttpServerExchange exchange = exchange("/api/v1/server");
+    exchange.getRequestHeaders().put(new HttpString("Accept"), "text/event-stream");
+
+    assertThatThrownBy(() -> forwarder.forwardIfReplica(exchange, user("root"), "/api/v1/server",
+        "{\"command\":\"restore database x\"}", true, true))
+        .isInstanceOf(IOException.class);
+  }
+
+  /**
    * A route that cannot stream - the {@code /server/users} ones - never gets {@link LeaderCommandForwarder#STREAMED}
    * back, whatever its client's Accept header says: its handler would have nothing to return it as.
    */
@@ -492,6 +512,17 @@ class Issue7603LeaderForwardHopTest {
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(status, bytes.length);
         exchange.getResponseBody().write(bytes);
+      };
+    }
+
+    /** Declares a hundred bytes of JSON, sends five, and closes the connection. */
+    void answerTruncatedJson() {
+      answer = exchange -> {
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, 100);
+        exchange.getResponseBody().write("{\"res".getBytes(StandardCharsets.UTF_8));
+        exchange.getResponseBody().flush();
+        exchange.getHttpContext().getServer().stop(0);
       };
     }
 
