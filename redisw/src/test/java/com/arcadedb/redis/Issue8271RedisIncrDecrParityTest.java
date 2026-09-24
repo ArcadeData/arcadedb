@@ -130,6 +130,41 @@ public class Issue8271RedisIncrDecrParityTest extends BaseRedisServerTest {
         .hasMessageNotContaining("is not a number");
   }
 
+  /**
+   * Found in review (not part of the original divergence table): {@code Double.parseDouble}/{@code Double.valueOf}
+   * both accept the text "Infinity"/"NaN", so without a finiteness check INCRBYFLOAT would store one and every
+   * later INCRBYFLOAT on that key would keep producing a non-finite value. Both surfaces share the same
+   * {@code RedisCounterOperations.incrementByFloat}, so pinning it once here covers both.
+   * <p>
+   * The increment is driven through the query language's free-form command text, which can spell "Infinity"/"NaN"
+   * directly: Jedis's typed {@code incrByFloat(key, double)} cannot reach this case over RESP, because it formats
+   * an infinite/NaN {@code double} as Redis' own wire spelling ("+inf"/"nan"), which {@code Double.valueOf} does not
+   * parse - a pre-existing, unrelated gap in the argument parsing upstream of this shared helper, out of scope
+   * here. The RESP side of this test instead pins the other, equally reachable half of the same finiteness check:
+   * a value already non-finite when it is READ, such as one written by a plain SET.
+   */
+  @Test
+  void incrbyfloatRefusesANonFiniteIncrementOrStoredValueOnBothSurfaces() throws Exception {
+    assertThatThrownBy(() -> executeCommand(0, "redis", "INCRBYFLOAT issue8271query6a Infinity"))
+        .hasMessageContaining("increment would produce NaN or Infinity");
+    assertThatThrownBy(() -> executeCommand(0, "redis", "INCRBYFLOAT issue8271query6b NaN"))
+        .hasMessageContaining("increment would produce NaN or Infinity");
+
+    executeCommand(0, "redis", "SET issue8271query6c Infinity");
+    assertThatThrownBy(() -> executeCommand(0, "redis", "INCRBYFLOAT issue8271query6c 1"))
+        .hasMessageContaining("value is not a valid float");
+
+    final String respKey = getDatabaseName() + ".issue8271resp6";
+    final Jedis jedis = connect();
+    try {
+      jedis.set(respKey, "Infinity");
+      assertThatThrownBy(() -> jedis.incrByFloat(respKey, 1.0)).isInstanceOf(JedisDataException.class)
+          .hasMessageContaining("value is not a valid float");
+    } finally {
+      jedis.close();
+    }
+  }
+
   private Jedis connect() {
     final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);

@@ -268,6 +268,43 @@ class ConsoleTest {
   }
 
   /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/8275">...</a>, the deliberate other side of the same fix
+   * (found in review): {@code executeLoad} cannot tell a statement that merely omits its trailing ';' from one that
+   * genuinely continues on the next line without parsing the target language's grammar, which this tokenizer does not do
+   * for any of {@code load}'s languages. So ';' between statements is now required - the same contract mysql/psql/sqlite3
+   * {@code .read} already have - and a script that relied on the line break alone to separate two statements now runs
+   * them as one and gets a syntax error from the query engine, rather than the two commands it used to. Only the file's
+   * last statement may still omit ';', which {@code loadScriptWithEmptyLinesDoesNotEchoEmptyPrompts} below still covers.
+   */
+  @Test
+  void loadScriptRequiresASemicolonBetweenStatementsNotJustALineBreak() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+
+    final File script = new File("./target/issue-8275-no-semicolon-between-statements.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          CREATE DOCUMENT TYPE Loaded2
+          INSERT INTO Loaded2 SET id = 1;
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(buffer::append);
+
+      // The query engine's own parser refuses the merged text; load() catches that (not batch mode), reports it,
+      // and keeps going, the same as any other statement error in a loaded script.
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+      assertThat(buffer.toString()).contains("ERROR").contains("mismatched input 'INSERT'");
+
+      // Neither half of the merged text ran: the type was never created.
+      buffer.setLength(0);
+      assertThat(console.parse("select from Loaded2")).isTrue();
+      assertThat(buffer.toString()).contains("ERROR").contains("was not found");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: {@code executeLoad} re-buffers one statement at a time, resetting
    * after every executed command, so an unclosed '{' must be reported at its real position in the FILE - here line 4 - not at
    * "line 1" relative to the buffer that happened to be accumulating when the error was found.
