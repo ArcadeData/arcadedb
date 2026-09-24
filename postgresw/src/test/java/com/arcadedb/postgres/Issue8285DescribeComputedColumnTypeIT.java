@@ -107,6 +107,71 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  void aModifierAppliedToAnAggregateIsNotDescribedAsTheAggregatesOwnType() throws Exception {
+    // count(*) is int8, but .asString() runs AFTER it and turns the result into a String - inferring from the
+    // un-modified count() alone would describe the modifier's input, not its actual output (review of #8285).
+    try (final Connection connection = openJdbcConnection()) {
+      createAndPopulateTestType(connection);
+
+      try (final PreparedStatement statement = connection.prepareStatement(
+          "SELECT count(*).asString() AS c FROM Items8285")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isNotEqualTo("int8");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getObject(1)).isInstanceOf(String.class);
+        }
+      }
+    }
+  }
+
+  @Test
+  void nonExactDivisionIsNotDescribedAsAnIntegerType() throws Exception {
+    // MathExpression.Operator.SLASH returns a Double whenever the division isn't exact - which value ends up in
+    // the row depends on n's value, not on n's declared type, so this can never be decided before execution
+    // (review of #8285). A statement Describe pins the contract later Executes of it honor (#6725), so once this
+    // is correctly left undecided (varchar), the value round-trips as text rather than a native binary type -
+    // safe, since text always decodes correctly, unlike a wrong binary int8 would have.
+    try (final Connection connection = openJdbcConnection()) {
+      createAndPopulateTestType(connection);
+
+      try (final PreparedStatement statement = connection.prepareStatement(
+          "SELECT n / 2 AS d FROM Items8285 WHERE n = 1")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isNotEqualTo("int8");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getDouble(1)).isEqualTo(0.5);
+        }
+      }
+    }
+  }
+
+  @Test
+  void sumOfADecimalPropertyDescribesAsNumericNotFloat8BeforeExecution() throws Exception {
+    // SQLFunctionSum/Type#increment keep a DECIMAL accumulator as BigDecimal: describing it as float8 would make
+    // binary encoding call doubleValue() and lose precision (review of #8285).
+    try (final Connection connection = openJdbcConnection()) {
+      try (final Statement statement = connection.createStatement()) {
+        statement.execute("CREATE DOCUMENT TYPE Items8285Decimal IF NOT EXISTS");
+        statement.execute("CREATE PROPERTY Items8285Decimal.amount IF NOT EXISTS DECIMAL");
+        statement.execute("INSERT INTO Items8285Decimal SET amount = 1.1");
+        statement.execute("INSERT INTO Items8285Decimal SET amount = 2.2");
+      }
+
+      try (final PreparedStatement statement = connection.prepareStatement(
+          "SELECT sum(amount) AS s FROM Items8285Decimal")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isEqualTo("numeric");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getObject(1)).isInstanceOf(java.math.BigDecimal.class);
+        }
+      }
+    }
+  }
+
+  @Test
   void aPlainDeclaredPropertyIsUnaffected() throws Exception {
     try (final Connection connection = openJdbcConnection()) {
       createAndPopulateTestType(connection);
