@@ -782,7 +782,7 @@ public final class SnapshotInstaller {
   static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
-    if (server.existsDatabase(databaseName))
+    if (server.existsDatabase(databaseName)) {
       try {
         return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
       } catch (final DatabaseNotAvailableException e) {
@@ -794,6 +794,7 @@ public final class SnapshotInstaller {
             "Database '%s' is registered but did not resolve while locating it for a snapshot install (%s); "
                 + "using its configured directory", null, databaseName, e.getMessage());
       }
+    }
     return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
         + File.separator + databaseName;
   }
