@@ -2938,7 +2938,17 @@ public class PostgresNetworkExecutor extends Thread {
    * Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
    * a SET can be refused ({@link PostgresSessionSettings#set} refuses a read-only parameter or an invalid value, as
    * PostgreSQL does), and a marker consumed by the refused attempt would let a retry of the same portal answer
-   * {@code CommandComplete SET} having applied nothing.
+   * {@code CommandComplete SET} having applied nothing - {@code applySetting()} throwing skips the assignment below
+   * by ordinary Java control flow, so this ordering cannot regress by itself; only reordering the two statements
+   * (or wrapping the apply in a try/finally that always clears the marker) could break it.
+   * <p>
+   * Issue #8261: this ordering has no wire-observable form any more. In autocommit, the Sync after a refused
+   * Execute ends the implicit transaction and drops the portal with it (#8212), so a retry is answered {@code
+   * 34000} (portal missing) before it ever reaches this method. Inside an explicit block, the refusal aborts the
+   * block and {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846), so nothing can recover the block and retry
+   * the same portal either. {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} still pins the
+   * weaker, still-real guarantee that a replay in either shape is answered as an error and never as {@code
+   * CommandComplete SET} - see that test's javadoc for why a test of this exact ordering was not added instead.
    */
   private void applyPendingSetting(final PostgresPortal portal) {
     final String[] setting = portal.setting;

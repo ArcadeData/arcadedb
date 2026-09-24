@@ -116,13 +116,15 @@ public class DateUtils {
       if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
         throw new IllegalArgumentException(
             "java.util.Date implementation cannot handle datetime with precision " + destinationPrecision);
-      value = new Date(convertedTimestamp);
+      // #8253: java.util.Date's constructor always takes MILLIS since the epoch, regardless of destinationPrecision
+      value = new Date(destinationPrecision == ChronoUnit.SECONDS ? TimeUnit.SECONDS.toMillis(convertedTimestamp) : convertedTimestamp);
     } else if (dateTimeImplementation.equals(Calendar.class)) {
       if (destinationPrecision == ChronoUnit.MICROS || destinationPrecision == ChronoUnit.NANOS)
         throw new IllegalArgumentException(
             "java.util.Calendar implementation cannot handle datetime with precision " + destinationPrecision);
       value = Calendar.getInstance(database.getSchema().getTimeZone());
-      ((Calendar) value).setTimeInMillis(convertedTimestamp);
+      // #8253: setTimeInMillis() always takes MILLIS since the epoch, regardless of destinationPrecision
+      ((Calendar) value).setTimeInMillis(destinationPrecision == ChronoUnit.SECONDS ? TimeUnit.SECONDS.toMillis(convertedTimestamp) : convertedTimestamp);
     } else if (dateTimeImplementation.equals(LocalDateTime.class)) {
       if (destinationPrecision.equals(ChronoUnit.SECONDS))
         value = LocalDateTime.ofInstant(Instant.ofEpochSecond(convertedTimestamp), UTC_ZONE_ID);
