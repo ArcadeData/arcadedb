@@ -2310,7 +2310,10 @@ public enum GlobalConfiguration {
       arcadedb.command.timeout of its own - that per-command budget wins when it is set, because a forwarded \
       command's legitimate duration is bounded by the query, not by a fixed administrative deadline (the \
       distinction arcadedb.ha.proxyReadTimeout cannot make, which is why this is a separate setting rather than \
-      reusing it). Defaults to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
+      reusing it). When it wins, the follower waits that budget PLUS arcadedb.ha.quorumTimeout and \
+      arcadedb.ha.proxyConnectTimeout (issue #7737): the leader enforces the same budget from a later start and \
+      without counting the quorum commit or the response transit, so the headroom is what lets the leader's own \
+      answer - the result, or its timeout error naming arcadedb.command.timeout - reach the client. Defaults to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
       restore/import budget, because arcadedb.command.timeout defaults to 0 (unbounded) and this is what stands \
       between an ordinary forwarded write and an indefinite wait when nobody has opted into a tighter one. A \
       blown deadline is reported as a non-retryable TransactionException, not NeedRetryException: the leader \

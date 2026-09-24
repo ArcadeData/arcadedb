@@ -3663,16 +3663,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         ? "https://" + leaderHttpsAddress
         : "http://" + leaderHttpAddress) + "/api/v1/command/" + getName();
 
-    // The response deadline (issues #7527/#7543): the command's own arcadedb.command.timeout when one is set,
-    // because a forwarded command's legitimate duration is bounded by the query rather than by a fixed
+    // Captured once, ahead of the deadline that depends on it, so the headroom below and the catch blocks further
+    // down both use the connect timeout THIS forward actually dials with, not necessarily this instance's own
+    // plain-HTTP httpClient (an HTTPS-scheme forward uses dial.client() instead, whose connect timeout is read
+    // from its own cache).
+    final HttpClient dialClient = leaderHttpsAddress != null ? dial.client() : httpClient;
+
+    // The response deadline (issues #7527/#7543): driven by the command's own arcadedb.command.timeout when one
+    // is set, because a forwarded command's legitimate duration is bounded by the query rather than by a fixed
     // administrative deadline - arcadedb.ha.proxyReadTimeout cannot make that distinction, which is why it is
     // not used here. Falling back to arcadedb.ha.proxyCommandTimeout otherwise, since arcadedb.command.timeout
     // defaults to 0 (unbounded) and the wait still has to be finite: it is an HTTP worker, wire-protocol, or
     // embedded caller's thread parked on send() below.
+    //
+    // The command budget plus headroom, never the budget alone (issue #7737). The leader enforces the same
+    // arcadedb.command.timeout against the same command, but its clock starts strictly later - after connect,
+    // transit, HTTP parse, auth and dispatch - and it does not count the Raft quorum commit or the response
+    // transit that follow execution. A deadline equal to the budget therefore always expired here first: a
+    // write the leader committed inside its budget came back as an unknown, do-not-retry failure, and the
+    // leader's own TimeoutException naming arcadedb.command.timeout could never reach the client. The headroom
+    // is the leader's quorum wait (arcadedb.ha.quorumTimeout) plus this dial's connect budget, which bounds the
+    // round trip on the same order of magnitude, so the leader always gets to answer first.
     final long configuredCommandTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
     final long resolvedTimeoutMs;
     if (configuredCommandTimeout > 0)
-      resolvedTimeoutMs = configuredCommandTimeout;
+      resolvedTimeoutMs = commandTimeoutWithHeadroom(configuredCommandTimeout,
+          server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT),
+          dialClient.connectTimeout().map(Duration::toMillis).orElse(0L));
     else {
       resolvedTimeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT);
       if (resolvedTimeoutMs < LeaderDial.MIN_FORWARD_TIMEOUT_MS && commandTimeoutClampWarned.compareAndSet(false, true))
@@ -3719,10 +3736,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
-    // Captured once so the catch blocks below can report the connect timeout THIS forward actually dialled
-    // with, not necessarily this instance's own plain-HTTP httpClient (an HTTPS-scheme forward uses
-    // dial.client() instead, whose connect timeout is a different setting entirely).
-    final HttpClient dialClient = leaderHttpsAddress != null ? dial.client() : httpClient;
     try {
       final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
@@ -3776,6 +3789,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     }
+  }
+
+  /**
+   * The follower's response deadline for a forwarded command that carries its own {@code arcadedb.command.timeout}:
+   * that budget plus the leader's quorum wait plus the connect budget of the dial (issue #7737), so the leader, whose
+   * identical deadline starts later and does not cover the commit or the response transit, always answers first.
+   * A non-positive component adds nothing, and the sum saturates at the command budget rather than overflowing:
+   * a budget that large is already effectively unbounded, and an overflowed deadline would be negative.
+   */
+  static long commandTimeoutWithHeadroom(final long commandTimeoutMs, final long quorumTimeoutMs,
+      final long connectTimeoutMs) {
+    final long headroom = Math.max(quorumTimeoutMs, 0L) + Math.max(connectTimeoutMs, 0L);
+    final long deadline = commandTimeoutMs + headroom;
+    return deadline < commandTimeoutMs ? commandTimeoutMs : deadline;
   }
 
   /**
