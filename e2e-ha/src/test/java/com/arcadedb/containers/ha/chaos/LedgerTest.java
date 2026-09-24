@@ -19,7 +19,6 @@
 
 package com.arcadedb.containers.ha.chaos;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -29,8 +28,7 @@ import java.util.Random;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@Tag("chaos")
-class LedgerIT {
+class LedgerTest {
 
   @Test
   void keyRoundTrip() {

@@ -34,8 +34,8 @@
     <packaging>jar</packaging>
 
     <properties>
-        <!-- HaChaosIT and its harness tests run only from ha-chaos-tests.yml, never in the nightly HA job.
-             Override with -Dfailsafe.excludedGroups= to run them. -->
+        <!-- HaChaosIT runs only from ha-chaos-tests.yml, never in the nightly HA job.
+             Override with -Dfailsafe.excludedGroups= to run it. -->
         <failsafe.excludedGroups>chaos</failsafe.excludedGroups>
     </properties>
 
@@ -46,14 +46,6 @@
                 <artifactId>maven-deploy-plugin</artifactId>
                 <configuration>
                     <skip>true</skip>
-                </configuration>
-            </plugin>
-            <!-- Skip tests by default; run nightly with -pl e2e-ha -DskipTests=false -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <skipTests>true</skipTests>
                 </configuration>
             </plugin>
         </plugins>

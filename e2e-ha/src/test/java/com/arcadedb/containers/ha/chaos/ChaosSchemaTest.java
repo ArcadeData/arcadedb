@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -41,9 +40,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Runs the exact statements the workload and the checkpoint send over HTTP against an embedded database, so a syntax
  * or semantics mistake shows up here instead of as a mysterious failure 20 minutes into a container run.
  */
-@Tag("chaos")
-class ChaosSchemaIT {
-  private static final String PATH = "./target/chaos-schema-it";
+class ChaosSchemaTest {
+  private static final String PATH = "./target/chaos-schema-test";
 
   private DatabaseFactory factory;
   private Database        database;

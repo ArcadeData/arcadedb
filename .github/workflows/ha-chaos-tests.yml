@@ -77,7 +77,7 @@ jobs:
           if [ -n "${SEED}" ]; then args+=(-Dchaos.seed="${SEED}"); fi
           if [ -n "${FAULTS}" ]; then args+=(-Dchaos.faults="${FAULTS}"); fi
           ./mvnw verify -Pintegration --batch-mode --errors --show-version -pl e2e-ha \
-            -Dgroups=chaos -Dfailsafe.excludedGroups= "${args[@]}"
+            -Dit.test=HaChaosIT -Dfailsafe.excludedGroups= "${args[@]}"
 
       - name: Write run summary
         if: always()

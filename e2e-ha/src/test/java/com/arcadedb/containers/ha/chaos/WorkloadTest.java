@@ -22,7 +22,6 @@ package com.arcadedb.containers.ha.chaos;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -40,8 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-@Tag("chaos")
-class WorkloadIT {
+class WorkloadTest {
   private final AtomicInteger status   = new AtomicInteger(200);
   private final AtomicInteger delayMs  = new AtomicInteger();
   private final AtomicInteger requests = new AtomicInteger();
@@ -87,7 +85,7 @@ class WorkloadIT {
   }
 
   private Workload workload(final Ledger ledger, final Endpoints endpoints, final int readTimeoutMs) {
-    final ChaosConfig config = ChaosConfig.fromProperties(ChaosConfigIT.props("chaos.seed", "1", "chaos.writers", "2"));
+    final ChaosConfig config = ChaosConfig.fromProperties(ChaosConfigTest.props("chaos.seed", "1", "chaos.writers", "2"));
     return new Workload(config, ledger, endpoints, ChaosSchema.DATABASE, 1_000, readTimeoutMs, 1);
   }
 

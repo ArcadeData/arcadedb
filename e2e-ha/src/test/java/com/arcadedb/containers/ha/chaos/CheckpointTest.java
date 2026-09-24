@@ -19,7 +19,6 @@
 
 package com.arcadedb.containers.ha.chaos;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -33,8 +32,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Tag("chaos")
-class CheckpointIT {
+class CheckpointTest {
   private final Ledger ledger = new Ledger(1);
 
   private long acked() {

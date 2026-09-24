@@ -19,15 +19,13 @@
 
 package com.arcadedb.containers.ha.chaos;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Tag("chaos")
-class InvariantCheckerIT {
+class InvariantCheckerTest {
   private final Ledger           ledger  = new Ledger(2);
   private final InvariantChecker checker = new InvariantChecker(ledger);
 

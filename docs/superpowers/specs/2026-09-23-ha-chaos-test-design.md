@@ -243,14 +243,16 @@ Written to `e2e-ha/target/chaos/<seed>/`:
 - New `.github/workflows/ha-chaos-tests.yml`, build steps copied from `ha-resilience-tests.yml`:
   - `schedule`: weekly, Sunday 02:00 UTC, 3 nodes, `PT60M`, random seed.
   - `workflow_dispatch` inputs: `nodes`, `duration`, `seed`, `faults`, `writers`.
-  - Runs `-Dgroups=chaos -Dfailsafe.excludedGroups=` plus the chaos.* properties, so the harness unit tests run with it.
+  - Runs `-Dit.test=HaChaosIT -Dfailsafe.excludedGroups=` plus the chaos.* properties; surefire runs the harness unit
+    tests in the same invocation.
   - `timeout-minutes` comes from a timeout_minutes input (default 105 = the 60-minute scheduled run + 45); GitHub expressions cannot parse an ISO-8601 duration.
   - Uploads `e2e-ha/target/chaos/`, `e2e-ha/target/logs/`, failsafe reports.
   - Writes seed, result and replay command to `$GITHUB_STEP_SUMMARY`.
 
 ## 9. Testing the harness
 
-- Unit tests, no containers (run in the `e2e-ha` module with the chaos lane, since the module skips surefire):
+- Unit tests, no containers (`*Test` classes run by surefire in the `e2e-ha` module, so every PR's unit-test lane runs
+  them):
   - `Ledger`: outcome transitions, concurrent recording, `UNKNOWN` resolution.
   - `InvariantChecker`: synthetic key sets that violate each of I1-I5 individually and one that passes; each must
     produce exactly the expected violation.
@@ -260,8 +262,8 @@ Written to `e2e-ha/target/chaos/<seed>/`:
 - Smoke: `HaChaosIT` with 3 nodes and `chaos.maxSteps=3` locally to verify end-to-end wiring (containers, faults heal,
   checkpoint passes).
 
-Since `e2e-ha` sets surefire `skipTests=true`, the container-free unit tests are named `*IT` too, tagged `chaos`, so they
-run in the same failsafe invocation as `HaChaosIT` and are excluded from the nightly job with it.
+Only `HaChaosIT` carries the `chaos` tag; the harness unit tests are plain `*Test` classes, untagged. The nightly HA job
+runs with `-DskipTests`, so it skips them.
 
 ## 10. Known findings
 

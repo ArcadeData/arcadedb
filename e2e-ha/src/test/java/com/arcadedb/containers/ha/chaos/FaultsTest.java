@@ -20,7 +20,6 @@
 package com.arcadedb.containers.ha.chaos;
 
 import com.arcadedb.containers.ha.chaos.ClusterState.NodeState;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -30,8 +29,7 @@ import java.util.Random;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@Tag("chaos")
-class FaultsIT {
+class FaultsTest {
 
   private static int firstIn(final ClusterState state, final NodeState wanted) {
     for (int i = 0; i < state.size(); i++)

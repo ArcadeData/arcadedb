@@ -20,7 +20,6 @@
 package com.arcadedb.containers.ha.chaos;
 
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -34,8 +33,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Tag("chaos")
-class ChaosRunnerIT {
+class ChaosRunnerTest {
   @TempDir
   Path dir;
 
@@ -49,7 +47,7 @@ class ChaosRunnerIT {
     final List<String> keyValues = new ArrayList<>(List.of("chaos.seed", "7", "chaos.maxSteps", "5", "chaos.duration",
         "PT1H", "chaos.writers", "1"));
     keyValues.addAll(Arrays.asList(overrides));
-    return ChaosConfig.fromProperties(ChaosConfigIT.props(keyValues.toArray(new String[0])));
+    return ChaosConfig.fromProperties(ChaosConfigTest.props(keyValues.toArray(new String[0])));
   }
 
   private Harness harness(final ChaosConfig config) throws IOException {
