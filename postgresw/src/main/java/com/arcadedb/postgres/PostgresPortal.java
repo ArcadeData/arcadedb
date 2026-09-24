@@ -38,7 +38,6 @@ public class PostgresPortal {
   public boolean                   ignoreExecution      = false;
   public boolean                   isExpectingResult;
   public boolean                   executed             = false;
-  public boolean                   rowDescriptionSent   = false;
   /**
    * True only when a {@code Describe('S')} for this exact statement text already sent the client a real
    * RowDescription (schema-sampled column OIDs, since no row has run yet) - as opposed to {@link #columns}
@@ -80,13 +79,13 @@ public class PostgresPortal {
    */
   public TransactionControl        transactionControl;
   /**
-   * The {@code {name, value}} pair of a {@code SET} statement, or null for everything else (issue #8135). Parse only
+   * The parsed {@code SET}/{@code RESET} statement, or null for everything else (issue #8135). Parse only
    * parses and RECORDS it here, exactly as it does {@link #transactionControl}; {@code executeCommand()} applies it
    * and then clears it on the portal it acted on. Applying it at Parse let a statement that was only prepared change
    * the session, and left every later Bind+Execute of the cached statement answering {@code CommandComplete SET}
    * without re-applying anything.
    */
-  public String[]                  setting;
+  public PostgresSessionSettings.Assignment setting;
 
   /**
    * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
@@ -150,8 +149,8 @@ public class PostgresPortal {
    * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers,
    * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
    * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
-   * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended},
-   * {@code rowDescriptionSent}, ...) at its fresh default, so each returned portal starts its own independent
+   * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended}, ...) at
+   * its fresh default, so each returned portal starts its own independent
    * lifecycle.
    */
   public static PostgresPortal bindFrom(final PostgresPortal template) {

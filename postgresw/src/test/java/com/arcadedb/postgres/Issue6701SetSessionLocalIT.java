@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Regression tests for issue #6701: two pre-existing gaps in
- * {@link PostgresNetworkExecutor#setConfiguration(String)} / {@code parseSetCommand()}, found by CodeRabbit
+ * {@code PostgresNetworkExecutor.parseSetCommand()}, found by CodeRabbit
  * while reviewing PR #6697 (unrelated to that PR's own fix).
  * <ul>
  *   <li>{@code SET SESSION <name> = <value>} / {@code SET LOCAL <name> = <value>} were not recognized: the
@@ -89,6 +89,10 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // Inside a block: a SET LOCAL lasts only until the end of its transaction (issue #8242), and outside one the
+        // statement is its own transaction, so there would be nothing left to observe.
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
         sendSimpleQuery(out, "SET LOCAL datestyle = 'DMY'");
         assertThat(messageTypesOf(readUntilReadyForQuery(in)))
             .as("no ErrorResponse for a SET LOCAL command").doesNotContain('E');
@@ -97,6 +101,11 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
             .as("SET LOCAL datestyle = 'DMY' must resolve the parameter name to plain 'datestyle', "
                 + "not 'local datestyle', so the datestyle special case actually fires")
             .isEqualTo("ISO, DMY");
+
+        sendSimpleQuery(out, "COMMIT");
+        readUntilReadyForQuery(in);
+        assertThat(PostgresWireMessages.show(out, in, "datestyle")).as("SET LOCAL ends with its transaction")
+            .isEqualTo("ISO, MDY");
       });
     }
   }

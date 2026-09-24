@@ -107,7 +107,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendBind(out, "", "");
       sendExecute(out, "");
       sendSync(out);
-      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', '2', 'T', 'D', 'D', 'C', 'Z');
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', '2', 'D', 'D', 'C', 'Z');
     });
   }
 
@@ -146,7 +146,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendBind(out, "p1", "s1");
       sendExecuteWithLimit(out, "p1", 1);
       sendSync(out);
-      assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("suspended after one row").containsExactly('1', '2', 'T', 'D', 's', 'Z');
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("suspended after one row").containsExactly('1', '2', 'D', 's', 'Z');
 
       sendExecuteWithLimit(out, "p1", 1);
       sendSync(out);
@@ -158,7 +158,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendBind(out, "p1", "s1");
       sendExecute(out, "p1");
       sendSync(out);
-      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('2', 'T', 'D', 'D', 'C', 'Z');
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('2', 'D', 'D', 'C', 'Z');
     });
   }
 
@@ -173,7 +173,7 @@ class Issue8211Issue8212PortalLifecycleIT extends PostgresWireProtocolTestBase {
       sendBind(out, "p1", "s1");
       sendExecuteWithLimit(out, "p1", 1);
       sendSync(out);
-      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', '2', 'T', 'D', 's', 'Z');
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', '2', 'D', 's', 'Z');
 
       // Resumed across the Sync: the explicit block is still open (the pgjdbc fetch-size cursor shape).
       sendExecuteWithLimit(out, "p1", 1);

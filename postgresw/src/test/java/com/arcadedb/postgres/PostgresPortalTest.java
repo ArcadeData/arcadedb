@@ -46,7 +46,6 @@ class PostgresPortalTest {
     assertThat(portal.ignoreExecution).isFalse();
     assertThat(portal.isExpectingResult).isTrue();
     assertThat(portal.executed).isFalse();
-    assertThat(portal.rowDescriptionSent).isFalse();
   }
 
   @Test
@@ -92,7 +91,6 @@ class PostgresPortalTest {
     portal.ignoreExecution = true;
     portal.isExpectingResult = false;
     portal.executed = true;
-    portal.rowDescriptionSent = true;
 
     assertThat(portal.parameterTypes).hasSize(2);
     assertThat(portal.parameterFormats).hasSize(1);
@@ -103,7 +101,6 @@ class PostgresPortalTest {
     assertThat(portal.ignoreExecution).isTrue();
     assertThat(portal.isExpectingResult).isFalse();
     assertThat(portal.executed).isTrue();
-    assertThat(portal.rowDescriptionSent).isTrue();
   }
 
   @Test

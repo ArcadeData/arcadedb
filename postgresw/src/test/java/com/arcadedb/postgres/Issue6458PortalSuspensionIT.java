@@ -98,12 +98,10 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       sendBind(out, "P1");
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
 
-      // First Execute: limit=4 with 10 rows available - must suspend with 4 rows left unread. No Describe
-      // means the client has not seen the columns yet, so this Execute must lead with its own RowDescription
-      // before any data - PostgresNetworkExecutor.executeCommand()'s own !rowDescriptionSent branch.
+      // First Execute: limit=4 with 10 rows available - must suspend with 4 rows left unread. No Describe was
+      // sent, and Execute never answers with a RowDescription (issue #8244): the data rows come first.
       sendExecute(out, "P1", 4);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription, since no Describe('P') preceded this Execute").isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 4))
           .as("first batch: DataRow x4 in id order, then exactly one terminator (checked by readNextBatchOfIds)")
           .containsExactly(0, 1, 2, 3);
@@ -248,7 +246,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PR1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 5)).as("first run reads every row").containsExactly(0, 1, 2, 3, 4);
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
@@ -259,9 +256,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PR1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type)
-          .as("RowDescription again - this is a brand new portal, not the exhausted first one; it has never sent one")
-          .isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 5))
           .as("second run re-executes and reads every row again, not an empty slice of the exhausted first run")
           .containsExactly(0, 1, 2, 3, 4);
@@ -311,7 +305,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PF1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 5)).as("first run reads every row").containsExactly(0, 1, 2, 3, 4);
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
@@ -371,7 +364,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PCQ1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription - first execution of this portal").isEqualTo('T');
       assertThat(readNextBatchOfStrings(in, 1)).as("first run matches only the one type created so far")
           .containsExactly("CatalogFB6458First");
       assertThat(readOneMessage(in).type).as("CommandComplete - fully drained").isEqualTo('C');
@@ -430,7 +422,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "P1", 4);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription for P1's first execution").isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 4)).as("P1 first batch").containsExactly(0, 1, 2, 3);
       assertThat(readOneMessage(in).type).as("P1 suspended - 6 rows remain unread").isEqualTo('s');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
@@ -441,7 +432,6 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "P2", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type).as("RowDescription for P2's own, independent first execution").isEqualTo('T');
       assertThat(readNextBatchOfIds(in, 10)).as("P2 reads every row, independently of P1's in-progress fetch").containsExactly(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
       assertThat(readOneMessage(in).type).as("P2 fully drained").isEqualTo('C');
       assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');

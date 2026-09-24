@@ -96,7 +96,8 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         sendExecute(out, "p");
         sendSync(out);
         final List<WireMessage> executed = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(executed)).containsExactly('C', 'Z');
+        // The ParameterStatus announces the application_name the SET changed (issue #8241)
+        assertThat(messageTypesOf(executed)).containsExactly('C', 'S', 'Z');
         assertThat(show(out, in, PARAMETER)).as("executing the SET applies it").isEqualTo(VALUE);
 
         sendSimpleQuery(out, "COMMIT");
@@ -129,7 +130,8 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         sendExecute(out, "p");
         sendSync(out);
         final List<WireMessage> reuse = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(reuse)).as("the re-executed SET answers CommandComplete").containsExactly('2', 'C', 'Z');
+        assertThat(messageTypesOf(reuse)).as("the re-executed SET answers CommandComplete, and reports the application_name it restored")
+            .containsExactly('2', 'C', 'S', 'Z');
         assertThat(show(out, in, PARAMETER)).as("a re-executed cached SET must apply the setting again, not only claim to")
             .isEqualTo(VALUE);
       });
