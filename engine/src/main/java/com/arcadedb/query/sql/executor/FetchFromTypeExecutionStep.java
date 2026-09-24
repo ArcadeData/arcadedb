@@ -391,6 +391,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
             final ResultSet[] rsHolder = new ResultSet[1];
             boolean more = true;
             while (more) {
+              // CANCELLATION (ResultSet.close() -> future.cancel(true)) IS SEEN HERE TOO, NOT ONLY IN THE BLOCKING offer():
+              // A PRODUCER WHOSE ROWS ARE ALL FILTERED AWAY NEVER OFFERS ANYTHING, SO IT WOULD NEVER NOTICE IT OTHERWISE
+              if (Thread.currentThread().isInterrupted())
+                return;
               // A NEW LIST PER BATCH: THE BATCH ITSELF IS HANDED TO THE CONSUMER, WHICH OWNS IT FROM THEN ON
               final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
               // SINGLE-ELEMENT HOLDER, NOT A LOCAL long: MUTATED FROM INSIDE THE LAMBDA BELOW, SAME PATTERN AS rsHolder
@@ -400,14 +404,19 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                 if (rs == null)
                   rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
                 // THE BYTE BOUND NEVER BLOCKS PROGRESS: IT IS CHECKED BEFORE ADDING, SO A SINGLE RECORD LARGER THAN
-                // maxBatchBytes STILL GOES INTO ITS OWN (OVER-BUDGET) BATCH RATHER THAN NEVER FITTING ANYWHERE
-                while (batch.size() < SCAN_BATCH_SIZE && batchBytes[0] < maxBatchBytes) {
+                // maxBatchBytes STILL GOES INTO ITS OWN (OVER-BUDGET) BATCH RATHER THAN NEVER FITTING ANYWHERE.
+                // examined BOUNDS THE ROWS READ UNDER ONE READ-LOCK ACQUISITION, NOT ONLY THE ROWS KEPT: WITH AN
+                // AFTER-READ LISTENER FILTERING MOST ROWS AWAY, FILLING 256 SURVIVORS COULD OTHERWISE HOLD THE LOCK FOR AN
+                // UNBOUNDED STRETCH OF THE BUCKET. A SHORT (EVEN EMPTY) BATCH IS FINE: THE OUTER LOOP COMES BACK FOR MORE
+                int examined = 0;
+                while (examined < SCAN_BATCH_SIZE && batch.size() < SCAN_BATCH_SIZE && batchBytes[0] < maxBatchBytes) {
                   if (!rs.hasNext()) {
                     rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
                     if (!rs.hasNext())
                       return false;
                   }
                   final Result r = rs.next();
+                  ++examined;
                   // EVERY ROW IN THE BATCH PAYS THIS, WHETHER THE CONSUMER EVER ASKS FOR IT OR NOT: A LIMIT-BOUNDED
                   // QUERY DESERIALIZES THE DISCARDED TAIL OF EACH BATCH TOO (UP TO SCAN_BATCH_SIZE - 1 WIDE ROWS PER
                   // FETCH), WHERE IT USED TO STAY LAZY. ACCEPTED: THE BENCHMARK IN #8265 IS FOR THE FULL-SCAN CASE

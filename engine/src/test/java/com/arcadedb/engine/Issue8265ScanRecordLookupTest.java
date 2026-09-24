@@ -315,4 +315,31 @@ class Issue8265ScanRecordLookupTest extends TestHelper {
           GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES.getDefValue());
     }
   }
+
+  /**
+   * With an after-read listener hiding almost every row, a producer fills its batches from far more rows than it keeps.
+   * The rows read under one read-lock acquisition are bounded by rows examined, not rows kept, so the scan comes back for
+   * more in short (often empty) batches, and must still return exactly the rows the listener lets through.
+   */
+  @Test
+  void parallelScanWithMostRowsFilteredReturnsTheSurvivors() {
+    database.getSchema().buildDocumentType().withName("Sparse8265").withTotalBuckets(4).create();
+    database.transaction(() -> {
+      for (int i = 0; i < 5_000; i++)
+        database.newDocument("Sparse8265").set("id", i).save();
+    });
+
+    final AfterRecordReadListener listener = record -> record.asDocument().getInteger("id") % 100 == 0 ? record : null;
+    database.getEvents().registerListener(listener);
+    try {
+      final Set<Integer> ids = new HashSet<>();
+      try (final ResultSet rs = database.query("sql", "select from Sparse8265")) {
+        while (rs.hasNext())
+          ids.add(rs.next().<Integer>getProperty("id"));
+      }
+      assertThat(ids).hasSize(50).allMatch(id -> id % 100 == 0);
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
 }
