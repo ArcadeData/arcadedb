@@ -33,8 +33,9 @@ import static org.mockito.Mockito.when;
  * passing. The SEVERE alert {@code HealthMonitor} raises at give-up said "a pod/process restart is the way
  * out", but nothing performed it.
  * <p>
- * {@code isLive()} now consults {@link HAServerPlugin#isCrashLoopEscalated()} so that restart happens
- * automatically.
+ * {@code isLive()} now fails so that restart happens automatically - once (issue #7736): it consults
+ * {@link HAServerPlugin#isCrashLoopRestartPending()}, not {@link HAServerPlugin#isCrashLoopEscalated()}, because an
+ * escalation inherited by the restarted process must not fail liveness again and loop the pod forever.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,12 +60,29 @@ class Issue7622LivenessCrashLoopEscalatedTest {
   }
 
   @Test
-  void isNotLiveOnceHaHasEscalatedACrashLoop() {
+  void isNotLiveOnceHaHasEscalatedACrashLoopInThisLifetime() {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.isCrashLoopEscalated()).thenReturn(true);
+    when(ha.isCrashLoopRestartPending()).thenReturn(true);
     when(server.getHA()).thenReturn(ha);
 
     assertThat(new ServerControlPlane(server).isLive()).isFalse();
+  }
+
+  /**
+   * Issue #7736: the restarted process inherits the recorded escalation and still crash-loops. Another restart
+   * cannot help - the cause is served by the leader - so liveness stays green and the node parks, out of the
+   * Service through readiness, instead of entering a perpetual CrashLoopBackOff.
+   */
+  @Test
+  void isLiveWhenTheEscalationWasInheritedFromAPreviousLifetime() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.isCrashLoopEscalated()).thenReturn(true);
+    when(ha.isCrashLoopRestartPending()).thenReturn(false);
+    when(server.getHA()).thenReturn(ha);
+
+    assertThat(new ServerControlPlane(server).isLive()).isTrue();
   }
 }

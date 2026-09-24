@@ -112,16 +112,34 @@ public interface HAServerPlugin extends ServerPlugin {
    * than {@link #getReadinessSignal(long)} answering {@code NOT_READY}: a node can be transiently not-ready
    * (still joining, catching up) without this ever being {@code true}.
    * <p>
-   * Consulted by {@code ServerControlPlane.isLive()} to fail the Kubernetes liveness probe once this is
-   * {@code true}: escalation used to leave the node in a permanent {@code NOT_READY} with liveness still
-   * green, which removed the pod from the Service but never triggered the pod restart that is the documented
-   * way out, leaving an operator to notice the SEVERE alert and act by hand. Failing liveness here makes that
-   * restart automatic.
+   * Stays {@code true} after a process restart when the escalation was recorded by a previous lifetime and the HA
+   * layer still does not come up (issue #7736). The liveness probe therefore does not consult this, but the
+   * narrower {@link #isCrashLoopRestartPending()}.
    * <p>
    * Returns {@code false} when this HA implementation has no such escalation concept - HA disabled, or a
    * non-Raft implementation.
    */
   default boolean isCrashLoopEscalated() {
+    return false;
+  }
+
+  /**
+   * Reports whether a process restart is still worth asking for after a crash-loop escalation: the escalation
+   * happened in this process lifetime, and it was durably recorded so the restarted process does not walk the
+   * automatic restart and Raft-storage reformat ladder again (issue #7736).
+   * <p>
+   * Consulted by {@code ServerControlPlane.isLive()}. Issue #7622 made liveness fail on escalation so that the
+   * one restart the SEVERE alert calls for happens without an operator. Consulting {@link #isCrashLoopEscalated()}
+   * for that turned the terminal state into a perpetual {@code CrashLoopBackOff}: every restart reset the
+   * in-memory escalation, reformatted the Raft storage and pulled a full snapshot from the leader, only to escalate
+   * and fail liveness again, for a cause - a poisoned log or snapshot served by the leader - that no restart of
+   * this node can cure. This answers {@code true} at most once per recorded escalation, and never for one
+   * inherited from a previous lifetime, which parks the node - out of the Service, alive, inspectable - for the
+   * operator.
+   * <p>
+   * Returns {@code false} when this HA implementation has no such escalation concept.
+   */
+  default boolean isCrashLoopRestartPending() {
     return false;
   }
 
@@ -139,7 +157,7 @@ public interface HAServerPlugin extends ServerPlugin {
    * node that is merely BEHIND - still joining, still replaying - and a deployment can reasonably choose to serve
    * from one. This is not that: the Raft implementation sets this only from Ratis's own {@code notifyLogFailed},
    * after which every later append is rejected until the log writer is restarted, so there is no deployment for
-   * which "in the Service" is the right answer. Same reasoning as {@link #isCrashLoopEscalated()}, which
+   * which "in the Service" is the right answer. Same reasoning as {@link #isCrashLoopRestartPending()}, which
    * {@code isLive()} consults unconditionally for the same kind of terminal condition.
    * <p>
    * The condition is recoverable: {@code HealthMonitor} restarts the log writer in place (issue #7037) and this

@@ -149,6 +149,30 @@ public final class HealthMonitor {
      */
     default void verifyBootstrapDivergence() {
     }
+
+    /**
+     * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
+     * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
+     * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
+     */
+    default boolean hasPersistedCrashLoopEscalation() {
+      return false;
+    }
+
+    /**
+     * Records the crash-loop escalation next to the Raft storage, so that a process restart does not reset the
+     * ladder and re-run a storage reformat plus a full snapshot download from the leader on the same, still
+     * poisoned, storage (issue #7736). Returns whether the record was durably written: the monitor asks for a
+     * process restart (failed liveness) only when it was, because an unrecorded escalation would make that
+     * restart walk the whole ladder again.
+     */
+    default boolean persistCrashLoopEscalation(final String reason) {
+      return false;
+    }
+
+    /** Removes the record written by {@link #persistCrashLoopEscalation(String)}, once the division came up healthy. */
+    default void clearPersistedCrashLoopEscalation() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -165,6 +189,17 @@ public final class HealthMonitor {
 
   /** At most one "deferred: volume still full" line per this window, matching the compaction scheduler's throttle. */
   static final long LOG_FAILURE_DEFERRED_WARNING_THROTTLE_MS = 60_000L;
+
+  /**
+   * Crash-loop escalation record (issue #7736): how long the Raft division must have stayed up, uninterrupted, before
+   * the record is deleted and the full restart/reformat ladder re-arms. One healthy tick is not enough: a division
+   * restarted on poisoned storage can look RUNNING for a while - long enough for a tick - before the state machine
+   * applies the bad entry and it falls back to CLOSED, and clearing the record on that tick would let the next
+   * escalation reformat the storage, pull a full snapshot from the leader and ask for a process restart all over
+   * again. Same order of magnitude as {@link #LOG_FAILURE_EPISODE_RESET_MS}, for the same reason. Package-private
+   * for tests.
+   */
+  static final long CRASH_LOOP_RECORD_RESET_MS = 10L * 60_000L;
 
   private final    HealthTarget             target;
   private final    long                     intervalMs;
@@ -199,6 +234,15 @@ public final class HealthMonitor {
   // worker thread via isCrashLoopEscalated() - the liveness probe (issue #7622) - so a plain field would
   // not guarantee the writing thread's update is ever seen by a reader on another one.
   private volatile boolean                  crashLoopEscalated           = false;
+  // Issue #7736: whether the current escalation was inherited from a previous process lifetime through the record
+  // under the Raft storage directory (a restart was already tried on this storage and did not help), and whether
+  // such a record exists right now. Written on the tick executor (and once in the constructor), read from an HTTP
+  // worker via isCrashLoopRestartPending(), hence volatile like crashLoopEscalated.
+  private volatile boolean                  crashLoopEscalationInherited  = false;
+  private volatile boolean                  crashLoopEscalationPersisted  = false;
+  // Since when the division has been observed up while a record exists (-1 = not up, or no record): the record is
+  // deleted once this is CRASH_LOOP_RECORD_RESET_MS old. Tick executor only.
+  private          long                     crashLoopRecordHealthySinceMs = -1;
   // Log-writer recovery (#7037): in-place restarts fired in the current failure episode, since when the writer
   // has been observed healthy again after them (-1 = not yet, or no episode), when the "deferred" line was last
   // logged, and whether the budget for this episode is spent (logged once).
@@ -240,6 +284,33 @@ public final class HealthMonitor {
     this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
     this.divergedFollowerMaxReformats = divergedFollowerMaxReformats;
     this.crashLoopRestartThreshold = crashLoopRestartThreshold;
+
+    // Issue #7736: every escalation field above is in-memory, and this monitor is built fresh per process. Without
+    // the record a restart of a node that had given up reset the whole ladder and walked it again on the same
+    // persisted storage: ten more non-sticking restarts, a Raft-storage reformat, a full snapshot download from the
+    // leader, ten more restarts, and a new escalation - every process lifetime. With the record the second lifetime
+    // starts where the first one stopped: escalated, reformat spent, no automatic restart. It is deleted once the
+    // division has stayed up for CRASH_LOOP_RECORD_RESET_MS, so a node the restart did cure re-arms the ladder.
+    if (target.hasPersistedCrashLoopEscalation()) {
+      if (crashLoopRestartThreshold <= 0)
+        // The escalation is disabled: nothing will honour the record, and one left behind would silently disarm the
+        // ladder the day the operator enables it again.
+        target.clearPersistedCrashLoopEscalation();
+      else {
+        crashLoopEscalationPersisted = true;
+        crashLoopReformatTried = true;
+        crashLoopEscalationInherited = true;
+        crashLoopEscalated = true;
+        LogManager.instance().log(this, Level.SEVERE,
+            "A previous run of this server gave up restarting its Raft layer after a crash loop, and recorded it next "
+                + "to the Raft storage. The Raft-storage reformat will NOT run again on this storage and this node "
+                + "will not ask for another process restart: if the Raft layer does not stay up, operator "
+                + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
+                + "coordinated full-cluster Raft-storage reformat). Delete the '%s' file in the Raft storage "
+                + "directory to re-arm the automatic recovery (issues #5291, #7736)",
+            RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
+      }
+    }
   }
 
   /** Package-private test hook to drive the persistence logic deterministically. */
@@ -273,11 +344,26 @@ public final class HealthMonitor {
    * Whether {@link #handleUnhealthyState} has given up automatically restarting this division: the crash
    * loop persisted past every remedy the threshold allows, a SEVERE alert already went out, and only a
    * healthy lifecycle tick (which cannot happen while restarts are stopped) clears it. Read from other
-   * threads via {@link RaftHAServer#isCrashLoopEscalated()} to fail the Kubernetes liveness probe once this
-   * is {@code true} (issue #7622), so the pod restart the SEVERE alert calls for happens automatically.
+   * threads via {@link RaftHAServer#isCrashLoopEscalated()} for the cluster status and its alert. It is
+   * {@code true} for an escalation inherited from a previous process lifetime too (issue #7736); the liveness
+   * probe consults the narrower {@link #isCrashLoopRestartPending()}.
    */
   boolean isCrashLoopEscalated() {
     return crashLoopEscalated;
+  }
+
+  /**
+   * Whether a process restart is still worth asking for (issue #7736): the crash loop was escalated in THIS
+   * process lifetime, and the escalation was durably recorded, so the restarted process will not walk the
+   * restart/reformat ladder again. {@code false} for an escalation inherited from a previous lifetime - a restart
+   * was already tried on this storage and the node came back to the same crash loop, so another one cannot help
+   * and would only truncate the logs an operator needs - and {@code false} when the record could not be written,
+   * because the restarted process would then reformat and pull a full snapshot from the leader all over again.
+   * This, not {@link #isCrashLoopEscalated()}, is what the liveness probe consults: at most one automatic
+   * restart per escalation, never a perpetual restart loop.
+   */
+  boolean isCrashLoopRestartPending() {
+    return crashLoopEscalated && crashLoopEscalationPersisted && !crashLoopEscalationInherited;
   }
 
   /**
@@ -305,8 +391,8 @@ public final class HealthMonitor {
     }
     // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
     crashRestartStreak = 0;
-    crashLoopReformatTried = false;
     crashLoopEscalated = false;
+    noteCrashLoopHealthy();
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
     // re-arm nor a storage reformat can fix (issue #7037).
@@ -342,11 +428,14 @@ public final class HealthMonitor {
    */
   private void handleUnhealthyState(final LifeCycle.State state) {
     crashRestartStreak++;
+    crashLoopRecordHealthySinceMs = -1;
 
     // Already escalated and gave up: do not resume the restart churn. The node stays down: readiness fails
     // because RaftHAServer.isReadyForTraffic() folds this division's own lifecycle into the gate (issue
     // #7130), so a CLOSED/EXCEPTION division answers not-ready even though the HTTP listener and getStatus()
-    // stay ONLINE. The SEVERE alert already told the operator; a pod/process restart is the way out.
+    // stay ONLINE. The SEVERE alert already told the operator. The liveness probe asks for one process restart
+    // when this escalation was recorded in this lifetime (issue #7622); an escalation inherited from a previous
+    // lifetime lands here straight from the constructor and parks the node for the operator (issue #7736).
     if (crashLoopEscalated)
       return;
 
@@ -365,13 +454,24 @@ public final class HealthMonitor {
       }
       // Reformat already attempted (or divergence recovery disabled) and it still crash-loops: the
       // corruption is not local. Stop restarting and surface it once for operator intervention.
-      crashLoopEscalated = true;
-      LogManager.instance().log(this, Level.SEVERE,
+      final String reason = String.format(
           "Ratis crash-loop persists after %d restarts%s; giving up automatic restart - operator intervention "
               + "required. A follower that keeps returning to %s (e.g. 'Failed updateLastAppliedTermIndex: newTI "
               + "< oldTI') usually indicates a term-inverted Raft log or snapshot served by the leader; a "
               + "coordinated full-cluster Raft-storage reformat may be required (issue #5291)",
           crashRestartStreak, crashLoopReformatTried ? " and a storage reformat" : "", state);
+      // Recorded BEFORE the flag is raised, so a liveness read that sees the escalation also sees whether it was
+      // recorded (issue #7736): the probe asks for a restart only for a recorded one.
+      if (!crashLoopEscalationPersisted)
+        crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason);
+      crashLoopEscalated = true;
+      LogManager.instance().log(this, Level.SEVERE, "%s. %s", reason, crashLoopEscalationPersisted ?
+          "The escalation is recorded next to the Raft storage: the liveness probe now fails ONCE so the process is "
+              + "restarted, and the restarted process will not re-run the restarts or the reformat on this storage "
+              + "(issue #7736)" :
+          "The escalation could NOT be recorded next to the Raft storage, so the liveness probe stays green: a "
+              + "process restart would re-run the restarts, the reformat and a full snapshot download from the leader "
+              + "(issue #7736)");
       resetStreaksAfterRestart();
       return;
     }
@@ -379,6 +479,33 @@ public final class HealthMonitor {
     HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);
     target.restartRatisIfNeeded();
     resetStreaksAfterRestart();
+  }
+
+  /**
+   * The division was observed up. Without an escalation record the incident is simply over, as it always was. With
+   * one (issue #7736), the division must stay up for {@link #CRASH_LOOP_RECORD_RESET_MS} before the record goes and
+   * the ladder re-arms: until then the reformat stays spent and an inherited escalation stays inherited, so a
+   * division that only looked up for a tick falls back to a bounded run of in-place restarts and a new give-up -
+   * no reformat, no snapshot download, no request for another process restart.
+   */
+  private void noteCrashLoopHealthy() {
+    if (!crashLoopEscalationPersisted) {
+      crashLoopReformatTried = false;
+      crashLoopEscalationInherited = false;
+      return;
+    }
+    final long now = clock.getAsLong();
+    if (crashLoopRecordHealthySinceMs < 0) {
+      crashLoopRecordHealthySinceMs = now;
+      return;
+    }
+    if (now - crashLoopRecordHealthySinceMs < CRASH_LOOP_RECORD_RESET_MS)
+      return;
+    crashLoopRecordHealthySinceMs = -1;
+    crashLoopEscalationPersisted = false;
+    crashLoopEscalationInherited = false;
+    crashLoopReformatTried = false;
+    target.clearPersistedCrashLoopEscalation();
   }
 
   /**

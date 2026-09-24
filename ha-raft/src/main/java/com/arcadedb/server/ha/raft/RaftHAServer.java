@@ -69,6 +69,7 @@ import org.apache.ratis.util.TimeDuration;
 
 import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -78,6 +79,7 @@ import java.net.http.HttpClient;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -147,6 +149,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Package-private so other cluster-internal RPC callers (e.g. LeaderDatabaseQuery) reuse the same constant
   // instead of re-inlining the "root" literal.
   static final String FORWARDED_ROOT_USER = "root";
+
+  /**
+   * Name of the file, directly under this peer's Raft storage directory, that records a crash-loop escalation
+   * across process restarts (issue #7736). Ratis ignores plain files there - it only scans sub-directories for
+   * Raft groups - and a Raft-storage reformat, by this node or by an operator, deletes it with the storage it
+   * describes. Deleting it by hand re-arms the automatic crash-loop recovery.
+   */
+  static final String CRASH_LOOP_ESCALATION_MARKER = "crash-loop-escalated";
 
   // Timeout carried by the node-local snapshot-management requests the log compaction scheduler issues.
   // Generous: the request is served on the state-machine updater thread, which may be busy applying a
@@ -3016,6 +3026,61 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Whether a process restart is still worth asking for after a crash-loop escalation (issue #7736): see
+   * {@link HealthMonitor#isCrashLoopRestartPending()}. {@code false} when there is no monitor.
+   */
+  public boolean isCrashLoopRestartPending() {
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null && monitor.isCrashLoopRestartPending();
+  }
+
+  private File crashLoopEscalationMarker() {
+    return new File(cachedRaftStorageDir(), CRASH_LOOP_ESCALATION_MARKER);
+  }
+
+  @Override
+  public boolean hasPersistedCrashLoopEscalation() {
+    return crashLoopEscalationMarker().isFile();
+  }
+
+  /**
+   * Writes and fsyncs the crash-loop escalation record (issue #7736). Only its existence is read back; the content
+   * is the SEVERE message, for an operator who finds the file. Returns {@code false} - and the node then does not
+   * ask for a restart - when it cannot be written, e.g. on the full volume issue #7037 is about.
+   */
+  @Override
+  public boolean persistCrashLoopEscalation(final String reason) {
+    final File marker = crashLoopEscalationMarker();
+    try {
+      final File dir = marker.getParentFile();
+      if (!dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory())
+        throw new IOException("Cannot create directory " + dir.getAbsolutePath());
+      try (final FileOutputStream out = new FileOutputStream(marker)) {
+        out.write((Instant.now() + " " + reason + System.lineSeparator()).getBytes(StandardCharsets.UTF_8));
+        out.getFD().sync();
+      }
+      return true;
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Cannot record the crash-loop escalation in '%s' (issue #7736)", e,
+          marker.getAbsolutePath());
+      return false;
+    }
+  }
+
+  @Override
+  public void clearPersistedCrashLoopEscalation() {
+    final File marker = crashLoopEscalationMarker();
+    if (!marker.exists())
+      return;
+    if (marker.delete() || !marker.exists())
+      LogManager.instance().log(this, Level.INFO, "Raft layer is healthy again: crash-loop escalation record cleared");
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot delete the crash-loop escalation record '%s': delete it by hand, or the next start of this server "
+              + "will not re-arm the automatic crash-loop recovery (issue #7736)", marker.getAbsolutePath());
+  }
+
+  /**
    * The connect-timeout-bounded client every {@link RaftReplicatedDatabase} this node wraps a database with
    * dials the leader on - one per node, not one per database (review finding on PR #7650): see the field
    * javadoc on {@link #forwardHttpClient}.
@@ -4585,12 +4650,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * itself is {@link SnapshotInstaller#nearestExistingAncestor}, the same one the snapshot space check uses.
    */
   private File raftStorageVolume() {
+    return SnapshotInstaller.nearestExistingAncestor(cachedRaftStorageDir());
+  }
+
+  /** The configured Raft storage directory, resolved once: config-derived and constant for this server's lifetime. */
+  private File cachedRaftStorageDir() {
     File dir = cachedRaftStorageDir;
     if (dir == null) {
       dir = getRaftStorageDir();
       cachedRaftStorageDir = dir;
     }
-    return SnapshotInstaller.nearestExistingAncestor(dir);
+    return dir;
   }
 
   /**
