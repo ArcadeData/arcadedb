@@ -149,6 +149,16 @@ public final class HealthMonitor {
      */
     default void verifyBootstrapDivergence() {
     }
+
+    /**
+     * Asks the current leader for its own commit index and remembers it for the readiness probe (issue #7619).
+     * A follower's local commit index is clamped by Ratis to its own flush index, so a follower that stopped
+     * receiving appends reports a local lag of {@code 0} however far the leader has moved on; only a figure
+     * that comes from the leader can show it. No-op on the leader, when no leader is known, and when the
+     * readiness probe does not consult HA state. Implementations bound the call and never propagate.
+     */
+    default void refreshLeaderCommitIndex() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -298,6 +308,9 @@ public final class HealthMonitor {
     // left with its own copy applies every entry it is sent and reports perfect health (issue #6124).
     // Self-throttled by the target, and free when no database took that branch.
     target.verifyBootstrapDivergence();
+    // Also invisible to every follower-local check: a follower whose inbound replication channel is wedged has
+    // commit == applied locally and looks caught up (issue #7619). Only the leader's commit index shows the gap.
+    target.refreshLeaderCommitIndex();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
