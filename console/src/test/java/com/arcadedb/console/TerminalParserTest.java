@@ -244,4 +244,115 @@ class TerminalParserTest {
   void aTrailingBackslashIsKept() {
     assertThat(split("select from V where p = 'a\\")).containsExactly("select from V where p = 'a\\");
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/8246: a map literal closed on a line that the statement continues
+   * after used to end the command there, so `UPDATE ... SET x = {json}` ran with no WHERE and overwrote every record.
+   */
+  @Test
+  void aMapLiteralFollowedByANewLineDoesNotEndTheStatement() {
+    assertThat(split("UPDATE Doc SET data = {\"a\": 1}\n  WHERE id = 1;"))
+        .containsExactly("UPDATE Doc SET data = {\"a\": 1}\n  WHERE id = 1");
+  }
+
+  @Test
+  void aMultiLineContentObjectDoesNotEndTheStatement() {
+    assertThat(split("INSERT INTO Doc CONTENT {\n  \"name\": \"x\"\n}\nRETURN @rid;"))
+        .containsExactly("INSERT INTO Doc CONTENT {\n  \"name\": \"x\"\n}\nRETURN @rid");
+  }
+
+  @Test
+  void aMultiLineMatchPatternDoesNotEndTheStatement() {
+    assertThat(split("MATCH {type: Person, as: p}\n  .out('Knows'){as: f}\nRETURN p, f;"))
+        .containsExactly("MATCH {type: Person, as: p}\n  .out('Knows'){as: f}\nRETURN p, f");
+  }
+
+  @Test
+  void aCommitRetryElseBlockDoesNotEndTheStatement() {
+    assertThat(split("COMMIT RETRY 3 ELSE {\n  INSERT INTO Log SET failed = true;\n}\nAND FAIL;"))
+        .containsExactly("COMMIT RETRY 3 ELSE {\n  INSERT INTO Log SET failed = true;\n}\nAND FAIL");
+  }
+
+  @Test
+  void aMapLiteralInsideAStatementStartingInsideTheSameTextDoesNotSplitIt() {
+    assertThat(split("SELECT 1;\nUPDATE Doc SET data = {\"a\": 1}\nWHERE id = 1;"))
+        .containsExactly("SELECT 1", "\nUPDATE Doc SET data = {\"a\": 1}\nWHERE id = 1");
+  }
+
+  /**
+   * The shape the brace rule was written for keeps working: a SQL script block ends at its closing brace even with no
+   * semicolon after it.
+   */
+  @Test
+  void aScriptBlockStillEndsAtItsClosingBrace() {
+    assertThat(split("if($x.size()>0){ \n  return true; \n} \nreturn false;"))
+        .containsExactly("if($x.size()>0){ \n  return true; \n}", "return false");
+    assertThat(split("LET x = SELECT 1;\nIF ($x.size() > 0) {\n  return true;\n}\nreturn false;"))
+        .containsExactly("LET x = SELECT 1", "\nIF ($x.size() > 0) {\n  return true;\n}", "return false");
+  }
+
+  @Test
+  void foreachAndWhileBlocksStillEndAtTheirClosingBrace() {
+    assertThat(split("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}\nSELECT 1;"))
+        .containsExactly("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}", "SELECT 1");
+    assertThat(split("while ($i < 3) {\n  LET i = $i + 1;\n}\nSELECT 1;"))
+        .containsExactly("while ($i < 3) {\n  LET i = $i + 1;\n}", "SELECT 1");
+  }
+
+  /**
+   * The ELSE branch of an IF continues the same statement, so the brace closing the IF body must not split it off.
+   */
+  @Test
+  void anIfBlockFollowedByElseOnTheNextLineIsOneStatement() {
+    assertThat(split("if($a){\n  return 1;\n}\nelse {\n  return 2;\n}\nreturn 3;"))
+        .containsExactly("if($a){\n  return 1;\n}\nelse {\n  return 2;\n}", "return 3");
+  }
+
+  /**
+   * A map literal in the condition of a script block is not the block body.
+   */
+  @Test
+  void aMapLiteralInTheConditionOfAnIfDoesNotEndIt() {
+    assertThat(split("if ($x = {\"a\": 1}\n  ) {\n  return 1;\n}\nreturn 2;"))
+        .containsExactly("if ($x = {\"a\": 1}\n  ) {\n  return 1;\n}", "return 2");
+  }
+
+  /**
+   * Script blocks are SQL: with the other languages a closing brace never ends a command, so a Cypher `CALL { ... }`
+   * subquery written over several lines stays one statement.
+   */
+  @Test
+  void withCypherAClosingBraceNeverEndsTheStatement() {
+    parser.setLanguage("cypher");
+    assertThat(split("CALL {\n  MATCH (n) RETURN n\n}\nRETURN n;"))
+        .containsExactly("CALL {\n  MATCH (n) RETURN n\n}\nRETURN n");
+    assertThat(split("MATCH (n)\nSET n += {a: 1}\nRETURN n;"))
+        .containsExactly("MATCH (n)\nSET n += {a: 1}\nRETURN n");
+  }
+
+  /**
+   * A comment between the body of an IF and its ELSE must not hide the ELSE: the comment is dropped and the IF stays whole.
+   */
+  @Test
+  void aCommentBetweenAnIfBodyAndItsElseDoesNotSplitThem() {
+    assertThat(split("if($a){\n  return 1;\n}\n-- a comment\nelse {\n  return 2;\n}\nreturn 3;"))
+        .containsExactly("if($a){\n  return 1;\n}\n\nelse {\n  return 2;\n}", "return 3");
+    assertThat(split("if($a){\n  return 1;\n} /* a comment */\nelse {\n  return 2;\n}\nreturn 3;"))
+        .containsExactly("if($a){\n  return 1;\n} \nelse {\n  return 2;\n}", "return 3");
+  }
+
+  @Test
+  void nestedIfBlocksSplitOnlyAtTheOutermostClosingBrace() {
+    assertThat(split("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}\nreturn 4;"))
+        .containsExactly("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}", "return 4");
+  }
+
+  /**
+   * Only an IF has an ELSE branch: a FOREACH or WHILE block still ends at its closing brace whatever follows it.
+   */
+  @Test
+  void aForeachBlockIsNotJoinedToAFollowingElse() {
+    assertThat(split("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}\nELSE something;"))
+        .containsExactly("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}", "ELSE something");
+  }
 }
