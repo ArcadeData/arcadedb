@@ -362,13 +362,31 @@ class HealthMonitorTest {
     final HealthMonitor monitor = stuckMonitor(fake, clock, 60_000, true); // interval=1000, recovery=60s
 
     monitor.tick(); // t=0: starts the streak
-    clock.set(999);
-    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("just under one interval").isFalse();
-
     clock.set(1000);
-    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("a full interval has elapsed").isTrue();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("time alone does not confirm").isFalse();
+
+    monitor.tick(); // t=1000: seen again on the next tick
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("second consecutive observation").isTrue();
     // ... and no reformat has happened yet: the visibility signal is not the recovery action.
     assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void aSingleObservationThatClearsIsNeverConfirmed() {
+    // The election blip: stuck on one tick, gone before the next. A status read in between - however long after
+    // the first tick - must not report it (review on PR #8294).
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 60_000, true);
+
+    monitor.tick(); // t=0: stuck
+    fake.stuckDiverged = false;
+    clock.set(2500); // the next tick has not run yet
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+
+    monitor.tick();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
   }
 
   @Test

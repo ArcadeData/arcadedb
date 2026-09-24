@@ -180,10 +180,12 @@ public final class HealthMonitor {
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
-  // Volatile: written only on this monitor's own single-threaded tick executor, but read from an HTTP worker
-  // thread via isFollowerStuckDivergedConfirmed() (issue #8289's visibility gap) - see crashLoopEscalated
-  // above for why a plain field is not enough there.
-  private volatile long                     stuckObservedSinceMs        = -1;
+  private          long                     stuckObservedSinceMs        = -1;
+  // Whether a tick has seen the stuck signature AGAIN after the one that started the streak (issue #8289). Set and
+  // cleared only on the tick executor, read from an HTTP worker via isFollowerStuckDivergedConfirmed(), hence
+  // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
+  // answer true for a streak whose condition cleared after its first tick, until the next tick got round to it.
+  private volatile boolean                  stuckConfirmed              = false;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
@@ -459,6 +461,7 @@ public final class HealthMonitor {
   private void resetStreaksAfterRestart() {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
+    stuckConfirmed = false;
     divergenceReformatCount = 0;
     divergenceHealthySinceMs = -1;
     divergenceRecoveryExhausted = false;
@@ -512,6 +515,7 @@ public final class HealthMonitor {
 
     if (!target.isFollowerStuckDiverged()) {
       stuckObservedSinceMs = -1;
+      stuckConfirmed = false;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
       // new divergence later.
@@ -533,6 +537,8 @@ public final class HealthMonitor {
       stuckObservedSinceMs = now; // first observation; require persistence before acting
       return;
     }
+
+    stuckConfirmed = true; // seen again on a later tick: no longer a single-tick blip
 
     if (!divergedFollowerRecoveryEnabled)
       return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
@@ -563,11 +569,12 @@ public final class HealthMonitor {
         now - stuckObservedSinceMs, divergenceReformatCount);
     target.recoverFromDivergence();
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
+    stuckConfirmed = false;
   }
 
   /**
-   * Whether the current stuck-at-stale-term streak (if any) has persisted for at least one health-check
-   * interval (issue #8289). {@link HealthTarget#isFollowerStuckDiverged()} itself is raw and momentary - a
+   * Whether the current stuck-at-stale-term streak (if any) has been observed on at least two consecutive
+   * ticks (issue #8289). {@link HealthTarget#isFollowerStuckDiverged()} itself is raw and momentary - a
    * healthy follower can cross that exact signature for an instant around every election, before it applies
    * the new leader's current-term no-op (see that method's javadoc) - so reporting it unfiltered to an
    * operator would flag a routine leader change as an incident on every status poll. This applies the same
@@ -579,8 +586,7 @@ public final class HealthMonitor {
    * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
    */
   boolean isFollowerStuckDivergedConfirmed() {
-    final long since = stuckObservedSinceMs;
-    return since != -1 && clock.getAsLong() - since >= intervalMs;
+    return stuckConfirmed;
   }
 
   private void tickSafely() {

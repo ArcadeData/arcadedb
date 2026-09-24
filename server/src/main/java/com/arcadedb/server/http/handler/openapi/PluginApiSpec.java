@@ -583,7 +583,7 @@ public class PluginApiSpec implements OpenApiContributor {
     // Issue #8289: this node stuck at a stale term after a snapshot install applies everything it could
     // locally commit, so 'localReplicationLag' above reads 0 and this node looks caught up, yet it keeps
     // rejecting the leader's current-term entries and does not count toward the Raft quorum. Debounced
-    // (persisted for at least one health-check interval) so a normal leader change is not reported as one.
+    // (seen on two consecutive health-monitor ticks) so a normal leader change is not reported as one.
     schema.addProperty("localStuckAtStaleTerm", SpecBuilders.bool(
         "True when this node recognizes a leader at a newer term but keeps rejecting its current-term entries "
             + "although it has applied everything it could locally commit. It does not count toward quorum while "

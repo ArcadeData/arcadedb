@@ -1455,8 +1455,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Debounced, operator-facing counterpart of {@link #isFollowerStuckDiverged()} for {@code GET /api/v1/cluster}
-   * (issue #8289): {@code true} once the stuck-at-stale-term signature has persisted for at least one
-   * {@link HealthMonitor} health-check interval. Raw and undebounced, {@link #isFollowerStuckDiverged()} can be
+   * (issue #8289): {@code true} once the stuck-at-stale-term signature has been observed on two consecutive
+   * {@link HealthMonitor} ticks. Raw and undebounced, {@link #isFollowerStuckDiverged()} can be
    * momentarily {@code true} for any follower around a normal election - before it applies the new leader's
    * current-term no-op - so publishing it as-is would report a routine leader change as an incident on every
    * status poll. This is the same filter the health monitor already applies before it starts counting toward
