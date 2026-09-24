@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8254: {@code RedisQueryEngine.executeTransaction()} (MULTI/EXEC) runs the queued commands inside
@@ -103,6 +104,63 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
           .as("a MULTI/EXEC block retried once must still leave the counter at 1, not 2")
           .isEqualTo(1L);
     }
+  }
+
+  /**
+   * PR #8309 review: the overlay used to store the raw key, but {@code setGlobalVariable}/{@code
+   * getGlobalVariable} strip a leading {@code $} before touching the real map. {@code SET $seq 1} followed by
+   * {@code GET seq} in the same block missed the buffered write, since {@code "$seq"} and {@code "seq"} were two
+   * different overlay entries. Both spellings must now agree, inside the block and after it publishes.
+   */
+  @Test
+  void dollarPrefixedKeyIsVisibleToAPlainGetInTheSameBlock() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    final String transaction = """
+        MULTI
+        SET $seq 1
+        GET seq
+        EXEC
+        """;
+
+    try (final ResultSet rs = database.command("redis", transaction)) {
+      final List<?> replies = (List<?>) rs.next().getProperty("value");
+      assertThat(replies).hasSize(2);
+      assertThat(replies.get(1)).as("GET seq must see the SET $seq buffered earlier in the same block").isEqualTo("1");
+    }
+
+    try (final ResultSet rs = database.command("redis", "GET seq")) {
+      assertThat(rs.next().<Object>getProperty("value")).as("published under the normalized key, not the raw \"$seq\"").isEqualTo("1");
+    }
+  }
+
+  /**
+   * PR #8309 review: key validation was deferred to the publish loop, which runs AFTER the block's document
+   * writes already committed. A reserved name must be refused at the point the offending command itself runs,
+   * inside the retried block, so the refusal rolls back the whole EXEC - including the document write - instead
+   * of leaving a committed document with the RAM write silently missing.
+   */
+  @Test
+  void reservedKeyNameRollsBackTheWholeBlockInsteadOfLeavingTheDocumentCommitted() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE DOCUMENT TYPE Widget");
+
+    final String transaction = """
+        MULTI
+        HSET Widget {"id":1}
+        SET parent 1
+        EXEC
+        """;
+
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.command("redis", transaction)) {
+        rs.next();
+      }
+    }).as("\"parent\" is a reserved variable name");
+
+    assertThat(countOf(database, "Widget"))
+        .as("the reserved-name refusal must roll back the HSET from the same block, not leave it committed")
+        .isZero();
   }
 
   private long countOf(final Database database, final String typeName) {
