@@ -132,7 +132,8 @@ public class PostgresNetworkExecutor extends Thread {
   /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
   private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
-  private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(?:SESSION|LOCAL)\\s+");
+  private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
+  private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -300,9 +301,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       ACTIVE_SESSIONS.put(pid, new Pair<>(secret, this));
 
-      sendServerParameter("server_version", PG_SERVER_VERSION);
-      sendServerParameter("server_encoding", "UTF8");
-      sendServerParameter("client_encoding", "UTF8");
+      // Every reported parameter, the ones the startup packet set included, goes out as a ParameterStatus ahead of
+      // the first ReadyForQuery: writeReadyForQueryMessage() reports them (issue #8241).
 
       try {
         writeReadyForQueryMessage();
@@ -389,6 +389,9 @@ public class PostgresNetworkExecutor extends Thread {
       skipUntilSync = false;
       if (database.isTransactionActive())
         database.rollback();
+      if (!explicitTransactionStarted)
+        // The SETs of the discarded implicit block go with it (issue #8242); an explicit block's wait for its ROLLBACK
+        sessionSettings.rollback();
       // errorInTransaction is deliberately NOT cleared here (issue #7851): Sync does not end a transaction
       // block, so an explicit BEGIN whose statement failed stays aborted - status 'E', every further statement
       // refused with 25P02 - until the client sends COMMIT/ROLLBACK/END, exactly as real PostgreSQL requires and
@@ -396,6 +399,7 @@ public class PostgresNetworkExecutor extends Thread {
     } else if (!explicitTransactionStarted) {
       if (database.isTransactionActive())
         database.commit();
+      sessionSettings.commit();
     }
     if (!explicitTransactionStarted)
       // The implicit block this Sync terminates is over, committed or discarded, and its portals end with it
@@ -559,7 +563,6 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (portal.columns != null && !portal.columns.isEmpty()) {
         writeRowDescription(portal.columns);
-        portal.rowDescriptionSent = true;
         // This IS the statement-level contract executeCommand() must honor for every future Bind/Execute of
         // this statement, whatever row each one actually returns (issue #6725) - unlike portal.columns being
         // non-null for some other reason (a catalog answer recomputed per-Bind, or bindCommand()'s fallback
@@ -593,7 +596,6 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private void answerWithColumns(final PostgresPortal portal) {
     writeRowDescription(portal.columns, portal.resultFormats);
-    portal.rowDescriptionSent = true;
   }
 
   /**
@@ -670,6 +672,7 @@ public class PostgresNetworkExecutor extends Thread {
           portal = abortedPortal;
           if (database.isTransactionActive())
             database.rollback();
+          sessionSettings.rollback();
           endTransactionBlockState();
           // Consumed, as applyTransactionControl() consumes it: re-Executing this portal must not end the next block.
           abortedPortal.transactionControl = null;
@@ -737,21 +740,17 @@ public class PostgresNetworkExecutor extends Thread {
             portal.fullResultSet = browseAndCacheBoundedResultSet(resultSet);
             portal.executed = true;
             profile.addEngineNanos(System.nanoTime() - engineStart);
-            // Only send RowDescription if not already sent during DESCRIBE
-            if (!portal.rowDescriptionSent) {
+            // Execute never answers with a RowDescription (issue #8244): PostgreSQL's protocol reserves it for
+            // Describe, and a client that bound a statement it already knows the shape of sends Bind/Execute/Sync
+            // with no Describe - pgjdbc once prepareThreshold promotes a statement - and reads a RowDescription it
+            // did not ask for as the answer to a Describe it never sent, which desynchronizes the connection. The
+            // columns are still resolved here, since the data rows are encoded from them. portal.columnsDescribed
+            // means a real Describe('S') already told the client this exact shape/OIDs - and, for a schemaless
+            // type, a client that negotiated binary transfer off that promise cannot have it silently swapped for a
+            // differently-typed one here (issue #6725): keep the promised columns.
+            if (!portal.columnsDescribed) {
               final long serStart = System.nanoTime();
-              // portal.columnsDescribed means a real Describe('S') already told the client this exact
-              // shape/OIDs - and, for a schemaless type, a client that negotiated binary transfer off that
-              // promise cannot have it silently swapped for a differently-typed one here (issue #6725):
-              // re-deriving from this execution's own rows, which can differ in type per row for an
-              // undeclared property, would desync that client's decoder. Keep the promised columns and just
-              // mark this portal as having satisfied it, matching real PostgreSQL - a portal never gets a
-              // second RowDescription once its statement was already Described.
-              if (!portal.columnsDescribed) {
-                resolvePortalColumns(portal);
-                writeRowDescription(portal.columns, portal.resultFormats);
-              }
-              portal.rowDescriptionSent = true;
+              resolvePortalColumns(portal);
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
           } else {
@@ -790,17 +789,10 @@ public class PostgresNetworkExecutor extends Thread {
                 portal.cachedResultSet.size(),
                 Thread.currentThread().threadId());
 
-          // If RowDescription wasn't sent during DESCRIBE (e.g., INSERT with RETURN), we need to send it now
-          // before the data rows. portal.columnsDescribed means a real Describe('S') already told the client
-          // this exact shape/OIDs (issue #6725) - keep it rather than silently swapping it for dataRowColumns,
-          // which a schemaless type's undeclared property can compute differently per row.
-          if (!portal.rowDescriptionSent) {
-            if (!portal.columnsDescribed) {
-              portal.columns = dataRowColumns;
-              writeRowDescription(portal.columns, portal.resultFormats);
-            }
-            portal.rowDescriptionSent = true;
-          }
+          // A portal materialized before this Execute (a SHOW/system/catalog answer fixed at Parse, or one a
+          // Describe('P') ran) already carries its columns; a RowDescription is never sent from here (issue #8244).
+          if (portal.columns == null)
+            portal.columns = dataRowColumns;
 
           // Verify column count matches what was sent in RowDescription
           if (portal.columns != null && portal.columns.size() != dataRowColumns.size()) {
@@ -892,6 +884,7 @@ public class PostgresNetworkExecutor extends Thread {
           // warning): there is nothing left to commit, so both end keywords just discard the transaction.
           if (database.isTransactionActive())
             database.rollback();
+          sessionSettings.rollback();
           endTransactionBlockState();
           // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
           writeCommandComplete("ROLLBACK", 0);
@@ -954,18 +947,21 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
-      // Transaction control returns no rows: PostgreSQL answers it with the bare CommandComplete tag. A RowDescription
-      // in front of the tag, even with zero fields, makes libpq report PGRES_TUPLES_OK instead of PGRES_COMMAND_OK,
-      // and a client that checks the status when it opens a transaction gives up ("Failed to begin transaction").
-      boolean transactionControl = false;
+      // Transaction control and SET/RESET return no rows: PostgreSQL answers them with the bare CommandComplete tag. A
+      // RowDescription in front of the tag, even with zero fields, makes libpq report PGRES_TUPLES_OK instead of
+      // PGRES_COMMAND_OK, and a client that checks the status when it opens a transaction gives up ("Failed to begin
+      // transaction"). A SET used to answer a one-row "Setting ignored" table here (issue #8306), unlike the same SET
+      // on the extended protocol, and untrue since the setting is recorded (issue #8217).
+      boolean answersNoRows = false;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
-      if (upperCaseText.startsWith("SET ")) {
-        setConfiguration(query.query);
-        resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
+      if (isSettingCommand(upperCaseText)) {
+        applySettingCommand(query.query);
+        answersNoRows = true;
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (upperCaseText.startsWith("SAVEPOINT ") ||
           upperCaseText.startsWith("RELEASE ")) {
-        transactionControl = true;
+        answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (systemQuery != null)
         resultSet = new IteratorResultSet(
@@ -985,7 +981,7 @@ public class PostgresNetworkExecutor extends Thread {
         // a warning and keeps the block it already has.
         if (!database.isTransactionActive())
           database.begin();
-        transactionControl = true;
+        answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
         // Whatever transaction the connection holds, not only one an explicit BEGIN opened (issue #8028): a
@@ -995,16 +991,18 @@ public class PostgresNetworkExecutor extends Thread {
         // applyTransactionControl()'s arms on the extended protocol.
         if (database.isTransactionActive())
           database.commit();
+        sessionSettings.commit();
         endTransactionBlockState();
-        transactionControl = true;
+        answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
         // See the COMMIT arm above (issue #8028): an implicit block is a transaction the client can end too,
         // and leaving it open made Sync COMMIT the writes the client had just been told were rolled back.
         if (database.isTransactionActive())
           database.rollback();
+        sessionSettings.rollback();
         endTransactionBlockState();
-        transactionControl = true;
+        answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
         // A query about the emulated system catalog, which every client sends and which ArcadeDB's own SQL
@@ -1024,7 +1022,7 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      if (!transactionControl) {
+      if (!answersNoRows) {
         Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
             : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
         if (columns.isEmpty() && cachedResultSet.isEmpty()) {
@@ -1080,6 +1078,11 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeReadyForQueryMessage() {
+    // PostgreSQL reports the reported parameters a statement changed right before the ReadyForQuery that ends it
+    // (issue #8241): a SET, a RESET, or the ROLLBACK/COMMIT that undid a SET or ended a SET LOCAL. Every one of them at
+    // startup. A single int comparison when nothing changed.
+    sessionSettings.reportChanges(this::sendServerParameter);
+
     final byte transactionStatus;
     if (errorInTransaction)
       transactionStatus = 'E';
@@ -2407,7 +2410,7 @@ public class PostgresNetworkExecutor extends Thread {
       // answer) into a fresh object, so that two portal names bound from the same statement - or the same
       // portal name re-bound without a new Parse, which is exactly what asyncpg's/pgjdbc's statement caching
       // does for a repeated query - never share mutable execution state (parameterValues, fullResultSet,
-      // resultCursor, suspended, rowDescriptionSent...). Without this, a later Bind on one portal name could
+      // resultCursor, suspended...). Without this, a later Bind on one portal name could
       // silently reset or overwrite another already-bound (possibly suspended) portal from the same statement,
       // since both names used to point at the very same object.
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
@@ -2663,6 +2666,7 @@ public class PostgresNetworkExecutor extends Thread {
         if (isTransactionEndStatement(abortedUpperCaseText)) {
           if (database.isTransactionActive())
             database.rollback();
+          sessionSettings.rollback();
           // Clears skipUntilSync as well, so the Bind/Execute the client pipelines behind this Parse (that is
           // how it sends the recovering statement, and there is no Sync in between - see the #6548 tests) are
           // not discarded by the state the failure left behind. Accepting the recovery here rather than only
@@ -2746,13 +2750,14 @@ public class PostgresNetworkExecutor extends Thread {
         setExtendedProtocolError();
         writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
-      } else if (upperCaseText.startsWith("SET ")) {
+      } else if (isSettingCommand(upperCaseText)) {
         // portal.query arrives here without its trailing ';' (normalized at the top of this method, issue #8245):
         // a Parse message keeps the terminator glued onto the text, which otherwise reaches parseSetCommand()
         // attached to the value (issue #6701).
         // Parsed here but APPLIED at Execute (issue #8135), the same split as BEGIN/COMMIT/ROLLBACK below: Parse
         // prepares a statement, it does not run one, so a SET that is only prepared must not change the session,
         // and every later Bind+Execute of the cached statement must apply it again rather than only answer it.
+        // RESET is a SET to the reset value and travels the same way (issue #8242).
         portal.setting = parseSetCommand(portal.query);
         if (portal.setting == null)
           LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", portal.query);
@@ -2861,52 +2866,79 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Parses a Postgres {@code SET <param> = <value>} or {@code SET <param> TO <value>} command into its
-   * {@code {paramName, value}} pair, honoring the optional PostgreSQL {@code SESSION}/{@code LOCAL} scope
-   * modifiers (issue #6701): {@code SET SESSION datestyle = 'ISO'} and {@code SET LOCAL datestyle = 'ISO'}
-   * must resolve to the same {@code datestyle} parameter name as a plain {@code SET datestyle = 'ISO'}, not
-   * a literal {@code "session datestyle"}/{@code "local datestyle"} that no special case ever matches.
-   * ArcadeDB has no notion of transaction-scoped config distinct from session-scoped config, so both
-   * modifiers - and no modifier at all - end up folded into the same connection's
-   * {@link PostgresSessionSettings}; that already matches the de facto behavior of a plain {@code SET}
-   * today.
+   * True for the statements {@link #parseSetCommand} answers: {@code SET ...} and {@code RESET ...} (issue #8242).
+   */
+  private static boolean isSettingCommand(final String upperCaseText) {
+    return upperCaseText.startsWith("SET ") || upperCaseText.startsWith("RESET ");
+  }
+
+  /**
+   * Parses a Postgres {@code SET <param> = <value>}, {@code SET <param> TO <value>}, {@code SET TIME ZONE <value>},
+   * {@code RESET <param>} or {@code RESET ALL} command.
+   * <p>
+   * The optional {@code SESSION}/{@code LOCAL} scope modifier (issue #6701) is not part of the parameter name:
+   * {@code SET SESSION datestyle = 'ISO'} and {@code SET LOCAL datestyle = 'ISO'} name the same {@code datestyle} as a
+   * plain {@code SET datestyle = 'ISO'}. {@code LOCAL} is kept on the result (issue #8242): its value lasts only until
+   * the end of the transaction, while {@code SESSION} is what a plain {@code SET} already is.
    * <p>
    * A command can only use one of the two separators, but its value may legitimately contain the other
    * one as plain text (e.g. {@code SET search_path TO 'a=b'} or {@code SET x = 'a TO b'}), so this picks
    * whichever separator - the first '=' or the first case-insensitive ' TO ' - occurs FIRST in the string
    * and splits on that one only, leaving every other occurrence of either inside the value untouched
-   * (issue #6423). {@code paramName} is lower-cased for case-insensitive comparison; a quoted {@code value}
+   * (issue #6423). The parameter name is lower-cased for case-insensitive comparison; a quoted value
    * has its surrounding quotes stripped. An unquoted {@code DEFAULT} keyword comes back as a null value, meaning "reset
    * to the default" (issue #8217), so it stays distinct from the quoted string literal {@code 'DEFAULT'}, as in
-   * PostgreSQL. Returns null when the command has neither separator.
+   * PostgreSQL; {@code RESET <param>} is the same null value and {@code RESET ALL} is
+   * {@link PostgresSessionSettings.Assignment#RESET_ALL}. Returns null for a malformed command.
    */
-  static String[] parseSetCommand(final String query) {
-    final int setLength = "SET ".length();
+  static PostgresSessionSettings.Assignment parseSetCommand(final String query) {
+    if (query.regionMatches(true, 0, "RESET ", 0, 6)) {
+      final String name = query.substring("RESET ".length()).trim().toLowerCase(Locale.ENGLISH);
+      if (name.isEmpty() || name.indexOf(' ') >= 0)
+        return null;
+      return "all".equals(name) ? PostgresSessionSettings.Assignment.RESET_ALL : new PostgresSessionSettings.Assignment(name, null, false);
+    }
+
     // Use original query to preserve case of values
-    String q = query.substring(setLength);
+    String q = query.substring("SET ".length()).trim();
 
+    boolean local = false;
     final Matcher scopeModifier = SET_SCOPE_MODIFIER.matcher(q);
-    if (scopeModifier.find())
+    if (scopeModifier.find()) {
+      local = scopeModifier.group(1).equalsIgnoreCase("LOCAL");
       q = q.substring(scopeModifier.end());
+    }
 
-    final int eqPos = q.indexOf('=');
-    final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
-    final boolean toFound = toMatcher.find();
+    final String paramName;
+    String value;
+    final Matcher timeZone = SET_TIME_ZONE.matcher(q);
+    if (timeZone.find()) {
+      // SET TIME ZONE <value> is PostgreSQL's SQL-standard spelling of SET timezone TO <value>, with no separator;
+      // its LOCAL value is the reset value, like DEFAULT.
+      paramName = "timezone";
+      value = q.substring(timeZone.end()).trim();
+      if ("LOCAL".equalsIgnoreCase(value))
+        value = "DEFAULT";
+    } else {
+      final int eqPos = q.indexOf('=');
+      final Matcher toMatcher = SET_TO_SEPARATOR.matcher(q);
+      final boolean toFound = toMatcher.find();
 
-    final String[] parts;
-    if (toFound && (eqPos < 0 || toMatcher.start() < eqPos))
-      parts = new String[] { q.substring(0, toMatcher.start()), q.substring(toMatcher.end()) };
-    else if (eqPos >= 0)
-      parts = StringUtils.splitKeyValue(q);
-    else
-      return null;
+      final String[] parts;
+      if (toFound && (eqPos < 0 || toMatcher.start() < eqPos))
+        parts = new String[] { q.substring(0, toMatcher.start()), q.substring(toMatcher.end()) };
+      else if (eqPos >= 0)
+        parts = StringUtils.splitKeyValue(q);
+      else
+        return null;
 
-    final String paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
-    if (paramName.isEmpty())
+      paramName = parts[0].trim().toLowerCase(Locale.ENGLISH);
+      value = parts[1].trim();
+    }
+    if (paramName.isEmpty() || value.isEmpty())
       // An empty parameter name (e.g. "SET = somevalue") is as malformed as a missing separator.
       return null;
 
-    String value = parts[1].trim();
     if (value.startsWith("'") || value.startsWith("\"")) {
       // A quoted value needs a matching closing delimiter: a single stray quote (e.g. "SET x = '") is a
       // malformed command, not a closed quoted value, so it is rejected the same way a missing separator
@@ -2919,44 +2951,36 @@ public class PostgresNetworkExecutor extends Thread {
     } else if ("DEFAULT".equalsIgnoreCase(value))
       value = null;
 
-    return new String[] { paramName, value };
+    return new PostgresSessionSettings.Assignment(paramName, value, local);
   }
 
-  private void setConfiguration(final String query) {
-    final String[] parts = parseSetCommand(query);
-    if (parts == null) {
+  private void applySettingCommand(final String query) {
+    final PostgresSessionSettings.Assignment assignment = parseSetCommand(query);
+    if (assignment == null) {
       LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
       return;
     }
-    applySetting(parts[0], parts[1]);
+    sessionSettings.apply(assignment);
   }
 
   /**
-   * Applies the {@code SET} a portal carries, at Execute (issue #8135) - {@code parseCommand()} only parses it and
-   * records it on the portal. The marker is cleared once applied, like {@code applyTransactionControl()}'s: a new
-   * Bind of the prepared statement copies it afresh out of the template, so a cached SET re-executed through a new
-   * Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
+   * Applies the {@code SET}/{@code RESET} a portal carries, at Execute (issue #8135) - {@code parseCommand()} only
+   * parses it and records it on the portal. The marker is cleared once applied, like {@code applyTransactionControl()}'s:
+   * a new Bind of the prepared statement copies it afresh out of the template, so a cached SET re-executed through a
+   * new Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
    * a SET can be refused ({@link PostgresSessionSettings#set} refuses a read-only parameter or an invalid value, as
    * PostgreSQL does), and a marker consumed by the refused attempt would let a retry of the same portal answer
    * {@code CommandComplete SET} having applied nothing.
+   * <p>
+   * Recorded in this connection's own settings (issue #8217), never in the database: a {@code SET datestyle} used to
+   * rewrite the schema's date-time format, shared by every session on every protocol.
    */
   private void applyPendingSetting(final PostgresPortal portal) {
-    final String[] setting = portal.setting;
+    final PostgresSessionSettings.Assignment setting = portal.setting;
     if (setting == null)
       return;
-    applySetting(setting[0], setting[1]);
+    sessionSettings.apply(setting);
     portal.setting = null;
-  }
-
-  /**
-   * Records a {@code SET} in this connection's own settings (issue #8217). It never touches the database: a
-   * {@code SET datestyle} used to rewrite the schema's date-time format, shared by every session on every protocol,
-   * and needed {@code UPDATE_DATABASE_SETTINGS} for a statement PostgreSQL treats as purely per-session. Dates already
-   * travel in ISO whatever that format says ({@code PostgresType.toText()}), so the schema write bought this
-   * connection nothing.
-   */
-  private void applySetting(final String paramName, final String value) {
-    sessionSettings.set(paramName, value);
   }
 
   /**
@@ -3006,6 +3030,7 @@ public class PostgresNetworkExecutor extends Thread {
       database = server.getDatabase(databaseName);
 
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
+      sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));
 
       database.setAutoTransaction(true);
 
@@ -3355,6 +3380,8 @@ public class PostgresNetworkExecutor extends Thread {
       return "RELEASE";
     } else if (upperCaseText.startsWith("SET ")) {
       return "SET";
+    } else if (upperCaseText.startsWith("RESET ")) {
+      return "RESET";
     } else {
       return "";
     }
@@ -3509,8 +3536,8 @@ public class PostgresNetworkExecutor extends Thread {
    * such function (issue #5290).
    */
   private static boolean isSessionCommand(final String queryText) {
-    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "SHOW ", 0, 5)
-        || PostgresSystemQuery.parse(queryText) != null;
+    return queryText.regionMatches(true, 0, "SET ", 0, 4) || queryText.regionMatches(true, 0, "RESET ", 0, 6)
+        || queryText.regionMatches(true, 0, "SHOW ", 0, 5) || PostgresSystemQuery.parse(queryText) != null;
   }
 
   private void emptyQueryResponse() {
@@ -3540,8 +3567,12 @@ public class PostgresNetworkExecutor extends Thread {
    * transaction has already committed itself.
    */
   private void commitSimpleQueryTransaction() {
-    if (!explicitTransactionStarted && database.isTransactionActive())
-      database.commit();
+    if (!explicitTransactionStarted) {
+      if (database.isTransactionActive())
+        database.commit();
+      // A SET outside an explicit block is a transaction of its own too, and a SET LOCAL there ends with it (#8242)
+      sessionSettings.commit();
+    }
   }
 
   /**
@@ -3553,8 +3584,11 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private void abortSimpleQueryTransaction() {
     setErrorInTx();
-    if (!explicitTransactionStarted && database.isTransactionActive())
-      database.rollback();
+    if (!explicitTransactionStarted) {
+      if (database.isTransactionActive())
+        database.rollback();
+      sessionSettings.rollback();
+    }
   }
 
   /**
@@ -3681,11 +3715,13 @@ public class PostgresNetworkExecutor extends Thread {
     case COMMIT -> {
       if (database.isTransactionActive())
         database.commit();
+      sessionSettings.commit();
       endTransactionBlockState();
     }
     case ROLLBACK -> {
       if (database.isTransactionActive())
         database.rollback();
+      sessionSettings.rollback();
       endTransactionBlockState();
     }
     }

@@ -20,6 +20,9 @@ package com.arcadedb.postgres;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -182,5 +185,103 @@ class PostgresSessionSettingsTest {
     settings.setFromStartup("server_version", "99");
     assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
     assertThat(settings.show("server_version")).isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
+  }
+
+  @Test
+  void rollbackUndoesTheSessionSetsOfTheTransaction() {
+    // Issue #8242
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("search_path", "before");
+    settings.commit();
+
+    settings.set("search_path", "x");
+    settings.set("datestyle", "DMY");
+    settings.rollback();
+    assertThat(settings.show("search_path")).isEqualTo("before");
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
+
+    settings.set("search_path", "kept");
+    settings.commit();
+    settings.rollback();
+    assertThat(settings.show("search_path")).as("a rollback after the commit has nothing to undo").isEqualTo("kept");
+  }
+
+  @Test
+  void setLocalEndsWithItsTransaction() {
+    // Issue #8242
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("search_path", "session");
+    settings.set("search_path", "local", true);
+    assertThat(settings.show("search_path")).isEqualTo("local");
+    settings.commit();
+    assertThat(settings.show("search_path")).isEqualTo("session");
+
+    settings.set("search_path", "local", true);
+    settings.set("search_path", "later");
+    settings.commit();
+    assertThat(settings.show("search_path")).as("a SET after a SET LOCAL supersedes it").isEqualTo("later");
+
+    settings.set("datestyle", "YMD", true);
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, YMD");
+    settings.rollback();
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
+  }
+
+  @Test
+  void resetRestoresTheStartupValue() {
+    // Issue #8242: PostgreSQL's reset value is the one the startup packet named, else the server default.
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.setFromStartup("application_name", "pgjdbc");
+    settings.setFromStartup("TimeZone", "Europe/Rome");
+    settings.set("application_name", "other");
+    settings.set("timezone", "Asia/Tokyo");
+    settings.set("application_name", null);
+    assertThat(settings.show("application_name")).isEqualTo("pgjdbc");
+    settings.commit();
+
+    settings.resetAll();
+    assertThat(settings.show("timezone")).isEqualTo("Europe/Rome");
+    settings.rollback();
+    assertThat(settings.show("timezone")).as("RESET ALL is transactional too").isEqualTo("Asia/Tokyo");
+  }
+
+  @Test
+  void reportChangesHandsOverOnlyWhatChanged() {
+    // Issue #8241
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    final Map<String, String> reported = new LinkedHashMap<>();
+    settings.reportChanges(reported::put);
+    assertThat(reported.keySet()).containsExactly(PostgresSessionSettings.REPORTED_PARAMETERS);
+    assertThat(reported).containsEntry("DateStyle", "ISO, MDY").containsEntry("TimeZone", "UTC").containsEntry("is_superuser", "off");
+
+    reported.clear();
+    settings.reportChanges(reported::put);
+    assertThat(reported).isEmpty();
+
+    settings.set("DateStyle", "SQL, DMY");
+    settings.set("search_path", "x");
+    settings.set("client_encoding", "LATIN1");
+    settings.reportChanges(reported::put);
+    assertThat(reported).containsExactly(Map.entry("DateStyle", "ISO, DMY"));
+
+    reported.clear();
+    settings.set("timezone", "Europe/Rome");
+    settings.set("timezone", null);
+    settings.reportChanges(reported::put);
+    assertThat(reported).as("a value that moved and came back is not reported").isEmpty();
+  }
+
+  @Test
+  void isSuperuserAndIntervalStyle() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.setSuperuser(true);
+    assertThat(settings.show("is_superuser")).isEqualTo("on");
+    assertThatThrownBy(() -> settings.set("is_superuser", "off")).isInstanceOf(PostgresSessionSettings.SettingException.class);
+
+    assertThat(settings.show("IntervalStyle")).isEqualTo("postgres");
+    settings.set("IntervalStyle", "ISO_8601");
+    assertThat(settings.show("intervalstyle")).isEqualTo("iso_8601");
+    assertThatThrownBy(() -> settings.set("IntervalStyle", "nonsense"))
+        .satisfies(e -> assertThat(((PostgresSessionSettings.SettingException) e).sqlState).isEqualTo("22023"));
   }
 }
