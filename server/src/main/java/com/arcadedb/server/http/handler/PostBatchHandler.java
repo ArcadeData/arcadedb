@@ -1014,6 +1014,122 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * An {@link InputStream} on which no single read can block longer than a budget: a timer is armed before each
+   * read and disarmed as soon as it returns, and when it fires it closes the underlying stream, which is what
+   * releases a reader parked on it (issue #7738).
+   * <p>
+   * It exists for the follower's relay of a streamed batch answer. The JDK client's request timeout
+   * ({@code arcadedb.ha.proxyBatchReadTimeout}) expires, on JDK 21 to 25, only until the leader's response
+   * HEADERS arrive, and on the streaming encoding those arrive with the leader's first progress line. (JDK 26
+   * extended the request timeout to the whole body, which turns the same setting into a cap on a streamed load's
+   * total length there: issue #8325.)
+   * {@code BodyHandlers.ofInputStream} has no per-read timeout and the client sets no socket read timeout, so a
+   * leader that answered its 200 and then stalled - deadlocked, in a long GC, blocked on a full volume - parked
+   * the follower's worker thread in {@code readLine()} for as long as the leader kept the connection open.
+   * <p>
+   * The bound is on SILENCE, not on the length of the answer: a load legitimately runs for as long as the client
+   * keeps uploading, and a leader that keeps emitting lines keeps the relay alive however long that is. Only a
+   * gap longer than the budget between two chunks of the leader's answer - the same gap the header wait already
+   * bounds for the first one - fails the read.
+   * <p>
+   * A read released by the timer fails with an {@link HttpTimeoutException} rather than with whatever the closed
+   * stream reports ("closed", or an end of stream on some JDKs), so the caller can tell a stalled leader from one
+   * that finished or dropped the connection. Arming and firing are settled by one compare-and-set, so a read
+   * that returns just as its timer fires is either released or not, never both.
+   * <p>
+   * Package-private, and timer-injected, so the bound can be tested without a live leader.
+   */
+  static final class ReadBoundedInputStream extends FilterInputStream {
+    /** Schedules one task; the returned {@link Runnable} cancels it and must tolerate running after it fired. */
+    @FunctionalInterface
+    interface Timer {
+      Runnable schedule(Runnable task, long delayMs);
+    }
+
+    private final long      timeoutMs;
+    private final Timer     timer;
+    private volatile boolean expired;
+
+    ReadBoundedInputStream(final InputStream in, final long timeoutMs, final Timer timer) {
+      super(in);
+      this.timeoutMs = timeoutMs;
+      this.timer = timer;
+    }
+
+    @Override
+    public int read() throws IOException {
+      final Runnable disarm = arm();
+      final int b;
+      try {
+        b = in.read();
+      } catch (final IOException e) {
+        throw expired ? timedOut(e) : e;
+      } finally {
+        disarm.run();
+      }
+      if (b < 0 && expired)
+        throw timedOut(null);
+      return b;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) throws IOException {
+      final Runnable disarm = arm();
+      final int n;
+      try {
+        n = in.read(b, off, len);
+      } catch (final IOException e) {
+        throw expired ? timedOut(e) : e;
+      } finally {
+        disarm.run();
+      }
+      if (n < 0 && expired)
+        throw timedOut(null);
+      return n;
+    }
+
+    /** Whether a read was released by the timer: the stream is closed from then on. */
+    boolean hasExpired() {
+      return expired;
+    }
+
+    private Runnable arm() {
+      final AtomicBoolean armed = new AtomicBoolean(true);
+      final Runnable cancel = timer.schedule(() -> {
+        if (!armed.compareAndSet(true, false))
+          // The read returned between this task being dequeued and this line: nothing to release.
+          return;
+        expired = true;
+        try {
+          in.close();
+        } catch (final IOException ignored) {
+          // The point was to release the reader; a stream that also failed to close has done that too.
+        }
+      }, timeoutMs);
+      return () -> {
+        if (armed.compareAndSet(true, false))
+          cancel.run();
+      };
+    }
+
+    private HttpTimeoutException timedOut(final IOException cause) {
+      final HttpTimeoutException e = new HttpTimeoutException("No data received for " + timeoutMs + "ms");
+      if (cause != null)
+        e.initCause(cause);
+      return e;
+    }
+  }
+
+  /** The {@link ReadBoundedInputStream.Timer} of this exchange's XNIO thread, where the write watchdog runs too. */
+  private static ReadBoundedInputStream.Timer ioThreadTimer(final HttpServerExchange exchange) {
+    final XnioIoThread ioThread = exchange.getIoThread();
+    return (task, delayMs) -> {
+      final XnioExecutor.Key key = ioThread.executeAfter(task, delayMs, TimeUnit.MILLISECONDS);
+      return key::remove;
+    };
+  }
+
+  /**
    * A failure writing the streamed RESPONSE, kept distinct from a failure reading the request body. Unchecked and
    * of its own type on purpose: {@link #streamRecords} catches {@link IOException} and answers it as a truncated
    * upload, with the counts a client needs to resume from - a diagnosis that would be precise, machine-parsable
@@ -1871,9 +1987,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The response deadline (issues #7526/#7542): deliberately arcadedb.ha.proxyBatchReadTimeout rather than
     // arcadedb.ha.proxyReadTimeout, because a bulk load's legitimate duration is a function of the payload the
     // client is still streaming - the same reasoning relaxConnectionReadTimeout above applies to the INCOMING
-    // side of this same load. On the streaming encoding this bounds only the wait for the leader's first
-    // response line (send() below returns as soon as headers arrive); on the non-streaming path it bounds the
-    // whole exchange.
+    // side of this same load. On the non-streaming path it bounds the wait for the leader's answer. On the
+    // streaming encoding the request timeout covers only the wait for the leader's first response line (send()
+    // below returns as soon as headers arrive), so relayNdJsonFromLeader applies the same budget to every later
+    // wait for the leader's data as well (issue #7738): a leader that stays silent that long is given up on,
+    // however far into the stream it stalls.
     final long configuredBatchTimeout = httpServer.getServer().getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT);
     if (configuredBatchTimeout < LeaderDial.MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
@@ -1895,8 +2013,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // send() returns as soon as the leader's response HEADERS arrive, which on the streaming encoding is at
         // the leader's first progress line - while the JDK client's own executor thread is still publishing the
         // relayed upload. That is what keeps the acknowledgements incremental across the hop.
-        return relayNdJsonFromLeader(exchange, databaseName,
-            dial.client().send(request, HttpResponse.BodyHandlers.ofInputStream()));
+        return relayNdJsonFromLeader(exchange, databaseName, url,
+            dial.client().send(request, HttpResponse.BodyHandlers.ofInputStream()), deadlineMs);
 
       final HttpResponse<String> response = dial.client().send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -2045,15 +2163,26 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * A leader that answered with anything other than the streaming encoding - an older node, or a refusal issued
    * before the load started, which is a normal status-carrying error response - is relayed as the buffered
    * answer it is, so the follower never invents a stream the leader did not send.
+   * <p>
+   * Every wait for the leader's data is bounded by {@code readTimeoutMs} (issue #7738), the budget the request
+   * timeout already applied to the wait for its first line: a leader that stops sending mid-stream is given up
+   * on, the connection to it is closed, and the client's stream ends without a terminal line.
+   *
+   * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
    */
   private ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
-      final HttpResponse<InputStream> response) throws IOException {
+      final String url, final HttpResponse<InputStream> response, final long readTimeoutMs) throws IOException {
+
+    final ReadBoundedInputStream leaderBody = new ReadBoundedInputStream(response.body(), readTimeoutMs,
+        ioThreadTimer(exchange));
 
     final String leaderContentType = response.headers().firstValue("Content-Type").orElse("");
     if (response.statusCode() != 200
         || !leaderContentType.toLowerCase(Locale.ROOT).contains(NdJsonResultStream.CONTENT_TYPE)) {
-      // Not a stream: read it whole and answer it the way every other forwarded response is answered.
-      try (final InputStream in = response.body()) {
+      // Not a stream: read it whole and answer it the way every other forwarded response is answered. A leader
+      // that stalls in the middle of this body fails the read with an HttpTimeoutException, which the caller
+      // answers 504 like a leader that never answered at all: no status has been sent to the client yet.
+      try (final InputStream in = leaderBody) {
         response.headers().firstValue("X-ArcadeDB-Commit-Index")
             .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
         return new ExecutionResponse(response.statusCode(),
@@ -2070,8 +2199,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     // Bounded exactly like the leader's own answer (issue #7381): a follower relaying a stream to a client that
     // stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
-    try (final BufferedReader in = new BufferedReader(
-        new InputStreamReader(response.body(), StandardCharsets.UTF_8));
+    try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
         final OutputStream out = new WriteBoundedOutputStream(exchange.getOutputStream(),
             connectionWriteWatchdog(exchange, streamingWriteTimeout(), databaseName))) {
       for (String line = in.readLine(); line != null; line = in.readLine()) {
@@ -2080,12 +2208,21 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         out.flush();
       }
     } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
-          e.getMessage());
+      if (leaderBody.hasExpired())
+        LogManager.instance().log(this, Level.WARNING,
+            "The leader at %s sent nothing for %,d ms while streaming the answer of a batch load on database '%s', "
+                + "so the relay is abandoned and the connection to the leader closed rather than holding a worker "
+                + "thread indefinitely. The client's stream ends without a terminal line. Raise '%s' if the leader "
+                + "legitimately stays silent that long", null, url, readTimeoutMs, databaseName,
+            GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey());
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
+            e.getMessage());
       // The 200 and part of the stream are already on the wire, so there is no status left to change and no
       // terminal line to trust: a consumer that saw neither 'summary' nor 'error' knows it did not get
-      // everything, which is the contract the encoding is built on.
+      // everything, which is the contract the encoding is built on. The relay only ever writes whole lines,
+      // so the stream the client got ends on a line boundary even when the leader stalled mid-line.
     }
     return null;
   }
