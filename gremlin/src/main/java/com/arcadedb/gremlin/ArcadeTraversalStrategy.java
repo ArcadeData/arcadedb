@@ -171,17 +171,21 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             }
 
             final Step replaceWith;
-            // #8258: true only when `step` (the HasStep) is itself removed below - the type/index-filter arms
-            // leave it in place (see the comment further down), so copying its labels there would duplicate them
-            boolean hasStepAlsoRemoved = false;
+            // #8258: true only for the count rewrite, which is a REDUCING BARRIER - real TinkerPop's own
+            // CountGlobalStep does not carry a label from before it forward either (confirmed empirically:
+            // the unoptimized g.V().as('v').hasLabel(X).count().select('v') throws NoSuchElementException,
+            // it does not return the vertex). So a label on the GraphStep/HasStep this rewrite also removes
+            // must NOT be copied onto ArcadeCountGlobalStep - only the count's OWN label (from countStep,
+            // handled below) may survive, since that one names the traverser the count itself produces.
+            boolean isCountRewrite = false;
             if (indexCursors.isEmpty()) {
               if (((HasStep<?>) step).getHasContainers().isEmpty() &&
                   i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
-                // #8258: keep a handle on the CountGlobalStep so its label (if any) survives the rewrite below
+                // #8258: keep a handle on the CountGlobalStep so its own label (if any) survives the rewrite below
                 final Step countStep = steps.get(i + 1);
                 traversal.removeStep(i - 1);
                 traversal.removeStep(i - 1);
-                hasStepAlsoRemoved = true;
+                isCountRewrite = true;
                 replaceWith = new ArcadeCountGlobalStep(step.getTraversal(), prevStepGraph.getReturnClass(), typeNameToMatch);
                 TraversalHelper.copyLabels(countStep, replaceWith, false);
               } else
@@ -194,10 +198,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
             if (replaceWith != null) {
               // #8258: a label on the GraphStep being replaced must survive on the new step, otherwise
-              // select()/path()/where() naming it later finds nothing
-              TraversalHelper.copyLabels(prevStepGraph, replaceWith, false);
-              if (hasStepAlsoRemoved)
-                TraversalHelper.copyLabels(step, replaceWith, false);
+              // select()/path()/where() naming it later finds nothing - except for the count rewrite, see above
+              if (!isCountRewrite)
+                TraversalHelper.copyLabels(prevStepGraph, replaceWith, false);
               //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
               traversal.removeStep(i - 1);
               traversal.addStep(i - 1, replaceWith);

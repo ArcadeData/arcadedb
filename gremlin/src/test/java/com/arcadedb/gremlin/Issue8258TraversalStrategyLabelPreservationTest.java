@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * https://github.com/ArcadeData/arcadedb/issues/8258
@@ -107,12 +108,20 @@ class Issue8258TraversalStrategyLabelPreservationTest {
   }
 
   @Test
-  void countArmAlsoPreservesTheLeadingGraphStepLabel() {
-    // the label sits on g.V()'s GraphStep, which the count arm removes together with the HasStep -
-    // neither of the other two rewrites' accidental safety net (see class javadoc) applies here
+  void countArmDoesNotBindTheLeadingGraphStepLabelToTheCount() {
+    // PR #8309 review: an earlier version of this fix copied the GraphStep's label onto the count too, which
+    // is wrong rather than merely unreachable - count() is a REDUCING BARRIER, and real TinkerPop's own
+    // CountGlobalStep does not carry a label from before it forward: the unoptimized
+    // g.V().as("v").hasLabel("Person").count().select("v") throws NoSuchElementException, it does not answer
+    // the vertex. Only the count's OWN label (asserted in countGlobalStepLabelSurvivesTheRewrite above) may
+    // survive the rewrite.
     final Step<?, ?> countStep = lastStepOf(graph.traversal().V().as("v").hasLabel("Person").count());
     assertThat(countStep).isInstanceOf(ArcadeCountGlobalStep.class);
-    assertThat(countStep.getLabels()).containsExactly("v");
+    assertThat(countStep.getLabels()).as("a label from before count() must not survive it, matching real TinkerPop").isEmpty();
+
+    assertThatThrownBy(() -> graph.traversal().V().as("v").hasLabel("Person").count().select("v").next())
+        .as("matching the unoptimized path's own NoSuchElementException for this shape")
+        .isInstanceOf(java.util.NoSuchElementException.class);
   }
 
   @Test
