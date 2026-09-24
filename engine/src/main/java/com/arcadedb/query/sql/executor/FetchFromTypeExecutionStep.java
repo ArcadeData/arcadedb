@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.PaginatedComponentFile;
@@ -341,6 +342,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       final DatabaseInternal db = context.getDatabase();
       final long abandonedTimeoutMs = db.getConfiguration()
           .getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
+      // MEMORY BACKPRESSURE COMPLEMENTING SCAN_BATCH_SIZE (CodeRabbit, PR #8311): a producer now loads each row's
+      // content before queuing it, so unlike the lazy shells the queue used to carry, a row-count-only bound does
+      // not bound a batch's retained bytes for wide or multi-page records. See GlobalConfiguration's javadoc.
+      final long maxBatchBytes = db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES);
       // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
       // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
       // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
@@ -384,11 +389,15 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
             while (more) {
               // A NEW LIST PER BATCH: THE BATCH ITSELF IS HANDED TO THE CONSUMER, WHICH OWNS IT FROM THEN ON
               final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
+              // SINGLE-ELEMENT HOLDER, NOT A LOCAL long: MUTATED FROM INSIDE THE LAMBDA BELOW, SAME PATTERN AS rsHolder
+              final long[] batchBytes = new long[1];
               more = db.executeInReadLock(() -> {
                 ResultSet rs = rsHolder[0];
                 if (rs == null)
                   rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
-                while (batch.size() < SCAN_BATCH_SIZE) {
+                // THE BYTE BOUND NEVER BLOCKS PROGRESS: IT IS CHECKED BEFORE ADDING, SO A SINGLE RECORD LARGER THAN
+                // maxBatchBytes STILL GOES INTO ITS OWN (OVER-BUDGET) BATCH RATHER THAN NEVER FITTING ANYWHERE
+                while (batch.size() < SCAN_BATCH_SIZE && batchBytes[0] < maxBatchBytes) {
                   if (!rs.hasNext()) {
                     rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
                     if (!rs.hasNext())
@@ -399,8 +408,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                   // QUERY DESERIALIZES THE DISCARDED TAIL OF EACH BATCH TOO (UP TO SCAN_BATCH_SIZE - 1 WIDE ROWS PER
                   // FETCH), WHERE IT USED TO STAY LAZY. ACCEPTED: THE BENCHMARK IN #8265 IS FOR THE FULL-SCAN CASE
                   // THIS METHOD EXISTS FOR, AND A SMALL LIMIT ON A WIDE TYPE IS THE ONE SHAPE THAT CAN LOSE FROM IT
-                  if (loadContent(r))
+                  if (loadContent(r)) {
                     batch.add(r);
+                    batchBytes[0] += loadedContentBytes(r);
+                  }
                 }
                 return true;
               });
@@ -571,6 +582,21 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       }
     }
     return true;
+  }
+
+  /**
+   * The size {@link #loadContent(Result)} just brought into memory, for the byte-bound half of the batch limit
+   * (issue #8311 CodeRabbit review): a row-count bound alone does not cap a batch's retained bytes once the content
+   * is loaded eagerly rather than left as a lazy shell. {@code 0} for anything {@link #loadContent(Result)} did not
+   * load (an edge, or a filtered/deleted record whose caller already dropped it from the batch).
+   */
+  private static long loadedContentBytes(final Result result) {
+    if (result instanceof ResultInternal internal && internal.element instanceof ImmutableDocument document) {
+      final Binary buffer = document.getBuffer();
+      if (buffer != null)
+        return buffer.size();
+    }
+    return 0L;
   }
 
   @Override
