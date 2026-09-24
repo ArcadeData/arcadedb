@@ -135,6 +135,40 @@ public class Issue8254RedisRetryRamCommandDuplicationTest extends BaseRedisServe
   }
 
   /**
+   * PR #8309 review: publishing a key that this same block already fixed to an absolute value (SET/GETDEL)
+   * used to record a remap instead of an overwrite once a later INCR/DECR touched it, so publish replayed the
+   * increment against whatever the LIVE value happened to be, discarding the block's own SET. Repro: the live
+   * value of the key is 100, the block does {@code SET seq 5} then {@code INCR seq} - the reply is correctly 6,
+   * but the published value used to come back as 101 (100 + 1) instead of 6 (5 + 1).
+   */
+  @Test
+  void setThenIncrInTheSameBlockPublishesRelativeToTheBlocksOwnSet() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("redis", "SET seq 100");
+
+    final String transaction = """
+        MULTI
+        SET seq 5
+        INCR seq
+        EXEC
+        """;
+
+    try (final ResultSet rs = database.command("redis", transaction)) {
+      final List<?> replies = (List<?>) rs.next().getProperty("value");
+      assertThat(replies).hasSize(2);
+      assertThat(((Number) replies.get(1)).longValue())
+          .as("INCR's own reply must be relative to this block's SET (5), not the live value (100)")
+          .isEqualTo(6L);
+    }
+
+    try (final ResultSet rs = database.command("redis", "GET seq")) {
+      assertThat(((Number) rs.next().<Object>getProperty("value")).longValue())
+          .as("the published value must match the reply: this block's SET, not the live value, is the base")
+          .isEqualTo(6L);
+    }
+  }
+
+  /**
    * PR #8309 review: key validation was deferred to the publish loop, which runs AFTER the block's document
    * writes already committed. A reserved name must be refused at the point the offending command itself runs,
    * inside the retried block, so the refusal rolls back the whole EXEC - including the document write - instead

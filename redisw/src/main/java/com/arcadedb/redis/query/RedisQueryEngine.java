@@ -361,7 +361,14 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     void setComputed(final String key, final Object newValue, final UnaryOperator<Object> remapping) {
+      // PR #8309 review: a key this same attempt already fixed to an absolute value (SET/GETDEL, no remap
+      // recorded since) has a fully known base - baking the new value in as another absolute overwrite keeps
+      // it, whereas recording a remap here would replay `remapping` against whatever is in the real map at
+      // publish time instead, silently discarding the SET/GETDEL this same block just did.
+      final boolean absoluteBase = values.containsKey(key) && !remaps.containsKey(key);
       values.put(key, newValue);
+      if (absoluteBase)
+        return;
       final UnaryOperator<Object> existing = remaps.get(key);
       remaps.put(key, existing == null ? remapping : value -> remapping.apply(existing.apply(value)));
     }
