@@ -890,6 +890,17 @@ public enum GlobalConfiguration {
       If the type has fewer buckets than this threshold, sequential scanning is used""",
       Integer.class, 2),
 
+  QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
+      """
+      Memory backpressure bound that complements the parallel scan's row-count batch size (256): a producer \
+      loads each scanned record's content before queuing it (issue #8265), so unlike the lazy shells the \
+      queue used to carry, a batch of wide or multi-page records can retain far more heap than a row count \
+      alone predicts. Once a batch's total loaded bytes reach this bound, the producer stops adding to it \
+      early even if under 256 rows, and starts a new one. The queue holds several such batches (currently \
+      4096 rows' worth) plus one per producer thread in flight, so this is the per-batch slice of that \
+      budget, not the whole of it""",
+      Long.class, 16L * 1024 * 1024),
+
   // CYPHER
   // `arcadedb.cypher.statementCache` used to be declared here. It had no reader anywhere in the tree and was a
   // duplicate of OPENCYPHER_STATEMENT_CACHE, which is the one LocalDatabase actually sizes the parsed-statement

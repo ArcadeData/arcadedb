@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.DatabaseInternal;
@@ -248,6 +249,42 @@ class Issue8265ScanRecordLookupTest extends TestHelper {
       assertThat(count).as("rows returned by a parallel scan with 1 in 5 records filtered away").isEqualTo(800);
     } finally {
       database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * Eager producer-side loading means a batch retains fully-materialized record content instead of the lazy shells
+   * the parallel-scan queue used to carry, so {@code SCAN_BATCH_SIZE} (a row count) no longer bounds a batch's
+   * retained bytes for wide records. A cap far smaller than a single record forces every batch down to one row -
+   * proof the byte bound is doing something (a plain row-count cap would need 256 such records to see any effect at
+   * all) - and the scan must still make forward progress and return every record intact, not hang or truncate.
+   */
+  @Test
+  void parallelScanCapsBatchBytesForWideRecords() {
+    database.getSchema().buildDocumentType().withName("Wide8265").withTotalBuckets(4).create();
+    final int recordCount = 300;
+    final int payloadSize = 50_000; // WELL OVER database.getConfiguration()'s DEFAULT queryParallelScanMaxBatchBytes / SCAN_BATCH_SIZE
+    database.transaction(() -> {
+      for (int i = 0; i < recordCount; i++)
+        database.newDocument("Wide8265").set("id", i).set("payload", "x".repeat(payloadSize)).save();
+    });
+
+    // FAR SMALLER THAN ONE payloadSize-SIZED RECORD: EVERY BATCH THE PRODUCER BUILDS MUST STOP AT ONE ROW
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES, 1_000L);
+    try {
+      final Set<Integer> ids = new HashSet<>();
+      try (final ResultSet rs = database.query("sql", "select from Wide8265")) {
+        assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("(parallel)");
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          assertThat(r.<String>getProperty("payload")).hasSize(payloadSize);
+          ids.add(r.<Integer>getProperty("id"));
+        }
+      }
+      assertThat(ids).hasSize(recordCount);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES,
+          GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES.getDefValue());
     }
   }
 }
