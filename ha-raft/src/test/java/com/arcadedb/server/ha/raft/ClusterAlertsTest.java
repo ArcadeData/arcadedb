@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -30,8 +31,11 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link ClusterAlerts} single-bucket type detection: the core diagnostic behind the
@@ -192,5 +196,52 @@ class ClusterAlertsTest {
     ClusterAlerts.addLaggingFollowerAlert(List.of(), empty);
     ClusterAlerts.addLaggingFollowerAlert(null, empty);
     assertThat(empty.length()).isZero();
+  }
+
+  // ---- follower-stuck-at-stale-term alert (issue #8289) ----
+
+  @Test
+  void stuckAtStaleTermAlertIsRaisedAsCritical() {
+    final JSONArray alerts = new JSONArray();
+    ClusterAlerts.addStuckAtStaleTermAlert(true, alerts);
+
+    assertThat(alerts.length()).isEqualTo(1);
+    final JSONObject alert = alerts.getJSONObject(0);
+    assertThat(alert.getString("id")).isEqualTo("follower-stuck-at-stale-term");
+    // Critical: unlike a merely lagging follower, this node makes no progress and does not count
+    // toward quorum, while every other field on the endpoint (including localReplicationLag) still
+    // reads healthy - so this is the one signal an operator has that fault tolerance is reduced.
+    assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_CRITICAL);
+    assertThat(alert.getJSONObject("details").getBoolean("stuckAtStaleTerm")).isTrue();
+  }
+
+  @Test
+  void stuckAtStaleTermAlertIsAbsentWhenNotStuck() {
+    final JSONArray empty = new JSONArray();
+    ClusterAlerts.addStuckAtStaleTermAlert(false, empty);
+    assertThat(empty.length()).isZero();
+  }
+
+  @Test
+  void scanIncludesStuckAtStaleTermAlertWhenFlagged() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getDatabaseNames()).thenReturn(Set.of());
+
+    final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
+        new ClusterAlerts.NodeStatus(null, null, false, true), true);
+
+    assertThat(alerts.length()).isEqualTo(1);
+    assertThat(alerts.getJSONObject(0).getString("id")).isEqualTo("follower-stuck-at-stale-term");
+  }
+
+  @Test
+  void scanOmitsStuckAtStaleTermAlertWhenNotFlagged() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getDatabaseNames()).thenReturn(Set.of());
+
+    final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
+        new ClusterAlerts.NodeStatus(null, null, false, true), false);
+
+    assertThat(alerts.length()).isZero();
   }
 }

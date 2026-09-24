@@ -1454,6 +1454,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Debounced, operator-facing counterpart of {@link #isFollowerStuckDiverged()} for {@code GET /api/v1/cluster}
+   * (issue #8289): {@code true} once the stuck-at-stale-term signature has persisted for at least one
+   * {@link HealthMonitor} health-check interval. Raw and undebounced, {@link #isFollowerStuckDiverged()} can be
+   * momentarily {@code true} for any follower around a normal election - before it applies the new leader's
+   * current-term no-op - so publishing it as-is would report a routine leader change as an incident on every
+   * status poll. This is the same filter the health monitor already applies before it starts counting toward
+   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS}, at a fraction of that duration, so an operator sees the risk
+   * long before the automatic reformat (if enabled) fires - not only in the leader's replication log, which
+   * before this was the only place the "advancing at 0 entries/tick" symptom showed up at all.
+   * <p>
+   * {@code false} while the health monitor is not running (HA not started, {@code arcadedb.ha.healthCheckInterval}
+   * disabled). Deliberately independent of {@code arcadedb.ha.divergedFollowerRecovery}: with automatic recovery
+   * turned off a stuck follower never self-heals, which makes this the ONLY signal an operator has that it
+   * happened.
+   */
+  public boolean isFollowerStuckAtStaleTermConfirmed() {
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null && monitor.isFollowerStuckDivergedConfirmed();
+  }
+
+  /**
    * Pure decision function behind {@link #isFollowerStuckDiverged()}, split out so the predicate can be
    * unit-tested in isolation from the Ratis state plumbing (the destructive recovery makes the predicate
    * the highest-risk piece). Returns {@code true} for the "stuck at a stale term" signature: a follower

@@ -138,7 +138,7 @@ public class ClusterAlerts {
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState) {
     return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
-        NodeStatus.of(stateMachine));
+        NodeStatus.of(stateMachine), false);
   }
 
   /**
@@ -173,13 +173,15 @@ public class ClusterAlerts {
   }
 
   /**
-   * Scan overload taking this node's terminal conditions explicitly (issue #7872): see {@link NodeStatus} for why
-   * they arrive as one sample rather than being re-read here.
+   * Scan overload taking this node's terminal conditions explicitly (issue #7872) plus, since issue #8289,
+   * whether this node is itself stuck at a stale term after a snapshot install: see
+   * {@link RaftHAServer#isFollowerStuckAtStaleTermConfirmed()} for what debounces it before it reaches here.
+   * This is the production entry point; {@link GetClusterHandler} calls it directly.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
-      final LocalResyncState localResyncState, final NodeStatus nodeStatus) {
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -196,11 +198,49 @@ public class ClusterAlerts {
       // an operator is asking when they poll the node readiness has taken out of the Service.
       addLocalResyncAlert(localResyncState, visibleDatabases, alerts);
     }
+    // Node-scoped like the resync alert above, and deliberately NOT folded into it: a stuck-at-stale-term
+    // follower answers its own readiness gate Ready (its raw applied-index lag is 0, see
+    // RaftHAServer.isReadyForTraffic), so unlike local-resync-in-progress this alert does not imply
+    // /api/v1/ready is 503 - it is the one condition on this endpoint that degrades the cluster's fault
+    // tolerance while every other signal here, readiness included, still looks healthy (issue #8289).
+    addStuckAtStaleTermAlert(stuckAtStaleTerm, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
       addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
     return alerts;
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the stuck-at-stale-term alert iff this node
+   * currently matches the debounced signature (issue #8289).
+   * <p>
+   * {@code critical}: unlike a merely lagging or falling-behind follower, this node makes no progress at all
+   * while stuck and does not count toward quorum, so the cluster runs one more lost node away from a total
+   * write outage - silently, because every other field on this endpoint (raftState, the peer list, this node's
+   * own {@code localReplicationLag}) still reads healthy.
+   */
+  static void addStuckAtStaleTermAlert(final boolean stuckAtStaleTerm, final JSONArray alerts) {
+    if (!stuckAtStaleTerm)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "follower-stuck-at-stale-term")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node is stuck at a stale term and not counting toward quorum")
+        .put("message", "This node recognizes a leader at a newer term but keeps rejecting its current-term "
+            + "entries: it has applied everything it could locally commit, so this document's localReplicationLag "
+            + "reads 0 and every other field here still looks healthy, but this node makes no further progress and "
+            + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
+            + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
+            + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
+            + "post-install entries.")
+        .put("recommendation", "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this "
+            + "self-heals: once the condition has persisted for arcadedb.ha.staleFollowerRecoveryDurationMs "
+            + "(default 60s) the node reformats its local Raft storage and rejoins via a fresh snapshot install. "
+            + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
+            + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
+        .put("details", new JSONObject().put("stuckAtStaleTerm", true)));
   }
 
   /**

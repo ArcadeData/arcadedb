@@ -180,7 +180,10 @@ public final class HealthMonitor {
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
-  private          long                     stuckObservedSinceMs        = -1;
+  // Volatile: written only on this monitor's own single-threaded tick executor, but read from an HTTP worker
+  // thread via isFollowerStuckDivergedConfirmed() (issue #8289's visibility gap) - see crashLoopEscalated
+  // above for why a plain field is not enough there.
+  private volatile long                     stuckObservedSinceMs        = -1;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
@@ -497,11 +500,14 @@ public final class HealthMonitor {
    * the first observation only starts the streak, any tick where the stuck condition clears resets
    * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
    * so both self-healing paths share the same "must persist this long" knob.
+   * <p>
+   * The streak itself is tracked regardless of {@link #divergedFollowerRecoveryEnabled} (issue #8289):
+   * only the destructive reformat action is gated on that flag. With it {@code false} a node that gets
+   * stuck has no automatic recovery at all - the setting's own javadoc says restart is then the only
+   * mitigation - which makes the observation this streak carries the ONLY signal an operator has, and
+   * {@link #isFollowerStuckDivergedConfirmed()} must keep reporting it either way.
    */
   private void checkStuckFollower() {
-    if (!divergedFollowerRecoveryEnabled)
-      return; // disabled
-
     final long now = clock.getAsLong();
 
     if (!target.isFollowerStuckDiverged()) {
@@ -528,6 +534,9 @@ public final class HealthMonitor {
       return;
     }
 
+    if (!divergedFollowerRecoveryEnabled)
+      return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
+
     if (now - stuckObservedSinceMs < staleFollowerRecoveryDurationMs)
       return; // not persisted long enough yet
 
@@ -542,7 +551,9 @@ public final class HealthMonitor {
             "Follower still stuck-diverged after %d automatic Raft-storage reformats; giving up auto-recovery - operator intervention required",
             divergedFollowerMaxReformats);
       }
-      stuckObservedSinceMs = -1; // re-arm the persistence streak but do not reformat again
+      // Keep the streak (issue #8289): the node is still stuck and nothing automatic is left, so this is exactly
+      // when isFollowerStuckDivergedConfirmed() must keep answering true. Resetting it here re-armed the streak on
+      // one tick and cleared it on the next, hiding the alert for good once the budget was spent.
       return;
     }
 
@@ -552,6 +563,24 @@ public final class HealthMonitor {
         now - stuckObservedSinceMs, divergenceReformatCount);
     target.recoverFromDivergence();
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
+  }
+
+  /**
+   * Whether the current stuck-at-stale-term streak (if any) has persisted for at least one health-check
+   * interval (issue #8289). {@link HealthTarget#isFollowerStuckDiverged()} itself is raw and momentary - a
+   * healthy follower can cross that exact signature for an instant around every election, before it applies
+   * the new leader's current-term no-op (see that method's javadoc) - so reporting it unfiltered to an
+   * operator would flag a routine leader change as an incident on every status poll. This applies the same
+   * "must not be a single-tick blip" reasoning {@link #checkStuckFollower()} already relies on before it will
+   * even start counting toward {@link #staleFollowerRecoveryDurationMs}, without waiting for that much longer
+   * duration: {@code intervalMs} is typically a few seconds (the default health-check interval) against a
+   * default recovery duration of a full minute.
+   * <p>
+   * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
+   */
+  boolean isFollowerStuckDivergedConfirmed() {
+    final long since = stuckObservedSinceMs;
+    return since != -1 && clock.getAsLong() - since >= intervalMs;
   }
 
   private void tickSafely() {
