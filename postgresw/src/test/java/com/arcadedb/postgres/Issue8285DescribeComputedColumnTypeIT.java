@@ -201,6 +201,7 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
     // server ("mismatched input '?'"), so this shape cannot be reproduced through pgjdbc's own API.
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      socket.setSoTimeout(30_000); // a stalled response fails the test instead of blocking it indefinitely
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
