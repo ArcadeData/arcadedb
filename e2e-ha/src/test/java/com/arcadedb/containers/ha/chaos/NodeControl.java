@@ -56,6 +56,13 @@ public interface NodeControl {
   boolean awaitLeader(Duration timeout);
 
   /**
+   * @return what each node reports about the leader right now, one entry per node (for example
+   * {@code "node 0: HTTP 200 leader=proxy:8671; node 1: connect failed on host:32918 (Connection refused)"}), so a
+   * failed {@link #awaitLeader} names the node and the reason
+   */
+  String leaderView();
+
+  /**
    * @return null when every node the state believes UP or DEGRADED is actually running, otherwise a description of the
    * node that exited on its own (for example {@code "node 1 exited unexpectedly: exitCode=137 OOMKilled=true"})
    */
