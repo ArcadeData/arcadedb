@@ -580,6 +580,15 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("localReplicationLag", SpecBuilders.integer(
         "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex'. -1 rather than a "
             + "fabricated difference whenever either side is unknown"));
+    // Issue #8289: this node stuck at a stale term after a snapshot install applies everything it could
+    // locally commit, so 'localReplicationLag' above reads 0 and this node looks caught up, yet it keeps
+    // rejecting the leader's current-term entries and does not count toward the Raft quorum. Debounced
+    // (seen on two consecutive health-monitor ticks) so a normal leader change is not reported as one.
+    schema.addProperty("localStuckAtStaleTerm", SpecBuilders.bool(
+        "True when this node recognizes a leader at a newer term but keeps rejecting its current-term entries "
+            + "although it has applied everything it could locally commit. It does not count toward quorum while "
+            + "this is true, even though 'localReplicationLag' reads 0. See the 'follower-stuck-at-stale-term' "
+            + "alert for the operator-facing explanation"));
     schema.addProperty("peers", SpecBuilders.arrayOf(peer, "Known peers"));
     schema.addProperty("databases", SpecBuilders.arrayOf(database, "Replicated databases"));
     schema.addProperty("databasePresence", SpecBuilders.mapOf(
@@ -608,8 +617,8 @@ public class PluginApiSpec implements OpenApiContributor {
     // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
-        "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "peers", "databases",
-        "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
+        "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm", "peers",
+        "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
     return schema;
   }
 

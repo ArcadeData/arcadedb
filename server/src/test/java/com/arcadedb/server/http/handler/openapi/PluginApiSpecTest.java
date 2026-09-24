@@ -123,11 +123,12 @@ class PluginApiSpecTest {
     // 'criticalHalt', 'raftLogFailure' and 'crashLoopEscalated' joined them with issue #7872: they are the
     // readiness - and, for the last one, liveness - inputs the #7136 invariant promised were visible in this
     // document and were not, so a node with a dead state machine read green here while '/api/v1/ready' was
-    // pinned at 503.
+    // pinned at 503. 'localStuckAtStaleTerm' joined with issue #8289: the one node-level condition that leaves
+    // readiness and 'localReplicationLag' reading healthy while the node does not count toward quorum.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
-        "localAppliedIndex", "localCommitIndex", "localReplicationLag",
+        "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "peers", "databases", "databasePresence", "alerts", "localResync",
         "criticalHalt", "raftLogFailure", "crashLoopEscalated");
 

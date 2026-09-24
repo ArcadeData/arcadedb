@@ -181,6 +181,11 @@ public final class HealthMonitor {
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
   private          long                     stuckObservedSinceMs        = -1;
+  // Whether a tick has seen the stuck signature AGAIN after the one that started the streak (issue #8289). Set and
+  // cleared only on the tick executor, read from an HTTP worker via isFollowerStuckDivergedConfirmed(), hence
+  // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
+  // answer true for a streak whose condition cleared after its first tick, until the next tick got round to it.
+  private volatile boolean                  stuckConfirmed              = false;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
   private          int                      divergenceReformatCount     = 0;
@@ -456,6 +461,7 @@ public final class HealthMonitor {
   private void resetStreaksAfterRestart() {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
+    stuckConfirmed = false;
     divergenceReformatCount = 0;
     divergenceHealthySinceMs = -1;
     divergenceRecoveryExhausted = false;
@@ -497,15 +503,19 @@ public final class HealthMonitor {
    * the first observation only starts the streak, any tick where the stuck condition clears resets
    * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
    * so both self-healing paths share the same "must persist this long" knob.
+   * <p>
+   * The streak itself is tracked regardless of {@link #divergedFollowerRecoveryEnabled} (issue #8289):
+   * only the destructive reformat action is gated on that flag. With it {@code false} a node that gets
+   * stuck has no automatic recovery at all - the setting's own javadoc says restart is then the only
+   * mitigation - which makes the observation this streak carries the ONLY signal an operator has, and
+   * {@link #isFollowerStuckDivergedConfirmed()} must keep reporting it either way.
    */
   private void checkStuckFollower() {
-    if (!divergedFollowerRecoveryEnabled)
-      return; // disabled
-
     final long now = clock.getAsLong();
 
     if (!target.isFollowerStuckDiverged()) {
       stuckObservedSinceMs = -1;
+      stuckConfirmed = false;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
       // new divergence later.
@@ -528,6 +538,11 @@ public final class HealthMonitor {
       return;
     }
 
+    stuckConfirmed = true; // seen again on a later tick: no longer a single-tick blip
+
+    if (!divergedFollowerRecoveryEnabled)
+      return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
+
     if (now - stuckObservedSinceMs < staleFollowerRecoveryDurationMs)
       return; // not persisted long enough yet
 
@@ -542,7 +557,9 @@ public final class HealthMonitor {
             "Follower still stuck-diverged after %d automatic Raft-storage reformats; giving up auto-recovery - operator intervention required",
             divergedFollowerMaxReformats);
       }
-      stuckObservedSinceMs = -1; // re-arm the persistence streak but do not reformat again
+      // Keep the streak (issue #8289): the node is still stuck and nothing automatic is left, so this is exactly
+      // when isFollowerStuckDivergedConfirmed() must keep answering true. Resetting it here re-armed the streak on
+      // one tick and cleared it on the next, hiding the alert for good once the budget was spent.
       return;
     }
 
@@ -552,6 +569,24 @@ public final class HealthMonitor {
         now - stuckObservedSinceMs, divergenceReformatCount);
     target.recoverFromDivergence();
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
+    stuckConfirmed = false;
+  }
+
+  /**
+   * Whether the current stuck-at-stale-term streak (if any) has been observed on at least two consecutive
+   * ticks (issue #8289). {@link HealthTarget#isFollowerStuckDiverged()} itself is raw and momentary - a
+   * healthy follower can cross that exact signature for an instant around every election, before it applies
+   * the new leader's current-term no-op (see that method's javadoc) - so reporting it unfiltered to an
+   * operator would flag a routine leader change as an incident on every status poll. This applies the same
+   * "must not be a single-tick blip" reasoning {@link #checkStuckFollower()} already relies on before it will
+   * even start counting toward {@link #staleFollowerRecoveryDurationMs}, without waiting for that much longer
+   * duration: {@code intervalMs} is typically a few seconds (the default health-check interval) against a
+   * default recovery duration of a full minute.
+   * <p>
+   * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
+   */
+  boolean isFollowerStuckDivergedConfirmed() {
+    return stuckConfirmed;
   }
 
   private void tickSafely() {

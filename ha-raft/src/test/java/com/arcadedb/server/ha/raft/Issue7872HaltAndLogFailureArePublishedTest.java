@@ -158,7 +158,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
 
     // A caller authorized on no database at all: the strictest filter the endpoint can build.
     final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
-        new ClusterAlerts.NodeStatus(null, null, true, false));
+        new ClusterAlerts.NodeStatus(null, null, true, false), false);
 
     assertThat(alertWithId(alerts, "crash-loop-escalated"))
         .as("whether this node's HA layer has given up is not a per-tenant fact")
