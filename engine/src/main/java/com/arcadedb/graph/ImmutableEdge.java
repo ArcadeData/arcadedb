@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -78,9 +77,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
         try {
           // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction().getPageToModify(rid.getPageId(database),
-              ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
-          reload();
+          pinPageAndReloadIfStale();
         } catch (final IOException e) {
           throw new DatabaseOperationException("Error on reloading edge " + rid, e);
         }
