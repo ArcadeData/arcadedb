@@ -55,7 +55,13 @@ public class CypherDuration implements CypherTemporalValue {
   public CypherDuration(final long months, final long days, final long seconds, final long nanosAdjustment) {
     this.months = months;
     this.days = days;
-    this.seconds = Math.addExact(seconds, Math.floorDiv(nanosAdjustment, 1_000_000_000L));
+    try {
+      this.seconds = Math.addExact(seconds, Math.floorDiv(nanosAdjustment, 1_000_000_000L));
+    } catch (final ArithmeticException e) {
+      // Reachable with client-supplied values (a Bolt duration struct): an overflow is the caller's mistake and must not
+      // reach the wire layers as an unrecognised throwable (same as divide(), issue #5602)
+      throw new ArithmeticErrorException("Duration overflow: " + seconds + " seconds + " + nanosAdjustment + " nanoseconds");
+    }
     this.nanosAdjustment = (int) Math.floorMod(nanosAdjustment, 1_000_000_000L);
   }
 
