@@ -1329,6 +1329,23 @@ public class TransactionManager {
   }
 
   /**
+   * Test-support hook (issue #8356): seeds {@link #inactiveWALFilePool} directly, so a test can populate it
+   * without waiting for a real file to cross {@link #MAX_LOG_FILE_SIZE}.
+   */
+  void addInactiveWALFileForTesting(final WALFile file) {
+    inactiveWALFilePool.add(file);
+  }
+
+  /**
+   * Test-support hook (issue #8356): runs {@link #cleanWALFiles} directly, the same method both the
+   * once-a-second housekeeping timer and {@link #close} call, so a test can drive concurrent callers
+   * against it deterministically instead of racing the real timer.
+   */
+  boolean cleanWALFilesForTesting(final boolean dropFiles, final boolean force, final boolean syncDataOnDrop) {
+    return cleanWALFiles(dropFiles, force, syncDataOnDrop);
+  }
+
+  /**
    * Test-support hook (issue #7479): the value {@link #checkWALFiles}'s rotation would use for its next
    * WAL file name, so a test can pre-create and lock a colliding file at exactly that name.
    */
@@ -1357,36 +1374,43 @@ public class TransactionManager {
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force, final boolean syncDataOnDrop) {
     boolean dataSynced = false;
     boolean droppedAny = false;
-    for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
-      final WALFile file = it.next();
+    // #8356: inactiveWALFilePool is a Collections.synchronizedList, which only makes each INDIVIDUAL call
+    // (add/remove/size) atomic - its own Javadoc requires the caller to synchronize on the list for manual
+    // iteration. This method used a raw iterator, so a concurrent add() from the background rotation timer
+    // (checkWALFiles, run every second on its own Timer thread) or from a second, racing close() could land
+    // between this iterator's hasNext()/next() and throw ConcurrentModificationException out of it.remove().
+    synchronized (inactiveWALFilePool) {
+      for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
+        final WALFile file = it.next();
 
-      if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
-        // ALL PAGES FLUSHED, REMOVE THE FILE
-        try {
-          final Map<String, Object> fileStats = file.getStats();
-          statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
-          statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
+        if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
+          // ALL PAGES FLUSHED, REMOVE THE FILE
+          try {
+            final Map<String, Object> fileStats = file.getStats();
+            statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
+            statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
 
-          if (dropFiles) {
-            // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
-            // right before the first WAL file is actually dropped in this pass (issue #4509).
-            if (syncDataOnDrop && !dataSynced) {
-              if (!database.getFileManager().syncFiles()) {
-                // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
-                // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
-                return false;
+            if (dropFiles) {
+              // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
+              // right before the first WAL file is actually dropped in this pass (issue #4509).
+              if (syncDataOnDrop && !dataSynced) {
+                if (!database.getFileManager().syncFiles()) {
+                  // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
+                  // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
+                  return false;
+                }
+                dataSynced = true;
               }
-              dataSynced = true;
-            }
-            file.drop();
-            droppedAny = true;
-          } else
-            file.close();
+              file.drop();
+              droppedAny = true;
+            } else
+              file.close();
 
-        } catch (final IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
+          }
+          it.remove();
         }
-        it.remove();
       }
     }
 

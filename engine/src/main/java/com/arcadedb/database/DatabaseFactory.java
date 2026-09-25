@@ -212,7 +212,9 @@ public class DatabaseFactory implements AutoCloseable {
    * modified while the loop advances. Errors are swallowed on purpose - a database that cannot be closed must
    * not stop the remaining ones from being closed, least of all during a JVM shutdown. Closing a database that
    * another component is closing concurrently (the ArcadeDB server's own shutdown hook, say) is a no-op: the
-   * second close finds it already closed.
+   * {@code isOpen()} check just above is not atomic with the {@code close()} call, so both threads can see it
+   * open and both call in - {@link LocalDatabase#close()} is what makes the second call a no-op, by waiting for
+   * the first one's teardown to finish rather than repeating (or racing) any part of it (issue #8356).
    */
   public static void closeActiveDatabaseInstances() {
     for (final Database database : new ArrayList<>(ACTIVE_INSTANCES.values())) {
