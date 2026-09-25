@@ -187,7 +187,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
       if (dbInternal.isTransactionActive())
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommit);
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommitCallback);
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
