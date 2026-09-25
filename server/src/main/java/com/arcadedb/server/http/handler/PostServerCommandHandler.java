@@ -30,7 +30,6 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HttpString;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -535,34 +534,56 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * progress line, so they still propagate to {@code AbstractServerHttpHandler}'s status mapping. A
    * failure <i>during</i> the restore or import - by which point the response has already begun - can
    * only be reported inside the stream, and becomes an {@code error} frame as before.
+   * <p>
+   * Either way a completed operation is answered to the idempotency cache in BOTH encodings (issue #8331): the JSON
+   * body, and the {@code completed} event as a one-frame stream. A retry with the same {@code X-Request-Id} is then
+   * replayed in the encoding IT asked for, instead of running the restore or import a second time - which is what a
+   * streamed request did, because it returned no response for the cache to keep. A failure is not cached, exactly as
+   * a failed buffered request is not.
    */
   private ExecutionResponse streamOrRun(final HttpServerExchange exchange, final String completionMessage,
       final ProgressingOperation operation) {
-    if (!isSSERequested(exchange)) {
+    if (!isEventStreamRequested(exchange)) {
       // Nothing to catch: a failure propagates to AbstractServerHttpHandler, which is what maps it
       // onto a status code, and every control-plane failure is unchecked.
-      operation.run(ServerControlPlane.ProgressListener.NOOP);
-      return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+      final JSONObject report = operation.run(ServerControlPlane.ProgressListener.NOOP);
+      return completedResponse(completionMessage, report);
     }
 
     final SSEProgressSink sink = new SSEProgressSink(exchange);
     try {
       final JSONObject report = operation.run(sink);
-
-      final JSONObject completed = new JSONObject().put("status", "completed").put("message", completionMessage);
-      if (report != null)
-        for (final String key : report.keySet())
-          completed.put(key, report.get(key));
-      sink.send(completed);
+      final ExecutionResponse response = completedResponse(completionMessage, report);
+      sink.send(completedEvent(completionMessage, report));
+      // Written already: what is returned is only what the idempotency cache keeps of it
+      return response.markAlreadySent();
     } catch (final RuntimeException e) {
       // Nothing has been written yet, so the request can still be answered with a status code.
       if (!sink.started())
         throw e;
       sink.send(errorEvent(e));
+      return null; // response already sent via SSE, and a failure is not replayed
     } finally {
       sink.close();
     }
-    return null; // response already sent via SSE
+  }
+
+  /** The JSON answer of a completed restore or import, carrying its SSE terminal event for a streamed retry. */
+  private static ExecutionResponse completedResponse(final String completionMessage, final JSONObject report) {
+    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString())
+        .setEventStreamReplay(sseFrame(completedEvent(completionMessage, report)));
+  }
+
+  private static JSONObject completedEvent(final String completionMessage, final JSONObject report) {
+    final JSONObject completed = new JSONObject().put("status", "completed").put("message", completionMessage);
+    if (report != null)
+      for (final String key : report.keySet())
+        completed.put(key, report.get(key));
+    return completed;
+  }
+
+  private static String sseFrame(final JSONObject data) {
+    return "data: " + data + "\n\n";
   }
 
   /**
@@ -646,15 +667,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     synchronized void send(final JSONObject data) {
       try {
         if (out == null) {
-          exchange.getResponseHeaders().put(new HttpString("Content-Type"), "text/event-stream");
-          exchange.getResponseHeaders().put(new HttpString("Cache-Control"), "no-cache");
-          exchange.getResponseHeaders().put(new HttpString("X-Accel-Buffering"), "no");
+          setEventStreamHeaders(exchange);
           exchange.setStatusCode(200);
           if (!exchange.isBlocking())
             exchange.startBlocking();
           out = exchange.getOutputStream();
         }
-        out.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
+        out.write(sseFrame(data).getBytes(StandardCharsets.UTF_8));
         out.flush();
       } catch (final IOException ignored) {
         // Client disconnected
@@ -670,11 +689,6 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         // Client disconnected
       }
     }
-  }
-
-  private static boolean isSSERequested(final HttpServerExchange exchange) {
-    final String accept = exchange.getRequestHeaders().getFirst("Accept");
-    return accept != null && accept.contains("text/event-stream");
   }
 
   private void dropDatabase(final String databaseName) {

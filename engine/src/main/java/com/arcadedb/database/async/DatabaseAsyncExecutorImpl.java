@@ -433,7 +433,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final boolean           initialUseWAL = transactionUseWAL;
       final WALFile.FlushType initialSync   = transactionSync;
       database.getTransaction().setUseWAL(initialUseWAL);
-      database.setWALFlush(initialSync);
+      database.getTransaction().setWALFlush(initialSync);
       database.getTransaction().begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED); // FORCE THE LOWEST LEVEL
       // OF ISOLATION
 
@@ -535,7 +535,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // commitEvery boundary or begin() call to deal with, exactly as untouched as it already was.
         if (!nested) {
           database.getTransaction().setUseWAL(currentUseWAL);
-          database.setWALFlush(currentSync);
+          database.getTransaction().setWALFlush(currentSync);
         }
 
         // #7667: snapshot the shared batch transaction and its commit count BEFORE handing it to the task, so the
@@ -704,7 +704,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             try {
               database.begin();
               database.getTransaction().setUseWAL(currentUseWAL);
-              database.setWALFlush(currentSync);
+              database.getTransaction().setWALFlush(currentSync);
               for (final DatabaseAsyncCommand command : pendingBatchCommands)
                 command.execute(this, database);
             } finally {
@@ -727,7 +727,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // anyway so the guarantee does not depend on that staying true in a different class (#6509
             // review round 9).
             database.getTransaction().setUseWAL(currentUseWAL);
-            database.setWALFlush(currentSync);
+            database.getTransaction().setWALFlush(currentSync);
           }
           return;
 
@@ -1517,7 +1517,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // both first - so `true` here is a compiler-mandated placeholder and not a default policy (#6526 review round
       // 5): a primitive cannot carry the "unset" the reference next to it does.
       TransactionContext  ownTx            = null;
-      boolean             previousUseWAL   = true;
+      Boolean             previousUseWAL   = null;
       WALFile.FlushType   previousWALFlush = null;
       try {
         try {
@@ -1545,11 +1545,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
             ownTx = database.getTransaction();
             // Read AFTER begin() on purpose: TransactionContext.begin()/reset() never touch these two, so this is
-            // still the value that was in force before this method ran - which is what has to go back. The session's
-            // setting rather than the effective one, so a per-transaction override can never be restored into it
-            // (issue #8129).
-            previousUseWAL = ownTx.isSessionUseWAL();
-            previousWALFlush = ownTx.getWALFlush();
+            // still the value that was in force before this method ran - which is what has to go back. The thread's
+            // own setting rather than the effective one, so neither a per-transaction override (issue #8129) nor the
+            // database-wide value of the moment (issue #8352) can be pinned onto the thread by the restore.
+            previousUseWAL = ownTx.getThreadUseWAL();
+            previousWALFlush = ownTx.getThreadWALFlush();
 
             ownTx.setUseWAL(useWAL);
             ownTx.setWALFlush(sync);
@@ -1582,7 +1582,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // transaction - an HTTP worker's next request - which never asked for it. On a pool thread that created
           // its own context the restore is a no-op the removeContext() below would have covered anyway; done
           // unconditionally so the guarantee does not depend on which of the two paths ran.
-          ownTx.setUseWAL(previousUseWAL);
+          ownTx.setThreadUseWAL(previousUseWAL);
           ownTx.setWALFlush(previousWALFlush);
         }
 

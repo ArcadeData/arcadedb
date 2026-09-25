@@ -195,7 +195,11 @@ public class TransactionContext implements Transaction {
   // merge is disabled for the rest of the transaction so heap stays bounded on a very large transaction.
   private       long                                 slotMergeMaxBytes;
   private       long                                 slotRebaseTrackedBytes;
-  private       boolean                              useWAL;
+  // The durability settings of the THREAD this context belongs to, set through the Transaction API: null follows the
+  // database's own setting (Database.setUseWAL()/setWALFlush()/setAsyncFlush()), which in turn falls back to the
+  // configuration this context was created with (issue #8352)
+  private       Boolean                              useWAL;
+  private final boolean                              configuredUseWAL;
   /**
    * Overrides {@link #useWAL} for THIS transaction only when set; {@code null} to follow the session's setting.
    * <p>
@@ -233,8 +237,12 @@ public class TransactionContext implements Transaction {
   // Set by publishCommittedPages once the WAL append crossed the point of no return; drives the failure regime of
   // the 2nd phase whichever thread concludes it.
   private       boolean                              phase2WalAppended;
-  private       boolean                              asyncFlush            = true;
+  private       Boolean                              asyncFlush;
   private       WALFile.FlushType                    walFlush;
+  private final WALFile.FlushType                    configuredWALFlush;
+  // The embedded database, whose setters hold the database-wide durability settings; null only for a context not
+  // backed by one
+  private final LocalDatabase                        embedded;
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
@@ -319,8 +327,9 @@ public class TransactionContext implements Transaction {
 
   public TransactionContext(final DatabaseInternal database) {
     this.database = database;
-    this.walFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
-    this.useWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+    this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+    this.configuredUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
+    this.embedded = database.getEmbedded() instanceof LocalDatabase local ? local : null;
     this.indexChanges = new TransactionIndexContext(database);
   }
 
@@ -598,9 +607,37 @@ public class TransactionContext implements Transaction {
     return database;
   }
 
+  /**
+   * Sets whether this thread's transactions are written to the WAL, from now on and until changed, whatever the
+   * database-wide setting ({@link Database#setUseWAL(boolean)}) says.
+   */
   @Override
   public void setUseWAL(final boolean useWAL) {
     this.useWAL = useWAL;
+  }
+
+  /**
+   * @return this thread's own WAL setting, or {@code null} when it follows the database's. The value to capture to put
+   * the thread back exactly as it was found through {@link #setThreadUseWAL(Boolean)}: capturing the effective value
+   * instead would pin the thread to it, deaf to a later database-wide change (issue #8352).
+   */
+  public Boolean getThreadUseWAL() {
+    return useWAL;
+  }
+
+  /**
+   * Sets this thread's own WAL setting; {@code null} makes the thread follow the database's again.
+   */
+  public void setThreadUseWAL(final Boolean useWAL) {
+    this.useWAL = useWAL;
+  }
+
+  /**
+   * @return this thread's own WAL flush strategy, or {@code null} when it follows the database's. See
+   * {@link #getThreadUseWAL()}; {@link #setWALFlush(WALFile.FlushType)} puts it back, {@code null} included.
+   */
+  public WALFile.FlushType getThreadWALFlush() {
+    return walFlush;
   }
 
   /**
@@ -639,6 +676,11 @@ public class TransactionContext implements Transaction {
     return commitLockTimeout;
   }
 
+  /**
+   * Sets the WAL flush strategy of this thread's transactions, from now on and until changed, whatever the
+   * database-wide setting ({@link Database#setWALFlush(WALFile.FlushType)}) says; {@code null} makes the thread follow
+   * the database's again.
+   */
   @Override
   public void setWALFlush(final WALFile.FlushType flush) {
     this.walFlush = flush;
@@ -653,7 +695,7 @@ public class TransactionContext implements Transaction {
   @Override
   public boolean isUseWAL() {
     final Boolean override = useWALOverride;
-    return override != null ? override : useWAL;
+    return override != null ? override : isSessionUseWAL();
   }
 
   /**
@@ -661,12 +703,24 @@ public class TransactionContext implements Transaction {
    * override. The value to capture when saving the setting to restore it later.
    */
   public boolean isSessionUseWAL() {
-    return useWAL;
+    final Boolean thread = useWAL;
+    if (thread != null)
+      return thread;
+    final Boolean database = embedded != null ? embedded.getUseWALSetting() : null;
+    return database != null ? database : configuredUseWAL;
   }
 
+  /**
+   * @return the WAL flush strategy of this transaction: the thread's own when set, otherwise the database's, otherwise
+   * the configured one ({@link GlobalConfiguration#TX_WAL_FLUSH})
+   */
   @Override
   public WALFile.FlushType getWALFlush() {
-    return walFlush;
+    final WALFile.FlushType thread = walFlush;
+    if (thread != null)
+      return thread;
+    final WALFile.FlushType database = embedded != null ? embedded.getWALFlushSetting() : null;
+    return database != null ? database : configuredWALFlush;
   }
 
   @Override
@@ -2345,7 +2399,7 @@ public class TransactionContext implements Transaction {
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
-        database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
+        database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, getWALFlush(), txId, changes.result);
         // Only a REAL append crosses the point of no return (#5053/#4940): with useWAL=false (bulk loads)
         // changes.result is null, nothing is durable and there is no WAL record for recovery to replay - a
         // publish failure must then behave like any pre-durability failure (full rollback of user-held
@@ -2359,7 +2413,7 @@ public class TransactionContext implements Transaction {
 
       // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
       // never by aborting.
-      database.getPageManager().publishPages(pagesToPublish, newPages, asyncFlush);
+      database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());
@@ -2618,11 +2672,22 @@ public class TransactionContext implements Transaction {
     indexChanges.addIndexKeyLock(index, operation, keys, rid);
   }
 
+  /**
+   * @return whether this transaction's pages are flushed by the background thread: the thread's own setting when set,
+   * otherwise the database's
+   */
   @Override
   public boolean isAsyncFlush() {
-    return asyncFlush;
+    final Boolean thread = asyncFlush;
+    if (thread != null)
+      return thread;
+    return embedded == null || embedded.isAsyncFlush();
   }
 
+  /**
+   * Sets whether this thread's transactions flush their pages in the background, from now on and until changed,
+   * whatever the database-wide setting ({@link Database#setAsyncFlush(boolean)}) says.
+   */
   @Override
   public void setAsyncFlush(final boolean value) {
     this.asyncFlush = value;

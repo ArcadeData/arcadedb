@@ -1215,14 +1215,18 @@ public class CypherOptimizer {
       hopEdgeTypes[i] = gav.getEdgeTypes();
       hopTargetVars[i] = gav.getTargetVariable();
 
-      // Resolve target label to bucket IDs for fast filtering
+      // Resolve target label to bucket IDs for fast filtering. A label matches its sub-types too (instanceOf, as
+      // ExpandAll does), so the table is the POLYMORPHIC bucket list. A label with no type matches nothing (#8377).
       final String targetLabel = gav.getTargetLabel();
-      if (targetLabel != null && database.getSchema().existsType(targetLabel)) {
-        final var buckets = database.getSchema().getType(targetLabel).getBuckets(false);
-        final int[] ids = new int[buckets.size()];
-        for (int b = 0; b < buckets.size(); b++)
-          ids[b] = buckets.get(b).getFileId();
-        hopTargetBuckets[i] = ids;
+      if (targetLabel != null) {
+        if (database.getSchema().existsType(targetLabel)) {
+          final var buckets = database.getSchema().getType(targetLabel).getBuckets(true);
+          final int[] ids = new int[buckets.size()];
+          for (int b = 0; b < buckets.size(); b++)
+            ids[b] = buckets.get(b).getFileId();
+          hopTargetBuckets[i] = ids;
+        } else
+          hopTargetBuckets[i] = new int[0];
       }
     }
 
