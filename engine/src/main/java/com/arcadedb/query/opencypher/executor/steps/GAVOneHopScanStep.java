@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -36,6 +37,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -77,10 +79,14 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
   private WorkGuard guard;
   private int       upperBound;
   private int       nextSourceId;
-  private GAVVertex source;
+  private Vertex    source;
   private int[]     neighbors;
   private int       neighborIndex;
   private Result    nextRow;
+  // Set when the sources are enumerated from the label's own buckets rather than from the whole view
+  private Iterator<Record> labelSources;
+  // The neighbors of a source the view does not map, walked through its edges
+  private Iterator<Vertex> recordNeighbors;
 
   /**
    * @param sourceVariable the variable bound to the node the edges are walked from, or null when anonymous
@@ -127,6 +133,14 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
     if (guard == null) {
       guard = WorkGuard.forCommandDeadline(context);
       upperBound = provider.getNodeIdUpperBound();
+      // Walking the view visits every node it holds, whatever its type: a source label that is a small share of the
+      // view is cheaper to enumerate from its own buckets, and mapped into the view one source at a time
+      final long labelRecords = countRecords(context.getDatabase());
+      if (labelRecords >= 0 && labelRecords * 2 < provider.getNodeCount()) {
+        @SuppressWarnings("unchecked")
+        final Iterator<Record> iterator = (Iterator<Record>) (Object) context.getDatabase().iterateType(sourceLabel, true);
+        labelSources = iterator;
+      }
     }
 
     return new ResultSet() {
@@ -160,6 +174,19 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
   private Result fetchNext(final CommandContext context) {
     final Database database = context.getDatabase();
     while (true) {
+      if (recordNeighbors != null) {
+        if (recordNeighbors.hasNext()) {
+          final Vertex target = recordNeighbors.next();
+          if (!inBuckets(targetBuckets, target.getIdentity().getBucketId()))
+            continue;
+          final Row row = new Row(source, target);
+          if (edgeFilter != null && !Boolean.TRUE.equals(edgeFilter.evaluateTernary(row, context)))
+            continue;
+          return row;
+        }
+        recordNeighbors = null;
+      }
+
       if (neighbors != null && neighborIndex < neighbors.length) {
         final int targetId = neighbors[neighborIndex++];
         guard.checkPeriodically(neighborIndex);
@@ -180,6 +207,8 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
 
   private boolean advanceSource(final CommandContext context, final Database database) {
     neighbors = null;
+    if (labelSources != null)
+      return advanceLabelSource(context, database);
     while (nextSourceId < upperBound) {
       final int nodeId = nextSourceId++;
       guard.checkPeriodically(nodeId);
@@ -205,6 +234,48 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
       return true;
     }
     return false;
+  }
+
+  /** {@link #advanceSource} over the label's own buckets. */
+  private boolean advanceLabelSource(final CommandContext context, final Database database) {
+    while (labelSources.hasNext()) {
+      guard.checkPeriodically(++nextSourceId);
+      final Record record = labelSources.next();
+      final RID rid = record.getIdentity();
+      final int nodeId = provider.getNodeId(rid);
+      final Vertex vertex = nodeId >= 0 ? new GAVVertex(rid, nodeId, provider, database) : record.asVertex();
+      source = vertex;
+      if (sourceFilter != null && !Boolean.TRUE.equals(sourceFilter.evaluateTernary(new Row(vertex, null), context)))
+        continue;
+
+      if (nodeId < 0) {
+        // Not in the view: its edges are walked on the record, as the expansion this step replaces does
+        recordNeighbors = vertex.getVertices(direction, edgeTypes).iterator();
+        return true;
+      }
+      int[] adjacent = provider.getNeighborIds(nodeId, direction, edgeTypes);
+      if (direction == Vertex.DIRECTION.BOTH)
+        adjacent = SelfLoops.deduplicate(adjacent, nodeId);
+      if (adjacent.length == 0)
+        continue;
+      neighbors = adjacent;
+      neighborIndex = 0;
+      return true;
+    }
+    return false;
+  }
+
+  /** The records the source buckets hold, from their commit-maintained counters, or -1 when one keeps none. */
+  private long countRecords(final Database database) {
+    long total = 0;
+    for (int bucketId = 0; bucketId < sourceBuckets.length; bucketId++) {
+      if (!sourceBuckets[bucketId])
+        continue;
+      if (!(database.getSchema().getBucketByIdIfExists(bucketId) instanceof LocalBucket bucket) || bucket.getCachedRecordCount() < 0)
+        return -1;
+      total += bucket.getCachedRecordCount();
+    }
+    return total;
   }
 
   private static boolean inBuckets(final boolean[] table, final int bucketId) {

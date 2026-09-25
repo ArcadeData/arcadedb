@@ -129,7 +129,7 @@ public final class PhysicalOrderRidFetcher {
         if (overflow)
           // Counting only: the range is too large to hold, it will be read again chunk by chunk
           continue;
-        if (buffer.size() >= maxBufferedRids) {
+        if (held() >= maxBufferedRids) {
           overflow = true;
           buffer.clear();
           passThrough = null;
@@ -192,7 +192,7 @@ public final class PhysicalOrderRidFetcher {
 
   private void fillNextChunk() {
     buffer.clear();
-    while (buffer.size() < maxBufferedRids) {
+    while (held() < maxBufferedRids) {
       final Object entry = chunkSource.next();
       if (entry == null) {
         chunkSourceExhausted = true;
@@ -202,6 +202,11 @@ public final class PhysicalOrderRidFetcher {
       add(entry);
     }
     buffer.sort();
+  }
+
+  /** Everything held for the current chunk, record addresses and the entries served as they came alike. */
+  private int held() {
+    return buffer.size() + (passThrough != null ? passThrough.size() : 0);
   }
 
   private void add(final Object entry) {
