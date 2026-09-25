@@ -257,6 +257,29 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Per server and not static: several ArcadeDBServer instances share a JVM in every HA test, and a shared cache
   // would rebuild on each probe and could close a client another server was still sending on.
   private final    TrustedHttpClientCache    capabilityHttpsClients = new TrustedHttpClientCache();
+  // Issue #7619: the commit index the LEADER last reported for itself, as seen from this follower, or -1 when none
+  // has been learned yet. Written only by the health-monitor thread (refreshLeaderCommitIndex), read by the
+  // readiness probe. Every value it ever holds is a commit index some leader actually reported, and a committed
+  // index is never un-committed, so it is at most the group's true commit index at the moment it is read: a stale
+  // value can only make the readiness gate below LESS strict, never report a caught-up follower as behind.
+  private volatile long                      leaderReportedCommitIndex = -1L;
+  // How the leader's commit index is asked for (see LeaderCommitProber). A field so a unit test can drive
+  // isReadyForTraffic() through a leader that reports a commit index this follower never received.
+  private volatile LeaderCommitProber        leaderCommitProber = this::queryLeaderCommitIndex;
+  // The Ratis client the prober above talks to the leader through, built lazily for leaderCommitProbeTarget and
+  // rebuilt when the leader changes or a call fails (a failed call may mean a stale DNS resolution of a re-IPed
+  // leader, which only a fresh channel re-resolves). Lock-free on purpose (review of PR #8322): stop() must never
+  // wait behind a probe that is blocked in its RPC. It raises leaderCommitProbeClosed and takes the client out of
+  // the reference; closing it fails the in-flight call at once. The health thread, the only builder, re-checks the
+  // flag after publishing a new client, so whichever of the two runs second closes it.
+  private final    AtomicReference<RaftClient> leaderCommitProbeClient = new AtomicReference<>();
+  private          RaftPeer                  leaderCommitProbeTarget;
+  private volatile boolean                   leaderCommitProbeClosed;
+  // Failure backoff of the probe above, so an unreachable leader does not stretch every health tick by the probe
+  // timeout for as long as it stays unreachable (review of PR #8322). Health-monitor thread only.
+  private          int                       leaderCommitProbeFailures;
+  private          int                       leaderCommitProbeSkipTicks;
+  private          RaftPeerId                leaderCommitProbeLastLeader;
   /**
    * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
    * a share of {@link #capabilityHttpsClients}: that one is asked by a single scheduled thread, sequentially, and
@@ -1819,6 +1842,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       CodeUtils.executeIgnoringExceptions(healthMonitor::stop, "Error on stopping the HA health monitor", true);
       healthMonitor = null;
     }
+    // After the monitor: its thread is the only user of this client (issue #7619).
+    CodeUtils.executeIgnoringExceptions(this::closeLeaderCommitProbeClient,
+        "Error on closing the HA leader commit-index probe client", true);
     if (logCompactionScheduler != null) {
       CodeUtils.executeIgnoringExceptions(logCompactionScheduler::stop,
           "Error on stopping the Raft log compaction scheduler", true);
@@ -3043,6 +3069,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftServer server = raftServer;
     if (server == null || shutdownRequested)
       return false;
+    // Read BEFORE the applied index below (issue #7619): the applied index only grows, so pairing it with a
+    // leader figure taken no later than itself can only under-state the lag, never over-state it.
+    final long leaderCommitIndex = leaderReportedCommitIndex;
     try {
       final var division = server.getDivision(raftGroup.getGroupId());
       final var info = division.getInfo();
@@ -3057,18 +3086,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean resyncInProgress = sm != null && sm.isResyncInProgress();
       // Issue #7131: commitIndex/appliedIndex above are both local to this division, and Ratis clamps a
       // follower's commit index to its own flush index - a follower receiving no appends has
-      // commitIndex == appliedIndex and reports lag 0 no matter how far behind the leader it really is. This
-      // gate needs no extra round trip: it is read from data Ratis already tracks locally. A second,
-      // leader-RPC-recency signal (RoleInfoProto.FollowerInfo.LeaderInfo.lastRpcElapsedTimeMs against
-      // HA_PEER_UNREACHABLE_THRESHOLD) was tried for the wedged-channel half of #7131 and removed: verified
-      // against Ratis 3.3.0 bytecode, granting a PRE_VOTE to ANY candidate - not necessarily this follower's
-      // own recognized leader - refreshes that same timestamp (RaftServerImpl.requestVote's shared
-      // FollowerState.updateLastRpcTime(REQUEST_VOTE) call is not gated on Phase.ELECTION the way the actual
-      // vote grant is), so it does not mean what it would need to mean here and would have offered false
-      // reassurance rather than real detection (review finding on PR #7605). The wedged-channel case remains
-      // open; the empty-log case below does not depend on it.
+      // commitIndex == appliedIndex and reports lag 0 no matter how far behind the leader it really is.
+      // emptyLogInMultiPeerCluster adds nothing to that: it is true only when commitIndex < 0, which the
+      // predicate already refuses on its own (issue #7619). It is kept only because the predicate's overloads
+      // and their tests carry it.
       final boolean emptyLogInMultiPeerCluster = isEmptyLogInMultiPeerCluster(
           conf == null ? 0 : conf.getCurrentPeers().size(), commitIndex);
+      // Issue #7619, the wedged-channel case #7131 was really about: measure the applied index against the
+      // commit index the LEADER reports, which the health monitor asks it for over a follower-to-leader call
+      // that does not depend on the leader-to-follower replication channel being alive. A leader-RPC-recency
+      // signal (lastRpcElapsedTimeMs) was tried for this before and removed, because a PRE_VOTE granted to any
+      // candidate refreshes that same timestamp (review finding on PR #7605); a commit index has no such
+      // ambiguity - it is exactly the quantity the lag is defined against.
+      final boolean behindLeaderCommit = isBehindLeaderCommit(leaderCommitIndex, appliedIndex, maxLagEntries);
       // Issue #7130: the division's own Ratis lifecycle, read from this same snapshot so it cannot disagree
       // with leaderPresent/localInConfig/commitIndex/appliedIndex above. A RaftServer proxy can stay RUNNING
       // while the per-group division underneath goes CLOSED or EXCEPTION (issue #5271); every field this
@@ -3078,7 +3108,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final boolean haltedAfterCriticalError = sm != null && sm.isHaltedAfterCriticalError();
       return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
           maxLagEntries, resyncInProgress, info.isLeaderReady(), emptyLogInMultiPeerCluster,
-          divisionLifecycleHealthy, haltedAfterCriticalError);
+          divisionLifecycleHealthy, haltedAfterCriticalError, behindLeaderCommit);
     } catch (final Exception e) {
       // Catch Exception, not IOException: getLastAppliedIndex() above is documented to throw Ratis'
       // IllegalStateException while an in-place restart re-initializes the division (issue #5271), so the
@@ -3118,6 +3148,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * The issue #7131 cold-rejoin signal: whether {@code commitIndex} means "this follower's log holds nothing
    * yet" in a configuration with more than one peer.
+   * <p>
+   * <b>It does not change the readiness answer for any input</b> (issue #7619): it is true only when
+   * {@code commitIndex < 0}, and the follower branch of {@link #isReadyForTrafficState} refuses a negative
+   * {@code commitIndex} on its own on the very next line. The follower it was meant to catch - one whose
+   * replication channel is wedged, so its local log stops growing - is caught by {@link #isBehindLeaderCommit}
+   * instead, which compares against the leader's commit index rather than this follower's clamped one.
    * <p>
    * Strictly {@code < 0} ({@code RaftLog.INVALID_LOG_INDEX}), not {@code <= 0}: index {@code 0} is
    * {@code RaftLog.LEAST_VALID_LOG_INDEX}, the leader's first real committed entry, not "empty". An earlier
@@ -3178,8 +3214,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * is meaningful only when {@code leader} is true; a follower's readiness is decided by its lag.
    * <p>
    * Kept as the direct 8-argument entry point for existing callers and tests: it forwards to the 9-argument
-   * overload with the issue #7131 gate disabled ({@code emptyLogInMultiPeerCluster=false}), so its documented
-   * lag-only behaviour is unchanged. Production code calls the final, 11-argument overload directly.
+   * overload with {@code emptyLogInMultiPeerCluster=false}. That flag never changes the answer when it is
+   * computed from the same {@code commitIndex} (see {@link #isEmptyLogInMultiPeerCluster}), so this overload's
+   * lag-only behaviour is exactly the production one minus the #7130 and #7619 inputs. Production code calls
+   * the final, 12-argument overload directly.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
@@ -3190,19 +3228,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Overload of {@link #isReadyForTrafficState(boolean, boolean, boolean, long, long, long, boolean, boolean)}
-   * that closes the empty-log half of issue #7131: the {@code commitIndex - appliedIndex} lag above is
-   * computed from indices that are both local to this division, and Ratis clamps a follower's commit index
-   * to its own flush index. A follower that has never received any entries - most concretely, one freshly
-   * rejoining an established multi-peer cluster after a wipe/reformat, before the leader's first append batch
-   * has had a chance to flush - therefore has {@code commitIndex == appliedIndex == 0} and reports lag
-   * {@code 0} regardless of how far behind the leader's true commit index it is. {@code emptyLogInMultiPeerCluster}
-   * catches exactly that: this follower's local log holds nothing yet, in a configuration that has more than
-   * one peer. Applies to followers only; the leader branch returns before it is evaluated.
+   * that adds the issue #7131 empty-log flag: this follower's local log holds nothing yet, in a configuration
+   * that has more than one peer. Applies to followers only; the leader branch returns before it is evaluated.
    * <p>
-   * A leader-RPC-recency signal was tried for the complementary wedged-channel case (a follower whose log is
-   * not empty but has simply stopped receiving new entries) and removed: see the comment in
-   * {@link #isReadyForTraffic(long)} for why it does not reliably mean what it would need to mean. That case
-   * remains open.
+   * As production computes it the flag is redundant (issue #7619): {@link #isEmptyLogInMultiPeerCluster} is
+   * true only for a negative {@code commitIndex}, which the follower branch refuses anyway. A follower that is
+   * not receiving entries - empty log or not - is caught by the {@code behindLeaderCommit} input of the
+   * 12-argument overload, which is measured against the leader's commit index instead of this follower's own.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
@@ -3222,13 +3254,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code applyTransaction} failing.
    * <p>
    * Both are evaluated before every other gate, including {@code leaderPresent}/{@code localInConfig}: once
-   * the division is unhealthy or the node is halted, none of the other fields can be trusted either. This is
-   * the production entry point; {@link #isReadyForTraffic(long)} calls it directly.
+   * the division is unhealthy or the node is halted, none of the other fields can be trusted either. Forwards
+   * to the 12-argument overload with no leader commit index known ({@code behindLeaderCommit=false}).
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
       final boolean resyncInProgress, final boolean leaderReady, final boolean emptyLogInMultiPeerCluster,
       final boolean divisionLifecycleHealthy, final boolean haltedAfterCriticalError) {
+    return isReadyForTrafficState(leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries,
+        resyncInProgress, leaderReady, emptyLogInMultiPeerCluster, divisionLifecycleHealthy, haltedAfterCriticalError,
+        false);
+  }
+
+  /**
+   * Overload that closes the wedged-channel case of issue #7131 (issue #7619). The lag every overload above
+   * measures, {@code commitIndex - appliedIndex}, is between two indices local to this division, and Ratis clamps
+   * a follower's commit index to its own flush index. A follower whose inbound replication channel is wedged -
+   * heartbeats still arrive, so a leader is known and nothing is resyncing, but no entries do - therefore has
+   * {@code commitIndex == appliedIndex} and reports lag {@code 0} however far the leader has moved on.
+   * {@code behindLeaderCommit} is the same lag measured against the commit index the leader itself reports (see
+   * {@link #isBehindLeaderCommit}); when it exceeds {@code maxLagEntries} the follower is not Ready. Applies to
+   * followers only: the leader branch returns before it is evaluated. This is the production entry point;
+   * {@link #isReadyForTraffic(long)} calls it directly.
+   */
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
+      final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries,
+      final boolean resyncInProgress, final boolean leaderReady, final boolean emptyLogInMultiPeerCluster,
+      final boolean divisionLifecycleHealthy, final boolean haltedAfterCriticalError,
+      final boolean behindLeaderCommit) {
     if (!divisionLifecycleHealthy)
       return false;
     if (haltedAfterCriticalError)
@@ -3243,8 +3296,226 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     if (commitIndex < 0 || appliedIndex < 0)
       return false;
+    if (behindLeaderCommit)
+      return false;
     final long lag = commitIndex - appliedIndex;
     return lag >= 0 && lag <= maxLagEntries;
+  }
+
+  /**
+   * Whether this follower's {@code appliedIndex} is more than {@code maxLagEntries} behind the commit index its
+   * leader last reported (issue #7619). {@code false} when no leader commit index is known yet
+   * ({@code leaderCommitIndex < 0}) - the gate then abstains and readiness falls back to the local lag, which is
+   * the behaviour before this gate existed - and when {@code appliedIndex} is negative, which the predicate
+   * refuses on its own. A leader figure below the applied index (a sample older than this follower's progress)
+   * is not a lag at all.
+   * <p>
+   * Package-private so the boundary can be exercised directly with raw indices.
+   */
+  static boolean isBehindLeaderCommit(final long leaderCommitIndex, final long appliedIndex,
+      final long maxLagEntries) {
+    if (leaderCommitIndex < 0 || appliedIndex < 0)
+      return false;
+    return leaderCommitIndex - appliedIndex > maxLagEntries;
+  }
+
+  /**
+   * The commit index this follower's leader last reported for itself, or {@code -1} when none has been learned
+   * (issue #7619). See {@link #refreshLeaderCommitIndex()}.
+   */
+  long getLeaderReportedCommitIndex() {
+    return leaderReportedCommitIndex;
+  }
+
+  /**
+   * Health-monitor hook (issue #7619): asks the current leader for its commit index, for the readiness gate in
+   * {@link #isReadyForTraffic(long)}. A follower cannot compute this itself - Ratis clamps its commit index to
+   * its own flush index, and every commit index a follower learns rides the same leader-to-follower appends
+   * whose absence is the thing to detect - so it has to come from the leader over a separate call.
+   * <p>
+   * Runs only where the answer is read: on a follower with a known leader, and only when
+   * {@code arcadedb.server.readinessRequiresHA} is on, since otherwise nothing consults it and a call to the
+   * leader on every tick would be pure cost. The value is replaced rather than maxed with the previous one: every
+   * sample is a commit index a leader really reported, so every sample is a safe lower bound, and replacing lets
+   * a node that outlived a wholesale reset of the cluster's Raft state forget a figure from the old log. A failed
+   * call keeps the previous value, which is still a lower bound.
+   * <p>
+   * The call runs on the health-monitor thread, so consecutive failures back off (skipping 1, 3, 7, then at most
+   * {@link #LEADER_COMMIT_PROBE_MAX_SKIP_TICKS} ticks between attempts) instead of adding the probe timeout to every
+   * tick while the leader stays unreachable; a success or a leader change re-arms it at once. The wedged channel
+   * this exists for is leader-to-follower, so the follower-to-leader call keeps succeeding there and never backs off.
+   * <p>
+   * Not the ReadIndex path {@link #fetchReadIndex} uses, although that also returns a leader's commit index: a
+   * ReadIndex makes the leader confirm its leadership with a heartbeat round to a majority, and it goes through the
+   * shared write client and its minute-long retry policy. This needs neither - any commit index a leader reports is
+   * a safe lower bound - so it uses the lighter group-info call on its own bounded client.
+   */
+  @Override
+  public void refreshLeaderCommitIndex() {
+    if (shutdownRequested || !configuration.getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA))
+      return;
+    final RaftServer server = raftServer;
+    if (server == null)
+      return;
+    final RaftPeer leaderPeer;
+    try {
+      final var division = server.getDivision(raftGroup.getGroupId());
+      final var info = division.getInfo();
+      if (info.isLeader())
+        return;
+      final RaftPeerId leaderId = info.getLeaderId();
+      final var conf = division.getRaftConf();
+      if (leaderId == null || conf == null)
+        return;
+      leaderPeer = findPeer(conf.getCurrentPeers(), leaderId);
+    } catch (final Exception e) {
+      // Same Ratis IllegalStateException window as isReadyForTraffic() (issue #5271): skip this tick.
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft state to probe the leader commit index", e);
+      return;
+    }
+    if (leaderPeer == null)
+      return;
+    if (!leaderPeer.getId().equals(leaderCommitProbeLastLeader)) {
+      // A new leader: whatever made the previous one unreachable says nothing about this one.
+      leaderCommitProbeLastLeader = leaderPeer.getId();
+      leaderCommitProbeFailures = 0;
+      leaderCommitProbeSkipTicks = 0;
+    }
+    if (leaderCommitProbeSkipTicks > 0) {
+      leaderCommitProbeSkipTicks--;
+      return;
+    }
+    final long reported = leaderCommitProber.commitIndexOf(leaderPeer);
+    if (reported >= 0) {
+      leaderReportedCommitIndex = reported;
+      leaderCommitProbeFailures = 0;
+    } else {
+      leaderCommitProbeFailures = Math.min(leaderCommitProbeFailures + 1, 30);
+      leaderCommitProbeSkipTicks = leaderCommitProbeSkipTicksAfter(leaderCommitProbeFailures);
+    }
+  }
+
+  /** Upper bound of the probe's failure backoff, in health ticks (issue #7619, review of PR #8322). */
+  static final int LEADER_COMMIT_PROBE_MAX_SKIP_TICKS = 8;
+
+  /** Ticks to skip after {@code failures} consecutive failed probes: 1, 3, 7, then {@link #LEADER_COMMIT_PROBE_MAX_SKIP_TICKS}. */
+  static int leaderCommitProbeSkipTicksAfter(final int failures) {
+    if (failures <= 0)
+      return 0;
+    return (int) Math.min(LEADER_COMMIT_PROBE_MAX_SKIP_TICKS, (1L << Math.min(failures, 4)) - 1);
+  }
+
+  /**
+   * The production {@link LeaderCommitProber}: a Ratis group-info call to {@code leader}, whose reply carries the
+   * leader's commit index for itself among its commit infos. Bounded by {@link #LEADER_COMMIT_PROBE_TIMEOUT_MS}
+   * with no retry, because it runs on the health-monitor thread and the next tick is the retry. Returns
+   * {@code -1} on any failure, after dropping the client so the next tick dials a fresh channel.
+   */
+  private long queryLeaderCommitIndex(final RaftPeer leader) {
+    if (leaderCommitProbeClosed)
+      return -1L;
+    RaftClient client = leaderCommitProbeClient.get();
+    try {
+      if (client == null || !leader.equals(leaderCommitProbeTarget)) {
+        closeProbeClient(leaderCommitProbeClient.getAndSet(null));
+        client = newLeaderCommitProbeClient(leader);
+        if (client == null)
+          return -1L;
+        leaderCommitProbeTarget = leader;
+        leaderCommitProbeClient.set(client);
+        if (leaderCommitProbeClosed) {
+          // stop() ran while this client was being built: it may have found the reference still empty.
+          closeProbeClient(leaderCommitProbeClient.getAndSet(null));
+          return -1L;
+        }
+      }
+      final var reply = client.getGroupManagementApi(leader.getId()).info(raftGroup.getGroupId());
+      if (reply == null || !reply.isSuccess())
+        return -1L;
+      final long reported = reportedCommitIndexOf(reply.getCommitInfos(), leader.getId());
+      return reported == NO_COMMIT_INFO ? -1L : reported;
+    } catch (final Exception e) {
+      if (!leaderCommitProbeClosed)
+        LogManager.instance().log(this, Level.FINE, "Cannot read the commit index of leader %s", e, leader.getId());
+      if (client != null && leaderCommitProbeClient.compareAndSet(client, null))
+        closeProbeClient(client);
+      return -1L;
+    }
+  }
+
+  /** Per-call bound of the leader commit-index probe (issue #7619). Well under the default health interval. */
+  static final long LEADER_COMMIT_PROBE_TIMEOUT_MS = 2_000L;
+
+  private RaftClient newLeaderCommitProbeClient(final RaftPeer leader) {
+    final RaftProperties shared = raftProperties;
+    if (shared == null)
+      return null;
+    // A copy, for the same reason as newMembershipClient(): the shared properties belong to the Raft server.
+    final RaftProperties properties = new RaftProperties(shared);
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties,
+        TimeDuration.valueOf(LEADER_COMMIT_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+    return RaftClient.newBuilder()
+        .setRaftGroup(RaftGroup.valueOf(raftGroup.getGroupId(), leader))
+        .setProperties(properties)
+        .setParameters(raftParameters)
+        .setRetryPolicy(RetryPolicies.noRetry())
+        .build();
+  }
+
+  /** Called from {@link #stop()}; never blocks on an in-flight probe, whose RPC closing the client fails at once. */
+  private void closeLeaderCommitProbeClient() {
+    leaderCommitProbeClosed = true;
+    closeProbeClient(leaderCommitProbeClient.getAndSet(null));
+  }
+
+  private void closeProbeClient(final RaftClient client) {
+    if (client != null)
+      try {
+        client.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Error closing the leader commit-index probe client", e);
+      }
+  }
+
+  /** What {@link #reportedCommitIndexOf} answers when the commit infos carry no entry for the server asked about. */
+  static final long NO_COMMIT_INFO = Long.MIN_VALUE;
+
+  /**
+   * The commit index {@code serverId} reported in a Ratis reply's commit infos, or {@link #NO_COMMIT_INFO} when
+   * they carry none for it. Shared by the ReadIndex path ({@link #extractLeaderCommitIndex}) and the readiness
+   * probe of issue #7619. Package-private so the lookup can be tested without a Ratis server.
+   */
+  static long reportedCommitIndexOf(final Collection<RaftProtos.CommitInfoProto> commitInfos,
+      final RaftPeerId serverId) {
+    if (commitInfos == null || serverId == null)
+      return NO_COMMIT_INFO;
+    final ByteString id = serverId.toByteString();
+    for (final RaftProtos.CommitInfoProto info : commitInfos)
+      if (info.hasServer() && id.equals(info.getServer().getId()))
+        return info.getCommitIndex();
+    return NO_COMMIT_INFO;
+  }
+
+  /** The member of {@code peers} whose id is {@code peerId}, or {@code null}. */
+  private static RaftPeer findPeer(final Collection<RaftPeer> peers, final RaftPeerId peerId) {
+    for (final RaftPeer peer : peers)
+      if (peer.getId().equals(peerId))
+        return peer;
+    return null;
+  }
+
+  /**
+   * How {@link #refreshLeaderCommitIndex()} asks a leader for its commit index (issue #7619): a seam so a unit
+   * test can stand in for a leader that has committed entries this follower never received.
+   */
+  @FunctionalInterface
+  interface LeaderCommitProber {
+    /** The leader's commit index for itself, or a negative value when it could not be read. */
+    long commitIndexOf(RaftPeer leader);
+  }
+
+  void setLeaderCommitProber(final LeaderCommitProber prober) {
+    this.leaderCommitProber = prober;
   }
 
   /** True when {@code peerId} is a member of the given Raft peer set (the current configuration). */
@@ -3961,14 +4232,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    *                              re-introduce the stale-read bug).
    */
   private long extractLeaderCommitIndex(final RaftClientReply reply) {
-    final RaftPeerId replyServerId = reply.getServerId();
-    if (replyServerId != null && reply.getCommitInfos() != null) {
-      final var serverIdBytes = replyServerId.toByteString();
-      for (final RaftProtos.CommitInfoProto info : reply.getCommitInfos()) {
-        if (info.hasServer() && serverIdBytes.equals(info.getServer().getId()))
-          return info.getCommitIndex();
-      }
-    }
+    final long commitIndex = reportedCommitIndexOf(reply.getCommitInfos(), reply.getServerId());
+    if (commitIndex != NO_COMMIT_INFO)
+      return commitIndex;
     // The read succeeded but the leader's commit index is missing from the reply. We cannot
     // prove linearizability, so fail loudly rather than serve a possibly-stale read.
     throw new ReplicationException(

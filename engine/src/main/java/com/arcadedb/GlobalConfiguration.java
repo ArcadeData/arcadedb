@@ -1457,7 +1457,7 @@ public enum GlobalConfiguration {
       Boolean.class, false),
 
   SERVER_READINESS_HA_MAX_LAG("arcadedb.server.readinessHAMaxLag", SCOPE.SERVER,
-      "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
+      "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. The lag is checked against both the follower's own commit index and the one its leader reports (read by the health monitor every arcadedb.ha.healthCheckInterval), so a follower whose replication channel is wedged is not reported as caught up. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
       Long.class, 100L),
 
   // The console formatter is chosen once, on the first log record the JVM emits, which is almost always before a
