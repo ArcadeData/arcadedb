@@ -279,7 +279,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = raftHAServer.getTransactionBroker()
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityUsers(usersJsonArray, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
@@ -312,7 +312,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = raftHAServer.getTransactionBroker()
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityGroups(groupsJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
@@ -344,7 +344,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = raftHAServer.getTransactionBroker()
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityApiTokens(apiTokensJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;

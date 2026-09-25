@@ -768,7 +768,8 @@ class BootstrapElection {
           "Bootstrap source for '%s': peer=%s, lastTxId=%d, fingerprint=%s",
           dbName, local.peerId, local.lastTxId, abbreviate(local.fingerprint));
       try {
-        haServer.getTransactionBroker().replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
+        RaftHAServer.requireTransactionBroker(haServer)
+            .replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
         anyCommitted = true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,

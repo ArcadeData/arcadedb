@@ -130,6 +130,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
@@ -2755,7 +2756,46 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Invalid characters used in database name '" + name + "'");
   }
 
+  /**
+   * #8356: a graceful shutdown can reach this from two independent JVM shutdown hooks at once
+   * (DatabaseFactory's registry sweep and the embedding ArcadeDBServer's own hook), and the {@code isOpen()}
+   * check the caller does beforehand is not atomic with this call. The previous guard - the {@code open} flag
+   * checked inside {@code closeDurableParts}'s write lock - only covered that one lambda; the async drain and
+   * the per-index teardown that run before it were unguarded, so two threads both running them was silent
+   * double work, and (per the reports behind this issue) the two could still end up racing inside the
+   * write-locked section itself. The CAS below makes the teardown run AT MOST ONCE: a losing thread waits for
+   * the winner instead of repeating (or interleaving with) any part of it, which is the "one shutdown path
+   * owns the closing" behaviour the class Javadoc already promised but this method did not yet provide.
+   * <p>
+   * The winner's {@code drop} flag decides for both: a {@code close()} racing a {@code drop()} keeps or deletes the
+   * files according to whichever took the CAS, and the loser's intent is discarded (as the old {@code open} check did).
+   */
+  private final AtomicBoolean   closing      = new AtomicBoolean(false);
+  private final CountDownLatch  closedSignal = new CountDownLatch(1);
+
+  /**
+   * Test-only hook (issue #8356): when set, invoked on the winning thread right after it takes ownership of
+   * {@link #closing} and before any teardown work runs, so a test can deterministically drive a second,
+   * concurrent {@code close()} call while the first is confirmed to be in progress.
+   */
+  static volatile Runnable TEST_CLOSE_HOOK = null;
+
   private void closeInternal(final boolean drop) {
+    if (!closing.compareAndSet(false, true)) {
+      // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
+      // THAN RUNNING closeSteps() A SECOND TIME CONCURRENTLY, THEN RETURN - THIS CALL IS A NO-OP.
+      try {
+        closedSignal.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return;
+    }
+
+    final Runnable testHook = TEST_CLOSE_HOOK;
+    if (testHook != null)
+      testHook.run();
+
     // #7458: a point-in-time snapshot window (a backup) reads this database's files without holding its lock, so
     // the close waits for the open windows to be released BEFORE tearing anything down - the database keeps serving
     // in the meantime - and marks itself so no new window opens on it. The mark is lifted at the end whatever
@@ -2766,6 +2806,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       closeSteps(drop);
     } finally {
       PageManager.INSTANCE.endDatabaseClose(this);
+      closedSignal.countDown();
     }
   }
 
