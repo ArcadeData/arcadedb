@@ -42,6 +42,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.traverser.TraverserRequirement;
+import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -164,12 +166,23 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
               }
 
             final Step replaceWith;
+            // #8258: true only for the count rewrite, which is a REDUCING BARRIER - real TinkerPop's own
+            // CountGlobalStep does not carry a label from before it forward either (confirmed empirically:
+            // the unoptimized g.V().as('v').hasLabel(X).count().select('v') throws NoSuchElementException,
+            // it does not return the vertex). So a label on the GraphStep/HasStep this rewrite also removes
+            // must NOT be copied onto ArcadeCountGlobalStep - only the count's OWN label (from countStep,
+            // handled below) may survive, since that one names the traverser the count itself produces.
+            boolean isCountRewrite = false;
             if (chosenIndex == null) {
               if (((HasStep<?>) step).getHasContainers().isEmpty() &&
                   i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
+                // #8258: keep a handle on the CountGlobalStep so its own label (if any) survives the rewrite below
+                final Step countStep = steps.get(i + 1);
                 traversal.removeStep(i - 1);
                 traversal.removeStep(i - 1);
+                isCountRewrite = true;
                 replaceWith = new ArcadeCountGlobalStep(step.getTraversal(), prevStepGraph.getReturnClass(), typeNameToMatch);
+                TraversalHelper.copyLabels(countStep, replaceWith, false);
               } else
                 replaceWith = new ArcadeFilterByTypeStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
                     prevStepGraph.isStartStep(), typeNameToMatch);
@@ -181,6 +194,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                   typeNameToMatch);
 
             if (replaceWith != null) {
+              // #8258: a label on the GraphStep being replaced must survive on the new step, otherwise
+              // select()/path()/where() naming it later finds nothing - except for the count rewrite, see above
+              if (!isCountRewrite)
+                TraversalHelper.copyLabels(prevStepGraph, replaceWith, false);
               //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
               traversal.removeStep(i - 1);
               traversal.addStep(i - 1, replaceWith);
@@ -223,6 +240,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         if (provider != null) {
           final ArcadeGAVVertexStep gavStep = new ArcadeGAVVertexStep(
               graph, vertexStep, provider, vertexStep.getDirection(), edgeLabels);
+          TraversalHelper.copyLabels(vertexStep, gavStep, false);
           traversal.removeStep(i);
           traversal.addStep(i, gavStep);
         }
@@ -245,14 +263,30 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         }
 
         if (chain.size() >= 2) {
-          // Fuse the chain into a single step
-          final ArcadeGAVFusedStep fusedStep = new ArcadeGAVFusedStep(
-              traversal, graph, firstGavStep.getProvider(), chain);
-          // Remove all steps in the chain (backwards to preserve indices)
-          for (int k = j - 1; k >= i; k--)
-            traversal.removeStep(k);
-          traversal.addStep(i, fusedStep);
-          // Don't increment i — check if next step is also fusible (it won't be, but safe)
+          // #8258: the fused step emits only the traverser at the END of the chain, so it cannot honour a
+          // label attached to an intermediate hop (select()/path()/where() naming it would find nothing), nor
+          // can it feed a traversal that needs the whole path (an explicit path()/simplePath()/cyclicPath()).
+          // The last hop's label is safe: it names exactly the traverser the fused step produces. The path
+          // requirement is the ROOT traversal's: a child traversal (local(), repeat(), ...) runs on traversers the
+          // root's generator creates, so a path() on the root needs every hop of a chain inside the child too, and the
+          // child's own requirements do not list it.
+          boolean canFuse = !TraversalHelper.getRootTraversal(traversal).getTraverserRequirements()
+              .contains(TraverserRequirement.PATH);
+          for (int k = 0; canFuse && k < chain.size() - 1; k++)
+            if (!chain.get(k).getLabels().isEmpty())
+              canFuse = false;
+
+          if (canFuse) {
+            // Fuse the chain into a single step
+            final ArcadeGAVFusedStep fusedStep = new ArcadeGAVFusedStep(
+                traversal, graph, firstGavStep.getProvider(), chain);
+            TraversalHelper.copyLabels(chain.get(chain.size() - 1), fusedStep, false);
+            // Remove all steps in the chain (backwards to preserve indices)
+            for (int k = j - 1; k >= i; k--)
+              traversal.removeStep(k);
+            traversal.addStep(i, fusedStep);
+            // Don't increment i — check if next step is also fusible (it won't be, but safe)
+          }
         }
       }
       i++;
@@ -315,6 +349,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       // Replace the where/filter step with our O(1) degree check
       final ArcadeEdgeCountFilterStep filterStep = new ArcadeEdgeCountFilterStep(
           traversal, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
+      TraversalHelper.copyLabels(step, filterStep, false);
       traversal.removeStep(i);
       traversal.addStep(i, filterStep);
     }
