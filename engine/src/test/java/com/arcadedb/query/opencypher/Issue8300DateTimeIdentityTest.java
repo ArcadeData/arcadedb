@@ -20,12 +20,14 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.util.Date;
 import java.util.List;
@@ -83,6 +85,31 @@ class Issue8300DateTimeIdentityTest extends TestHelper {
     assertThat(single("RETURN datetime('2026-01-01T12:30:00+01:00') > " + Y + " AS v")).isEqualTo(true);
     assertThat(single("RETURN datetime('2026-01-01T11:30:00+01:00') < " + Y + " AS v")).isEqualTo(true);
     assertThat(single("RETURN " + X + " >= " + Y + " AND " + X + " <= datetime('2026-01-01T11:00:01Z') AS v")).isEqualTo(true);
+  }
+
+  /**
+   * compareTo is a total order across DateTime and LocalDateTime too (a LocalDateTime is read as UTC and sorts first at
+   * the same instant), so ORDER BY over a mixed list is consistent, while = keeps comparing the two types by instant.
+   */
+  @Test
+  void localAndZonedDateTimesAtOneInstant() {
+    final CypherDateTime x = CypherDateTime.parse("2026-01-01T12:00:00+01:00");
+    final CypherDateTime y = CypherDateTime.parse("2026-01-01T11:00:00Z");
+    final CypherLocalDateTime local = new CypherLocalDateTime(LocalDateTime.of(2026, 1, 1, 11, 0));
+    assertThat(local.compareTo(x)).isNegative();
+    assertThat(local.compareTo(y)).isNegative();
+    assertThat(x.compareTo(local)).isPositive();
+    assertThat(y.compareTo(local)).isPositive();
+
+    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + Y + " AS v")).isEqualTo(true);
+    assertThat(single("RETURN localdatetime('2026-01-01T11:00:00') = " + X + " AS v")).isEqualTo(true);
+
+    try (final ResultSet rs = database.query("opencypher",
+        "UNWIND [" + X + ", localdatetime('2026-01-01T11:00:00'), " + Y + ", localdatetime('2026-01-01T10:59:00')] AS d "
+            + "RETURN toString(d) AS s ORDER BY d")) {
+      assertThat(rs.stream().map(r -> (String) r.getProperty("s")).toList())
+          .containsExactly("2026-01-01T10:59", "2026-01-01T11:00", "2026-01-01T11:00Z", "2026-01-01T12:00+01:00");
+    }
   }
 
   /**

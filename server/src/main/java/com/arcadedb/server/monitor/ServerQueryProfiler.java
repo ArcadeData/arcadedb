@@ -214,7 +214,8 @@ public class ServerQueryProfiler {
     if (files == null)
       return result;
 
-    Arrays.sort(files, Comparator.comparing(File::getName).reversed());
+    // Newest first by modification time, for the reason cleanOldFiles gives
+    Arrays.sort(files, Comparator.comparingLong(File::lastModified).thenComparing(File::getName).reversed());
 
     for (final File f : files) {
       final JSONObject entry = new JSONObject();
@@ -532,12 +533,15 @@ public class ServerQueryProfiler {
     }
   }
 
-  private void cleanOldFiles(final File dir) {
+  static void cleanOldFiles(final File dir) {
     final File[] files = dir.listFiles(f -> f.getName().startsWith("profiler-run-") && f.getName().endsWith(".json"));
     if (files == null || files.length <= MAX_PROFILER_FILES)
       return;
 
-    Arrays.sort(files, Comparator.comparing(File::getName));
+    // Oldest first by modification time, not by name: a name's timestamp was formatted with the default locale's
+    // calendar and digits before issue #8301, so a Buddhist-year or Arabic-Indic-digit name sorts after every newer
+    // one and name order would delete the newest runs while keeping those forever.
+    Arrays.sort(files, Comparator.comparingLong(File::lastModified).thenComparing(File::getName));
     final int toDelete = files.length - MAX_PROFILER_FILES;
     for (int i = 0; i < toDelete; i++)
       files[i].delete();

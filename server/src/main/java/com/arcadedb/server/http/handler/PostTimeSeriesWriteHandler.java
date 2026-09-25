@@ -35,6 +35,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.logging.Level;
@@ -83,6 +84,7 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
+  private static final int MAX_REPORTED_MALFORMED_LINES = 100;
 
   public PostTimeSeriesWriteHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -194,49 +196,56 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     if (rawPayload == null || rawPayload.isBlank())
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
-    // Parse line protocol
-    final List<Sample> samples = LineProtocolParser.parse(rawPayload, precision);
-    if (samples.isEmpty())
+    // Parse line protocol. A malformed line is not ingested and is reported below with the write-time drops, so the
+    // client is not answered 204 for a line it believes was stored (issue #8302).
+    final List<Integer> malformedLines = new ArrayList<>();
+    final List<Sample> samples = LineProtocolParser.parse(rawPayload, precision, malformedLines);
+    if (samples.isEmpty() && malformedLines.isEmpty())
       return new ExecutionResponse(204, "");
 
     // NOTE: this call does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own
     // begin/commit, so every measurement the gateway appends has already committed its shard writes by the
     // time it returns. If a later measurement throws, nothing can undo the measurements already written -
     // the same partial-write shape the 400 response below reports, now at measurement granularity.
-    final WriteReport report = TimeSeriesGateway.write(database, samples);
+    final WriteReport report = samples.isEmpty() ? null : TimeSeriesGateway.write(database, samples);
 
-    if (!report.unknownTypes().isEmpty())
+    if (report != null && !report.unknownTypes().isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for unknown timeseries type(s): %s", null, report.unknownTypes());
 
-    if (!report.nonTimeSeriesTypes().isEmpty())
+    if (report != null && !report.nonTimeSeriesTypes().isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for non-timeseries type(s): %s", null, report.nonTimeSeriesTypes());
 
-    if (!report.unavailableTypes().isEmpty())
+    if (report != null && !report.unavailableTypes().isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "Skipped line protocol samples for TimeSeries type(s) with no storage engine available: %s", null,
           report.unavailableTypes());
 
-    // Any dropped sample is a partial write: matching InfluxDB, return 400 naming the dropped
-    // measurements (with written/dropped counts) even when some samples were inserted, so the client
-    // is not told 204 "all good" while data was silently discarded (issue #5036). The samples that did
-    // insert are already committed - this is a partial-write signal, not a full rollback.
-    // `dropped` counts individual samples, consistent with `written`; every parsed sample is either
-    // inserted or skipped into one of the drop sets.
-    if (!report.isComplete()) {
+    // Any dropped sample or line is a partial write: matching InfluxDB, return 400 naming the dropped
+    // measurements and the lines that could not be parsed (with written/dropped counts) even when some samples
+    // were inserted, so the client is not told 204 "all good" while data was silently discarded (issues #5036,
+    // #8302). The samples that did insert are already committed - this is a partial-write signal, not a full
+    // rollback. `dropped` counts individual samples plus malformed lines (one sample each), consistent with
+    // `written`.
+    if (!malformedLines.isEmpty() || !report.isComplete()) {
       final StringBuilder msg = new StringBuilder("partial write: ");
-      if (!report.unknownTypes().isEmpty())
+      if (!malformedLines.isEmpty())
+        msg.append("unable to parse ").append(malformedLines.size()).append(" line(s) (see malformedLines).");
+      if (report != null && !report.unknownTypes().isEmpty()) {
+        if (!malformedLines.isEmpty())
+          msg.append(" ");
         msg.append("unknown timeseries type(s): ").append(String.join(", ", report.unknownTypes()))
             .append(" (create the type first with CREATE TIMESERIES TYPE).");
-      if (!report.nonTimeSeriesTypes().isEmpty()) {
-        if (!report.unknownTypes().isEmpty())
+      }
+      if (report != null && !report.nonTimeSeriesTypes().isEmpty()) {
+        if (!malformedLines.isEmpty() || !report.unknownTypes().isEmpty())
           msg.append(" ");
         msg.append("non-timeseries type(s): ").append(String.join(", ", report.nonTimeSeriesTypes()))
             .append(" (only TIMESERIES types can receive line protocol data).");
       }
-      if (!report.unavailableTypes().isEmpty()) {
-        if (!report.unknownTypes().isEmpty() || !report.nonTimeSeriesTypes().isEmpty())
+      if (report != null && !report.unavailableTypes().isEmpty()) {
+        if (!malformedLines.isEmpty() || !report.unknownTypes().isEmpty() || !report.nonTimeSeriesTypes().isEmpty())
           msg.append(" ");
         msg.append("TimeSeries type(s) with no storage engine available: ")
             .append(String.join(", ", report.unavailableTypes()))
@@ -248,13 +257,16 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
       final String correlationId = getCorrelationId(exchange);
       if (correlationId != null && !correlationId.isEmpty())
         error.put("requestId", correlationId);
-      error.put("written", report.written());
-      error.put("dropped", report.dropped());
-      if (!report.unknownTypes().isEmpty())
+      error.put("written", report != null ? report.written() : 0);
+      error.put("dropped", (report != null ? report.dropped() : 0) + malformedLines.size());
+      if (!malformedLines.isEmpty())
+        // Bounded: the line numbers are for locating the problem, the count above is the whole of it
+        error.put("malformedLines", new JSONArray(malformedLines.subList(0, Math.min(malformedLines.size(), MAX_REPORTED_MALFORMED_LINES))));
+      if (report != null && !report.unknownTypes().isEmpty())
         error.put("unknownTypes", new JSONArray(report.unknownTypes()));
-      if (!report.nonTimeSeriesTypes().isEmpty())
+      if (report != null && !report.nonTimeSeriesTypes().isEmpty())
         error.put("nonTimeSeriesTypes", new JSONArray(report.nonTimeSeriesTypes()));
-      if (!report.unavailableTypes().isEmpty())
+      if (report != null && !report.unavailableTypes().isEmpty())
         error.put("unavailableTypes", new JSONArray(report.unavailableTypes()));
       return new ExecutionResponse(400, error.toString());
     }
