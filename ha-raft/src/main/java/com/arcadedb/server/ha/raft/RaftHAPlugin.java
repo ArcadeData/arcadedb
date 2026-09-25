@@ -385,9 +385,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * forward, the gRPC admin RPCs refuse off-leader, and openCypher {@code CREATE USER} / {@code ALTER USER} /
    * {@code DROP USER} reach {@code SecurityManager} only after {@code RaftReplicatedDatabase.command} has forwarded
    * the non-idempotent statement. A submission can still be decided off the leader - when leadership moves between
-   * the forward and the submit, or from host code (a JavaScript/Java trigger or function) that reaches
-   * {@code SecurityManager} on a follower (issue #8370) - which is why this is still the ask-now variant and not
-   * the cache.
+   * the forward and the submit, or from host code (a JavaScript/Java trigger or function) calling a public
+   * {@code ServerSecurity} cluster-wide mutator directly on a follower (issue #8405; the {@code SecurityManager}
+   * entry points refuse off-leader since issue #8370) - which is why this is still the ask-now variant and not the
+   * cache.
    * <p>
    * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
    * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
