@@ -7067,7 +7067,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
         int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults && overlay != null) {
-          availableVectors = Math.min(ordinalMap.length, vectorIndex().size() - countSupersededLive(overlay));
+          // Counting stops at the rows the answer is short of: past that the netted budget can no longer exceed it
+          final int live = vectorIndex().size();
+          availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
           expectedResults = Math.min(k, availableVectors);
         }
         if (results.size() < expectedResults) {
@@ -8213,11 +8215,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * How many live vectors of the committed index the calling transaction supersedes (issue #8057): the rows
    * {@code vectorIndex().size()} still counts that no search inside the transaction may return. A superseded RID the
    * committed index does not hold - a row inserted and removed by the same transaction - contributes nothing.
+   * <p>
+   * Stops once {@code cap} is reached: the only question the caller asks is whether the answer is still short once they
+   * are netted out, and that is settled as soon as the count reaches the gap. A transaction that superseded many rows
+   * therefore pays for at most the gap per short search, not for its whole write set.
    */
-  private int countSupersededLive(final TransactionVectorOverlay overlay) {
+  private int countSupersededLive(final TransactionVectorOverlay overlay, final int cap) {
     int count = 0;
-    for (final RID rid : overlay.supersededRIDs())
+    for (final RID rid : overlay.supersededRIDs()) {
+      if (count >= cap)
+        break;
       count += vectorIndex().getVectorIdsForRid(rid).length;
+    }
     return count;
   }
 
