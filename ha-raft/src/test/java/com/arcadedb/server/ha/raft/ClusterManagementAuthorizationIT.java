@@ -26,8 +26,10 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Regression test for issue #4791: the five cluster-management HTTP endpoints must require the
@@ -50,6 +52,10 @@ class ClusterManagementAuthorizationIT extends BaseRaftHATest {
     // A non-root user that is otherwise a database admin: this is the privilege-escalation scenario.
     // On the leader: the SecurityManager user mutators refuse off-leader on an HA cluster (issue #8370).
     getServer(findLeaderIndex()).getSecurity().createUser(TENANT_USER, TENANT_PASSWORD);
+    // Server 0 may be a follower whose apply lags the leader's return: without this wait a request could be rejected
+    // for unknown credentials instead of reaching the root check, and the 403 below would pass for the wrong reason.
+    await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
+        .until(() -> getServer(0).getSecurity().existsUser(TENANT_USER));
 
     // Every cluster-management endpoint must reject the non-root tenant with 403. Because the root
     // check runs first, none of these calls mutates the cluster, so the order here is irrelevant.
