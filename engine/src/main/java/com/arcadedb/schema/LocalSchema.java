@@ -3915,6 +3915,52 @@ public class LocalSchema implements Schema {
     return this;
   }
 
+  /**
+   * Adds a user-defined function to the library {@code libraryName}: the schema change behind {@code DEFINE FUNCTION}.
+   * When the schema has no such library yet, {@code newLibrary} is registered under that name - AFTER the function was
+   * accepted into it, so a definition the library rejects (a polyglot body that does not compile) leaves no empty
+   * library behind to be persisted. A library that appeared in the meantime is used instead of {@code newLibrary}.
+   * <p>
+   * Runs inside a schema recording session (issue #8404), so the change is persisted to {@code schema.json} and,
+   * under HA, proposed to the followers as a {@code SCHEMA_ENTRY} like any other DDL. A bare
+   * {@link #saveConfiguration()} did the former and not the latter, and the function existed on one node only.
+   *
+   * @param libraryName name of the library that receives the function
+   * @param newLibrary  library to register under {@code libraryName} if the schema has none, or {@code null} when the
+   *                    caller found one
+   * @param function    the function to add
+   */
+  public void defineFunction(final String libraryName, final FunctionLibraryDefinition newLibrary,
+      final FunctionDefinition function) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    recordFileChanges(() -> {
+      final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
+      if (existing != null)
+        existing.registerFunction(function);
+      else {
+        if (newLibrary == null)
+          throw new IllegalArgumentException("Function library '" + libraryName + "' not defined");
+        newLibrary.registerFunction(function);
+        functionLibraries.put(libraryName, newLibrary);
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Removes a user-defined function from its library: the schema change behind {@code DELETE FUNCTION}. Runs inside a
+   * schema recording session for the reason {@link #defineFunction} does (issue #8404).
+   *
+   * @throws IllegalArgumentException if the library is not defined
+   */
+  public void deleteFunction(final String libraryName, final String functionName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    recordFileChanges(() -> {
+      getFunctionLibrary(libraryName).unregisterFunction(functionName);
+      return null;
+    });
+  }
+
   @Override
   public Iterable<FunctionLibraryDefinition> getFunctionLibraries() {
     return functionLibraries.values();
