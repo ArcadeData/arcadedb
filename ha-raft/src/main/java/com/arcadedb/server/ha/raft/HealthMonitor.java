@@ -149,6 +149,16 @@ public final class HealthMonitor {
      */
     default void verifyBootstrapDivergence() {
     }
+
+    /**
+     * Asks the current leader for its own commit index and remembers it for the readiness probe (issue #7619).
+     * A follower's local commit index is clamped by Ratis to its own flush index, so a follower that stopped
+     * receiving appends reports a local lag of {@code 0} however far the leader has moved on; only a figure
+     * that comes from the leader can show it. No-op on the leader, when no leader is known, and when the
+     * readiness probe does not consult HA state. Implementations bound the call and never propagate.
+     */
+    default void refreshLeaderCommitIndex() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -320,6 +330,12 @@ public final class HealthMonitor {
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
     checkStuckFollower();
+    // Also invisible to every follower-local check: a follower whose inbound replication channel is wedged has
+    // commit == applied locally and looks caught up (issue #7619). Only the leader's commit index shows the gap.
+    // LAST, because it is the one step that dials another node (bounded by its own short timeout): a slow or
+    // unreachable leader then delays nothing else in this tick. The early returns above skip it, and lose
+    // nothing by doing so - a CLOSED/EXCEPTION division or a failed log writer is already not Ready on its own.
+    target.refreshLeaderCommitIndex();
   }
 
   /**
