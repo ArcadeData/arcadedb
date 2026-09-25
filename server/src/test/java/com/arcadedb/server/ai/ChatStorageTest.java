@@ -35,13 +35,25 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ChatStorageTest {
   private static final String TEST_ROOT = "target/test-chat-storage";
+
+  // Issue #8340: whether two spellings are one directory is now asked of the filesystem. These two
+  // stand-ins answer as a case-insensitive (NTFS, default macOS APFS/HFS+) and a case-sensitive (ext4,
+  // XFS) filesystem would, so a test pins the answer it depends on instead of inheriting whatever the
+  // machine running it happens to do - CI is case-sensitive, a developer's Mac is not.
+  private static final BiPredicate<File, File> FOLDS_CASE        = (dir, other) -> dir.exists()
+      && dir.getParentFile().equals(other.getParentFile()) && dir.getName().equalsIgnoreCase(other.getName());
+  private static final BiPredicate<File, File> KEEPS_CASE_APART = (dir, other) -> false;
   private ChatStorage          chatStorage;
 
   @BeforeEach
@@ -289,10 +301,14 @@ class ChatStorageTest {
     final File legacyFile = new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json");
     FileUtils.writeFile(legacyFile, chat.toString());
 
-    final List<JSONObject> chats = chatStorage.listChats("legacyuser");
+    // No account list, so on a case-FOLDING filesystem an unseen "LegacyUser" could share the directory
+    // and the migration is refused (#8340); this test is about the ordinary migration, so it pins a
+    // filesystem that keeps spellings apart.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, null, KEEPS_CASE_APART);
+    final List<JSONObject> chats = storage.listChats("legacyuser");
 
     assertThat(chats).hasSize(1);
-    assertThat(chatStorage.getChat("legacyuser", chat.getString("id"))).isNotNull();
+    assertThat(storage.getChat("legacyuser", chat.getString("id"))).isNotNull();
     // The legacy directory itself must be gone: this user's data now lives only under the hash.
     assertThat(legacyDir).doesNotExist();
   }
@@ -463,13 +479,18 @@ class ChatStorageTest {
     final JSONObject chat = ChatStorage.createNewChat("db", "alice's pre-upgrade chat");
     FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
 
+    // Pinned to a filesystem whose sameDirectory probe keeps spellings apart, so that without an account
+    // list neither lookup is refused up front on a possible case-folded twin (#8340) and this test keeps
+    // reaching the guard it names: isSpelledExactlyOnDisk.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, null, KEEPS_CASE_APART);
+
     // "Alice" is a different user from "alice" and must not receive alice's history, however the
     // filesystem happens to compare the two names.
-    assertThat(chatStorage.listChats("Alice")).isEmpty();
+    assertThat(storage.listChats("Alice")).isEmpty();
     assertThat(Paths.get(TEST_ROOT, "chats", "alice").toFile().list()).hasSize(1);
 
     // ...while "alice" herself, whose spelling does match the entry on disk, still migrates.
-    assertThat(chatStorage.listChats("alice")).hasSize(1);
+    assertThat(storage.listChats("alice")).hasSize(1);
   }
 
   @Test
@@ -604,7 +625,8 @@ class ChatStorageTest {
     // class already special-cases (HASHED_DIR_NAME, isSpelledExactlyOnDisk), so "chats/John_Doe" and
     // "chats/john_doe" name the very same on-disk directory: only one of the two accounts could really
     // have owned it, and it cannot be told which from the file tree - the migration must be refused.
-    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("John_Doe", "john_doe"));
+    // Pinned to a case-folding filesystem: that is where the two spellings are one directory (#8340).
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("John_Doe", "john_doe"), FOLDS_CASE);
 
     final File legacyDir = Paths.get(TEST_ROOT, "chats", "john_doe").toFile();
     assertThat(legacyDir.mkdirs()).isTrue();
@@ -642,7 +664,10 @@ class ChatStorageTest {
     final JSONObject chat = ChatStorage.createNewChat("db", "Pre-upgrade chat");
     FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
 
-    assertThat(chatStorage.listChats(username)).hasSize(1);
+    // True of sanitizeFilename, and of the directory only where the filesystem keeps case apart: on a
+    // case-folding one "LegacyUser" names the same directory, which singleArgument...FoldsCase covers.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, null, KEEPS_CASE_APART);
+    assertThat(storage.listChats(username)).hasSize(1);
     assertThat(legacyDir).doesNotExist();
   }
 
@@ -652,11 +677,11 @@ class ChatStorageTest {
   // special-cases do, so "Alice" and "alice" are two accounts, two hashed directories - and ONE
   // legacy directory. The six tests below drive that collision through every public entry point.
   //
-  // They are deterministic on a case-SENSITIVE filesystem too, which is what CI runs on: the
-  // decision under test is made from the registered-account list before any filesystem comparison,
-  // so creating chats/Alice and looking up "Alice" reaches it either way. Before the fix, "Alice"
-  // passed the underscore gate untested, passed isSpelledExactlyOnDisk (the entry really is spelled
-  // "Alice"), and migrated the shared directory - "alice"'s chat included.
+  // Since #8340 the collision is only a collision where the filesystem folds case, so these tests pin
+  // one with FOLDS_CASE; that keeps them deterministic on the case-SENSITIVE filesystem CI runs on,
+  // where creating chats/Alice and looking up "Alice" still reaches the decision. Before #8154,
+  // "Alice" passed the underscore gate untested, passed isSpelledExactlyOnDisk (the entry really is
+  // spelled "Alice"), and migrated the shared directory - "alice"'s chat included.
   // ---------------------------------------------------------------------------------------------
 
   /**
@@ -674,7 +699,7 @@ class ChatStorageTest {
   }
 
   private static ChatStorage caseFoldedAccountsStorage() {
-    return new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"));
+    return new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"), FOLDS_CASE);
   }
 
   @Test
@@ -748,7 +773,7 @@ class ChatStorageTest {
     // exactly one account mapping onto chats/Alice, and the next lookup migrated it - "alice"'s chat
     // included. Same escalation-by-deletion as #8126's, reached through case folding instead.
     final AtomicReference<Set<String>> registeredAccounts = new AtomicReference<>(Set.of("Alice", "alice"));
-    final ChatStorage storage = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, registeredAccounts::get, FOLDS_CASE);
 
     final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
     final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
@@ -765,7 +790,7 @@ class ChatStorageTest {
     assertThat(legacyDir).exists();
 
     // ...and across a restart, since the record is a file rather than in-memory state.
-    final ChatStorage afterRestart = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+    final ChatStorage afterRestart = new ChatStorage(TEST_ROOT, registeredAccounts::get, FOLDS_CASE);
     assertThat(afterRestart.listChats("Alice")).isEmpty();
     assertThat(legacyDir).as("must not have been migrated, taking alice's chat with it").exists();
   }
@@ -788,4 +813,208 @@ class ChatStorageTest {
     assertThat(Paths.get(TEST_ROOT, "chats", ".bob.ambiguous-migration").toFile()).doesNotExist();
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Issue #8340 (#8183 + #8184): the case-folded half of the ambiguity guard is asked of the
+  // filesystem instead of assumed. On a filesystem that keeps "Alice" and "alice" apart they are two
+  // directories with one owner each and both migrate; where it folds them, the pair is still refused -
+  // and with no account list to consult, any name an unseen case-only twin could share is refused too.
+  // ---------------------------------------------------------------------------------------------
+
+  private static File seedLegacyDirectory(final String name, final JSONObject chat) throws Exception {
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", name).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+    return legacyDir;
+  }
+
+  /**
+   * Whether the filesystem under {@link #TEST_ROOT} compares names case-sensitively, asked the only
+   * reliable way: create one spelling and look for another.
+   */
+  private static boolean testRootIsCaseSensitive() {
+    final File probe = Paths.get(TEST_ROOT, "CaseProbe").toFile();
+    assertThat(probe.mkdirs()).isTrue();
+    try {
+      return !Paths.get(TEST_ROOT, "caseprobe").toFile().exists();
+    } finally {
+      FileUtils.deleteRecursively(probe);
+    }
+  }
+
+  @Test
+  void caseOnlyTwinsOnAFilesystemThatKeepsThemApartDoNotBlockEachOthersMigration() throws Exception {
+    // #8184, the reported regression. On ext4/XFS chats/Alice holds only Alice's chats however many
+    // case-spellings of her name are registered, and refusing it cost her history for a collision that
+    // does not exist on that volume.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"), KEEPS_CASE_APART);
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice's own chat");
+    final File legacyDir = seedLegacyDirectory("Alice", alices);
+
+    assertThat(storage.listChats("Alice")).extracting(c -> c.getString("title")).containsExactly("Alice's own chat");
+    assertThat(legacyDir).as("migrated under Alice's hash").doesNotExist();
+    assertThat(Paths.get(TEST_ROOT, "chats", ".Alice.ambiguous-migration").toFile()).as("no collision to record").doesNotExist();
+  }
+
+  @Test
+  void anExactSanitizeCollisionIsRefusedWithoutAskingTheFilesystem() throws Exception {
+    // #8184's first care point: "user@corp.com" and "user.corp.com" sanitize to ONE name, so there is
+    // only ever one directory and nothing for the filesystem to decide. A probe answering "apart" must
+    // not be able to re-admit it - and must not even be consulted.
+    final AtomicInteger probes = new AtomicInteger();
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("user@corp.com", "user.corp.com"), (dir, other) -> {
+      probes.incrementAndGet();
+      return false;
+    });
+    final JSONObject chat = ChatStorage.createNewChat("db", "Whose?");
+    final File legacyDir = seedLegacyDirectory(ChatStorage.sanitizeFilename("user@corp.com"), chat);
+
+    assertThat(storage.listChats("user@corp.com")).isEmpty();
+    assertThat(storage.listChats("user.corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ".user_corp_com.ambiguous-migration").toFile()).exists();
+    assertThat(probes.get()).as("an exact collision needs no filesystem answer").isZero();
+  }
+
+  @Test
+  void aCaseOnlyCollisionIsRefusedAndRecordedWhereTheFilesystemFoldsCase() throws Exception {
+    // The other side of the probe: where both spellings are one directory both accounts wrote into it,
+    // so the #8154 refusal and its marker still apply in full.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("Bob", "bob"), FOLDS_CASE);
+    final File legacyDir = seedLegacyDirectory("Bob", ChatStorage.createNewChat("db", "mixed"));
+
+    assertThat(storage.listChats("Bob")).isEmpty();
+    assertThat(legacyDir).exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ".Bob.ambiguous-migration").toFile()).exists();
+  }
+
+  @Test
+  void theMarkerOfACaseFoldedCollisionStillRefusesAfterTheTreeIsCopiedToACaseSensitiveVolume() throws Exception {
+    // #8184's second care point. The marker records that the directory's CONTENTS are mixed, which a
+    // copy onto ext4 does not undo. Here the tree as it arrives on the case-sensitive volume: one
+    // directory "alice" and its marker, spelled like it. The probe now says the spellings are apart, and
+    // the account list alone would call alice the sole owner - the marker is what keeps refusing.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"), KEEPS_CASE_APART);
+    final File legacyDir = seedLegacyDirectory("alice", ChatStorage.createNewChat("db", "Alice's and alice's, mixed"));
+    FileUtils.writeFile(Paths.get(TEST_ROOT, "chats", ".alice.ambiguous-migration").toFile(), "");
+
+    assertThat(storage.listChats("alice")).isEmpty();
+    assertThat(legacyDir).exists();
+  }
+
+  @Test
+  void spellingOnDiskPrefersTheExactEntryAndOtherwiseReportsTheCaseFoldedOne() throws Exception {
+    // The marker is named after this, so it has to name the directory as it is really spelled: that is
+    // the spelling a case-sensitive copy of the tree will be looked up by.
+    final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
+    assertThat(new File(chatsDir, "alice").mkdirs()).isTrue();
+
+    assertThat(ChatStorage.spellingOnDisk(new File(chatsDir, "alice"), "alice")).isEqualTo("alice");
+    assertThat(ChatStorage.spellingOnDisk(new File(chatsDir, "Alice"), "Alice")).isEqualTo("alice");
+    assertThat(ChatStorage.spellingOnDisk(new File(chatsDir, "bob"), "bob")).as("nothing on disk").isEqualTo("bob");
+    final File missingParent = Paths.get(TEST_ROOT, "chats", "nope", "deeper").toFile();
+    assertThat(ChatStorage.spellingOnDisk(missingParent, "deeper")).isEqualTo("deeper");
+  }
+
+  @Test
+  void theSingleArgumentConstructorRefusesAnUnderscoreFreeNameWhereTheFilesystemFoldsCase() throws Exception {
+    // #8183. With no account list, a case-folded twin cannot be SEEN - but whether one could share the
+    // directory is a question for the filesystem, and where it folds case the answer is yes, so the
+    // name is no longer claimed on the underscore test alone.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, null, FOLDS_CASE);
+    final File legacyDir = seedLegacyDirectory("legacyuser", ChatStorage.createNewChat("db", "maybe LegacyUser's too"));
+
+    assertThat(storage.listChats("legacyuser")).isEmpty();
+    assertThat(legacyDir).as("left intact").exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername("legacyuser")).toFile()).doesNotExist();
+  }
+
+  @Test
+  void everyUnknownAccountListStateRefusesAnUnderscoreFreeNameWhereTheFilesystemFoldsCase() throws Exception {
+    // UNKNOWN has three more ways in than a null supplier: it throws, it returns null, or it does not
+    // list the requesting user. Each must fall to the same filesystem-aware rule.
+    final List<ChatStorage> unknownStates = List.of(
+        new ChatStorage(TEST_ROOT, () -> {
+          throw new IllegalStateException("security not ready");
+        }, FOLDS_CASE),
+        new ChatStorage(TEST_ROOT, () -> null, FOLDS_CASE),
+        new ChatStorage(TEST_ROOT, () -> Set.of("root"), FOLDS_CASE));
+    final File legacyDir = seedLegacyDirectory("carol", ChatStorage.createNewChat("db", "maybe Carol's too"));
+
+    for (final ChatStorage storage : unknownStates) {
+      assertThat(storage.listChats("carol")).isEmpty();
+      assertThat(legacyDir).exists();
+    }
+  }
+
+  @Test
+  void withoutAccountsANameWithNoLetterIsStillClaimedEvenWhereTheFilesystemFoldsCase() throws Exception {
+    // The guard rail on #8183: a name with no letter has no other case spelling, so no twin can share it
+    // on any filesystem, and refusing it would orphan history for nothing.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, null, FOLDS_CASE);
+    final File legacyDir = seedLegacyDirectory("12345", ChatStorage.createNewChat("db", "digits only"));
+
+    assertThat(storage.listChats("12345")).hasSize(1);
+    assertThat(legacyDir).doesNotExist();
+  }
+
+  @Test
+  void flipAsciiCaseInvertsEveryLetterAndReportsANameWithoutOne() {
+    assertThat(ChatStorage.flipAsciiCase("John_Doe-42")).isEqualTo("jOHN_dOE-42");
+    assertThat(ChatStorage.flipAsciiCase("a")).isEqualTo("A");
+    assertThat(ChatStorage.flipAsciiCase("12_3-4")).isNull();
+  }
+
+  @Test
+  void resolvesToSameDirectoryIsFalseForAMissingOrDistinctDirectoryAndTrueForItself() {
+    final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
+    final File one = new File(chatsDir, "one");
+    final File two = new File(chatsDir, "two");
+    assertThat(one.mkdirs()).isTrue();
+    assertThat(two.mkdirs()).isTrue();
+
+    assertThat(ChatStorage.resolvesToSameDirectory(one, one)).isTrue();
+    assertThat(ChatStorage.resolvesToSameDirectory(one, two)).isFalse();
+    assertThat(ChatStorage.resolvesToSameDirectory(one, new File(chatsDir, "absent"))).isFalse();
+  }
+
+  @Test
+  void onARealCaseSensitiveFilesystemTwoCaseOnlyTwinsEachMigrateTheirOwnDirectory() throws Exception {
+    // End to end through the production probe, on the filesystem #8184 is about. Runs where TEST_ROOT
+    // is case-sensitive (CI); skipped elsewhere, where the two directories cannot both exist.
+    assumeTrue(testRootIsCaseSensitive(), "needs a case-sensitive filesystem");
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"));
+    final File upper = seedLegacyDirectory("Alice", ChatStorage.createNewChat("db", "Alice's"));
+    final File lower = seedLegacyDirectory("alice", ChatStorage.createNewChat("db", "alice's"));
+
+    assertThat(storage.listChats("Alice")).extracting(c -> c.getString("title")).containsExactly("Alice's");
+    assertThat(storage.listChats("alice")).extracting(c -> c.getString("title")).containsExactly("alice's");
+    assertThat(upper).doesNotExist();
+    assertThat(lower).doesNotExist();
+
+    // ...and the single-argument constructor still claims an underscore-free name there.
+    final File legacyDir = seedLegacyDirectory("dave", ChatStorage.createNewChat("db", "dave's"));
+    assertThat(new ChatStorage(TEST_ROOT).listChats("dave")).hasSize(1);
+    assertThat(legacyDir).doesNotExist();
+  }
+
+  @Test
+  void onARealCaseInsensitiveFilesystemCaseOnlyTwinsAndAnUnlistedNameAreRefused() throws Exception {
+    // End to end through the production probe where the filesystem folds case (NTFS, default macOS
+    // APFS/HFS+); skipped on CI's case-sensitive one, which the FOLDS_CASE tests stand in for.
+    assumeFalse(testRootIsCaseSensitive(), "needs a case-insensitive filesystem");
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"));
+    final File legacyDir = seedLegacyDirectory("alice", ChatStorage.createNewChat("db", "mixed"));
+
+    assertThat(storage.listChats("Alice")).isEmpty();
+    assertThat(storage.listChats("alice")).isEmpty();
+    assertThat(legacyDir).exists();
+    // Recorded under the directory's own spelling although "Alice" was looked up first.
+    assertThat(Paths.get(TEST_ROOT, "chats").toFile().list()).contains(".alice.ambiguous-migration")
+        .doesNotContain(".Alice.ambiguous-migration");
+
+    // #8183 on the real filesystem: no accounts, underscore-free name, refused.
+    final File other = seedLegacyDirectory("erin", ChatStorage.createNewChat("db", "maybe Erin's too"));
+    assertThat(new ChatStorage(TEST_ROOT).listChats("erin")).isEmpty();
+    assertThat(other).exists();
+  }
 }
