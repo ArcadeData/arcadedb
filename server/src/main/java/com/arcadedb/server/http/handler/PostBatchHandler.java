@@ -2041,13 +2041,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
       final HttpResponse<String> response = dial.client().send(request, HttpResponse.BodyHandlers.ofString());
 
-      // ExecutionResponse carries only status + body, so the leader's X-ArcadeDB-Commit-Index bookmark
-      // (issue #5862) has to be copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
+      // The leader's X-ArcadeDB-Commit-Index bookmark (issue #5862) is not on the relayed-header allow-list of
+      // LeaderCommandForwarder, so it is copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
       // landed on a follower would never see it despite the leader having just emitted it.
       response.headers().firstValue("X-ArcadeDB-Commit-Index")
           .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
 
-      return new ExecutionResponse(response.statusCode(), response.body());
+      // Retry-After and the other allow-listed headers ride on the relayed answer itself (issue #8343).
+      return LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);
@@ -2222,8 +2223,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       try (final InputStream in = leaderBody) {
         response.headers().firstValue("X-ArcadeDB-Commit-Index")
             .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
-        return new ExecutionResponse(response.statusCode(),
-            new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        return LeaderCommandForwarder.relayedResponse(response.statusCode(),
+            new String(in.readAllBytes(), StandardCharsets.UTF_8), response.headers());
       }
     }
 

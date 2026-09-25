@@ -19,7 +19,9 @@
 package com.arcadedb.server.http.handler;
 
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
 import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 
 import java.nio.ByteBuffer;
 
@@ -27,6 +29,12 @@ public class ExecutionResponse {
   private final int    code;
   private final String response;
   private final byte[] binary;
+  /**
+   * Response headers to send with this response, as name/value pairs, or null when there are none - which is what
+   * almost every response has, so the common case allocates nothing. Used to carry the headers a follower relays from
+   * the leader's answer to a forwarded request, such as {@code Retry-After} (issue #8343).
+   */
+  private String[]     headers;
 
   public ExecutionResponse(final int code, final String response) {
     this.code = code;
@@ -56,8 +64,48 @@ public class ExecutionResponse {
     return binary != null;
   }
 
+  /**
+   * Adds a header to send with this response. A second call with the same name replaces the first value.
+   *
+   * @return this response, for chaining
+   */
+  public ExecutionResponse setHeader(final String name, final String value) {
+    if (headers != null)
+      for (int i = 0; i < headers.length; i += 2)
+        if (headers[i].equalsIgnoreCase(name)) {
+          headers[i + 1] = value;
+          return this;
+        }
+
+    final int size = headers == null ? 0 : headers.length;
+    final String[] extended = new String[size + 2];
+    if (headers != null)
+      System.arraycopy(headers, 0, extended, 0, size);
+    extended[size] = name;
+    extended[size + 1] = value;
+    headers = extended;
+    return this;
+  }
+
+  /** The value of a header set with {@link #setHeader}, matched case-insensitively, or null. */
+  public String getHeader(final String name) {
+    if (headers != null)
+      for (int i = 0; i < headers.length; i += 2)
+        if (headers[i].equalsIgnoreCase(name))
+          return headers[i + 1];
+    return null;
+  }
+
+  /** Copies the headers set with {@link #setHeader} onto {@code target}. Package-private for tests. */
+  void applyHeaders(final HeaderMap target) {
+    if (headers != null)
+      for (int i = 0; i < headers.length; i += 2)
+        target.put(HttpString.tryFromString(headers[i]), headers[i + 1]);
+  }
+
   public void send(final HttpServerExchange exchange) {
     exchange.setStatusCode(code);
+    applyHeaders(exchange.getResponseHeaders());
     if (binary != null) {
       exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, binary.length);
       exchange.getResponseSender().send(ByteBuffer.wrap(binary));
