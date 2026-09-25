@@ -173,6 +173,10 @@ public final class RuntimeJoinDetector {
   /**
    * Writes the marker. A failure is logged, never thrown: this runs on a Ratis callback thread, and the in-memory
    * arm stays in place for the rest of the process either way.
+   * <p>
+   * The file content is written with {@code SYNC}, but the parent directory is not fsynced, so an OS crash in the
+   * instant after the arm can lose the new directory entry. That restart then comes back unarmed, which is the
+   * behaviour before issue #8329.
    */
   private void persist(final RaftPeerId self) {
     if (marker == null)
