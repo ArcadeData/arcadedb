@@ -183,6 +183,17 @@ public final class HealthMonitor {
      */
     default void refreshLeaderCommitIndex() {
     }
+
+    /**
+     * Tracks whether this follower is stalled behind its leader from its own point of view (issue #8342): more than
+     * the lag threshold behind the commit index the leader last reported (see {@link #refreshLeaderCommitIndex()})
+     * and making no progress at all. The one follower-local signal for a follower whose log stops receiving entries
+     * while the term does not change: its local lag is {@code 0} and its applied term is current, so neither
+     * {@link #isFollowerLaggingBeyond(long)} nor {@link #isFollowerStuckDiverged()} can see it. Report-only: the
+     * leader-driven resync is what recovers such a follower. Implementations never propagate.
+     */
+    default void trackFollowerStall() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -394,6 +405,10 @@ public final class HealthMonitor {
     // left with its own copy applies every entry it is sent and reports perfect health (issue #6124).
     // Self-throttled by the target, and free when no database took that branch.
     target.verifyBootstrapDivergence();
+    // Before the early returns below, so a node that goes CLOSED or whose log writer fails drops a stall it was
+    // reporting instead of keeping it until it recovers (issue #8342). It reads the leader commit index the
+    // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.
+    target.trackFollowerStall();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);

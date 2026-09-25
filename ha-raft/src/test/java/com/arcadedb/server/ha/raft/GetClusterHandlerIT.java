@@ -175,6 +175,13 @@ class GetClusterHandlerIT extends BaseRaftHATest {
       assertThat(response.has("localStuckAtStaleTerm")).as("every node must carry the stuck signal").isTrue();
       assertThat(response.getBoolean("localStuckAtStaleTerm")).as("a healthy node is not stuck").isFalse();
       assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-stuck-at-stale-term");
+
+      // Issue #8342: written by every node, and false on a healthy cluster.
+      assertThat(response.has("leaderCommitIndex")).as("every node must carry the leader commit figure").isTrue();
+      assertThat(response.getLong("leaderCommitIndex")).isGreaterThanOrEqualTo(-1L);
+      assertThat(response.has("localStalledBehindLeader")).as("every node must carry the stall signal").isTrue();
+      assertThat(response.getBoolean("localStalledBehindLeader")).as("a healthy node is not stalled").isFalse();
+      assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-stalled-behind-leader");
     }
   }
 
