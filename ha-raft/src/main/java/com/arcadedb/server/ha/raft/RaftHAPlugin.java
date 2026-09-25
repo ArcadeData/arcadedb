@@ -608,6 +608,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public boolean isCrashLoopRestartPending() {
+    final RaftHAServer s = raftHAServer;
+    return s != null && s.isCrashLoopRestartPending();
+  }
+
+  @Override
   public String getRaftLogFailure() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getRaftLogFailure() : null;

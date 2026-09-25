@@ -610,8 +610,10 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("criticalHalt", criticalHaltSchema());
     schema.addProperty("raftLogFailure", raftLogFailureSchema());
     schema.addProperty("crashLoopEscalated", SpecBuilders.bool("""
-        True once the health monitor has given up restarting this node's HA layer (issue #7622). The liveness \
-        counterpart of the two above: this is what makes '/api/v1/health' answer unhealthy."""));
+        True once the health monitor has given up restarting this node's HA layer (issue #7622), including an \
+        escalation a previous run of this node recorded next to its Raft storage. The liveness counterpart of the \
+        two above: an escalation raised in this process makes '/api/v1/health' answer unhealthy, once, so the \
+        process is restarted a single time; an inherited one does not (issue #7736)."""));
     // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
     // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
     // explicit null rather than going absent (issues #7578, #7872).

@@ -362,14 +362,18 @@ public class ServerControlPlane {
    * Liveness. Reaching a request handler at all proves the process is live, so this deliberately
    * does not consult server status: a node still warming up must not be killed.
    * <p>
-   * The one exception is a crash-loop that the HA layer has already escalated and given up on (issue #7622):
-   * {@link HAServerPlugin#isCrashLoopEscalated()} says the automatic remedies are exhausted and a pod/process
-   * restart is the only way out, so liveness fails too, turning that restart into something Kubernetes
-   * performs on its own rather than something an operator has to notice a SEVERE alert and do by hand.
+   * The one exception is a crash-loop that the HA layer has just escalated and given up on (issue #7622): the
+   * automatic remedies in this process are exhausted, so liveness fails and Kubernetes performs the one process
+   * restart the SEVERE alert calls for, rather than an operator having to notice it and do it by hand.
+   * <p>
+   * Only ONE restart (issue #7736): {@link HAServerPlugin#isCrashLoopRestartPending()} is {@code true} only for an
+   * escalation recorded in this lifetime. A restarted process that inherits the record and still crash-loops stays
+   * live - out of the Service through readiness, but alive and inspectable - because another restart cannot cure a
+   * cause served by the leader, and failing liveness on it again was a perpetual {@code CrashLoopBackOff}.
    */
   public boolean isLive() {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
-    return ha == null || !ha.isCrashLoopEscalated();
+    return ha == null || !ha.isCrashLoopRestartPending();
   }
 
   /**

@@ -346,8 +346,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user));
     response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
     response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
-    // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
-    // equally invisible here. Same reasoning, same scoping - none.
+    // The liveness counterpart (issue #7622): an escalation is what fails /api/v1/health (once, issue #7736), and
+    // it was equally invisible here. Same reasoning, same scoping - none.
     response.put("crashLoopEscalated", nodeStatus.crashLoopEscalated());
 
     response.put("alerts",

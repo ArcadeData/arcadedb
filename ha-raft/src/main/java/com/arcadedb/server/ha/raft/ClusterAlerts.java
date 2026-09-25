@@ -338,12 +338,15 @@ public class ClusterAlerts {
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node's HA layer has given up restarting itself")
         .put("message", "The health monitor restarted this node's Raft layer repeatedly without it staying up, and "
-            + "has stopped trying. Nothing automatic is left: the node does not rejoin the cluster on its own, and "
-            + "/api/v1/health answers unhealthy so a Kubernetes liveness probe restarts the pod.")
-        .put("recommendation", "Restart this node, and read its log from the first restart in the loop rather than "
-            + "the last - the escalation reports the loop, not the fault that started it. A node that escalates "
-            + "again after the restart has a persistent local cause (storage, ports, clock) rather than a transient "
-            + "one.")
+            + "has stopped trying. The escalation is recorded next to the Raft storage: /api/v1/health answers "
+            + "unhealthy once, so a Kubernetes liveness probe restarts the pod a single time, and a restarted process "
+            + "that inherits the record does not re-run the restarts or the Raft-storage reformat - it stays out of "
+            + "the Service but alive, for the operator.")
+        .put("recommendation", "Read this node's log from the first restart in the loop rather than the last - the "
+            + "escalation reports the loop, not the fault that started it. A node still escalated after a restart "
+            + "has a persistent cause: a term-inverted log or snapshot served by the leader needs a coordinated "
+            + "full-cluster Raft-storage reformat. Deleting the 'crash-loop-escalated' file in the Raft storage "
+            + "directory re-arms the automatic recovery for the next start.")
         .put("details", new JSONObject().put("escalated", true)));
   }
 
