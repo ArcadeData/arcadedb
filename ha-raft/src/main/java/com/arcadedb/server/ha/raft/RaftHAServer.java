@@ -2246,6 +2246,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return runtimeJoinDetector.securityDocumentsNotInstalledSinceJoin();
   }
 
+  /**
+   * Records that the leader found this node's security documents, read at {@code appliedIndex}, equal to its own
+   * (issue #8346). See {@link RuntimeJoinDetector#onSecurityDocumentsMatchedLeader(long)}.
+   */
+  void onSecurityDocumentsMatchedLeader(final long appliedIndex) {
+    runtimeJoinDetector.onSecurityDocumentsMatchedLeader(appliedIndex);
+  }
+
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
   }

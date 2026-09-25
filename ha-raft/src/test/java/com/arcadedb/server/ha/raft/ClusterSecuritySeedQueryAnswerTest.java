@@ -73,6 +73,31 @@ class ClusterSecuritySeedQueryAnswerTest {
   }
 
   /**
+   * Issue #8346: the caller has to be able to tell "already matched, nothing submitted" from "seeded". Only the
+   * first proves this node's documents equal the cluster's right now; a seeded document converges only once this
+   * node applies the seed entry.
+   */
+  @Test
+  void anUpToDateAnswerIsToldApartFromASeededOne() throws Exception {
+    assertThat(ClusterSecuritySeedQuery.parseAnswer(answer(200,
+        "{\"upToDate\":true,\"seeded\":false,\"failedSeeds\":[]}"), LEADER).upToDate()).isTrue();
+    assertThat(ClusterSecuritySeedQuery.parseAnswer(answer(200,
+        "{\"upToDate\":false,\"seeded\":true,\"failedSeeds\":[]}"), LEADER).upToDate()).isFalse();
+    // A leader that predates the field says nothing about a match, which must not be read as one.
+    assertThat(ClusterSecuritySeedQuery.parseAnswer(answer(200, "{\"failedSeeds\":[]}"), LEADER).upToDate())
+        .isFalse();
+  }
+
+  /** A partial failure is never a match, whatever else the body says. */
+  @Test
+  void aPartialFailureIsNeverAMatch() throws Exception {
+    final ClusterSecuritySeedQuery.SeedAnswer answer = ClusterSecuritySeedQuery.parseAnswer(answer(503,
+        "{\"upToDate\":true,\"seeded\":true,\"failedSeeds\":[\"groups\"]}"), LEADER);
+    assertThat(answer.upToDate()).isFalse();
+    assertThat(answer.failedSeeds()).containsExactly("groups");
+  }
+
+  /**
    * The partial failure, which is the one an operator acts on: issue #7521 made it a 503 naming the documents,
    * and the names have to survive the trip back rather than becoming a generic transport error.
    */

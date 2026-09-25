@@ -349,7 +349,17 @@ final class SecurityCatchUp implements AutoCloseable {
         return Outcome.NOBODY_TO_ASK;
       }
 
-      final List<String> failed = ClusterSecuritySeedQuery.seedForCatchUp(server, plugin, reason);
+      // Read BEFORE the fingerprints the request carries, so a match proves the documents are the cluster's as of
+      // at least this position (issue #8346). See RuntimeJoinDetector.onSecurityDocumentsMatchedLeader.
+      final long appliedBeforeRead = raft.getLastAppliedIndex();
+      final ClusterSecuritySeedQuery.SeedAnswer answer = ClusterSecuritySeedQuery.seedForCatchUpAnswer(server, plugin,
+          reason);
+      if (answer.upToDate())
+        // The leader compared and submitted nothing. On a runtime joiner that caught up by snapshot install past its
+        // seed, this is the only evidence of convergence it will ever get: no seed entry is applied here and no
+        // later install is coming, so without it the readiness gate holds for its whole window (issue #8346).
+        raft.onSecurityDocumentsMatchedLeader(appliedBeforeRead);
+      final List<String> failed = answer.failedSeeds();
       if (failed.isEmpty())
         LogManager.instance().log(this, Level.FINE,
             "Cluster security documents are in step after %s", reason);
