@@ -76,6 +76,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -4119,11 +4120,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Databases this node is replacing from the leader's bootstrap snapshot right now, sorted for deterministic
-   * output (issue #7519). Package-private: the readiness gate reaches it through {@link #bootstrapWindowReason()}
-   * and the tests read it directly.
+   * Databases this node is installing from the leader's bootstrap snapshot right now, sorted for deterministic
+   * output (issue #7519) - every one of them, whether it replaces a copy this node holds or reinstalls one it lost.
+   * <p>
+   * Package-private, and read by {@code ClusterAlerts.NodeStatus} so {@code GET /api/v1/cluster} publishes it as
+   * the {@code bootstrap-install-in-progress} alert and the {@code bootstrapInstalls} member (issue #8044): until
+   * then the readiness gate was its only consumer, and the status document the gate's 503 body points at said
+   * nothing about it.
    */
-  // @VisibleForTesting
   List<String> getBootstrapInstallsInFlight() {
     // The overwhelmingly common answer, and this is on the readiness-probe path: allocate nothing for it.
     if (bootstrapInstallsInFlight.isEmpty())
@@ -4137,10 +4141,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Why this node must not be in the load balancer's pool because of the cluster's first-formation bootstrap, or
    * {@code null} when it may be (issue #7519).
    * <p>
-   * Two conditions, and they are the two halves of the same window:
+   * The question it answers is narrower than "is anything bootstrap-related going on": <b>is this node serving a
+   * copy of a database that the cluster's committed baseline did not adopt?</b> Two conditions make that true, and
+   * they are the two halves of the same window:
    * <ul>
-   *   <li><b>An install is in flight.</b> This node's copy of the database did not match the committed baseline
-   *       and is being replaced wholesale from the leader. The copy on disk is the one the cluster decided
+   *   <li><b>A held copy is being replaced.</b> This node's copy of the database did not match the committed
+   *       baseline and is being replaced wholesale from the leader. The copy on disk is the one the cluster decided
    *       against for as long as that takes, and it is open and serving on every protocol for the length of the
    *       download - the node-wide {@code snapshotInstallInProgress} 503 covers only the swap at the end of it,
    *       and only HTTP.</li>
@@ -4150,26 +4156,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       {@code .raft/bootstrap-baselines} - and until an operator or an automatic remedy replaces the copy,
    *       everything this node serves for that database is data the cluster never adopted.</li>
    * </ul>
-   * Both are recoverable, and both are cleared exactly where this node's copy is actually replaced by the
-   * cluster's, so a node that recovers rejoins the Service on its own. That is the same shape as
+   * <b>A database this node does not hold is neither</b> (issue #8045). The #7298 replay-skip marks a database it
+   * found gone and could not pull back in the same unreconciled set, and reinstalls it through the same install
+   * path - but nothing is being served in the cluster's stead, so there is nothing to take out of the Service for.
+   * Counting it held a node with nine good databases out of the Service for good over the tenth, under a remedy
+   * ("discards the local copy") for a copy that does not exist, while the SEVERE line and the
+   * {@code bootstrap-database-missing} alert told the operator the node was serving everything else. Both halves
+   * are therefore classified by where the database is NOW, with the same presence test
+   * {@link #getBootstrapUnreconciled(Set)} uses, and only a present copy counts.
+   * <p>
+   * Both conditions are recoverable, and both are cleared exactly where this node's copy is actually replaced by
+   * the cluster's, so a node that recovers rejoins the Service on its own. That is the same shape as
    * {@link #getRaftLogFailure()}, the other terminal-until-remedied condition the readiness probe consults
    * unconditionally.
    * <p>
    * <b>It counts the databases and does not name them.</b> {@code GET /api/v1/ready} is the one route that
    * answers without authentication ({@code GetReadyHandler.isRequireAuthentication()} returns false), and this
    * string is its response body, so a name here is a database name handed to anything that can reach the port.
-   * The authenticated {@code GET /api/v1/cluster} already publishes both sets by name through {@code
-   * ClusterAlerts}, filtered to the databases the caller may see, which is where a name belongs. The sibling
-   * gates make the same distinction without stating it: the log failure reports a log index and the
-   * security-convergence gate reports document kinds.
+   * The authenticated {@code GET /api/v1/cluster} publishes both by name, filtered to the databases the caller may
+   * see: the kept copies as the {@code bootstrap-diverged-databases} alert, and the installs as the
+   * {@code bootstrap-install-in-progress} alert and the {@code bootstrapInstalls} member (issue #8044 - until then
+   * the install half was published nowhere, and this sentence was not true of it). The sibling gates make the
+   * same distinction without stating it: the log failure reports a log index and the security-convergence gate
+   * reports document kinds.
    */
   public String bootstrapWindowReason() {
-    final int installing = bootstrapInstallsInFlight.size();
-    // Not getBootstrapUnreconciledDatabases(): that sorts a copy, and this runs on every readiness probe.
+    // Not getBootstrapUnreconciled(): that allocates two lists and sorts a copy, and this runs on every readiness
+    // probe. The empty checks come first so the overwhelmingly common answer stats no file.
     ensureBootstrapBaselinesLoaded();
-    final int unreconciled = bootstrapUnreconciledDatabases.size();
+    if (bootstrapInstallsInFlight.isEmpty() && bootstrapUnreconciledDatabases.isEmpty())
+      return null;
 
-    if (installing == 0 && unreconciled == 0)
+    final int replacing = countPresentLocally(bootstrapInstallsInFlight.keySet());
+    final int kept = countPresentLocally(bootstrapUnreconciledDatabases);
+    if (replacing == 0 && kept == 0)
       return null;
 
     // BOTH are reported when both hold, rather than the first one found (review of PR #7964). They are different
@@ -4177,14 +4197,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // operator who reads only the install would go on believing the node comes back by itself when the install
     // finishes, which is the one case where it does not.
     final StringBuilder reason = new StringBuilder(256);
-    if (installing > 0)
-      reason.append("The cluster's first-formation bootstrap is replacing ").append(installing)
+    if (replacing > 0)
+      reason.append("The cluster's first-formation bootstrap is replacing ").append(replacing)
           .append(" database(s) on this node from the leader's snapshot: what is on disk is the copy the cluster's "
               + "committed baseline decided against, so this node must not serve it.");
-    if (unreconciled > 0) {
-      if (installing > 0)
+    if (kept > 0) {
+      if (replacing > 0)
         reason.append(' ');
-      reason.append(unreconciled)
+      reason.append(kept)
           .append(" database(s) on this node hold a copy the cluster's committed bootstrap baseline did not adopt, "
               + "and nothing has reconciled them since: their file ids are out of step with every other peer. "
               + "POST /api/v1/cluster/resync/<database> on this node discards the local copy and adopts the "
@@ -4193,6 +4213,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Said once, whichever arms fired: the authenticated route is where the names are, and it is the answer to
     // "which databases" for both conditions alike.
     return reason.append(" GET /api/v1/cluster names them.").toString();
+  }
+
+  /**
+   * How many of {@code names} this node holds a copy of, by the same test {@link #getBootstrapUnreconciled(Set)}
+   * classifies on (issue #8045). A live view is fine to iterate: both backing collections are concurrent, and a
+   * name added or removed mid-count only moves the answer to the next probe.
+   */
+  private int countPresentLocally(final Iterable<String> names) {
+    int count = 0;
+    for (final String name : names)
+      if (isDatabasePresentLocally(name))
+        ++count;
+    return count;
   }
 
   /**
@@ -4574,17 +4607,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Whether {@code dbName}'s directory is on disk at all, which is the question {@code existsDatabase} does not
-   * answer: it reports registry membership, so a closed-but-present database and one that was deleted look the
-   * same to it. Only the second is safe to reinstall over.
+   * Whether {@code dbName}'s directory is on disk with something in it, which is the question {@code existsDatabase}
+   * does not answer: it reports registry membership, so a closed-but-present database and one that was deleted look
+   * the same to it. Only the second is safe to reinstall over.
    * <p>
-   * A path that cannot be resolved answers {@code true} - "present" is the conservative answer here, because it
-   * is the one that leaves the local files alone.
+   * <b>An EMPTY directory is not a copy</b> (issue #8045). {@code SnapshotInstaller.install} creates the database
+   * directory to stage its download in, and a failed download - the likely outcome of the #7298 reinstall, which
+   * runs when no leader may be reachable yet - cleans its staging out of it and leaves the directory itself behind.
+   * Counted as present, that one failure flipped a missing database into a KEPT one for good: the
+   * {@code bootstrap-diverged-databases} alert told the operator to copy this node's (empty) directory to every
+   * peer, the readiness gate held the node out of the Service under the kept-copy text, and the periodic #7298
+   * retry stopped retrying, because it only runs for a directory that is gone. Anything at all in the directory
+   * still counts - a closed database, a torn install the installer's own recovery reconciles - so this only
+   * narrows "present" by the one shape that provably holds nothing.
+   * <p>
+   * A path that cannot be resolved or read answers {@code true} - "present" is the conservative answer here,
+   * because it is the one that leaves the local files alone.
    */
   private boolean databaseDirectoryExists(final String dbName) {
     try {
       final String path = SnapshotInstaller.resolveDatabasePath(server, dbName);
-      return path == null || new File(path).isDirectory();
+      if (path == null)
+        return true;
+      final Path dir = Path.of(path);
+      if (!Files.isDirectory(dir))
+        return false;
+      try (final DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
+        return entries.iterator().hasNext();
+      }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not resolve the directory of '%s' while verifying bootstrap divergence: %s; assuming it is present",

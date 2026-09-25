@@ -207,7 +207,10 @@ class Issue7519BootstrapWindowGateTest {
     });
 
     sm.setServer(server);
-    // A second database left unreconciled by an earlier pass, which no install in this test will clear.
+    // A second database left unreconciled by an earlier pass, which no install in this test will clear. It has to
+    // be a copy this node HOLDS: a marked database that is not here is the #7298 missing half, which does not hold
+    // readiness at all (issue #8045).
+    when(server.existsDatabase("another-database")).thenReturn(true);
     sm.markBootstrapUnreconciled("another-database");
 
     assertThatNoException().isThrownBy(
