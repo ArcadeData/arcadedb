@@ -824,11 +824,11 @@ public class LocalSchema implements Schema {
    * re-registers the instances it did not touch, and those must keep running.
    */
   private void retireIndexesNoLongerPublished(final Collection<IndexInternal> candidates) {
-    final Set<IndexInternal> published = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
-    published.addAll(indexMap.values());
+    final Set<IndexInternal> stillPublished = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
+    stillPublished.addAll(indexMap.values());
 
     for (final IndexInternal index : candidates)
-      if (!published.contains(index)) {
+      if (!stillPublished.contains(index)) {
         try {
           index.onSuperseded();
         } catch (final Exception e) {
