@@ -48,7 +48,8 @@ class ClusterManagementAuthorizationIT extends BaseRaftHATest {
   @Test
   void nonRootRejectedOnAllClusterManagementEndpoints() throws Exception {
     // A non-root user that is otherwise a database admin: this is the privilege-escalation scenario.
-    getServer(0).getSecurity().createUser(TENANT_USER, TENANT_PASSWORD);
+    // On the leader: the SecurityManager user mutators refuse off-leader on an HA cluster (issue #8370).
+    getServer(findLeaderIndex()).getSecurity().createUser(TENANT_USER, TENANT_PASSWORD);
 
     // Every cluster-management endpoint must reject the non-root tenant with 403. Because the root
     // check runs first, none of these calls mutates the cluster, so the order here is irrelevant.
