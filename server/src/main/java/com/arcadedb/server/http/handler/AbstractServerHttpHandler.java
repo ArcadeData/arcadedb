@@ -1305,12 +1305,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Replays a cached idempotent response onto {@code exchange}, honoring the stored principal so a
-   * different user cannot replay another caller's response merely by guessing the request id. Returns
-   * false (nothing written) when there is no usable entry or the principal does not match, so the caller
-   * can fall back to executing the request.
-   */
-  /**
    * Answers a request whose identical twin (same {@code X-Request-Id}, method, path, database and body) is still
    * executing on this server: {@code 409 Conflict} with {@code Retry-After}. Nothing was executed for this request,
    * so the client may retry it as it is, with the same id, and gets the first execution's answer once it settles.
@@ -1324,6 +1318,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             + " to receive the result of the execution in progress", null, null, null));
   }
 
+  /**
+   * Replays a cached idempotent response onto {@code exchange}, honoring the stored principal so a
+   * different user cannot replay another caller's response merely by guessing the request id. Returns
+   * false (nothing written) when there is no usable entry or the principal does not match, so the caller
+   * can fall back to executing the request.
+   */
   private boolean replayCachedResponse(final HttpServerExchange exchange, final IdempotencyCache.CachedEntry cached,
       final String currentPrincipal) {
     if (cached == null)
