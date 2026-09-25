@@ -68,8 +68,11 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   /** Every property of the chosen index, in key order: a composite index is not registered under a single one. */
   private final List<String> indexProperties;
   private boolean adaptive;
-  /** How the last execution was served, for the plan description; null before it decided. */
-  private volatile Boolean servedByScan;
+  /**
+   * How the calling thread's last execution was served, for the PROFILE that follows it on the same thread. Per thread
+   * because the operator belongs to a cached plan that concurrent executions share; null before it decided.
+   */
+  private final ThreadLocal<Boolean> servedByScan = new ThreadLocal<>();
 
   /**
    * Create a range scan operator from range predicates.
@@ -227,9 +230,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           // Every vertex of the label: the pattern's WHERE is evaluated downstream on each of them, exactly as it is
           // on what the index returns, so the rows that survive are the same
           labelScan = context.getDatabase().iterateType(label, true);
-          servedByScan = true;
+          servedByScan.set(true);
         } else
-          servedByScan = false;
+          servedByScan.set(false);
         return true;
       }
 
@@ -396,7 +399,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]");
     if (adaptive) {
-      final Boolean scan = servedByScan;
+      final Boolean scan = servedByScan.get();
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :
           scan ? " [served by label scan: large range]" : " [served in physical order]");
     }
