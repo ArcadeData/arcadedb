@@ -298,6 +298,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide);
 
   /**
+   * Records whether this node was added to the Raft configuration while running, which is what arms the
+   * security-convergence readiness gate (issue #7819). Replaced by {@link RaftHAServer} with the instance it
+   * owns, so the answer survives an in-place Ratis restart; the default keeps a state machine with nothing wired
+   * to it - every peer of the {@code MiniRaftCluster} harness - recording on its own.
+   */
+  private volatile RuntimeJoinDetector runtimeJoinDetector = new RuntimeJoinDetector();
+
+  /**
    * Brings THIS node's security documents back in step when it rejoined without a membership change, or caught
    * up by a snapshot install that carried none of them (issue #7833). See {@link SecurityCatchUp}.
    */
@@ -1757,6 +1765,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link MembershipSecuritySeeder} carries the decision: leader only, and only for a configuration that
    * brought in a peer the previous one did not have.
    * <p>
+   * It is also where a node learns that it was itself the peer brought in: {@link RuntimeJoinDetector} records
+   * that, and it is what arms the security-convergence readiness gate on the joiner (issue #7819).
+   * <p>
    * <b>Nothing here may throw or block.</b> Ratis calls this from two places in ratis-server 3.3.0 -
    * {@code RaftServerImpl.applyLogToStateMachine}, i.e. the state-machine apply loop, and
    * {@code SnapshotInstallationHandler.installSnapshotImpl}, i.e. the thread serving a leader-initiated
@@ -1773,6 +1784,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final List<RaftPeerId> peers = new ArrayList<>(newRaftConfiguration.getPeersCount());
       for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getPeersList())
         peers.add(RaftPeerId.valueOf(peer.getId()));
+
+      // Before the seeder, and on its own inputs: whether THIS node was just added arms its readiness gate
+      // (issue #7819), and must not depend on the seed decision - which is the leader's, never the joiner's.
+      final List<RaftPeerId> oldPeers = new ArrayList<>(newRaftConfiguration.getOldPeersCount());
+      for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getOldPeersList())
+        oldPeers.add(RaftPeerId.valueOf(peer.getId()));
+      runtimeJoinDetector.onConfiguration(getId(), peers, oldPeers);
 
       membershipSecuritySeeder.onConfigurationChanged(term, index, peers);
     } catch (final Throwable t) {
@@ -1858,6 +1876,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
+  /** Installs the detector {@link RaftHAServer} owns, so it outlives this state machine (issue #7819). */
+  void setRuntimeJoinDetector(final RuntimeJoinDetector detector) {
+    this.runtimeJoinDetector = detector;
+  }
+
+  /** Whether this node was added to the Raft configuration while running (issue #7819). */
+  RuntimeJoinDetector getRuntimeJoinDetector() {
+    return runtimeJoinDetector;
+  }
+
   void setMembershipSecuritySeederForTesting(final MembershipSecuritySeeder seeder) {
     final MembershipSecuritySeeder previous = this.membershipSecuritySeeder;
     this.membershipSecuritySeeder = seeder;

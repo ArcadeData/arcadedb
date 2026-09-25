@@ -620,6 +620,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public boolean hasJoinedClusterAtRuntime() {
+    final RaftHAServer s = raftHAServer;
+    return s != null && s.hasJoinedClusterAtRuntime();
+  }
+
+  @Override
   public String getCriticalHaltReason() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getCriticalHaltReason() : null;
