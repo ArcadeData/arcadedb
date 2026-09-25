@@ -38,7 +38,6 @@ import org.junit.jupiter.api.function.Executable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +47,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -295,7 +293,7 @@ class Issue8363DirectoryReplacementClientGateTest {
    * thread reading the database at that moment is refused; the install's own thread reading it is not.
    */
   @Test
-  void aClientReadingDuringARealBootstrapReinstallIsRefusedAndTheInstallIsNot() {
+  void aClientReadingDuringARealBootstrapReinstallIsRefusedAndTheInstallIsNot() throws Exception {
     final ArcadeStateMachine realStateMachine = new ArcadeStateMachine();
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
@@ -338,8 +336,11 @@ class Issue8363DirectoryReplacementClientGateTest {
         .isInstanceOf(NeedRetryException.class).hasMessageContaining(DB_NAME);
     assertThat(installThreadOutcome.get()).as("the install's own thread").isNull();
 
-    // The failed download hands its holder to a retry on the lifecycle executor: let it finish before teardown
-    // deletes the directory under it.
-    await().atMost(Duration.ofSeconds(30)).until(() -> realStateMachine.getBootstrapInstallsInFlight().isEmpty());
+    // The failed download schedules a retry on the lifecycle executor: let it finish before teardown deletes the
+    // directory under it. The holder itself outlives it (issue #8367): nothing here replaces the rejected copy.
+    realStateMachine.awaitLifecycleTasksForTesting(30_000);
+    assertThat(realStateMachine.isBootstrapInstallInFlight(DB_NAME))
+        .as("a client is still refused after the retry failed as well: the copy on disk is still the rejected one")
+        .isTrue();
   }
 }

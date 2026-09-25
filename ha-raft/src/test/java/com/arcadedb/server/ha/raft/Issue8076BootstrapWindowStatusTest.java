@@ -42,7 +42,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +51,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -140,12 +138,14 @@ class Issue8076BootstrapWindowStatusTest {
   }
 
   /**
-   * A failed install hands its readiness holder to a retry on the state machine's lifecycle executor, which writes
-   * under {@code .raft} before it releases it. Waiting for the release keeps that write from racing the
-   * {@link TempDir} cleanup - the teardown flake {@code Issue7298BootstrapReplaySkipMissingDatabaseTest} documents.
+   * A failed install schedules a retry on the state machine's lifecycle executor, which may write under {@code .raft}.
+   * Waiting for that executor to drain keeps the write from racing the {@link TempDir} cleanup - the teardown flake
+   * {@code Issue7298BootstrapReplaySkipMissingDatabaseTest} documents. Not "until nothing is in flight": since issue
+   * #8367 a failed replacement of a copy this node holds stays in flight until the copy is actually replaced, which
+   * no unit-test leader ever does.
    */
-  private static void awaitInstallsSettled(final ArcadeStateMachine sm) {
-    await().atMost(Duration.ofSeconds(30)).until(() -> sm.getBootstrapInstallsInFlight().isEmpty());
+  private static void awaitInstallsSettled(final ArcadeStateMachine sm) throws Exception {
+    sm.awaitLifecycleTasksForTesting(30_000);
   }
 
   private static JSONObject alertWithId(final JSONArray alerts, final String id) {
@@ -180,7 +180,7 @@ class Issue8076BootstrapWindowStatusTest {
    * to - as an alert a monitoring rule keyed on {@code alerts} sees, and as a member a client reads by name.
    */
   @Test
-  void anInstallInFlightIsPublishedInTheStatusDocumentTheReadinessBodyPointsAt() {
+  void anInstallInFlightIsPublishedInTheStatusDocumentTheReadinessBodyPointsAt() throws Exception {
     final ArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     final AtomicReference<StatusSample> inside = new AtomicReference<>();
@@ -216,7 +216,7 @@ class Issue8076BootstrapWindowStatusTest {
    * {@code bootstrap-database-missing} do it.
    */
   @Test
-  void aScopedCallerSeesTheInstallButNotTheName() {
+  void aScopedCallerSeesTheInstallButNotTheName() throws Exception {
     final ArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     final AtomicReference<StatusSample> inside = new AtomicReference<>();
@@ -331,7 +331,7 @@ class Issue8076BootstrapWindowStatusTest {
    * turn the missing database into a "kept copy" - see the next test.
    */
   @Test
-  void reinstallingAMissingDatabaseIsPublishedButDoesNotHoldReadiness() {
+  void reinstallingAMissingDatabaseIsPublishedButDoesNotHoldReadiness() throws Exception {
     final ArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     // A previous session applied this very entry, so the replay-skip arm finds the database gone and reinstalls.
@@ -362,7 +362,7 @@ class Issue8076BootstrapWindowStatusTest {
    * copy this node's directory - empty - to every peer.
    */
   @Test
-  void aFailedReinstallLeavesTheDatabaseMissingNotKept() {
+  void aFailedReinstallLeavesTheDatabaseMissingNotKept() throws Exception {
     final ArcadeDBServer server = stubbedServer();
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.writePersistedAppliedIndex(50L, MISSING_DB);
