@@ -3784,6 +3784,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           raft.getLeaderName());
     }
 
+    // Counted here, past every refusal above, so a forward that never leaves this node takes no ordinal.
+    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
+    final String clusterToken = raftHAServer.getClusterToken();
+    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
+    final boolean relaysRequestId = forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted);
+
+    // This forward is the client's whole request, and relays its key (issue #8347): it posts the client's own body, not
+    // one rebuilt from the statement (issue #8359). The key settles one answer on the leader, and it has to be the one
+    // the client's request asks for - its 'serializer', 'limit', 'typeHints', 'profileExecution' - both for a retry
+    // the client sends straight to the leader and for this forward when a direct attempt settled the key first. The
+    // answer comes back in that rendering and is handed to the handler as it is, below. Under the cluster token only,
+    // like the key.
+    final ForwardedRequestIdContext.WholeRequest wholeRequest = relaysRequestId && ordinalTrusted ?
+        ForwardedRequestIdContext.wholeRequestForward(forwardOrdinal, language, query) :
+        null;
+
     final JSONObject body = new JSONObject();
     body.put("language", language);
     body.put("command", query);
@@ -3850,10 +3866,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .uri(URI.create(leaderUrl))
         .timeout(Duration.ofMillis(deadlineMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
+        .POST(HttpRequest.BodyPublishers.ofString(wholeRequest != null ? wholeRequest.clientBody() : body.toString()));
 
-    final String clusterToken = raftHAServer.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank()) {
+    if (ordinalTrusted) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
       // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
       // does reach refuses the command instead of resolving the same wrong address and forwarding it again
@@ -3903,20 +3918,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its reservation, and a forward whose body happens to match the client's would find that reservation pending and
     // wait out the in-flight timeout for nothing. Decided on the destination captured above, not on a fresh
     // isLeader() read, so a leadership change in between cannot make the two disagree.
-    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
-    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
-    if (forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted)) {
+    if (relaysRequestId) {
       try {
         builder.header(IdempotencyCache.HEADER_REQUEST_ID, ForwardedRequestIdContext.requestId());
         if (forwardOrdinal > 1)
           builder.header(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER, Integer.toString(forwardOrdinal));
-        // The key the client's own request has on this node, when this forward is that whole request (issue #8347): the
-        // body above is rebuilt from the statement, so the leader keys this forward differently from the retry the
-        // client may send it directly, with its own body. The leader claims this key too, and that retry then finds
-        // the forward's entry. Under the cluster token only, the one form in which the leader honors it.
-        final String clientKey = ForwardedRequestIdContext.clientKeyForCommandForward(forwardOrdinal);
-        if (clientKey != null && ordinalTrusted)
-          builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, clientKey);
+        // The key the client's own request has on this node, when this forward is that whole request (issue #8347). The
+        // body is the client's own now (issue #8359), so the leader usually computes the same key for this forward; the
+        // key is relayed anyway, because it is this node's computation and the leader's may differ in what it hashes.
+        // The leader claims it too, and a retry sent to it directly then finds the forward's entry. Under the cluster
+        // token only, the one form in which the leader honors it.
+        if (wholeRequest != null)
+          builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, wholeRequest.clientKey());
       } catch (final IllegalArgumentException e) {
         // A value the JDK client refuses to put on the wire: the write still runs, only without the leader-side
         // replay protection, exactly as it did before the relay existed.
@@ -3929,7 +3942,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (response.statusCode() != 200)
         throw reconstructLeaderException(response.statusCode(), response.body());
 
-      return parseResultSetFromJson(response.body());
+      final ResultSet resultSet = parseResultSetFromJson(response.body());
+      // The answer to the client's own body, in the rendering it asked for (issue #8359): the handler sends it as it is.
+      // Parsed as well, for a caller that reads the result set, but only a 'record'-shaped body parses to its rows.
+      if (wholeRequest != null)
+        ForwardedRequestIdContext.publishWholeRequestAnswer(response.body());
+      return resultSet;
     } catch (final ArcadeDBException e) {
       throw e;
     } catch (final InterruptedException e) {
