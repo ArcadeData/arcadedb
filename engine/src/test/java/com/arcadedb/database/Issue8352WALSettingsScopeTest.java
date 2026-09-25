@@ -24,6 +24,7 @@ import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -48,26 +49,45 @@ class Issue8352WALSettingsScopeTest extends TestHelper {
 
   @Test
   void databaseSettersReachEveryThread() throws Exception {
-    // The issue's repro: set on one thread, committed from another
+    // The issue's repro: set on one thread, committed from another. The same worker checks again after a second
+    // change, so a transaction context it already created must follow too, not only a fresh one
+    final CountDownLatch firstChecked = new CountDownLatch(1);
+    final CountDownLatch changedAgain = new CountDownLatch(1);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
     database.setWALFlush(WALFile.FlushType.YES_NOMETADATA);
     database.setUseWAL(false);
     database.setAsyncFlush(false);
 
-    onAnotherThread(tx -> {
-      assertThat(tx.getWALFlush()).isEqualTo(WALFile.FlushType.YES_NOMETADATA);
-      assertThat(tx.isUseWAL()).isFalse();
-      assertThat(tx.isAsyncFlush()).isFalse();
+    final Thread worker = new Thread(() -> {
+      try {
+        commitAndCheck(tx -> {
+          assertThat(tx.getWALFlush()).isEqualTo(WALFile.FlushType.YES_NOMETADATA);
+          assertThat(tx.isUseWAL()).isFalse();
+          assertThat(tx.isAsyncFlush()).isFalse();
+        });
+        firstChecked.countDown();
+        changedAgain.await();
+        commitAndCheck(tx -> {
+          assertThat(tx.getWALFlush()).isEqualTo(WALFile.FlushType.YES_FULL);
+          assertThat(tx.isUseWAL()).isTrue();
+          assertThat(tx.isAsyncFlush()).isTrue();
+        });
+      } catch (final Throwable t) {
+        failure.set(t);
+        firstChecked.countDown();
+      }
     });
+    worker.start();
+    firstChecked.await();
 
-    // Changed again later: a thread that already ran a transaction follows too, its context is reused
     database.setWALFlush(WALFile.FlushType.YES_FULL);
     database.setUseWAL(true);
     database.setAsyncFlush(true);
-    onAnotherThread(tx -> {
-      assertThat(tx.getWALFlush()).isEqualTo(WALFile.FlushType.YES_FULL);
-      assertThat(tx.isUseWAL()).isTrue();
-      assertThat(tx.isAsyncFlush()).isTrue();
-    });
+    changedAgain.countDown();
+    worker.join();
+    assertThat(failure.get()).isNull();
+
     final TransactionContext own = ((DatabaseInternal) database).getTransaction();
     assertThat(own.getWALFlush()).isEqualTo(WALFile.FlushType.YES_FULL);
     assertThat(database.isAsyncFlush()).isTrue();
@@ -133,6 +153,13 @@ class Issue8352WALSettingsScopeTest extends TestHelper {
     assertThat(own.getWALFlush()).isEqualTo(WALFile.FlushType.YES_FULL);
     assertThat(own.isUseWAL()).isTrue();
     assertThat(database.countType("T", false)).isEqualTo(50);
+  }
+
+  private void commitAndCheck(final Consumer<TransactionContext> check) {
+    database.transaction(() -> {
+      database.newDocument("T").set("k", 0).save();
+      check.accept(((DatabaseInternal) database).getTransaction());
+    });
   }
 
   private void onAnotherThread(final Consumer<TransactionContext> check) throws Exception {

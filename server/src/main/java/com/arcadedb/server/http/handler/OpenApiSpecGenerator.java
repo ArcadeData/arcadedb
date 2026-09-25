@@ -295,9 +295,10 @@ public class OpenApiSpecGenerator {
 
     components.addParameters(REQUEST_ID_PARAM_COMPONENT, SpecBuilders.headerParam(IdempotencyCache.HEADER_REQUEST_ID, """
         Correlation id, echoed on the response and logged with the request. On this POST route it also makes a \
-        retry safe to send verbatim: a successful (2xx) response is kept for '%s' ms, keyed by this id together \
-        with the method, path, database and body and bound to the authenticated user, and an identical retry is \
-        answered from it instead of executing again. A failed request is not kept, so its retry executes afresh. \
+        retry safe to send verbatim: a successful (2xx) response is kept for up to '%s' ms, keyed by this id \
+        together with the method, path, database and body and bound to the authenticated user, and an identical \
+        retry is answered from it instead of executing again. The cache is also bounded by entry count and total \
+        size, so under pressure a completed response can be evicted before its TTL, and a retry then executes again. A failed request is not kept, so its retry executes afresh. \
         While the first request is still executing, an identical retry waits briefly for it and then answers 409 \
         with Retry-After rather than executing a second time. Not replayed: a request inside a client-managed \
         transaction (it carries 'arcadedb-session-id'), a request asking for an NDJSON stream, and a response \
