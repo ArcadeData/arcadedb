@@ -29,9 +29,9 @@ import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.LocalTransactionExplicitLock;
-import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordCallback;
@@ -1864,6 +1864,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * listener tags its request threads with its protocol and clears the tag afterwards, and everything else reads
    * {@link ProtocolContext#INTERNAL}. {@link SnapshotInstaller#install} re-tags its own thread INTERNAL for its
    * duration, because the operator resync runs it on the HTTP worker that received the request.
+   * <p>
+   * <b>Why the record mutators carry no gate of their own.</b> {@code createRecord}, {@code updateRecord},
+   * {@code deleteRecord} and a document's {@code save()} need an active transaction, and this wrapper installs itself
+   * as the proxied database's {@code wrappedDatabaseInstance}, so every transaction - an explicit one, a
+   * {@code transaction(...)} block, or the implicit one {@code LocalDatabase.checkTransactionIsActive} opens - begins
+   * and commits through {@link #begin()} and {@link #commit()} here, both gated. Anything that changes that routing
+   * has to gate the mutators instead.
    * <p>
    * Allocation-free and a map read or two when nothing is being replaced, which is every request on a healthy node.
    */

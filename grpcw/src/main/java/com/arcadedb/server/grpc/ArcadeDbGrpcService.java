@@ -145,7 +145,7 @@ import java.util.logging.Level;
  */
 public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImplBase {
   /** The {@code protocol} tag every query this service runs is metered under. */
-  private static final String GRPC_PROTOCOL = "grpc";
+  private static final String GRPC_PROTOCOL = GrpcProtocolContextInterceptor.GRPC_PROTOCOL;
 
 
   // Pick serializer once
