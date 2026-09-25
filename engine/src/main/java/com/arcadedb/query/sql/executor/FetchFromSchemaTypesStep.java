@@ -127,7 +127,10 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
           r.setProperty("externalBuckets", extMap);
       }
 
-      final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+      // A readable type may extend one the user cannot read: that parent is hidden here as it is from the listing
+      final List<String> parents = type.getSuperTypes().stream()
+          .filter(pt -> SecurityHelper.canAccessType(currentUser, pt, SecurityDatabaseUser.ACCESS.READ_RECORD))
+          .map(pt -> pt.getName()).collect(Collectors.toList());
       r.setProperty("parentTypes", parents);
 
       final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase)
