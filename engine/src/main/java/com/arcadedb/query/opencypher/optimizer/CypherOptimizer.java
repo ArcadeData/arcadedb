@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
@@ -39,6 +40,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
@@ -617,7 +619,26 @@ public class CypherOptimizer {
    */
   private PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     final IndexSelectionRule indexRule = (IndexSelectionRule) rules.get(0);
-    return indexRule.createAnchorOperator(anchor);
+    final PhysicalOperator operator = indexRule.createAnchorOperator(anchor);
+    // A range is picked whatever share of the label it holds: let it give way to a label scan, or load in physical
+    // order, where the order its rows come in cannot show in the output (issue #8333)
+    if (operator instanceof NodeIndexRangeScan rangeScan)
+      rangeScan.setAdaptive(rowOrderIsInvisible());
+    return operator;
+  }
+
+  /**
+   * Whether the output cannot show the order the matched rows came in: the RETURN aggregates, or an ORDER BY re-sorts
+   * them. A statement that returns its rows as they come shows the index order, which callers rely on; one with a
+   * WITH is left alone, whatever its shape, since a WITH can hand the rows on in their order under a LIMIT.
+   */
+  private boolean rowOrderIsInvisible() {
+    if (statement == null || statement.getReturnClause() == null)
+      return false;
+    final List<WithClause> withClauses = statement.getWithClauses();
+    if (withClauses != null && !withClauses.isEmpty())
+      return false;
+    return statement.getReturnClause().hasAggregations() || statement.getOrderByClause() != null;
   }
 
   /**

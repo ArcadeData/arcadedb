@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
@@ -3870,12 +3871,15 @@ public class SelectExecutionPlanner {
       } else {
         filterClusterIds = clazz.getBucketIds(true);
       }
-      result.add(new GetValueFromIndexEntryStep(context, filterClusterIds));
+      final boolean indexOrderApplied =
+          orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex());
+      result.add(new GetValueFromIndexEntryStep(context, filterClusterIds,
+          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context)));
       if (desc.requiresDistinctStep()) {
         result.add(new DistinctExecutionStep(context));
       }
 
-      if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex()))
+      if (indexOrderApplied)
         info.orderApplied = true;
 
       if (needsFilterStep(desc.getRemainingCondition(), context)) {
@@ -4045,6 +4049,81 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * The scan an index search may give way to at execution time, when its range turns out to hold a large share of the
+   * type (issue #8333, see {@link GetValueFromIndexEntryStep}), or null when the index must be used as planned. Built
+   * only where the scan is guaranteed to answer the same rows and nothing downstream depends on reading the index:
+   * <ul>
+   *   <li>a plain LSM-Tree index with the default collation and no BY ITEM/KEY/VALUE property: a case-insensitive or a
+   *   per-item index answers a condition differently from evaluating it on the record;</li>
+   *   <li>a key made only of =, &lt;, &lt;=, &gt;, &gt;= and BETWEEN conditions, the ones a filter evaluates exactly
+   *   as the index does;</li>
+   *   <li>not a point lookup on a unique index, which returns one record at most;</li>
+   *   <li>a statement whose output cannot show the order the rows came in: an aggregation, or an ORDER BY the index
+   *   does not serve (the caller excludes one it serves). That also rules out a LIMIT stopping the index early.</li>
+   * </ul>
+   */
+  private static GetValueFromIndexEntryStep.ScanFallback scanFallbackFor(final IndexSearchDescriptor desc,
+      final DocumentType type, final Set<String> filterBuckets, final QueryPlanningInfo info, final CommandContext context) {
+    final float maxSelectivity = context.getDatabase().getConfiguration()
+        .getValueAsFloat(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY);
+    if (!(maxSelectivity > 0))
+      return null;
+
+    // The rows of an index search come in key order, and a statement that returns them as they come can show it:
+    // users rely on it (a partial key on a composite index reads sorted by the rest of the key). Physical order and a
+    // scan are only used where that order cannot reach the output: an aggregation consumes every row whatever their
+    // order, and an ORDER BY the index does not serve re-sorts them. Both also read the whole range before their
+    // first row, so a LIMIT cannot have stopped the index early either.
+    final boolean aggregates = info.aggregateProjection != null || info.groupBy != null;
+    if (!aggregates && info.orderBy == null)
+      return null;
+
+    final Index index = desc.getIndex();
+    if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
+      return null;
+    if (index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive())
+      return null;
+    final List<String> indexProperties = index.getPropertyNames();
+    for (final String property : indexProperties)
+      if (!Index.basePropertyName(property).equals(property))
+        return null;
+
+    final AndBlock keyFilter = new AndBlock();
+    boolean allEquality = true;
+    for (final BooleanExpression block : desc.getSubBlocks()) {
+      if (block instanceof BinaryCondition condition) {
+        final BinaryCompareOperator operator = condition.getOperator();
+        if (isRangeComparison(operator))
+          allEquality = false;
+        else if (!(operator instanceof EqualsCompareOperator))
+          return null;
+      } else if (block instanceof BetweenCondition)
+        allEquality = false;
+      else
+        return null;
+      keyFilter.getSubBlocks().add(block.copy());
+    }
+
+    final BinaryCondition additionalRange = desc.additionalRangeCondition;
+    if (additionalRange != null) {
+      if (!isRangeComparison(additionalRange.getOperator()))
+        return null;
+      keyFilter.getSubBlocks().add(additionalRange.copy());
+      allEquality = false;
+    }
+
+    if (allEquality && index.isUnique() && desc.getSubBlocks().size() == indexProperties.size())
+      return null;
+
+    return new GetValueFromIndexEntryStep.ScanFallback(type.getName(), filterBuckets, createWhereFrom(keyFilter));
+  }
+
+  private static boolean isRangeComparison(final BinaryCompareOperator operator) {
+    return operator instanceof LtOperator || operator instanceof LeOperator || operator instanceof GtOperator
+        || operator instanceof GeOperator;
+  }
+
+  /**
    * Whether what an index search left behind still has to be evaluated per record. A residual that is empty, or true
    * for every record, is no filter at all: {@code WHERE 1=1 AND indexedProperty = 'x'} hands the second term to the
    * index and leaves the first behind, and evaluating it would cost the index plan the very step the whole where
@@ -4054,7 +4133,7 @@ public class SelectExecutionPlanner {
     return remainingCondition != null && !remainingCondition.isEmpty() && !remainingCondition.isAlwaysTrue(context);
   }
 
-  private WhereClause createWhereFrom(final BooleanExpression remainingCondition) {
+  private static WhereClause createWhereFrom(final BooleanExpression remainingCondition) {
     final WhereClause result = new WhereClause();
     result.setBaseExpression(remainingCondition);
     return result;
