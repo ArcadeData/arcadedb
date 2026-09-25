@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -283,6 +285,76 @@ class BuildFilteredQueryTest {
     // Should insert before GROUP BY, not after comment's WHERE
     assertThat(result).isEqualTo(
         "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nWHERE `ts` >= 1000 GROUP BY sensor_id");
+  }
+
+  /**
+   * #8251: strip() dropped the newline ending a trailing line comment, so the closing bracket and the GROUP BY pasted
+   * after it were commented out and every refresh after the first failed on a syntax error.
+   */
+  @Test
+  void trailingLineCommentInWhereDoesNotSwallowTheBracket() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading\nWHERE active = true -- only the live ones\nGROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading\nWHERE `ts` >= 1000 AND (active = true -- only the live ones\n) GROUP BY sensor_id");
+
+    final ContinuousAggregateImpl atEnd = buildCA("SELECT sensor_id, temp FROM SensorReading WHERE active = true -- live");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(atEnd, 1000, true)).isEqualTo(
+        "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 AND (active = true -- live\n)");
+  }
+
+  /**
+   * #8251, same defect on the other branch: a query without WHERE ending in a line comment got the filter appended on
+   * the comment's line. That did not even fail - the filter was silently commented out, so the refresh re-aggregated
+   * every bucket next to the rows it already held.
+   */
+  @Test
+  void trailingLineCommentWithoutWhereDoesNotSwallowTheFilter() {
+    final ContinuousAggregateImpl ca = buildCA("SELECT sensor_id, temp FROM SensorReading -- all of them");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id, temp FROM SensorReading -- all of them\nWHERE `ts` >= 1000");
+  }
+
+  @Test
+  void endsInsideLineComment() {
+    assertThat(ContinuousAggregateRefresher.endsInsideLineComment("a = 1 -- x")).isTrue();
+    assertThat(ContinuousAggregateRefresher.endsInsideLineComment("a = 1 -- x\n")).isFalse();
+    assertThat(ContinuousAggregateRefresher.endsInsideLineComment("a = '-- x'")).isFalse();
+    assertThat(ContinuousAggregateRefresher.endsInsideLineComment("a = 1 /* -- x */")).isFalse();
+    assertThat(ContinuousAggregateRefresher.endsInsideLineComment("a = 1 -- it's")).isTrue();
+  }
+
+  /**
+   * Every rewrite must still PARSE, not only match an expected string: the string-only cases above are why a
+   * syntactically broken rewrite passed (#8251).
+   */
+  @Test
+  void rewrittenQueriesStillParseAndRun() throws Exception {
+    TestHelper.executeInNewDatabase("./target/databases/testBuildFilteredQueryParses", db -> {
+      db.getSchema().createDocumentType("SensorReading");
+      db.transaction(() -> {
+        for (int i = 0; i < 5; i++)
+          db.newDocument("SensorReading").set("sensor_id", "s" + i).set("temp", 10.0 + i).set("active", true).set("ts", 2000L + i)
+              .save();
+      });
+
+      for (final String query : new String[] { //
+          "SELECT sensor_id, avg(temp) FROM SensorReading\nWHERE active = true -- only the live ones\nGROUP BY sensor_id", //
+          "SELECT sensor_id, temp FROM SensorReading WHERE active = true -- live", //
+          "SELECT sensor_id, temp FROM SensorReading -- all of them", //
+          "SELECT sensor_id, avg(temp) FROM SensorReading -- all\nGROUP BY sensor_id", //
+          "SELECT sensor_id, avg(temp) FROM SensorReading WHERE active = true /* live */ GROUP BY sensor_id", //
+          "SELECT sensor_id, avg(temp) FROM SensorReading WHERE active = true OR temp > 100 -- either\nGROUP BY sensor_id" }) {
+        final String rewritten = ContinuousAggregateRefresher.buildFilteredQuery(buildCA(query), 1000, true);
+        try (final ResultSet original = db.query("sql", query); final ResultSet filtered = db.query("sql", rewritten)) {
+          assertThat(filtered.stream().count()).as(rewritten).isEqualTo(original.stream().count()).isEqualTo(5);
+        }
+        // the filter is really applied: a watermark past every row leaves none
+        try (final ResultSet none = db.query("sql", ContinuousAggregateRefresher.buildFilteredQuery(buildCA(query), 9000, true))) {
+          assertThat(none.stream().count()).as(query).isZero();
+        }
+      }
+    });
   }
 
   @Test

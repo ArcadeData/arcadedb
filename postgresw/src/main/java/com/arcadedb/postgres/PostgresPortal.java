@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.DocumentType;
@@ -89,6 +90,11 @@ public class PostgresPortal {
    * no Bind or Execute - open, commit or roll back a transaction it never executed.
    */
   public TransactionControl        transactionControl;
+  /**
+   * The isolation level a {@code BEGIN ISOLATION <level>} asked for, recorded next to {@link #transactionControl} and
+   * applied with it at Execute (issue #8273). Null for a plain BEGIN and for every other statement.
+   */
+  public Database.TRANSACTION_ISOLATION_LEVEL isolationLevel;
   /**
    * The parsed {@code SET}/{@code RESET} statement, or null for everything else (issue #8135). Parse only
    * parses and RECORDS it here, exactly as it does {@link #transactionControl}; {@code executeCommand()} applies it
@@ -180,6 +186,7 @@ public class PostgresPortal {
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
     portal.transactionControl = template.transactionControl;
+    portal.isolationLevel = template.isolationLevel;
     portal.setting = template.setting;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;

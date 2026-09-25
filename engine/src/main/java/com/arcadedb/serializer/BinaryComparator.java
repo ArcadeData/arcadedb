@@ -695,7 +695,10 @@ public class BinaryComparator {
     if (b instanceof BigDecimal bigDecimal)
       return BigDecimal.valueOf(a).compareTo(bigDecimal);
     if (Type.isExactAsDouble(a) || !Type.isFinite(b))
-      return Double.compare(a, b.doubleValue());
+      // a Float reads as its shortest decimal (Type.widenFloat), as the typed path's toDouble() and every other arm of
+      // compareNumbers read it: its exact binary expansion can put an integer on the other side of the float and make
+      // the order intransitive (issue #8252)
+      return Double.compare(a, b instanceof Float float1 ? Type.widenFloat(float1) : b.doubleValue());
     return BigDecimal.valueOf(a).compareTo(Type.floatingToBigDecimal(b));
   }
 
