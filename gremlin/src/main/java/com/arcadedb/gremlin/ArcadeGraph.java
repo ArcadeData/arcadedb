@@ -100,8 +100,10 @@ public class ArcadeGraph implements Graph, Closeable {
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
+    // ArcadeTraversalStrategies, NOT A PLAIN CLONE: IT KEEPS THE io() PERMISSION STRATEGY OUT OF THE CALLER'S REACH
+    // (withoutStrategies() IS A SOURCE INSTRUCTION ANY REQUEST CAN CARRY)
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
-        TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
+        new ArcadeTraversalStrategies(TraversalStrategies.GlobalCache.getStrategies(Graph.class))//
             .addStrategies(//
                 ArcadeIoRegistrationStrategy.instance(),//
                 new ArcadeTraversalStrategy())//

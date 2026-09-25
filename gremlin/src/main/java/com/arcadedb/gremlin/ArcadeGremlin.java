@@ -35,13 +35,18 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
+import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
+import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
+import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
@@ -213,10 +218,20 @@ public class ArcadeGremlin extends ArcadeQuery {
       // BINDINGS, SO USE THE NULL-TOLERANT JAVA ENGINE TO BUILD THE TRAVERSAL SHAPE WITHOUT REQUIRING THEM. #5187
       final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement(true);
 
+      // RECURSIVE: A WRITE NESTED IN A CHILD TRAVERSAL (coalesce(), union(), sideEffect(), choose(), local()...) IS STILL
+      // A WRITE, AND NO TraversalParent IS ITSELF Mutating. A FLAT SCAN OF THE ROOT STEPS CALLED THE CANONICAL UPSERT
+      // fold().coalesce(unfold(), addV(...)) READ-ONLY, AND THE HA FOLLOWER THEN RAN IT LOCALLY INSTEAD OF FORWARDING
+      // IT TO THE LEADER (#8296)
       boolean idempotent = true;
       final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-      for (final Object step : resultSet.getSteps()) {
-        if (step instanceof Mutating) {
+      for (final Step<?, ?> step : TraversalHelper.getStepsOfAssignableClassRecursively(resultSet, Mutating.class, IoStep.class)) {
+        if (step instanceof IoStep<?> ioStep) {
+          // io().read() LOADS A FILE INTO THE GRAPH WITHOUT BEING A Mutating STEP; io().write() ONLY READS THE GRAPH
+          if (ioStep.getMode() != ReadWriting.Mode.WRITING) {
+            idempotent = false;
+            ops.add(OperationType.CREATE);
+          }
+        } else {
           idempotent = false;
           // TinkerPop 3.8.1's gremlin-lang parser hands parse() GValue-based placeholder step types for
           // addV/addE/property (e.g. AddVertexStartStepPlaceholder) instead of the concrete step classes
@@ -226,7 +241,11 @@ public class ArcadeGremlin extends ArcadeQuery {
           // the concrete class. See #5838. DropStep has no placeholder variant in 3.8.1, so it stays a direct check.
           if (step instanceof AddVertexStepContract || step instanceof AddEdgeStepContract)
             ops.add(OperationType.CREATE);
-          else if (step instanceof DropStep)
+          else if (step instanceof MergeStepContract) {
+            // mergeV()/mergeE() CREATE OR UPDATE DEPENDING ON WHAT THEY FIND
+            ops.add(OperationType.CREATE);
+            ops.add(OperationType.UPDATE);
+          } else if (step instanceof DropStep)
             ops.add(OperationType.DELETE);
           else if (step instanceof AddPropertyStepContract)
             ops.add(OperationType.UPDATE);
