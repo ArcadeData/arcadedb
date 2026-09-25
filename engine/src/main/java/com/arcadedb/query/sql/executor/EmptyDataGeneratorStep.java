@@ -78,4 +78,14 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
     }
     return result;
   }
+
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new EmptyDataGeneratorStep(size, context);
+  }
 }

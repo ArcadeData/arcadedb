@@ -87,12 +87,26 @@ public class SubQueryStep extends AbstractExecutionStep {
 
   @Override
   public boolean canBeCached() {
-    return sameContextAsParent && subExecutionPlan.canBeCached();
+    return subExecutionPlan.canBeCached();
   }
 
+  /**
+   * A correlated FROM-subquery (a target that reads {@code $parent}, e.g. {@code TRAVERSE ... FROM (SELECT
+   * $parent.x)}) is planned with its own child context, not the enclosing plan's own - see
+   * SelectExecutionPlanner#handleSubqueryAsTarget / TraverseExecutionPlanner, which build exactly the
+   * {@code BasicCommandContext} + {@code setParent} pair reconstructed here. Reusing {@code context} for both ends,
+   * as the {@code sameContextAsParent} branch does, would collapse that child relationship and resolve {@code
+   * $parent} one level too shallow in the copy.
+   */
   @Override
-  public ExecutionStep copy(CommandContext context) {
-    return new SubQueryStep(subExecutionPlan.copy(context), context, context);
+  public ExecutionStep copy(final CommandContext context) {
+    if (sameContextAsParent)
+      return new SubQueryStep(subExecutionPlan.copy(context), context, context);
+
+    final BasicCommandContext subCtx = new BasicCommandContext();
+    subCtx.setDatabase(context.getDatabase());
+    subCtx.setParent(context);
+    return new SubQueryStep(subExecutionPlan.copy(subCtx), context, subCtx);
   }
 
   @Override

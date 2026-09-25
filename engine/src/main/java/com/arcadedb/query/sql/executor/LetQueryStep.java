@@ -33,6 +33,16 @@ public class LetQueryStep extends AbstractExecutionStep {
   private final Identifier varName;
   private final Statement  query;
 
+  // Built from the first record this instance processes, then reused (via #copy) for every later record instead of
+  // being planned again. A LET subquery is re-evaluated once per incoming record - see #calculate - so without this,
+  // query.createExecutionPlan() re-runs the full SelectExecutionPlanner (target/index selection, optimizeQuery, ...)
+  // for every single row, even though the query text never changes between rows: only the $parent binding a
+  // correlated subquery reads does. #copy() gives every row its own fresh step instances bound to that row's
+  // subCtx - the same mechanism ExecutionPlanCache.get() already relies on for the (single) top-level statement
+  // cache - so this is safe for a correlated subquery exactly as that cache already is. Left null (falling back to
+  // the per-row createExecutionPlan below) when the plan reports it cannot be cached.
+  private InternalExecutionPlan cachedSubPlanTemplate;
+
   public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
     super(context);
     this.varName = varName;
@@ -66,7 +76,16 @@ public class LetQueryStep extends AbstractExecutionStep {
         final BasicCommandContext subCtx = new BasicCommandContext();
         subCtx.setDatabase(context.getDatabase());
         subCtx.setParentWithoutOverridingChild(context);
-        final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx);
+
+        final InternalExecutionPlan subExecutionPlan;
+        if (cachedSubPlanTemplate != null) {
+          subExecutionPlan = cachedSubPlanTemplate.copy(subCtx);
+        } else {
+          subExecutionPlan = query.createExecutionPlan(subCtx);
+          if (subExecutionPlan.canBeCached())
+            cachedSubPlanTemplate = subExecutionPlan;
+        }
+
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         // Not every upstream Result is a ResultInternal (e.g. wrapper Results): guard the cast to avoid a
         // ClassCastException. When the row cannot carry per-row metadata, the LET value is still exposed through

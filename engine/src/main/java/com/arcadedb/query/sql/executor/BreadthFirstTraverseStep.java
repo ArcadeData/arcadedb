@@ -223,6 +223,12 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new BreadthFirstTraverseStep(this.projections, this.whileClause == null ? null : this.whileClause.copy(),
+        this.postFilter == null ? null : this.postFilter.copy(), this.maxDepth == null ? null : this.maxDepth.copy(), context);
+  }
+
+  @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
