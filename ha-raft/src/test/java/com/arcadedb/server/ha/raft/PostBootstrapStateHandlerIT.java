@@ -114,6 +114,30 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
     assertThat(response.getLong("snapshotTerm")).isEqualTo(marker.getTerm());
   }
 
+  /**
+   * Issue #8374: a snapshot install that needs only the marker asks with {@code markerOnly}, and the peer answers
+   * with the marker and no per-database fingerprints. Driven through {@link LeaderDatabaseQuery#fetchSnapshotMarker},
+   * the client the reconciler uses, with the real cluster-token authentication peers use.
+   */
+  @Test
+  void markerOnlyRequestReturnsTheMarkerWithoutFingerprintingDatabases() throws Exception {
+    final RaftHAServer raft = getRaftPlugin(0).getRaftHAServer();
+    final ArcadeStateMachine sm = raft.getStateMachine();
+    assertThat(sm.takeSnapshot()).as("the fixture has applied entries, so a checkpoint must be taken").isGreaterThanOrEqualTo(0L);
+    final TermIndex marker = sm.getLatestSnapshotTermIndex();
+    assertThat(marker).isNotNull();
+
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.fetchSnapshotMarker(
+        "localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L, getServer(0));
+
+    assertThat(state.snapshotTermIndex()).isEqualTo(marker);
+    assertThat(state.databases()).as("markerOnly skips the fingerprinting").isEmpty();
+
+    // The full request still lists the databases, so the flag is what made the difference.
+    assertThat(LeaderDatabaseQuery.fetch("localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L,
+        getServer(0)).databases()).isNotEmpty();
+  }
+
   /** Two peers should agree on the fingerprint of an identical, just-created database. */
   @Test
   void allPeersReportSameFingerprintForReplicatedDatabase() throws Exception {

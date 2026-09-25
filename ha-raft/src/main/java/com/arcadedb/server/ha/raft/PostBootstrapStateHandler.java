@@ -80,6 +80,12 @@ import java.util.logging.Level;
  */
 public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
 
+  /**
+   * Request flag (issue #8374): answer with this peer's snapshot marker only, skipping the per-database fingerprints.
+   * A snapshot install that needs nothing but the marker would otherwise hash every database on the leader.
+   */
+  static final String MARKER_ONLY = "markerOnly";
+
   private final RaftHAPlugin plugin;
 
   public PostBootstrapStateHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -116,6 +122,14 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
+
+    if (payload != null && payload.getBoolean(MARKER_ONLY, false)) {
+      final JSONObject response = new JSONObject();
+      response.put("databases", new JSONArray());
+      response.put("peerId", raftHAServer.getLocalPeerId().toString());
+      putSnapshotMarker(response, raftHAServer.getStateMachine());
+      return new ExecutionResponse(200, response.toString());
+    }
 
     final ArcadeDBServer server = httpServer.getServer();
 
@@ -175,14 +189,17 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     // cluster can register the snapshot it just received under the REAL term of the log entry it covers rather
     // than approximating it from the term of the next log entry. Omitted (not zeroed) when this peer has not
     // taken a Raft snapshot yet, so the caller can tell "no data" from "boundary is at term 0, index 0".
-    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    putSnapshotMarker(response, raftHAServer.getStateMachine());
+
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private static void putSnapshotMarker(final JSONObject response, final ArcadeStateMachine stateMachine) {
     final TermIndex snapshotTermIndex = stateMachine != null ? stateMachine.getLatestSnapshotTermIndex() : null;
     if (snapshotTermIndex != null) {
       response.put("snapshotTerm", snapshotTermIndex.getTerm());
       response.put("snapshotIndex", snapshotTermIndex.getIndex());
     }
-
-    return new ExecutionResponse(200, response.toString());
   }
 
   /**

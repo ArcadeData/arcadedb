@@ -77,8 +77,11 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
         .setOption(RaftStorage.StartupOption.FORMAT)
         .build();
     try {
-      sm.setServer(followerServer(databaseDirectory));
+      final ArcadeDBServer server = followerServer(databaseDirectory);
+      sm.setServer(server);
       sm.initialize(stubServer(), RaftGroupId.valueOf(UUID.randomUUID()), storage);
+      // The install reads the leader's snapshot marker even with auto-acquire off (issue #8374); answer it locally.
+      NoNetworkMarkerReconciler.installInto(sm, server);
       sm.setRaftHAServer(haServerThatIsTornDownMidResolution(sm));
 
       final TermIndex installed = sm.notifyInstallSnapshotFromLeader(
@@ -120,8 +123,8 @@ class Issue7253SnapshotInstallReadsHAServerOnceTest {
   }
 
   /**
-   * A follower holding no databases, with auto-acquire off so the reconciler takes the refresh-existing path and
-   * completes without dialling anything: this test is about which field read happens, not about the download.
+   * A follower holding no databases, with auto-acquire off so the reconciler takes the refresh-existing path and,
+   * with the marker read stubbed, completes without dialling anything: this test is about which field read happens, not about the download.
    */
   private static ArcadeDBServer followerServer(final Path databaseDirectory) {
     final ContextConfiguration configuration = new ContextConfiguration();
