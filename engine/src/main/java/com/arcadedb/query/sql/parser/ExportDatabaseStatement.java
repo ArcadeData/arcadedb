@@ -33,11 +33,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.DateUtils;
 
 import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -164,7 +164,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   static String defaultTargetName(final String databaseName, final String format) {
     return "%s-export-%s-%s.%s.tgz".formatted(//
         databaseName,//
-        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+        LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP),//
         UUID.randomUUID(),//
         format);
   }

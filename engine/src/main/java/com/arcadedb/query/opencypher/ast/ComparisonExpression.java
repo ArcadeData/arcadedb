@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.temporal.Temporal;
 import java.util.Date;
 import java.util.List;
@@ -81,6 +82,10 @@ public class ComparisonExpression implements BooleanExpression {
   // scanned row) is wrapped into a CypherTemporalValue once instead of allocating a fresh wrapper per
   // row. volatile + an immutable {raw, coerced} pair keeps concurrent evaluators from seeing a torn pair.
   private volatile Object[] temporalCoercionMemo;
+  // Single-slot memo of the zone adoption below, {raw, zone, adjusted}: the zone-less operand is typically an invariant
+  // parameter and the stored datetimes it is compared with typically share one zone, so this keeps that comparison
+  // allocation-free per row, like the coercion memo above.
+  private volatile Object[] zoneAdoptionMemo;
 
   public ComparisonExpression(final Expression left, final Operator operator, final Expression right) {
     this.left = left;
@@ -173,9 +178,9 @@ public class ComparisonExpression implements BooleanExpression {
     // zoned datetime it takes that operand's zone, so it equals every datetime at its instant rather than only the
     // UTC ones: datetimes at one instant in different zones are distinct values (issue #8300).
     if ((left instanceof Date || left instanceof Instant) && rightTemporal instanceof CypherDateTime zoned)
-      leftTemporal = new CypherDateTime(((CypherDateTime) leftTemporal).getValue().withZoneSameInstant(zoned.getValue().getZone()));
+      leftTemporal = adoptZone(left, (CypherDateTime) leftTemporal, zoned.getValue().getZone());
     else if ((right instanceof Date || right instanceof Instant) && leftTemporal instanceof CypherDateTime zoned)
-      rightTemporal = new CypherDateTime(((CypherDateTime) rightTemporal).getValue().withZoneSameInstant(zoned.getValue().getZone()));
+      rightTemporal = adoptZone(right, (CypherDateTime) rightTemporal, zoned.getValue().getZone());
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
         final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
@@ -392,6 +397,15 @@ public class ComparisonExpression implements BooleanExpression {
     final Object coerced = TemporalUtil.fromCoreJavaType(value);
     temporalCoercionMemo = new Object[] { value, coerced };
     return coerced;
+  }
+
+  private CypherDateTime adoptZone(final Object raw, final CypherDateTime coerced, final ZoneId zone) {
+    final Object[] memo = zoneAdoptionMemo;
+    if (memo != null && memo[0] == raw && memo[1].equals(zone))
+      return (CypherDateTime) memo[2];
+    final CypherDateTime adjusted = new CypherDateTime(coerced.getValue().withZoneSameInstant(zone));
+    zoneAdoptionMemo = new Object[] { raw, zone, adjusted };
+    return adjusted;
   }
 
   private Boolean numericCompare(final long leftNum, final long rightNum) {

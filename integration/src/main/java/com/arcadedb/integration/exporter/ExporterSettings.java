@@ -18,19 +18,16 @@
  */
 package com.arcadedb.integration.exporter;
 
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 public class ExporterSettings {
-  // Locale-independent: the default locale's calendar and digits would otherwise leak into the file name (issue #8301)
-  private static final DateTimeFormatter DEFAULT_FILE_TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS", Locale.ROOT);
-
   public       String              format;
   public       String              databaseURL;
   public       String              file;
@@ -63,7 +60,7 @@ public class ExporterSettings {
         break;
       }
 
-    file = file.formatted(LocalDateTime.now().format(DEFAULT_FILE_TIMESTAMP));
+    file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
   }
 
   public int parseParameter(String name, final String value) {

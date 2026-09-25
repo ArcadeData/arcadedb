@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.engine.MaintenanceCoordinator;
+import com.arcadedb.utility.DateUtils;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -95,14 +96,13 @@ import java.util.regex.Pattern;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BackupCoordinator implements MaintenanceCoordinator {
-  private static final DateTimeFormatter ARCHIVE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS", Locale.ROOT);
   /**
    * Matches the archives this class names, and the second-precision ones every release before it wrote: retention and
    * the backup listing run over directories that hold both, and a name they cannot parse is a file they silently stop
    * managing - it would never be listed and never be rotated out.
    */
   private static final Pattern           ARCHIVE_NAME_PATTERN     = Pattern.compile(".*-backup-(\\d{8})-(\\d{6}(?:\\d{3})?)\\.zip$");
-  private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]");
+  private static final DateTimeFormatter ARCHIVE_TIMESTAMP_PARSER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss[SSS]", Locale.ROOT);
 
   /**
    * Cached because {@link Operation#values()} clones its array on every call, and {@link #begin(String, Operation)}
@@ -367,7 +367,7 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * The name of the archive a backup of this database starting now writes to.
    */
   public String newArchiveName(final String databaseName) {
-    return databaseName + "-backup-" + LocalDateTime.now().format(ARCHIVE_TIMESTAMP_FORMAT) + ".zip";
+    return databaseName + "-backup-" + LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP) + ".zip";
   }
 
   /**
