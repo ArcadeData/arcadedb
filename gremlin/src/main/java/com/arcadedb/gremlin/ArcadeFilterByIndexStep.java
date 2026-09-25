@@ -72,6 +72,10 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   protected       boolean                              done       = false;
   private         Traverser.Admin<S>                   head       = null;
   private         Iterator<E>                          iterator   = EmptyIterator.instance();
+  // COMPUTED ON THE FIRST EXECUTION AND KEPT: BUCKET MEMBERSHIP DEPENDS ON THE SCHEMA ONLY, NOT ON THE DATA, SO A STEP
+  // RE-ENTERED PER TRAVERSER (local(), repeat(), A MID-TRAVERSAL V()) DOES NOT REBUILD IT EVERY TIME
+  private         boolean[]                            allowedBuckets;
+  private         boolean                              allowedBucketsResolved;
 
   /**
    * @param index     the index to scan; it may belong to {@code typeName} or to one of its super types
@@ -131,7 +135,11 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
 
   private Iterator<E> openIterator() {
     final ArcadeGraph graph = (ArcadeGraph) getTraversal().getGraph().get();
-    final boolean[] allowed = allowedBuckets(graph.getDatabase().getSchema());
+    if (!allowedBucketsResolved) {
+      allowedBuckets = allowedBuckets(graph.getDatabase().getSchema());
+      allowedBucketsResolved = true;
+    }
+    final boolean[] allowed = allowedBuckets;
     final IndexCursor cursor = openCursor();
 
     return new CloseableIterator<>() {
@@ -158,6 +166,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
             next = (E) new ArcadeEdge(graph, edge);
           else if (rec != null)
             throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
+          // A NULL RECORD IS AN INDEX ENTRY WHOSE RECORD IS GONE: SKIPPED, THE SAME AS A RECORD THAT NO LONGER MATCHES
           if (next != null)
             return true;
         }
@@ -268,7 +277,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     if (!super.equals(o))
       return false;
     final ArcadeFilterByIndexStep<?, ?> that = (ArcadeFilterByIndexStep<?, ?>) o;
-    return Objects.equals(index.getName(), that.index.getName()) && predicate == that.predicate && Arrays.equals(keys, that.keys)
+    return Objects.equals(index.getName(), that.index.getName()) && Objects.equals(predicate, that.predicate) && Arrays.equals(keys, that.keys)
         && Objects.equals(typeName, that.typeName) && Objects.equals(returnClass, that.returnClass);
   }
 

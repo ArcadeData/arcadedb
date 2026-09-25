@@ -36,6 +36,10 @@ import java.util.List;
  * source's strategies and removes from the clone; {@code clone()} keeps this class). Refusing the removal here is
  * therefore the one place that holds for every entry point, instead of a check per front end.
  * <p>
+ * This relies on {@code DefaultTraversalStrategies#clone()} going through {@code Object#clone()}, which keeps the
+ * runtime class. Should a TinkerPop upgrade rebuild a plain {@code DefaultTraversalStrategies} there instead, nothing
+ * would fail to compile: {@code Issue8295IoStrategyCannotBeRemovedTest} is the guard that turns red.
+ * <p>
  * Naming the pinned strategy is not an error, it is simply not honoured - the same outcome as naming a strategy that
  * is not registered at all.
  *
