@@ -608,8 +608,10 @@ public class ClusterAlerts {
         .put("message", nodes.length() + " follower(s) cannot keep up with the leader's write rate. "
             + (anyStalled
                 ? "At least one is STALLED (its matchIndex is not moving, either while the leader advances or for long "
-                    + "enough that it is not catching up), so it does not count toward the quorum: it stalls quorum "
-                    + "acknowledgements, forcing replication backpressure, and losing one more node can stop all writes."
+                    + "enough that it is not catching up), so it does not count toward the quorum. If the remaining "
+                    + "replicas cannot form an advancing quorum, quorum acknowledgements stall and replication backpressure "
+                    + "follows; otherwise the cluster has lost its fault tolerance, and losing one more node can stop all "
+                    + "writes."
                 : "They are FALLING_BEHIND (lag is growing), which raises replication backpressure and risks election "
                     + "churn if it continues.")
             + " The slowest node is the bottleneck for the whole cluster.")

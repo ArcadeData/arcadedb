@@ -73,7 +73,9 @@ public class ClusterMonitor {
    * replica read {@link ReplicaStatus#CATCHING_UP} ("advancing at 0 entries/tick") for as long as the outage
    * lasted, which the {@code lagging-followers} alert ignores. A replica that is behind and not moving is not
    * catching up, whatever the leader does. The grace keeps the first tick of a fresh baseline (a new leader, whose
-   * probe has not landed yet) from being judged on a single sample.
+   * probe has not landed yet) from being judged on a single sample. That is why this path waits for a grace while
+   * the leader-advancing rule fires on the first tick: there, the leader moving while the replica does not is
+   * already a comparison of two samples.
    */
   static final long ZERO_PROGRESS_STALL_GRACE_MS = 10_000L;
 
@@ -325,9 +327,13 @@ public class ClusterMonitor {
               """
               Replica '%s' STALLED: matchIndex stuck at %d for %dms (lag=%d) and the leader did not advance either. \
               While it stays stuck it does not count toward the quorum: if the leader is waiting on its vote, writes \
-              are blocked, and one more lost node stops them. The leader-driven resync \
-              (arcadedb.ha.stalledReplicaResyncDurationMs) recovers it; POST /api/v1/cluster/resync/{database} forces it now.""",
-              replicaId, matchIndex, now - state.zeroProgressSinceMs, lag);
+              are blocked, and one more lost node stops them. %s""",
+              replicaId, matchIndex, now - state.zeroProgressSinceMs, lag,
+              stalledResyncDurationMs > 0 && stalledReplicaHandler != null
+                  ? "The leader-driven resync (arcadedb.ha.stalledReplicaResyncDurationMs) recovers it; "
+                      + "POST /api/v1/cluster/resync/{database} forces it now."
+                  : "Leader-driven resync is disabled (arcadedb.ha.stalledReplicaResyncDurationMs=0): resync it with "
+                      + "POST /api/v1/cluster/resync/{database}.");
         else
           LogManager.instance().log(this, Level.SEVERE,
               """
