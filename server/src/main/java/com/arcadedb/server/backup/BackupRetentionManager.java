@@ -25,9 +25,10 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.DayOfWeek;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.time.temporal.WeekFields;
+import java.time.temporal.TemporalAdjusters;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Level;
@@ -248,36 +249,30 @@ public class BackupRetentionManager {
   private Set<File> applyTieredRetention(final List<BackupFileInfo> backupFiles,
                                          final DatabaseBackupConfig.TieredConfig tiered) {
     final Set<File> filesToKeep = new HashSet<>();
-    final LocalDateTime now = LocalDateTime.now();
 
     // Apply each tier
-    filesToKeep.addAll(selectTierBackups(backupFiles, now, ChronoUnit.HOURS, tiered.getHourly()));
-    filesToKeep.addAll(selectTierBackups(backupFiles, now, ChronoUnit.DAYS, tiered.getDaily()));
-    filesToKeep.addAll(selectWeeklyBackups(backupFiles, now, tiered.getWeekly()));
-    filesToKeep.addAll(selectMonthlyBackups(backupFiles, now, tiered.getMonthly()));
-    filesToKeep.addAll(selectYearlyBackups(backupFiles, now, tiered.getYearly()));
+    filesToKeep.addAll(selectTierBackups(backupFiles, ChronoUnit.HOURS, tiered.getHourly()));
+    filesToKeep.addAll(selectTierBackups(backupFiles, ChronoUnit.DAYS, tiered.getDaily()));
+    filesToKeep.addAll(selectTierBackups(backupFiles, ChronoUnit.WEEKS, tiered.getWeekly()));
+    filesToKeep.addAll(selectTierBackups(backupFiles, ChronoUnit.MONTHS, tiered.getMonthly()));
+    filesToKeep.addAll(selectTierBackups(backupFiles, ChronoUnit.YEARS, tiered.getYearly()));
 
     return filesToKeep;
   }
 
   /**
-   * Selects backups for hourly/daily tiers.
+   * Selects the backups of one tier: the oldest backup of each of the N most recent buckets of {@code unit}.
    */
-  private Set<File> selectTierBackups(final List<BackupFileInfo> backupFiles,
-                                      final LocalDateTime now,
-                                      final ChronoUnit unit,
-                                      final int count) {
+  private Set<File> selectTierBackups(final List<BackupFileInfo> backupFiles, final ChronoUnit unit, final int count) {
     final Set<File> selected = new HashSet<>();
     if (count <= 0)
       return selected;
 
-    // Group backups by their truncated time bucket
-    final Map<LocalDateTime, List<BackupFileInfo>> buckets = new LinkedHashMap<>();
-
-    for (final BackupFileInfo info : backupFiles) {
-      final LocalDateTime bucket = truncateToUnit(info.timestamp, unit);
-      buckets.computeIfAbsent(bucket, k -> new ArrayList<>()).add(info);
-    }
+    // Group backups by the start of their bucket. backupFiles is sorted oldest first, so each bucket's first entry is
+    // its oldest backup.
+    final Map<LocalDateTime, List<BackupFileInfo>> buckets = new HashMap<>();
+    for (final BackupFileInfo info : backupFiles)
+      buckets.computeIfAbsent(bucketStart(info.timestamp, unit), k -> new ArrayList<>()).add(info);
 
     // Keep the oldest backup from the most recent N buckets
     final List<LocalDateTime> sortedBuckets = new ArrayList<>(buckets.keySet());
@@ -293,109 +288,20 @@ public class BackupRetentionManager {
   }
 
   /**
-   * Selects backups for weekly tier.
+   * The first instant of the bucket {@code dateTime} falls in. Keying every tier by this instant makes the key one
+   * value per bucket and makes its natural order the chronological one, which the "most recent N buckets" ranking
+   * relies on. A week is an ISO week, starting on Monday: keying it by calendar year plus ISO week number mixed two
+   * calendars, so the last days of December (ISO week 1 of the NEXT year) collided with the first week of January
+   * of the SAME year, and the tier kept a year-old archive in place of a recent one (issue #8298).
    */
-  private Set<File> selectWeeklyBackups(final List<BackupFileInfo> backupFiles,
-                                        final LocalDateTime now,
-                                        final int count) {
-    final Set<File> selected = new HashSet<>();
-    if (count <= 0)
-      return selected;
-
-    // Group by year-week (using ISO week definition for consistent behavior across locales)
-    final Map<String, List<BackupFileInfo>> buckets = new LinkedHashMap<>();
-    final WeekFields weekFields = WeekFields.ISO;
-
-    for (final BackupFileInfo info : backupFiles) {
-      final int year = info.timestamp.getYear();
-      final int week = info.timestamp.get(weekFields.weekOfWeekBasedYear());
-      final String bucket = year + "-W" + String.format("%02d", week);
-      buckets.computeIfAbsent(bucket, k -> new ArrayList<>()).add(info);
-    }
-
-    // Keep oldest from most recent N weeks
-    final List<String> sortedBuckets = new ArrayList<>(buckets.keySet());
-    sortedBuckets.sort(Comparator.reverseOrder());
-
-    for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
-      final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
-      if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
-    }
-
-    return selected;
-  }
-
-  /**
-   * Selects backups for monthly tier.
-   */
-  private Set<File> selectMonthlyBackups(final List<BackupFileInfo> backupFiles,
-                                         final LocalDateTime now,
-                                         final int count) {
-    final Set<File> selected = new HashSet<>();
-    if (count <= 0)
-      return selected;
-
-    // Group by year-month
-    final Map<String, List<BackupFileInfo>> buckets = new LinkedHashMap<>();
-
-    for (final BackupFileInfo info : backupFiles) {
-      final String bucket = info.timestamp.getYear() + "-" +
-          String.format("%02d", info.timestamp.getMonthValue());
-      buckets.computeIfAbsent(bucket, k -> new ArrayList<>()).add(info);
-    }
-
-    // Keep oldest from most recent N months
-    final List<String> sortedBuckets = new ArrayList<>(buckets.keySet());
-    sortedBuckets.sort(Comparator.reverseOrder());
-
-    for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
-      final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
-      if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
-    }
-
-    return selected;
-  }
-
-  /**
-   * Selects backups for yearly tier.
-   */
-  private Set<File> selectYearlyBackups(final List<BackupFileInfo> backupFiles,
-                                        final LocalDateTime now,
-                                        final int count) {
-    final Set<File> selected = new HashSet<>();
-    if (count <= 0)
-      return selected;
-
-    // Group by year
-    final Map<Integer, List<BackupFileInfo>> buckets = new LinkedHashMap<>();
-
-    for (final BackupFileInfo info : backupFiles) {
-      buckets.computeIfAbsent(info.timestamp.getYear(), k -> new ArrayList<>()).add(info);
-    }
-
-    // Keep oldest from most recent N years
-    final List<Integer> sortedBuckets = new ArrayList<>(buckets.keySet());
-    sortedBuckets.sort(Comparator.reverseOrder());
-
-    for (int i = 0; i < Math.min(count, sortedBuckets.size()); i++) {
-      final List<BackupFileInfo> bucketFiles = buckets.get(sortedBuckets.get(i));
-      if (!bucketFiles.isEmpty())
-        selected.add(bucketFiles.get(0).file);
-    }
-
-    return selected;
-  }
-
-  /**
-   * Truncates a LocalDateTime to the specified unit.
-   */
-  private LocalDateTime truncateToUnit(final LocalDateTime dateTime, final ChronoUnit unit) {
+  static LocalDateTime bucketStart(final LocalDateTime dateTime, final ChronoUnit unit) {
     return switch (unit) {
       case HOURS -> dateTime.truncatedTo(ChronoUnit.HOURS);
       case DAYS -> dateTime.truncatedTo(ChronoUnit.DAYS);
-      default -> dateTime;
+      case WEEKS -> dateTime.truncatedTo(ChronoUnit.DAYS).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+      case MONTHS -> dateTime.truncatedTo(ChronoUnit.DAYS).withDayOfMonth(1);
+      case YEARS -> dateTime.truncatedTo(ChronoUnit.DAYS).withDayOfYear(1);
+      default -> throw new IllegalArgumentException("Unsupported retention tier unit: " + unit);
     };
   }
 

@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -301,6 +302,78 @@ class BackupRetentionManagerTest {
       assertThat(files.get(i)).doesNotExist();
     for (int i = 5; i < 10; i++)
       assertThat(files.get(i)).exists();
+  }
+
+  /**
+   * Issue #8298: the weekly bucket was keyed by the calendar year plus the ISO week number, so 2024-12-30 (ISO week 1
+   * of 2025) collided with 2024-01-01 (ISO week 1 of 2024) and the tier kept the year-old archive in its place.
+   */
+  @Test
+  void weeklyBucketsAreIsoWeeksAcrossTheYearBoundary() {
+    assertThat(BackupRetentionManager.bucketStart(LocalDateTime.of(2024, 12, 30, 2, 0), ChronoUnit.WEEKS))
+        .isNotEqualTo(BackupRetentionManager.bucketStart(LocalDateTime.of(2024, 1, 1, 2, 0), ChronoUnit.WEEKS))
+        .isEqualTo(BackupRetentionManager.bucketStart(LocalDateTime.of(2025, 1, 1, 2, 0), ChronoUnit.WEEKS))
+        .isEqualTo(LocalDateTime.of(2024, 12, 30, 0, 0));
+    assertThat(BackupRetentionManager.bucketStart(LocalDateTime.of(2023, 1, 1, 2, 0), ChronoUnit.WEEKS))
+        .isNotEqualTo(BackupRetentionManager.bucketStart(LocalDateTime.of(2023, 12, 26, 2, 0), ChronoUnit.WEEKS))
+        .isEqualTo(LocalDateTime.of(2022, 12, 26, 0, 0));
+  }
+
+  @Test
+  void weeklyTierKeepsTheRecentArchiveOfACollidingWeek() throws Exception {
+    final File jan2024 = createBackupFile(LocalDateTime.of(2024, 1, 1, 2, 0));
+    final File dec2024 = createBackupFile(LocalDateTime.of(2024, 12, 30, 2, 0));
+    final File feb2025 = createBackupFile(LocalDateTime.of(2025, 2, 10, 2, 0));
+
+    registerTiered(0, 0, 2, 0, 0);
+    assertThat(retentionManager.applyRetention(DATABASE_NAME)).isEqualTo(1);
+
+    assertThat(jan2024).doesNotExist();
+    assertThat(dec2024).exists();
+    assertThat(feb2025).exists();
+  }
+
+  @Test
+  void weeklyTierKeepsTheMostRecentWeeksAcrossTheYearEnd() throws Exception {
+    final File w2024_01 = createBackupFile(LocalDateTime.of(2024, 1, 1, 2, 0));
+    final File w2024_52 = createBackupFile(LocalDateTime.of(2024, 12, 27, 2, 0));
+    final File w2025_01 = createBackupFile(LocalDateTime.of(2024, 12, 30, 2, 0));
+    final File w2025_02 = createBackupFile(LocalDateTime.of(2025, 1, 6, 2, 0));
+    final File w2025_03 = createBackupFile(LocalDateTime.of(2025, 1, 13, 2, 0));
+    final File w2025_04 = createBackupFile(LocalDateTime.of(2025, 1, 20, 2, 0));
+
+    registerTiered(0, 0, 4, 0, 0);
+    assertThat(retentionManager.applyRetention(DATABASE_NAME)).isEqualTo(2);
+
+    assertThat(w2024_01).doesNotExist();
+    assertThat(w2024_52).doesNotExist();
+    assertThat(w2025_01).exists();
+    assertThat(w2025_02).exists();
+    assertThat(w2025_03).exists();
+    assertThat(w2025_04).exists();
+  }
+
+  @Test
+  void monthlyAndYearlyBucketsStartOnTheirFirstDay() {
+    final LocalDateTime t = LocalDateTime.of(2024, 12, 30, 14, 35, 12);
+    assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.MONTHS)).isEqualTo(LocalDateTime.of(2024, 12, 1, 0, 0));
+    assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.YEARS)).isEqualTo(LocalDateTime.of(2024, 1, 1, 0, 0));
+    assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.DAYS)).isEqualTo(LocalDateTime.of(2024, 12, 30, 0, 0));
+    assertThat(BackupRetentionManager.bucketStart(t, ChronoUnit.HOURS)).isEqualTo(LocalDateTime.of(2024, 12, 30, 14, 0));
+  }
+
+  private void registerTiered(final int hourly, final int daily, final int weekly, final int monthly, final int yearly) {
+    final DatabaseBackupConfig config = new DatabaseBackupConfig(DATABASE_NAME);
+    final DatabaseBackupConfig.RetentionConfig retention = new DatabaseBackupConfig.RetentionConfig();
+    final DatabaseBackupConfig.TieredConfig tiered = new DatabaseBackupConfig.TieredConfig();
+    tiered.setHourly(hourly);
+    tiered.setDaily(daily);
+    tiered.setWeekly(weekly);
+    tiered.setMonthly(monthly);
+    tiered.setYearly(yearly);
+    retention.setTiered(tiered);
+    config.setRetention(retention);
+    retentionManager.registerDatabase(DATABASE_NAME, config);
   }
 
   private List<File> createBackupFiles(final int count, final LocalDateTime startDate) throws IOException {

@@ -244,11 +244,21 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * Executes multiple commands, either as a MULTI/EXEC transaction or as a batch.
+   * Executes a batch: every line, in order. A command outside a MULTI block runs on its own, the commands between
+   * MULTI and EXEC run as one atomic transaction, and the commands between MULTI and DISCARD are dropped. The reply
+   * is one entry per command that ran, in batch order, so a batch with no DISCARD answers exactly one entry per
+   * command line. A batch whose only content is a discarded block answers {@code "OK"}, as DISCARD does.
+   * <p>
+   * The whole batch is planned before anything runs, so a malformed one (EXEC or DISCARD without MULTI, nested MULTI,
+   * MULTI without EXEC) is refused before any of its commands has had an effect. Returning from the middle of the
+   * loop at the first EXEC or DISCARD silently dropped every line after it, ran the commands before MULTI inside the
+   * transaction, and let an EXEC with no MULTI commit the prefix (issue #8297).
    */
   private ResultSet executeMultipleCommands(final String[] lines) {
-    final List<String> commands = new ArrayList<>();
-    boolean inTransaction = false;
+    // A String is a command run on its own, a List<String> the commands of a block that EXEC commits.
+    final List<Object> plan = new ArrayList<>(lines.length);
+    List<String> block = null;
+    boolean discarded = false;
 
     for (final String line : lines) {
       final String trimmed = line.trim();
@@ -256,33 +266,56 @@ public class RedisQueryEngine implements QueryEngine {
         continue; // Skip empty lines and comments (analyze() skips the same ones)
 
       final String upperCmd = trimmed.toUpperCase(Locale.ENGLISH);
-      if ("MULTI".equals(upperCmd)) {
-        inTransaction = true;
-        continue;
-      } else if ("EXEC".equals(upperCmd)) {
-        // Execute all queued commands in a transaction
-        return executeTransaction(commands);
-      } else if ("DISCARD".equals(upperCmd)) {
-        // Discard all queued commands
-        commands.clear();
-        return createResultSet("OK");
+      switch (upperCmd) {
+      case "MULTI" -> {
+        if (block != null)
+          throw new CommandParsingException("MULTI calls can not be nested");
+        block = new ArrayList<>();
       }
-
-      commands.add(trimmed);
+      case "EXEC" -> {
+        if (block == null)
+          throw new CommandParsingException("EXEC without MULTI");
+        plan.add(block);
+        block = null;
+      }
+      case "DISCARD" -> {
+        if (block == null)
+          throw new CommandParsingException("DISCARD without MULTI");
+        block = null;
+        discarded = true;
+      }
+      default -> {
+        if (block != null)
+          block.add(trimmed);
+        else
+          plan.add(trimmed);
+      }
+      }
     }
 
-    // If we reach here without EXEC, execute as a batch (not a transaction)
-    if (inTransaction) {
+    if (block != null)
       throw new CommandParsingException("MULTI without EXEC - transaction not committed");
-    }
 
-    return executeBatch(commands);
+    if (plan.isEmpty() && discarded)
+      return createResultSet("OK");
+
+    final List<Object> results = new ArrayList<>();
+    for (final Object step : plan) {
+      if (step instanceof String command)
+        results.add(executeSingleCommandInternal(command));
+      else {
+        @SuppressWarnings("unchecked")
+        final List<String> commands = (List<String>) step;
+        results.addAll(executeTransaction(commands));
+      }
+    }
+    return createResultSet(results);
   }
 
   /**
-   * Executes commands in a database transaction (atomically).
+   * Executes commands in a database transaction (atomically) and returns one reply per command.
    */
-  private ResultSet executeTransaction(final List<String> commands) {
+  private List<Object> executeTransaction(final List<String> commands) {
     // Filled fresh on every attempt and published only once the block has returned, the way
     // MCPToolUtils.collectInTransaction does: `database.transaction(...)` retries the block up to
     // arcadedb.txRetries times on an MVCC conflict, rolling the failed attempt back first, and an accumulator
@@ -303,21 +336,7 @@ public class RedisQueryEngine implements QueryEngine {
       committed[0] = attemptResults;
     });
 
-    return createResultSet(committed[0]);
-  }
-
-  /**
-   * Executes commands as a batch (sequentially, not atomically).
-   */
-  private ResultSet executeBatch(final List<String> commands) {
-    final List<Object> results = new ArrayList<>();
-
-    for (final String command : commands) {
-      final Object result = executeSingleCommandInternal(command);
-      results.add(result);
-    }
-
-    return createResultSet(results);
+    return committed[0];
   }
 
   /**

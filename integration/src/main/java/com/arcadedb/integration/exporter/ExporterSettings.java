@@ -18,10 +18,10 @@
  */
 package com.arcadedb.integration.exporter;
 
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -60,8 +60,7 @@ public class ExporterSettings {
         break;
       }
 
-    final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-    file = file.formatted(dateFormat.format(System.currentTimeMillis()));
+    file = file.formatted(LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
   }
 
   public int parseParameter(String name, final String value) {

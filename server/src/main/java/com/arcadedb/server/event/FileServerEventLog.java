@@ -24,19 +24,19 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
-import java.text.SimpleDateFormat;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -76,7 +76,7 @@ public class FileServerEventLog implements ServerEventLog {
             if (pos < 0)
               continue;
 
-            final int fileIdx = Integer.parseInt(fileName.substring(pos + 1, fileName.length() - FILE_EXT.length()));
+            final int fileIdx = fileCounter(fileName);
             if (fileIdx > maxCounter)
               maxCounter = fileIdx;
 
@@ -88,23 +88,14 @@ public class FileServerEventLog implements ServerEventLog {
         }
       }
 
-      existentFiles.sort(Comparator.reverseOrder());
-
-      if (existentFiles.size() > KEEP_FILES) {
-        // REMOVE THE OLDEST FILES
-        while (existentFiles.size() > KEEP_FILES) {
-          final String removed = existentFiles.removeLast();
-          FileUtils.deleteFile(new File(logDirectory, removed));
-          LogManager.instance().log(this, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
-        }
-      }
+      retainNewest(logDirectory, existentFiles);
     }
 
     // ASSIGN THE NEXT NUMBER
     ++maxCounter;
 
     newFileName = new File(logDirectory,
-        FILE_PREFIX + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date()) + "." + maxCounter + FILE_EXT);
+        FILE_PREFIX + LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP_SECONDS) + "." + maxCounter + FILE_EXT);
     try {
       if (!newFileName.createNewFile())
         throw new ServerException("Error on creating new server event log file " + newFileName);
@@ -130,6 +121,28 @@ public class FileServerEventLog implements ServerEventLog {
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on writing into server event log file %s", e, newFileName);
     }
+  }
+
+  /**
+   * Sorts {@code files} newest first and deletes all but the newest {@link #KEEP_FILES} from {@code logDirectory} and
+   * from the list. Newest by the counter every start increments, not by name: a name's timestamp was formatted with
+   * the default locale's calendar and digits before issue #8301, so a Buddhist-year or Arabic-Indic-digit name sorts
+   * after every newer one, and name order deleted the newest logs while keeping those forever.
+   */
+  static void retainNewest(final File logDirectory, final List<String> files) {
+    files.sort(Comparator.comparingInt(FileServerEventLog::fileCounter).reversed());
+    while (files.size() > KEEP_FILES) {
+      final String removed = files.removeLast();
+      FileUtils.deleteFile(new File(logDirectory, removed));
+      LogManager.instance().log(FileServerEventLog.class, Level.FINE, "Deleted server event log file %s (keep max %d files)", removed, KEEP_FILES);
+    }
+  }
+
+  /**
+   * The start counter a log file name ends with, "server-event-log-&lt;timestamp&gt;.&lt;counter&gt;.jsonl".
+   */
+  static int fileCounter(final String fileName) {
+    return Integer.parseInt(fileName.substring(fileName.indexOf('.') + 1, fileName.length() - FILE_EXT.length()));
   }
 
   String formatEventTime(final long epochMillis) {

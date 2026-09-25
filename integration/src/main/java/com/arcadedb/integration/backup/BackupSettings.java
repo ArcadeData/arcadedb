@@ -18,12 +18,12 @@
  */
 package com.arcadedb.integration.backup;
 
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -101,12 +101,11 @@ public class BackupSettings {
     }
 
     if (file == null)
-      // ASSIGN DEFAULT FILENAME. THE SERVER REPEATS THIS CONVENTION IN BackupCoordinator - IT CANNOT DEPEND ON THIS
-      // MODULE - AND ITS RETENTION READS BACK BOTH, SO CHANGE ONE AND CHANGE THE OTHER;
-      // theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention FAILS THE MOMENT THEY DRIFT
+      // ASSIGN DEFAULT FILENAME. THE SERVER REPEATS THIS "<db>-backup-<timestamp>.zip" CONVENTION IN BackupCoordinator -
+      // IT CANNOT DEPEND ON THIS MODULE - AND ITS RETENTION READS BACK BOTH. THE TIMESTAMP IS THE SHARED
+      // DateUtils.FILE_NAME_TIMESTAMP; theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention FAILS IF THE REST DRIFTS
       if ("full".equals(format)) {
-        final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-        file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
+        file = "%s-backup-%s.zip".formatted(databaseName, LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
       }
   }
 
