@@ -55,17 +55,33 @@ class Issue7795TypeIndexBucketLimitTest extends TestHelper {
       probe.addIndexOnBucket(recordingLimits(bucketIndex, limits));
 
     database.transaction(() -> {
+      // HOW MANY ENTRIES EACH BUCKET HOLDS FOR THE KEY, IN THE ORDER THE TYPE INDEX VISITS THEM
+      final IndexInternal[] buckets = real.getIndexesOnBuckets();
+      final int[] perBucket = new int[buckets.length];
+      for (int b = 0; b < buckets.length; b++)
+        try (final IndexCursor cursor = buckets[b].get(new Object[] { "k" })) {
+          while (cursor.hasNext()) {
+            cursor.next();
+            perBucket[b]++;
+          }
+        }
+
       for (final int limit : new int[] { 1, 5, 15, PER_KEY - 1 }) {
         limits.clear();
         final List<Object> rows = new ArrayList<>();
         probe.get(new Object[] { "k" }, limit).forEachRemaining(rows::add);
-
         assertThat(rows).hasSize(limit);
-        assertThat(limits).as("limit %d", limit).isNotEmpty();
-        assertThat(limits.getFirst()).as("the first bucket is asked for the whole limit").isEqualTo(limit);
-        for (final int asked : limits)
-          assertThat(asked).as("a bucket asked for %d rows under limit %d", asked, limit).isBetween(1, limit);
+
+        // EVERY BUCKET IS ASKED FOR EXACTLY WHAT THE BUCKETS BEFORE IT LEFT MISSING, AND NONE AFTER THE LIMIT IS MET
+        final List<Integer> expected = new ArrayList<>();
+        int remaining = limit;
+        for (int b = 0; b < buckets.length && remaining > 0; b++) {
+          expected.add(remaining);
+          remaining -= Math.min(remaining, perBucket[b]);
+        }
+        assertThat(limits).as("limits pushed down under limit %d", limit).isEqualTo(expected);
       }
+      assertThat(limits).as("limit %d must span more than one bucket", PER_KEY - 1).hasSizeGreaterThan(1);
 
       // NO LIMIT STAYS NO LIMIT
       limits.clear();
