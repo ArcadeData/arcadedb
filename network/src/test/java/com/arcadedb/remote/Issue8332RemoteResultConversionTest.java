@@ -130,6 +130,20 @@ class Issue8332RemoteResultConversionTest {
   }
 
   @Test
+  void rowWithUnknownCategoryFallsBackToAProjectionConvertedOnce() {
+    final CountingJSONObject row = new CountingJSONObject("{\"@cat\":\"x\",\"a\":1,\"@props\":\"a:3\"}");
+
+    final Result result = database.json2Result(row);
+
+    // json2Record() is asked, finds no category it can build, and must not have paid a conversion for that answer.
+    assertThat(database.json2RecordCalls).isEqualTo(1);
+    assertThat(row.toMapCalls).isEqualTo(1);
+    assertThat(result.isElement()).isFalse();
+    assertThat(result.getPropertyNames()).containsExactly("a");
+    assertThat(result.<Object>getProperty("a")).isEqualTo(1L);
+  }
+
+  @Test
   void hintedRowDropsEveryMetadataField() {
     final Result result = database.json2Result(
         new JSONObject("{\"@rid\":\"#3:4\",\"@type\":\"T\",\"@in\":\"#1:1\",\"@out\":\"#1:2\",\"n\":1,\"@props\":\"n:3\"}"));
