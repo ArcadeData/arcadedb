@@ -112,6 +112,31 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
   }
 
   @Test
+  void anEdgeReportedBeforeTheRebuildOpenedItsWatchIsNotDuplicated() {
+    // The transaction creates its edge while no build is running, a rebuild opens its watch before the transaction
+    // commits, and the scan reads the source only after the commit: the scan captures the edge, and the buffered
+    // delta must not add it a second time
+    final GraphAnalyticalView view = builder(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).build();
+    final Vertex a = person(0);
+    final Vertex b = person(1);
+    final long before = a.countEdges(Vertex.DIRECTION.OUT, "KNOWS");
+
+    final int held = GraphAnalyticalView.BUILD_PERMITS.drainPermits();
+    try {
+      database.begin();
+      a.modify().newEdge("KNOWS", b);
+      view.buildAsync(); // opens its watch now, scans once a permit is back
+      database.commit();
+    } finally {
+      GraphAnalyticalView.BUILD_PERMITS.release(held);
+    }
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(view.countEdges(view.getNodeId(a.getIdentity()), Vertex.DIRECTION.OUT, "KNOWS")).isEqualTo(before + 1);
+    assertDegreesMatchTheRecords(view);
+  }
+
+  @Test
   void offBuildRacedByACommitIsPublishedStale() {
     final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.OFF).buildAsync());
     // Not kept up to date, so it cannot hold the raced commits: it must say so rather than claim to be current

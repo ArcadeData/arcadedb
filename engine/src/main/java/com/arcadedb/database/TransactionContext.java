@@ -2682,7 +2682,7 @@ public class TransactionContext implements Transaction {
     final Boolean thread = asyncFlush;
     if (thread != null)
       return thread;
-    return embedded == null || embedded.isAsyncFlush();
+    return embedded == null || embedded.isAsyncFlushSetting();
   }
 
   /**

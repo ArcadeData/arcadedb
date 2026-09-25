@@ -1219,8 +1219,9 @@ public class CypherOptimizer {
       // ExpandAll does), so the table is the POLYMORPHIC bucket list. A label with no type matches nothing (#8377).
       final String targetLabel = gav.getTargetLabel();
       if (targetLabel != null) {
-        if (database.getSchema().existsType(targetLabel)) {
-          final var buckets = database.getSchema().getType(targetLabel).getBuckets(true);
+        final var targetType = database.getSchema().getTypeOrNull(targetLabel);
+        if (targetType != null) {
+          final var buckets = targetType.getBuckets(true);
           final int[] ids = new int[buckets.size()];
           for (int b = 0; b < buckets.size(); b++)
             ids[b] = buckets.get(b).getFileId();

@@ -122,10 +122,6 @@ public class ExecutionResponse {
     return this;
   }
 
-  public boolean isAlreadySent() {
-    return alreadySent;
-  }
-
   /** The value of a header set with {@link #setHeader}, matched case-insensitively, or null. */
   public String getHeader(final String name) {
     if (headers != null)
