@@ -162,7 +162,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
     assertThat(schema.getIndexByName(INDEX_NAME)).isNotSameAs(indexBefore);
     assertThat(schema.existsBucket(blockingBucketName)).isTrue();
-    assertThat(neighbors()).containsExactly("a");
+    assertNearestNeighbourIsA();
   }
 
   /**
@@ -226,7 +226,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
         .as("the replacement is published once its schema hook has run")
         .isNotSameAs(indexBefore);
     assertThat(schema.existsBucket(blockingBucketName)).isTrue();
-    assertThat(neighbors()).containsExactly("a");
+    assertNearestNeighbourIsA();
   }
 
   /**
@@ -247,7 +247,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     assertThat(schema.getBucketByName(addedBucket).getFileId()).isEqualTo(addedFileId);
     assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
     assertThat(schema.getType(TYPE_NAME).getAllIndexes(false)).isNotEmpty();
-    assertThat(neighbors()).containsExactly("a");
+    assertNearestNeighbourIsA();
   }
 
   /**
@@ -298,7 +298,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
     assertThat(schema.getIndexByName(INDEX_NAME)).isNotSameAs(indexBefore);
     assertThat(schema.existsBucket(blockingBucketName)).isTrue();
-    assertThat(neighbors()).containsExactly("a");
+    assertNearestNeighbourIsA();
   }
 
   /**
@@ -311,6 +311,11 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   void aLoadThatThrowsInsideTheWindowLeavesNothingStaged() throws Exception {
     final LocalSchema schema = schema();
     final String blockingBucketName = firstBucketNameOf(schema);
+    final IndexInternal bucketLevelIndexBefore = bucketLevelVectorIndex(schema);
+    // Armed by the fixture's writes. The failed load below must leave it armed: a load that dies publishes nothing,
+    // so the instances still published are the live ones, and retiring them (issue #8310) would silently end their
+    // background rebuilds.
+    assertThat(inactivityTimerThreadsOf(bucketLevelIndexBefore)).hasSize(1);
 
     final BlockingHook hook = installBlockingBucket(schema, blockingBucketName);
     hook.failInsteadOfBlocking = true;
@@ -323,13 +328,20 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
       restoreRealBuckets(schema);
     }
 
+    assertThat(bucketLevelVectorIndex(schema))
+        .as("a load that fails leaves the previous generation published (issue #7963)")
+        .isSameAs(bucketLevelIndexBefore);
+    assertThat(inactivityTimerThreadsOf(bucketLevelIndexBefore))
+        .as("and leaves it running: only what the failed load built itself is retired (issue #8310)")
+        .hasSize(1);
+
     // The window has to be closed, which a second load is the only honest way to observe: beginStagedPublication()
     // refuses outright when one is still open.
     schema.load(ComponentFile.MODE.READ_WRITE, true);
 
     assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
     assertThat(schema.existsBucket(blockingBucketName)).isTrue();
-    assertThat(neighbors()).containsExactly("a");
+    assertNearestNeighbourIsA();
   }
 
   /**
@@ -404,6 +416,28 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
       }
       super.onAfterSchemaLoad();
     }
+  }
+
+  /**
+   * The search every test ends on. On failure it says what state the vector index the query hit was in, because the
+   * two ways this can go wrong look identical from the result alone - an empty list - and differ in exactly what
+   * those counters show: a graph never built ({@code graphNodeCount} 0) against locations never loaded (issue #8178).
+   */
+  private void assertNearestNeighbourIsA() {
+    final List<String> found = neighbors();
+    assertThat(found)
+        .as(() -> "nearest neighbour of the first fixture vector; vector index stats: "
+            + bucketLevelVectorIndex(schema()).getStats())
+        .containsExactly("a");
+  }
+
+  private static List<Thread> inactivityTimerThreadsOf(final IndexInternal index) {
+    final String name = "VectorIndex-InactivityTimer-" + index.getName();
+    final List<Thread> result = new ArrayList<>();
+    for (final Thread t : Thread.getAllStackTraces().keySet())
+      if (t.isAlive() && t.getName().equals(name))
+        result.add(t);
+    return result;
   }
 
   /** The nearest neighbour of the first fixture vector. Answers nothing at all when the index loaded no vectors. */

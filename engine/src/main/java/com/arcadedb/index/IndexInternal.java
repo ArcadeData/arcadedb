@@ -177,6 +177,20 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * Tells an index that a schema reload has published another instance in its place, so nothing reaches this one
+   * through the schema any more (issue #8310). Stops the maintenance the index would otherwise start on its own
+   * initiative, now and later - which on the retired instance is work done twice, on files the successor owns too -
+   * and nothing else: a query that resolved this instance just before the swap may still be running on it, so its
+   * files, its state and any work a caller is waiting on are left alone. That is why this is not
+   * {@link #releaseBackgroundResources()}, which also cancels a graph build in flight.
+   * <p>
+   * {@code LocalDatabase} releases only the indexes the schema lists on close and drop, so without this call a
+   * retired instance's background work outlives both. Most indexes run nothing of the sort and this is a no-op.
+   */
+  default void onSuperseded() {
+  }
+
+  /**
    * Asks the index to hold off the maintenance it starts on its own initiative, for the duration of a bulk load.
    * <p>
    * "On its own initiative" is the whole distinction: work a read or a write NEEDS is not affected, and neither is
