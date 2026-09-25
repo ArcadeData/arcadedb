@@ -147,6 +147,8 @@ public class GraphAnalyticalViewPersistence {
         final int ct = gavDef.getInt("compactionThreshold", -1);
         if (ct >= 0)
           builder.withCompactionThreshold(ct);
+        if (gavDef.has("useWhenStale"))
+          builder.withUseWhenStale(gavDef.getBoolean("useWhenStale"));
         // Defers to a persisted CSR from disk if one plausibly applies (issue #6583, made lazy by #6632 —
         // the actual read waits for a real query or an explicit awaitReady()) and only falls back to the
         // async full rebuild below when there is none — see restoreFromDiskOrBuildAsync() for the check
@@ -247,6 +249,10 @@ public class GraphAnalyticalViewPersistence {
     json.put("updateMode", view.getUpdateMode().name());
     if (view.getCompactionThreshold() != GraphAnalyticalView.DEFAULT_COMPACTION_THRESHOLD)
       json.put("compactionThreshold", view.getCompactionThreshold());
+    // Only an explicit per-view override is saved: without one the view follows the database's configuration (#7875)
+    final Boolean useWhenStale = view.getUseWhenStaleOverride();
+    if (useWhenStale != null)
+      json.put("useWhenStale", useWhenStale.booleanValue());
     return json;
   }
 }

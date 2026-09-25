@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.graph.EdgeIdentitySet;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
@@ -32,6 +33,9 @@ import java.util.function.BiPredicate;
  * joined by a Cartesian product, as a predicate the join applies to each candidate pair before
  * merging it into a row - so a pair that would bind the same edge to two different relationship
  * variables is rejected before a row is ever allocated for it, and never reaches a further join.
+ * <p>
+ * A relationship walked through a Graph Analytical View is bound as a {@link GAVEdgeRef} rather than an edge record,
+ * and is compared with the other labels of its clause (issue #8394).
  */
 public final class RelationshipUniquenessFilter {
   private RelationshipUniquenessFilter() {
@@ -47,6 +51,7 @@ public final class RelationshipUniquenessFilter {
       if (variables.size() < 2)
         continue;
       EdgeIdentitySet used = null;
+      Set<GAVEdgeRef> usedRefs = null;
       for (final String variable : variables) {
         // A variable owned by a component not yet joined is bound on neither side and is skipped:
         // it cannot conflict with anything until the join that introduces it.
@@ -54,6 +59,13 @@ public final class RelationshipUniquenessFilter {
             : right.hasProperty(variable) ? right.getProperty(variable) : null;
         if (binding == null)
           continue;
+        if (binding instanceof GAVEdgeRef ref) {
+          if (usedRefs == null)
+            usedRefs = new HashSet<>();
+          if (!usedRefs.add(ref))
+            return true;
+          continue;
+        }
         if (used == null)
           used = new EdgeIdentitySet();
         if (RelationshipBindings.addBindingAndDetectOverlap(used, binding))

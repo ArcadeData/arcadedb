@@ -85,6 +85,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -567,6 +568,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // is published from a per-database verdict: exactly the databases the install did not bring to snapshotIndex are
   // clamped, and the healthy co-located ones keep serving unclamped reads. Entries are removed when the database is
   // genuinely refreshed (a later install, a targeted resync, or a full resync).
+  // DURABLE since issue #8137, like the quarantine it always travels with: mirrored into the "floors" object of
+  // .raft/applied-index under appliedIndexFileLock, in the same write as the quarantine, and read back by
+  // ensureAppliedIndexLoaded(). In memory only, a restart kept the database quarantined but dropped its clamp, so a
+  // LINEARIZABLE read reaching the node directly was served from the copy the install had given up on.
   private final ConcurrentHashMap<String, Long> staleDatabaseAppliedFloors = new ConcurrentHashMap<>();
   // Set to true after applyTransaction hits a genuinely unrecoverable, node-wide condition: a JVM
   // Error (OOM, StackOverflow - the JVM itself is unstable), an unknown committed entry type (#4798,
@@ -5434,6 +5439,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               for (final String name : perDb.keySet())
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
               restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
+              restorePersistedFloors(json.getJSONObject("floors", new JSONObject()));
             } else
               // Legacy format: a single plain number is the global Raft-log position.
               globalAppliedIndex = Long.parseLong(content);
@@ -5496,6 +5502,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Seeds {@link #staleDatabaseAppliedFloors} from the {@code floors} object of the persisted applied-index file
+   * (issue #8137). Called from {@link #ensureAppliedIndexLoaded()} right after the quarantine is restored, under
+   * {@link #appliedIndexFileLock}.
+   * <p>
+   * A floor only means something beside its quarantine, so one whose database is no longer quarantined is ignored.
+   * A database quarantined by an incomplete snapshot install but carrying no floor - a file written by a build that
+   * persisted the quarantine (#7735) but not yet the floor - is clamped at its own persisted applied position, which
+   * is where {@code markDatabasesNotAtSnapshotIndex} put the floor in the first place: the install deliberately
+   * left that position behind for it.
+   */
+  private void restorePersistedFloors(final JSONObject floors) {
+    for (final String name : floors.keySet())
+      if (divergedDatabases.containsKey(name))
+        staleDatabaseAppliedFloors.putIfAbsent(name, Math.max(0L, floors.getLong(name, 0L)));
+
+    for (final Map.Entry<String, DivergenceCause> entry : divergedDatabases.entrySet())
+      if (entry.getValue() == DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE) {
+        final Long applied = appliedIndexByDb.get(entry.getKey());
+        staleDatabaseAppliedFloors.putIfAbsent(entry.getKey(), Math.max(0L, applied != null ? applied : -1L));
+      }
+
+    for (final Map.Entry<String, Long> entry : staleDatabaseAppliedFloors.entrySet())
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' is still behind a snapshot install from a previous run: clamping its LINEARIZABLE / "
+              + "read-your-writes reads at appliedIndex=%d until a resync succeeds (issue #8137)",
+          entry.getKey(), entry.getValue());
+  }
+
+  /**
    * Serialises the in-memory applied-index bookkeeping to {@code .raft/applied-index} via a temp file
    * and atomic rename, so a crash mid-write never leaves a corrupt file.
    * <p>
@@ -5526,6 +5561,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         for (final Map.Entry<String, DivergenceCause> entry : divergedDatabases.entrySet())
           quarantine.put(entry.getKey(), entry.getValue().name());
         json.put("quarantine", quarantine);
+      }
+      // The read floors qualify the quarantine and go with it (issue #8137); omitted when none is outstanding
+      if (!staleDatabaseAppliedFloors.isEmpty()) {
+        final JSONObject floors = new JSONObject();
+        for (final Map.Entry<String, Long> entry : staleDatabaseAppliedFloors.entrySet())
+          floors.put(entry.getKey(), entry.getValue().longValue());
+        json.put("floors", floors);
       }
 
       Files.createDirectories(file.getParent());
@@ -6062,6 +6104,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public long getDatabaseAppliedFloor(final String dbName) {
     if (dbName == null)
       return -1;
+    // A floor restored from disk must clamp the very first read after a restart (issue #8137). Latched after the
+    // first read, so this costs a volatile field test
+    ensureAppliedIndexLoaded();
     final Long floor = staleDatabaseAppliedFloors.get(dbName);
     return floor != null ? floor : -1;
   }
@@ -6076,20 +6121,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * machinery: the mark keeps {@link #isResyncInProgress()} true, and {@link #retryUnfilledSnapshotGap()} re-drives
    * the resync on the HealthMonitor tick until the database is refreshed for real.
    */
-  private void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
-    // One quarantine write for the whole batch (code review on PR #8146). Since the quarantine became durable
-    // (#7735) a per-database markStateDiverged() would re-serialise the applied-index file and fsync+rename it
-    // once per database, back to back, while holding the lock the apply thread also needs - N synchronous
-    // rewrites where this loop used to do pure in-memory work. The set is what one install gave up on, so it
-    // can be more than a couple on a node with many co-located databases.
-    quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+  // @VisibleForTesting
+  void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
+    final Map<String, Long> published = new LinkedHashMap<>();
+    // One write for the whole batch, quarantine and floors together (code review on PR #8146, issue #8137). Since the
+    // quarantine became durable (#7735) a per-database markStateDiverged() would re-serialise the applied-index file
+    // and fsync+rename it once per database, back to back, while holding the lock the apply thread also needs - N
+    // synchronous rewrites where this loop used to do pure in-memory work. The set is what one install gave up on,
+    // so it can be more than a couple on a node with many co-located databases.
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      for (final String dbName : databases) {
+        // The install deliberately did NOT advance the persisted position of this database, so it still carries whatever
+        // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
+        // nothing is known about.
+        final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
+        staleDatabaseAppliedFloors.put(dbName, floor);
+        published.put(dbName, floor);
+      }
+      // Writes the file once when it quarantines anything; a batch whose databases all were already quarantined
+      // wrote nothing, and its floors still have to reach the disk
+      if (quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE).isEmpty() && !published.isEmpty()
+          && !persistAppliedIndexFile() && !closed)
+        LogManager.instance().log(this, Level.WARNING,
+            "The read floors of database(s) %s could NOT be written to %s: a restart before this is fixed serves their "
+                + "LINEARIZABLE reads unclamped. Check that the .raft directory is writable and has free space "
+                + "(issue #8137)", published.keySet(), getAppliedIndexFile());
+    }
 
-    for (final String dbName : databases) {
-      // The persisted position was deliberately NOT advanced for this database above, so it still carries whatever
-      // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
-      // nothing is known about.
-      final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
-      staleDatabaseAppliedFloors.put(dbName, floor);
+    for (final Map.Entry<String, Long> entry : published.entrySet()) {
+      final String dbName = entry.getKey();
+      final long floor = entry.getValue();
       // The cause is named above, because the alert quotes it: nothing failed while APPLYING anything here, the
       // install is what did not finish the job, and an operator sent to look for an apply error would find none
       // (issue #7741).
@@ -6196,12 +6258,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // quarantined after the next restart - the inverse of the bug, and just as wrong.
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      if (divergedDatabases.remove(dbName) != null)
+      // The resync restored this database, so its read floor is satisfied (issue #6760). Dropped in the same write
+      // as the quarantine, so the file never keeps one without the other (issue #8137)
+      final boolean floorRemoved = staleDatabaseAppliedFloors.remove(dbName) != null;
+      if (divergedDatabases.remove(dbName) != null || floorRemoved)
         persistAppliedIndexFile();
     }
     lastDivergedResyncLogByDb.remove(dbName);
-    // The resync restored this database, so its read floor is satisfied (issue #6760).
-    staleDatabaseAppliedFloors.remove(dbName);
     if (divergedDatabases.isEmpty())
       divergedSwallowedErrors.set(0);
   }
@@ -6336,17 +6399,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Same reasoning as clearDivergedDatabase: the persisted copy has to go with the in-memory one (issue #7735).
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      if (!divergedDatabases.isEmpty()) {
+      // A resync reinstalls every database, so every per-database read floor is satisfied too (issue #6760). The
+      // snapshot-install path re-publishes the floors of the databases it could NOT reinstall right after calling
+      // this, so clearing wholesale here stays correct. Same write as the quarantine (issue #8137)
+      if (!divergedDatabases.isEmpty() || !staleDatabaseAppliedFloors.isEmpty()) {
         divergedDatabases.clear();
+        staleDatabaseAppliedFloors.clear();
         persistAppliedIndexFile();
       }
     }
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
-    // A resync reinstalls every database, so every per-database read floor is satisfied too (issue #6760). The
-    // snapshot-install path re-publishes the floors of the databases it could NOT reinstall right after calling
-    // this, so clearing wholesale here stays correct.
-    staleDatabaseAppliedFloors.clear();
   }
 
   // @VisibleForTesting
