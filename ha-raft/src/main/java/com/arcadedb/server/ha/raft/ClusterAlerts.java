@@ -157,9 +157,24 @@ public class ClusterAlerts {
    *                             Both are text this node did not compose and either can name a filesystem path or
    *                             another tenant's database, so a non-root HTTP caller is told the condition and
    *                             not the detail (review on PR #7953)
+   * @param bootstrapInstalls    the databases this node is installing from the leader's bootstrap snapshot right
+   *                             now, unscoped and sorted (issue #8044). Sampled here for the same reason as the
+   *                             halt: the {@code bootstrapInstalls} member and the {@code bootstrap-install-in-progress}
+   *                             alert are rendered from this one list, so they cannot disagree
    */
   public record NodeStatus(ArcadeStateMachine.CriticalHalt halt, ArcadeStateMachine.RaftLogFailure logFailure,
-      boolean crashLoopEscalated, boolean detailedDiagnostics) {
+      boolean crashLoopEscalated, boolean detailedDiagnostics, List<String> bootstrapInstalls) {
+
+    public NodeStatus {
+      if (bootstrapInstalls == null)
+        bootstrapInstalls = Collections.emptyList();
+    }
+
+    /** The shape before issue #8044, for callers that have no state machine to sample installs from. */
+    public NodeStatus(final ArcadeStateMachine.CriticalHalt halt, final ArcadeStateMachine.RaftLogFailure logFailure,
+        final boolean crashLoopEscalated, final boolean detailedDiagnostics) {
+      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, Collections.emptyList());
+    }
 
     /**
      * What the state machine alone can answer, for the callers that have no HA server and no HTTP user: the
@@ -168,7 +183,8 @@ public class ClusterAlerts {
     static NodeStatus of(final ArcadeStateMachine stateMachine) {
       if (stateMachine == null)
         return new NodeStatus(null, null, false, true);
-      return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true);
+      return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true,
+          stateMachine.getBootstrapInstallsInFlight());
     }
   }
 
@@ -206,6 +222,9 @@ public class ClusterAlerts {
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
+      // The other half of the #7519 bootstrap window, which the readiness body pointed at this document for and
+      // this document did not carry (issue #8044).
+      addBootstrapInstallAlert(nodeStatus.bootstrapInstalls(), visibleDatabases, alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
@@ -782,6 +801,49 @@ public class ClusterAlerts {
             + "peers - it has no copy to give. If this node is itself the leader, transfer leadership first "
             + "(POST /api/v1/cluster/leader): a node cannot install a database from itself.")
         .put("details", new JSONObject().put("databases", names).put("count", missingCount)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the bootstrap-install alert iff this node is
+   * installing at least one database from the leader's first-formation snapshot (issue #8044).
+   * <p>
+   * The #7519 readiness gate holds {@code /api/v1/ready} at 503 for the length of such an install and its body
+   * sends the reader here, but the install path never touches {@code localResync}, marks nothing unreconciled and
+   * trips none of the terminal conditions - so without this the document answered {@code alerts: []} and
+   * {@code localResync.inProgress: false} for a whole database download, which is the #7136 invariant broken
+   * again.
+   * <p>
+   * Node-scoped for the same reason as {@code addBootstrapMissingAlert} and {@code addLocalResyncAlert}: whether
+   * this node is out of the Service is not a per-tenant fact, so the alert fires on the raw count and only the
+   * NAMES are reduced. That also covers a database being reinstalled because it went missing, which the
+   * registry-derived filter could never contain.
+   * <p>
+   * {@code warning}, not {@code critical}: the install ends by itself one way or the other, and a failed download
+   * is retried without an operator. What stays behind if it does not recover is reported by the unreconciled
+   * alerts above, which are the critical ones.
+   */
+  static void addBootstrapInstallAlert(final List<String> installs, final Set<String> visibleDatabases,
+      final JSONArray alerts) {
+    if (installs == null || installs.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "bootstrap-install-in-progress")
+        .put("severity", SEVERITY_WARNING)
+        .put("title", "This node is installing database(s) from the leader's bootstrap snapshot")
+        .put("message", "The cluster's first-formation bootstrap is installing " + installs.size() + " database(s) "
+            + "on this node from the leader's snapshot. Where the install replaces a copy this node already holds, "
+            + "that copy is the one the committed baseline decided against, so /api/v1/ready answers 503 and a "
+            + "Kubernetes Service has taken the node out of rotation until the install ends; a database that was "
+            + "missing here is simply absent until it lands. This is not a resync, so localResync here does not "
+            + "report it.")
+        .put("recommendation", "Nothing to do while it runs: the node rejoins the Service by itself when the "
+            + "install completes, and a failed download is retried automatically once a leader is reachable. If "
+            + "this does not clear, check this node's log for the install error. A node that is itself the leader "
+            + "cannot install from itself and needs leadership transferred first (POST /api/v1/cluster/leader).")
+        .put("details", new JSONObject()
+            .put("databases", namesArray(visible(installs, visibleDatabases)))
+            .put("count", installs.size())));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */

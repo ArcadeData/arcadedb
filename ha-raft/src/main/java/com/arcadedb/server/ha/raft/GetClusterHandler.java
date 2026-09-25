@@ -353,18 +353,38 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // field can disagree, and the document would then carry a null criticalHalt next to a
     // halted-after-critical-error alert, or the reverse.
     final ClusterAlerts.NodeStatus nodeStatus = new ClusterAlerts.NodeStatus(stateMachine.getCriticalHalt(),
-        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user));
+        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user),
+        stateMachine.getBootstrapInstallsInFlight());
     response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
     response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
     // The liveness counterpart (issue #7622): an escalation is what fails /api/v1/health (once, issue #7736), and
     // it was equally invisible here. Same reasoning, same scoping - none.
     response.put("crashLoopEscalated", nodeStatus.crashLoopEscalated());
+    // The #7519 bootstrap install window (issue #8044), the one readiness input still missing after #7872: the
+    // install never touches localResync, so for a whole database download /api/v1/ready answered 503 and pointed
+    // here while everything here read healthy. From the same NodeStatus sample the alert scan below reads.
+    response.put("bootstrapInstalls", buildBootstrapInstalls(nodeStatus.bootstrapInstalls(), authorizedDatabases));
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
             localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader));
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Renders the bootstrap installs in flight for the status document (issue #8044).
+   * <p>
+   * Scoped like {@link #buildLocalResync}: {@code inProgress} and {@code count} are the node-level answer and reach
+   * every caller, the database names are reduced to {@code visibleDatabases}. Written on every answer, with
+   * {@code inProgress: false} rather than absent, so a client can tell "healthy" from "this build does not report
+   * it". Package-private so the shape can be pinned against the published contract without a live cluster.
+   */
+  static JSONObject buildBootstrapInstalls(final List<String> installs, final Set<String> visibleDatabases) {
+    return new JSONObject()
+        .put("inProgress", !installs.isEmpty())
+        .put("count", installs.size())
+        .put("databases", ClusterAlerts.namesArray(ClusterAlerts.visible(installs, visibleDatabases)));
   }
 
   /**

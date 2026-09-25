@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -171,7 +172,9 @@ class Issue7902BootstrapMissingDatabaseAlertTest {
   void aKeptLocalCopyStillGetsTheDivergenceAlert() throws Exception {
     final ArcadeStateMachine sm = stateMachineOnAnEmptyRegistry();
     sm.markBootstrapUnreconciled(KEPT_DB);
-    Files.createDirectories(serverDir.resolve(KEPT_DB));
+    // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
+    // copy of anything (issue #8045).
+    Files.writeString(Files.createDirectories(serverDir.resolve(KEPT_DB)).resolve(LocalSchema.SCHEMA_FILE_NAME), "{}");
 
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.checkBootstrapDivergedDatabases(sm, alerts, null);
@@ -194,7 +197,9 @@ class Issue7902BootstrapMissingDatabaseAlertTest {
     final ArcadeStateMachine sm = stateMachineOnAnEmptyRegistry();
     sm.markBootstrapUnreconciled(MISSING_DB);
     sm.markBootstrapUnreconciled(KEPT_DB);
-    Files.createDirectories(serverDir.resolve(KEPT_DB));
+    // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
+    // copy of anything (issue #8045).
+    Files.writeString(Files.createDirectories(serverDir.resolve(KEPT_DB)).resolve(LocalSchema.SCHEMA_FILE_NAME), "{}");
 
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.checkBootstrapDivergedDatabases(sm, alerts, null);
@@ -214,7 +219,9 @@ class Issue7902BootstrapMissingDatabaseAlertTest {
   void theKeptCopyAlertIsStillSuppressedForACallerThatMayNotSeeIt() throws Exception {
     final ArcadeStateMachine sm = stateMachineOnAnEmptyRegistry();
     sm.markBootstrapUnreconciled(KEPT_DB);
-    Files.createDirectories(serverDir.resolve(KEPT_DB));
+    // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
+    // copy of anything (issue #8045).
+    Files.writeString(Files.createDirectories(serverDir.resolve(KEPT_DB)).resolve(LocalSchema.SCHEMA_FILE_NAME), "{}");
 
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.checkBootstrapDivergedDatabases(sm, alerts, Set.of("some-other-tenants-database"));

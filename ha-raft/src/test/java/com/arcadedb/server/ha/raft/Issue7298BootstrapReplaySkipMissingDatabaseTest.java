@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
@@ -142,6 +143,10 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX));
 
     verify(server, atLeastOnce()).getBackupCoordinator();
+    // The failed install hands off to a retry on the lifecycle executor, which persists the unreconciled mark under
+    // .raft before it releases its holder. Waiting for the release keeps that write from racing the @TempDir
+    // cleanup, which surfaced as "Failed to close extension context" with the test itself green.
+    await().atMost(Duration.ofSeconds(30)).until(() -> sm.getBootstrapInstallsInFlight().isEmpty());
   }
 
   /**
@@ -219,7 +224,9 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = stateMachineOn(server);
     sm.markBootstrapUnreconciled(DB_NAME);
-    Files.createDirectories(serverDir.resolve(DB_NAME));
+    // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
+    // copy of anything (issue #8045).
+    Files.writeString(Files.createDirectories(serverDir.resolve(DB_NAME)).resolve(LocalSchema.SCHEMA_FILE_NAME), "{}");
 
     sm.reconcileBootstrapDivergence(Map.of(DB_NAME, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
 

@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
@@ -183,7 +184,9 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
     final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
     final ArcadeStateMachine sm = leaderStateMachineOn(server);
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
-    Files.createDirectories(serverDir.resolve(DB_NAME));
+    // A closed database, files and all: an EMPTY directory is what a failed install leaves behind, and holds no
+    // copy of anything (issue #8045).
+    Files.writeString(Files.createDirectories(serverDir.resolve(DB_NAME)).resolve(LocalSchema.SCHEMA_FILE_NAME), "{}");
 
     sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX);
 
