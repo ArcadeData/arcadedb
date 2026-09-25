@@ -619,7 +619,7 @@ public class BoltStructureMapper {
       }
 
       case SIG_DURATION:
-        return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), (int) asLong(f.get(3)));
+        return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), asLong(f.get(3)));
 
       case SIG_POINT_2D:
         return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);

@@ -468,6 +468,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private          LSMVectorIndexCompacted compactedSubIndex;
   private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
+  // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
+  // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
+  // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
+  // instance monitor.
+  private volatile boolean                 superseded;
 
   // Page tracking for inserts (avoids getTotalPages() issue with transaction-local pages)
   // Protected by write lock, reset to -1 after transaction commits or graph rebuilds
@@ -4598,6 +4603,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private synchronized void startAsyncGraphRebuild() {
     if (asyncRebuildInProgress)
       return; // Another rebuild is already running
+
+    if (superseded)
+      return; // Retired by a schema reload: its successor does this work (issue #8310)
 
     // Still cooling down from a rebuild that did not fit the heap (issue #6503). Checked HERE, before the thread
     // is spawned, rather than inside admitOnlineRebuild(): the point is to not pay for the attempt at all - no
@@ -9554,6 +9562,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Retires this instance after a schema reload has published its successor (issue #8310): cancels the inactivity
+   * rebuild timer and refuses to arm it again or to start an async rebuild. Left alone on purpose: a graph build
+   * already running, which a query that resolved this instance before the swap may be waiting on, and the graph
+   * build pool it runs on. {@link #releaseBackgroundResources()} would cancel both.
+   */
+  @Override
+  public synchronized void onSuperseded() {
+    superseded = true;
+    cancelInactivityRebuildTimer();
+  }
+
+  /**
    * Stops the inactivity rebuild timer, the graph build pool and the pooled graph searchers (issue #5418). Split
    * out of {@link #close()} because {@code LocalDatabase} must be able to stop them on every database close and
    * drop WITHOUT closing the index files, which stay open until the pending pages have been flushed.
@@ -11112,6 +11132,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (!isValid())
       return; // Index closed or dropped - no point scheduling
 
+    if (superseded)
+      return; // Retired by a schema reload: a write landing here after the swap must not arm it again (issue #8310)
+
     if (delayMs <= 0)
       return; // Disabled
 
@@ -11166,6 +11189,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (timeoutMs <= 0)
       return; // Disabled since this task was armed
 
+    if (superseded)
+      return; // Retired by a schema reload while this task was already running: cancel() cannot stop it (issue #8310)
+
     // The deadline is read here, not enforced by the scheduling: a write that landed after this task was armed
     // moved it, and the remaining wait is what is left of the window from that write (issue #7357).
     final long quietMs = (System.nanoTime() - lastMutationNanos) / 1_000_000L;
@@ -11210,7 +11236,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // retries at the next interval rather than staying stuck with pending mutations.
       if (REBUILD_SEMAPHORE.tryAcquire()) {
         try {
-          buildGraphFromScratch();
+          // Asked again right before the build, not only at the top: a retirement landing in between would
+          // otherwise still pay for one full build on the retired instance (issue #8310). What is left after this
+          // read is the same case as a build already running when the retirement arrives - bounded and finished.
+          if (!superseded)
+            buildGraphFromScratch();
         } finally {
           REBUILD_SEMAPHORE.release();
         }

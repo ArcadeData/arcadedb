@@ -718,6 +718,15 @@ public class LocalSchema implements Schema {
         }
       }
 
+    // What the maps serve right now, taken before they change, so the instances this publication retires can be
+    // released once it is done (issue #8310). Skipped when nothing is staged, which leaves nothing to replace.
+    final Set<IndexInternal> previousIndexes;
+    if (rebuildingEverything || !stagedIndexMap.isEmpty()) {
+      previousIndexes = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
+      previousIndexes.addAll(indexMap.values());
+    } else
+      previousIndexes = null;
+
     // Buckets first, and the order is not arbitrary: a published index names the bucket it is associated with, so
     // publishing indexes first would let a reader resolve an index by name a few instructions before the bucket it
     // points at is resolvable. Nothing points the other way.
@@ -796,7 +805,38 @@ public class LocalSchema implements Schema {
         }
     }
 
+    // The same for the indexes, and for the same reason: nothing reaches them through the schema any more, and
+    // LocalDatabase releases only what the schema still lists on close and drop, so without this nobody ever would
+    // (issue #8310). An LSMVectorIndex keeps an inactivity rebuild timer - a thread of its own - that any write arms,
+    // and the retired instance used to wake up when it expired and run a full graph build: against the live
+    // database, holding the JVM-wide rebuild permit and persisting a graph file its successor owns too, or against
+    // a database closed in between. Retired, never closed or released: the files are shared with the instance that
+    // replaced it, and a query that resolved it before the swap may still be running on it.
+    if (previousIndexes != null)
+      retireIndexesNoLongerPublished(previousIndexes);
+
     endStagedPublication();
+  }
+
+  /**
+   * Retires every index in {@code candidates} the schema no longer publishes (issue #8310), through
+   * {@link IndexInternal#onSuperseded()}. By identity, as with the TimeSeries types above: an incremental refresh
+   * re-registers the instances it did not touch, and those must keep running.
+   */
+  private void retireIndexesNoLongerPublished(final Collection<IndexInternal> candidates) {
+    final Set<IndexInternal> stillPublished = Collections.newSetFromMap(new IdentityHashMap<>(indexMap.size()));
+    stillPublished.addAll(indexMap.values());
+
+    for (final IndexInternal index : candidates)
+      if (!stillPublished.contains(index)) {
+        try {
+          index.onSuperseded();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error retiring index '%s' superseded by a schema reload: %s", null,
+              index.getName(), e.getMessage());
+        }
+      }
   }
 
   /**
@@ -807,7 +847,6 @@ public class LocalSchema implements Schema {
     if (!isStagingPublication())
       return;
 
-    stagedIndexMap.clear();
     stagedBucketMap.clear();
     // Dropping the overlay IS the file-id rollback for the incremental path (issue #7962): nothing it built ever
     // reached the live array, so an aborted refresh leaves the slots exactly as it found them with no undo
@@ -818,8 +857,15 @@ public class LocalSchema implements Schema {
     // Only when the graph was NOT published: after a successful commit these very instances are the live ones
     // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
     // would otherwise leak one engine, and its file handles, per failed reload.
-    if (published.types() != publishedFromStaging)
+    if (published.types() != publishedFromStaging) {
       closeTimeSeriesTypesOf(stagedTypes);
+      // And the indexes it built that never went live (issue #8310), for the same reason. The staged map can carry
+      // instances the published generation is still serving - an incremental refresh re-registers the ones it did
+      // not touch - which is why this goes through the identity check rather than releasing the map wholesale.
+      if (!stagedIndexMap.isEmpty())
+        retireIndexesNoLongerPublished(new ArrayList<>(stagedIndexMap.values()));
+    }
+    stagedIndexMap.clear();
     publishedFromStaging = null;
     stagedTypes.clear();
     stagedBucketId2TypeMap = null;

@@ -257,8 +257,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Multiplier applied to HA_ELECTION_TIMEOUT_MAX when flooring the watchdog timeout. */
   static final int WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER = 4;
 
+  static final String LIFECYCLE_THREAD_NAME        = "arcadedb-sm-lifecycle";
+  static final String SNAPSHOT_INSTALL_THREAD_NAME = "arcadedb-raft-snapshot-install";
+
+  /**
+   * How long {@link #close()} waits, in total, for the task its executors are still running (issue #8182). Bounded
+   * because a download blocked in a socket read is past every interruption point and would otherwise hold the stop
+   * for as long as the leader takes to answer; the task keeps running past the bound and is only logged.
+   */
+  static final long CLOSE_AWAIT_MS = 5_000L;
+
+  // The current worker of each executor below, recorded by its thread factory, so close() can tell by identity - not
+  // by the thread name every state machine in the JVM shares - that it is running on one of them (issue #8182). Each
+  // executor has at most one worker at a time, and a worker running a task is never replaced, so the latest thread
+  // the factory made is the one running any task that calls close().
+  private volatile Thread lifecycleWorker;
+  private volatile Thread snapshotInstallWorker;
+
   private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
-    final Thread t = new Thread(r, "arcadedb-sm-lifecycle");
+    final Thread t = new Thread(r, LIFECYCLE_THREAD_NAME);
+    lifecycleWorker = t;
     t.setDaemon(true);
     return t;
   });
@@ -280,9 +298,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ThreadPoolExecutor snapshotInstallExecutor = createSnapshotInstallExecutor();
 
-  private static ThreadPoolExecutor createSnapshotInstallExecutor() {
+  private ThreadPoolExecutor createSnapshotInstallExecutor() {
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), r -> {
-      final Thread t = new Thread(r, "arcadedb-raft-snapshot-install");
+      final Thread t = new Thread(r, SNAPSHOT_INSTALL_THREAD_NAME);
+      snapshotInstallWorker = t;
       t.setDaemon(true);
       return t;
     }, new ThreadPoolExecutor.AbortPolicy());
@@ -806,6 +825,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public StateMachineStorage getStateMachineStorage() {
     return storage;
+  }
+
+  /**
+   * This node's own latest Raft snapshot boundary (issue #8360), i.e. what {@link #takeSnapshot()} or a prior
+   * leader-driven install last registered via {@link #registerSnapshotMarker}. Served to a peer over
+   * {@code POST /api/v1/cluster/bootstrap-state} so a follower installing a snapshot FROM this node (when this
+   * node is the leader) can register the snapshot under the same term Ratis on this node will send as
+   * {@code previous} for that index, instead of approximating it from a neighboring log entry's term. {@code null}
+   * when no snapshot has been taken yet.
+   */
+  public TermIndex getLatestSnapshotTermIndex() {
+    final var latest = storage.getLatestSnapshot();
+    return latest != null ? latest.getTermIndex() : null;
   }
 
   /**
@@ -1974,9 +2006,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
 
       // Databases the reconciler gave up on: it stopped failing the install for them, so they are NOT at the
-      // snapshot index and must not be recorded as if they were (issue #6760).
-      final Set<String> notInstalled = reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr,
-          clusterToken);
+      // snapshot index and must not be recorded as if they were (issue #6760). The reconciler also carries back
+      // the leader's own latest Raft snapshot TermIndex (issue #8360), fetched over the very same bootstrap-state
+      // RPC call, below.
+      final DatabaseReconciler.ReconcileFromLeaderResult reconcileResult =
+          reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      final Set<String> notInstalled = reconcileResult.notInstalled();
 
       // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
       // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
@@ -1987,12 +2022,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
       //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
       final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
-      // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
-      // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
-      // so we use the term of the first available log entry as a safe upper bound. This value is
-      // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
-      // snapshotIndex tracking; it does not affect data correctness.
-      final long snapshotTerm = firstTermIndexInLog.getTerm();
+      final TermIndex leaderSnapshotTermIndex = reconcileResult.leaderSnapshotTermIndex();
+      if (leaderSnapshotTermIndex != null && !leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
+        LogManager.instance().log(this, Level.WARNING,
+            "Leader-reported snapshot boundary %s does not match the computed install index %d; falling back to "
+                + "the approximate term of the next log entry (issue #8360). This is expected only on a race with "
+                + "the leader's own compaction or against an older leader build; if it persists, the follower "
+                + "risks the same stuck-at-stale-term symptom this fallback existed to avoid.",
+            leaderSnapshotTermIndex, snapshotIndex);
+      final long snapshotTerm = resolveInstalledSnapshotTerm(snapshotIndex, firstTermIndexInLog.getTerm(),
+          leaderSnapshotTermIndex);
       final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
 
       // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
@@ -2094,6 +2133,50 @@ public class ArcadeStateMachine extends BaseStateMachine {
     String reason() {
       return reason;
     }
+  }
+
+  /**
+   * Picks the term to register for a leader-driven snapshot install at {@code snapshotIndex} (issue #8360).
+   * <p>
+   * The correct value is whatever term the LEADER will put in {@code previous} for its next {@code AppendEntries}
+   * at {@code snapshotIndex + 1}. That index is no longer in the leader's log, so Ratis's
+   * {@code LogAppender.getPreviousLog()} falls back to the leader's own snapshot marker
+   * ({@code getLatestSnapshot().getTermIndex()}) - the value {@link #getLatestSnapshotTermIndex()} serves. Matching
+   * that marker is what matters, even if the marker itself carries an inflated term (#575/#593): the follower must
+   * agree with the leader, not with an abstract "true" term. {@code fallbackTerm} (the term of the NEXT log entry,
+   * {@code snapshotIndex + 1}) is only an approximation: it is wrong whenever a term/leadership change lands exactly
+   * on that boundary, which a rolling restart or a chaos-fault election makes routine rather than rare.
+   * <p>
+   * The mismatch matters because Ratis trusts whatever {@code TermIndex} this method's caller returns as gospel:
+   * {@code ServerState.reloadStateMachine} stores it verbatim in {@code latestInstalledSnapshot}, and
+   * {@code ServerState.containsTermIndex} - which answers the {@code AppendEntries} log-matching check the LEADER
+   * runs for every subsequent replication attempt starting right after this boundary - accepts only an EXACT
+   * {@code equals()} match. A wrong term therefore does not degrade gracefully: every future {@code AppendEntries}
+   * whose {@code previous} is this boundary is rejected forever, the leader cannot walk further back (that is
+   * exactly why it drove a snapshot install here in the first place), and it can only re-notify another install -
+   * which recomputes the identical wrong term and reproduces the same stuck boundary index on every reformat.
+   * <p>
+   * {@code leaderSnapshotTermIndex} is the leader's own answer, fetched over the same bootstrap-state RPC this
+   * install already makes for database reconciliation ({@link #getLatestSnapshotTermIndex()} on the leader). It is
+   * trusted only when its index matches {@code snapshotIndex}: {@code firstAvailableLogIndex} the leader hands
+   * Ratis is always exactly one past the leader's own last-taken snapshot index (a Raft log purge always stops at
+   * its snapshot boundary), so the indices coincide on every clean read; a mismatch means a race (the leader's own
+   * compaction advanced between answering Ratis and answering this query) or an older leader build that has not
+   * yet started reporting this field, and falls back to the approximation rather than trusting a term for an index
+   * it was not actually reported against.
+   * <p>
+   * Package-private and static so the decision is unit-testable without a live Raft cluster.
+   */
+  static long resolveInstalledSnapshotTerm(final long snapshotIndex, final long fallbackTerm,
+      final TermIndex leaderSnapshotTermIndex) {
+    if (leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
+      return leaderSnapshotTermIndex.getTerm();
+    return fallbackTerm;
+  }
+
+  /** The one rule for trusting the leader's marker, shared by the decision and the fallback WARNING. */
+  static boolean leaderSnapshotMatches(final long snapshotIndex, final TermIndex leaderSnapshotTermIndex) {
+    return leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() == snapshotIndex;
   }
 
   public long getElectionCount() {
@@ -4021,6 +4104,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void endBootstrapInstall(final String dbName) {
     bootstrapInstallsInFlight.computeIfPresent(dbName, (name, depth) -> depth > 1 ? depth - 1 : null);
+  }
+
+  /**
+   * Whether {@code dbName}'s directory is held by the first-formation bootstrap right now (issue #8363): an install
+   * replacing it is running, or a failed one has handed its holder to the retry it scheduled. The second half is why
+   * {@code RaftReplicatedDatabase} asks this as well as {@link SnapshotInstaller#isInstallInFlight(String)}: between
+   * a failed download and its retry no install is registered there, and the copy on disk is still the one the
+   * committed baseline decided against.
+   * <p>
+   * Asked on every client request, so the common answer - nothing in flight at all - costs one map read.
+   */
+  public boolean isBootstrapInstallInFlight(final String dbName) {
+    return !bootstrapInstallsInFlight.isEmpty() && bootstrapInstallsInFlight.containsKey(dbName);
   }
 
   /**
@@ -6103,10 +6199,61 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
+    // shutdownNow() drops the queued tasks and interrupts the running one, and does NOT wait for it (issue #8182).
+    // A snapshot install past its last interruption point went on creating <db>/.snapshot-new and the pending
+    // marker after close() had returned, i.e. after the caller believed the database directory was quiet - JUnit's
+    // @TempDir teardown in the unit tests, and a restartRatis() about to start a new state machine installing into
+    // the same directory in production. One deadline for both executors, so the bound is the whole wait.
+    //
+    // shutdownNow() also interrupts the caller when the caller is one of those workers (a task closing its own state
+    // machine). That interrupt is taken off for the wait and put back afterwards: left on, it would short-circuit the
+    // wait for the OTHER executor too, whose task runs on a different thread and is exactly what this barrier is for
+    // (review of PR #8366). The wait for the caller's OWN executor is skipped instead - it cannot terminate while its
+    // worker is here waiting for it.
+    final boolean callerInterrupted = Thread.interrupted();
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_AWAIT_MS);
+    // Both waits run whatever the first one met: an interrupt landing during the first must not skip the second, or
+    // the install on the other executor is left writing exactly as before (review of PR #8366). The deadline still
+    // bounds the whole thing, and the interrupt is restored once both are done.
+    final boolean lifecycleWaitInterrupted = !awaitTermination(lifecycleExecutor, lifecycleWorker, LIFECYCLE_THREAD_NAME,
+        deadline);
+    final boolean installWaitInterrupted = !awaitTermination(snapshotInstallExecutor, snapshotInstallWorker,
+        SNAPSHOT_INSTALL_THREAD_NAME, deadline);
+    if (callerInterrupted || lifecycleWaitInterrupted || installWaitInterrupted)
+      Thread.currentThread().interrupt();
     membershipSecuritySeeder.close();
     securityCatchUp.close();
     deferredDatabaseDeleter.close();
     super.close();
+  }
+
+  /**
+   * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down. Skipped when the caller
+   * IS that executor's worker: a task closing its own state machine would otherwise wait out the whole bound for the
+   * one thread that cannot terminate while it waits - itself.
+   *
+   * @param worker     the executor's current worker as its thread factory recorded it, or null if it never made one
+   * @param threadName the executor's thread name, for the log line only
+   *
+   * @return false if the caller was interrupted while waiting, for {@link #close()} to restore the flag
+   */
+  private boolean awaitTermination(final ExecutorService executor, final Thread worker, final String threadName,
+      final long deadlineNanos) {
+    if (worker == Thread.currentThread())
+      return true;
+    // Logged as the budget THIS wait had: the two waits share one deadline, so the second can get far less than
+    // CLOSE_AWAIT_MS.
+    final long budgetNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+    try {
+      if (!executor.awaitTermination(budgetNanos, TimeUnit.NANOSECONDS))
+        LogManager.instance().log(this, Level.WARNING,
+            "State machine closed while a task on '%s' was still running after a %d ms wait; it keeps running in the "
+                + "background and may still write under the database directory", null, threadName,
+            TimeUnit.NANOSECONDS.toMillis(budgetNanos));
+      return true;
+    } catch (final InterruptedException e) {
+      return false;
+    }
   }
 
   /**

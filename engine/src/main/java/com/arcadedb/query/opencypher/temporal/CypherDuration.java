@@ -46,19 +46,23 @@ public class CypherDuration implements CypherTemporalValue {
   private final long seconds;
   private final int nanosAdjustment; // 0..999_999_999
 
-  public CypherDuration(final long months, final long days, final long seconds, final int nanosAdjustment) {
-    // Normalize nanoseconds into seconds
-    long totalNanos = nanosAdjustment;
-    long extraSeconds = totalNanos / 1_000_000_000L;
-    int remainNanos = (int) (totalNanos % 1_000_000_000L);
-    if (remainNanos < 0) {
-      extraSeconds--;
-      remainNanos += 1_000_000_000;
-    }
+  /**
+   * The nanosecond argument is a {@code long} and may hold any number of whole seconds, which are folded into
+   * {@code seconds}: the {@code milliseconds}/{@code microseconds}/{@code nanoseconds} map fields are unbounded, so
+   * {@code duration({nanoseconds: 3000000000})} is three seconds. It was an {@code int}, and every caller that carried
+   * more than 2^31 ns wrapped silently, often to a negative duration (issue #8385).
+   */
+  public CypherDuration(final long months, final long days, final long seconds, final long nanosAdjustment) {
     this.months = months;
     this.days = days;
-    this.seconds = seconds + extraSeconds;
-    this.nanosAdjustment = remainNanos;
+    try {
+      this.seconds = Math.addExact(seconds, Math.floorDiv(nanosAdjustment, 1_000_000_000L));
+    } catch (final ArithmeticException e) {
+      // Reachable with client-supplied values (a Bolt duration struct): an overflow is the caller's mistake and must not
+      // reach the wire layers as an unrecognised throwable (same as divide(), issue #5602)
+      throw new ArithmeticErrorException("Duration overflow: " + seconds + " seconds + " + nanosAdjustment + " nanoseconds");
+    }
+    this.nanosAdjustment = (int) Math.floorMod(nanosAdjustment, 1_000_000_000L);
   }
 
   public static CypherDuration parse(final String str) {
@@ -115,9 +119,11 @@ public class CypherDuration implements CypherTemporalValue {
           case "years":
             return new CypherDuration(((Number) value).longValue() * 12, 0, 0, 0);
           case "milliseconds":
-            return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, (int) (((Number) value).longValue() % 1000 * 1_000_000));
+            return new CypherDuration(0, 0, ((Number) value).longValue() / 1000, ((Number) value).longValue() % 1000 * 1_000_000);
+          case "microseconds":
+            return new CypherDuration(0, 0, ((Number) value).longValue() / 1_000_000, ((Number) value).longValue() % 1_000_000 * 1_000);
           case "nanoseconds":
-            return new CypherDuration(0, 0, 0, ((Number) value).intValue());
+            return new CypherDuration(0, 0, 0, ((Number) value).longValue());
         }
       }
     }
@@ -131,14 +137,18 @@ public class CypherDuration implements CypherTemporalValue {
     final double hours = map.containsKey("hours") ? toDouble(map.get("hours")) : 0;
     final double minutes = map.containsKey("minutes") ? toDouble(map.get("minutes")) : 0;
     final double seconds = map.containsKey("seconds") ? toDouble(map.get("seconds")) : 0;
-    final double milliseconds = map.containsKey("milliseconds") ? toDouble(map.get("milliseconds")) : 0;
-    final double microseconds = map.containsKey("microseconds") ? toDouble(map.get("microseconds")) : 0;
-    final long nanoseconds = map.containsKey("nanoseconds") ? ((Number) map.get("nanoseconds")).longValue() : 0;
+    // Sub-second fields are summed in exact long arithmetic: a double sum loses nanoseconds past 2^53
+    final long totalNanos;
+    try {
+      totalNanos = Math.addExact(Math.addExact(toNanos(map.get("milliseconds"), 1_000_000L),
+          toNanos(map.get("microseconds"), 1_000L)), toNanos(map.get("nanoseconds"), 1L));
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Duration sub-second fields overflow: " + map);
+    }
 
     final double totalMonths = years * 12 + quarters * 3 + months;
-    final double totalNanos = milliseconds * 1_000_000 + microseconds * 1_000 + nanoseconds;
 
-    return fromComponents(0, totalMonths, weeks, days, hours, minutes, seconds, (long) totalNanos);
+    return fromComponents(0, totalMonths, weeks, days, hours, minutes, seconds, totalNanos);
   }
 
   private static CypherDuration fromComponents(final double years, final double months, final double weeks,
@@ -158,7 +168,19 @@ public class CypherDuration implements CypherTemporalValue {
 
     final long nanos = Math.round(fracSeconds * 1_000_000_000) + extraNanos;
 
-    return new CypherDuration(wholeMonths, wholeDays, wholeSeconds, (int) nanos);
+    return new CypherDuration(wholeMonths, wholeDays, wholeSeconds, nanos);
+  }
+
+  /**
+   * Converts a sub-second map field to nanoseconds. Integral values stay exact in long arithmetic; a fractional value
+   * ({@code milliseconds: 1.5}) is rounded to the nearest nanosecond.
+   */
+  private static long toNanos(final Object value, final long nanosPerUnit) {
+    if (value == null)
+      return 0L;
+    if (value instanceof Number number && !hasFraction(number))
+      return Math.multiplyExact(number.longValue(), nanosPerUnit);
+    return Math.round(toDouble(value) * nanosPerUnit);
   }
 
   private static boolean hasFraction(final Number value) {
@@ -321,9 +343,25 @@ public class CypherDuration implements CypherTemporalValue {
       sb.append(s).append('.').append(formatNanos(nanos)).append('S');
   }
 
+  /**
+   * Nine-digit, zero-padded fraction with the trailing zeros dropped. This string is the storage encoding
+   * ({@link TemporalUtil#toCoreJavaType(Object)} writes {@code toString()}, {@link #parse(String)} reads it back), so the
+   * digits must be ASCII whatever the JVM default locale: {@code String.format("%09d")} localized them, and under
+   * {@code ar-SA} or {@code fa-IR} the stored value no longer parsed as a duration (issue #8387).
+   */
   private static String formatNanos(final int nanos) {
-    final String nanoStr = String.format("%09d", Math.abs(nanos));
-    return nanoStr.replaceAll("0+$", "");
+    int value = Math.abs(nanos);
+    int digits = 9;
+    while (value % 10 == 0 && digits > 1) {
+      value /= 10;
+      digits--;
+    }
+    final char[] buffer = new char[digits];
+    for (int i = digits - 1; i >= 0; i--) {
+      buffer[i] = (char) ('0' + value % 10);
+      value /= 10;
+    }
+    return new String(buffer);
   }
 
   @Override

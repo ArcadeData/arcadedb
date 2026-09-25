@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -225,6 +226,26 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Whether ANY install is in flight in this JVM (issue #8363). The cheap first half of
+   * {@link #isInstallInFlight(String)}: {@code RaftReplicatedDatabase} asks it on every client request, and the
+   * overwhelmingly common answer is no, so that answer must cost one map read and no path arithmetic.
+   */
+  static boolean hasInstallsInFlight() {
+    return !INSTALLS_IN_FLIGHT.isEmpty();
+  }
+
+  /**
+   * Whether an install is replacing the database directory at {@code databasePath} right now, from the moment
+   * {@link #install(String, String, Supplier, Supplier, String, ArcadeDBServer)} registers it - before the
+   * download, which is the long part and runs with the live copy still open - until the swap is done or has been
+   * rolled back (issue #8363). Keyed by resolved path, like the registry itself, so two logical servers in one JVM
+   * never answer for each other's copy of a same-named database.
+   */
+  static boolean isInstallInFlight(final String databasePath) {
+    return !INSTALLS_IN_FLIGHT.isEmpty() && INSTALLS_IN_FLIGHT.containsKey(resolvedInFlightKey(Path.of(databasePath)));
+  }
+
+  /**
    * Test-only: registers {@code dbDir} as having an install in flight, so a test can exercise the issue #7128
    * skip guard in {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} without driving a real download.
    * Always paired with {@link #clearInstallInFlightForTesting} once the test is done with it.
@@ -364,6 +385,15 @@ public final class SnapshotInstaller {
     // touched the coordinator or the filesystem at all.
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
     final String inFlightKey = dbPath.toString();
+
+    // The install is the engine's work, whatever thread drives it (issue #8363). The operator resync runs it on the
+    // HTTP worker that received POST /api/v1/cluster/resync, which is tagged as a client request, and registering
+    // this install below is exactly what makes RaftReplicatedDatabase refuse client requests on this database: left
+    // tagged, the install would be refused by the gate it opens the moment anything it drives - the reopen at the
+    // end of the swap included - went through the wrapper. Restored in the outer finally, so the caller's own
+    // request goes on being what it was once the install has returned.
+    final String callerProtocol = ProtocolContext.get();
+    ProtocolContext.set(ProtocolContext.INTERNAL);
     // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen). If
     // they ever do, log it loudly rather than silently double-closing: registering here makes the violation
     // diagnosable, and counted rather than a plain flag so the guard below survives however many overlap
@@ -396,6 +426,7 @@ public final class SnapshotInstaller {
       }
     } finally {
       releaseInstallInFlight(inFlightKey);
+      ProtocolContext.set(callerProtocol);
     }
   }
 
