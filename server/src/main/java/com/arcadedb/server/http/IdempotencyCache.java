@@ -36,6 +36,11 @@ import java.util.concurrent.TimeUnit;
  * Concurrent identical retries are de-duplicated: the first caller {@link #reserve(String) reserves}
  * the key (installing a PENDING marker) and executes; a concurrent caller observes the marker
  * ({@link Reservation#isInFlight()}) and can wait for the winner's result instead of executing again.
+ * A PENDING marker is settled only by its owner ({@link #complete} or {@link #abort}): it is exempt from the TTL
+ * and from the entry-count eviction, because either would let an identical retry reserve the key and execute the
+ * request a second time while the first execution is still running - and a request that outlives the TTL, such
+ * as a long {@code restore database}, is exactly the one a client retries (issue #8324). Pending markers carry no
+ * body, so they cost nothing against {@link #maxBytes}, and there is at most one per executing request.
  * <p>
  * Only successful responses (HTTP 2xx) are cached; errors are passed through so the client can retry
  * a fresh call if it chooses. Entries expire after {@link #ttlMs}. The cache is bounded both by the
@@ -272,10 +277,11 @@ public class IdempotencyCache {
       // the first non-expired entry means every later entry is newer too: stop scanning immediately.
       if (entry.timestampMs >= cutoff)
         break;
+      // Still executing: only its owner may settle it (see the class javadoc).
+      if (entry.pending)
+        continue;
       it.remove();
       currentBytes -= entry.sizeInBytes();
-      if (entry.latch != null)
-        entry.latch.countDown();
     }
   }
 
@@ -287,8 +293,9 @@ public class IdempotencyCache {
     return currentBytes;
   }
 
+  // A pending marker never expires: its owner is still executing and settles it itself (see the class javadoc).
   private boolean isExpired(final CachedEntry e) {
-    return System.currentTimeMillis() - e.timestampMs > ttlMs;
+    return !e.pending && System.currentTimeMillis() - e.timestampMs > ttlMs;
   }
 
   // Inserts (or replaces) an entry and enforces both bounds with O(1) FIFO eviction. Callers hold the
@@ -300,18 +307,20 @@ public class IdempotencyCache {
     evictToBounds();
   }
 
-  // Drops eldest entries (insertion order) until both bounds are satisfied. Each removal is O(1) via a
-  // single LinkedHashMap iterator, so a single insert never scans the whole map.
+  // Drops eldest completed entries (insertion order) until both bounds are satisfied. Each removal is O(1) via a
+  // single LinkedHashMap iterator, so a single insert never scans the whole map: the only entries it steps over
+  // are pending markers, which are never evicted (see the class javadoc) and number at most one per executing
+  // request. When nothing but pending markers is left, the entry count may exceed maxEntries by that many.
   private void evictToBounds() {
     if (cache.size() <= maxEntries && currentBytes <= maxBytes)
       return;
     final Iterator<Map.Entry<String, CachedEntry>> it = cache.entrySet().iterator();
     while (it.hasNext() && (cache.size() > maxEntries || currentBytes > maxBytes)) {
       final CachedEntry evicted = it.next().getValue();
+      if (evicted.pending)
+        continue;
       it.remove();
       currentBytes -= evicted.sizeInBytes();
-      if (evicted.latch != null)
-        evicted.latch.countDown();
     }
   }
 
