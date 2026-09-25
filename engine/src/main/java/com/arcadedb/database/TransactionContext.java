@@ -1761,7 +1761,8 @@ public class TransactionContext implements Transaction {
   }
 
   public boolean hasChanges() {
-    final int totalImpactedPages = modifiedPages.size() + (newPages != null ? newPages.size() : 0);
+    // modifiedPages is null outside begin()..commit/rollback, like newPages
+    final int totalImpactedPages = (modifiedPages != null ? modifiedPages.size() : 0) + (newPages != null ? newPages.size() : 0);
     return totalImpactedPages > 0 || !indexChanges.isEmpty();
   }
 
