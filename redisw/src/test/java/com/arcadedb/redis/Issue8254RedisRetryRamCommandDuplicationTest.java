@@ -46,9 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Driven directly via {@code database.command("redis", ...)} - the same reasoning {@link
  * Issue8037RedisRetryReplyDuplicationTest} documents at length: called this way, with nothing else on the thread
  * holding a transaction open, {@code executeTransaction()}'s own {@code database.transaction(...)} call is the
- * genuinely outermost one, so its retry loop is live (over the HTTP command endpoint, {@code
- * DatabaseAbstractHandler.executeInTransaction}'s own outer retry would make this rewind from scratch with a
- * fresh RAM overlay each time and never reach the bug).
+ * genuinely outermost one, so its retry loop is live. The HTTP path, where the block joins the transaction the
+ * command endpoint wraps the request in, is covered by {@link Issue8254RedisRamTransactionScopeTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

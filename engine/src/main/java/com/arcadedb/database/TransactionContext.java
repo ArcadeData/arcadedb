@@ -308,6 +308,7 @@ public class TransactionContext implements Transaction {
   private volatile Object                             requester;
   private       List<Runnable>                       afterCommitCallbacks        = null;
   private       Set<String>                          registeredCallbackKeys      = null;
+  private       Map<String, Object>                  attachments                 = null;
 
   // #5279: above this many tracked insert reservations the parallel arrays are dropped instead of being reused, so a
   // one-off bulk insert does not keep its (per-record) tracking arrays alive on a long-lived transaction context.
@@ -812,6 +813,25 @@ public class TransactionContext implements Transaction {
       return false;
     addAfterCommitCallback(callback);
     return true;
+  }
+
+  /**
+   * State a component keeps for the life of THIS transaction only, under its own key: released by {@link #reset()},
+   * so it is gone after a commit and after a rollback alike, and a retry that begins again starts without it. Pairs
+   * with {@link #addAfterCommitCallback(Runnable)} for work that must be published only if the transaction commits
+   * (issue #8254: the Redis RAM writes made while a transaction is active).
+   *
+   * @return the value attached under {@code key}, or null when nothing is
+   */
+  public Object getAttachment(final String key) {
+    return attachments != null ? attachments.get(key) : null;
+  }
+
+  /** Attaches {@code value} to this transaction under {@code key}. See {@link #getAttachment(String)}. */
+  public void setAttachment(final String key, final Object value) {
+    if (attachments == null)
+      attachments = new HashMap<>(4);
+    attachments.put(key, value);
   }
 
   public boolean hasCallbackKey(final String key) {
@@ -2740,6 +2760,7 @@ public class TransactionContext implements Transaction {
     newRecords.clear();
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
+    attachments = null;
     commitLockTimeout = null;
     useWALOverride = null;
     txId = -1;

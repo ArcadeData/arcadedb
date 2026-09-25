@@ -266,8 +266,12 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           // #8258: the fused step emits only the traverser at the END of the chain, so it cannot honour a
           // label attached to an intermediate hop (select()/path()/where() naming it would find nothing), nor
           // can it feed a traversal that needs the whole path (an explicit path()/simplePath()/cyclicPath()).
-          // The last hop's label is safe: it names exactly the traverser the fused step produces.
-          boolean canFuse = !traversal.getTraverserRequirements().contains(TraverserRequirement.PATH);
+          // The last hop's label is safe: it names exactly the traverser the fused step produces. The path
+          // requirement is the ROOT traversal's: a child traversal (local(), repeat(), ...) runs on traversers the
+          // root's generator creates, so a path() on the root needs every hop of a chain inside the child too, and the
+          // child's own requirements do not list it.
+          boolean canFuse = !TraversalHelper.getRootTraversal(traversal).getTraverserRequirements()
+              .contains(TraverserRequirement.PATH);
           for (int k = 0; canFuse && k < chain.size() - 1; k++)
             if (!chain.get(k).getLabels().isEmpty())
               canFuse = false;

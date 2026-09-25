@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -315,12 +316,11 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * Executes commands in a database transaction (atomically) and returns one reply per command - the persistent commands (HSET/HDEL) only. The RAM
-   * commands (SET/GET/GETDEL/INCR/DECR and their variants) write straight to {@code database}'s global-variables map, a plain
-   * {@code ConcurrentHashMap} that {@code database.transaction(...)}'s retry/rollback never touches (issue #8254):
-   * buffered in {@code ramOverlay} during the attempt and published to the real map only once the block finally
-   * commits, the same way {@code committed} below is - otherwise a retried {@code INCR} in the same block as a
-   * write that hits an MVCC conflict or a duplicated key applies twice, once per attempt.
+   * Executes commands in a database transaction and returns one reply per command. The persistent commands (HSET/HDEL)
+   * write to the transaction. The RAM commands (SET/GET/GETDEL/INCR/DECR and their variants) work on {@code database}'s
+   * global-variables map, which a rollback never touches, so they follow the rules of {@link #ramOverlay()} and
+   * {@link RamSlot} instead (issue #8254): a SET is published only when the transaction commits, and an INCR/DECR/GETDEL
+   * is applied atomically once, the retry of a conflicting block reusing what its first attempt reserved.
    */
   private List<Object> executeTransaction(final List<String> commands) {
     // Filled fresh on every attempt and published only once the block has returned, the way
@@ -333,52 +333,35 @@ public class RedisQueryEngine implements QueryEngine {
     // else touches this array before the single assignment below.
     @SuppressWarnings("unchecked")
     final List<Object>[] committed = new List[1];
-    final RamOverlay[] ramWrites = new RamOverlay[1];
 
-    // #8254 follow-up (PR #8309 review): database.transaction(...) only actually commits when THIS call
-    // creates the transaction (LocalDatabase.transaction()'s own createdNewTx); joining one already active -
-    // the HTTP command endpoint's own auto-commit wrapper - returns here before that OUTER transaction
-    // commits. Publishing RAM writes right after this call would be premature in that case: a conflict at the
-    // outer level re-runs this whole command from scratch, and a write already published by the discarded
-    // attempt would be picked up as the new baseline and re-applied by the fresh one - the same bug #8254
-    // reported, one nesting level up. Sampled before the call, since nothing else on this thread can open or
-    // close a transaction between the check and database.transaction() below.
-    final boolean nested = database.isTransactionActive();
+    // Deliberately OUTSIDE the retried block, unlike `committed`: one slot per command, surviving the attempts, so a
+    // retry answers with the value the first attempt already took from the shared map instead of taking another.
+    final RamSlot[] slots = new RamSlot[commands.size()];
+    for (int i = 0; i < slots.length; i++)
+      slots[i] = new RamSlot();
 
     database.transaction(() -> {
-      // Falls back to writing straight through (this engine's behavior before #8254) when nested: a MULTI/EXEC
-      // joined into an outer retryable transaction is not the shape #8254 reported, and buffering here without
-      // a way to publish exactly at the OUTER commit would only trade one double-apply window for another.
-      final RamOverlay ramOverlay = nested ? null : new RamOverlay();
       final List<Object> attemptResults = new ArrayList<>(commands.size());
-      for (final String command : commands) {
-        final Object result = executeSingleCommandInternal(command, ramOverlay);
-        attemptResults.add(result);
-      }
+      for (int i = 0; i < commands.size(); i++)
+        attemptResults.add(executeSingleCommandInternal(commands.get(i), slots[i]));
       committed[0] = attemptResults;
-      ramWrites[0] = ramOverlay;
     });
-
-    if (ramWrites[0] != null)
-      ramWrites[0].publishTo(database);
 
     return committed[0];
   }
 
   /**
-   * Buffers the RAM mutations one MULTI/EXEC attempt performs (issue #8254), so a discarded attempt never
-   * reaches the real global-variables map. {@code values} answers in-block reads (SET/GETDEL's overwrite, or
-   * INCR/DECR's running total); {@code remaps} additionally tracks, for a key whose most recent operation in
-   * this attempt was an INCR/DECR, the composed remapping to replay through {@code computeGlobalVariable} at
-   * publish time - PR #8309 review: publishing a blind {@code setGlobalVariable} for a counter would silently
-   * lose a concurrent standalone INCR/DECR on the same key that lands between this attempt finishing and its
-   * publish. A SET/GETDEL clears any pending remap for its key: it supplies a fresh value this attempt itself
-   * chose, no longer relative to whatever else is in the real map, so it publishes as a plain overwrite -
-   * consistent with a bare SET's own last-write-wins semantics outside any block.
+   * The RAM writes made while a transaction is active (issue #8254), attached to that transaction: reads made in the
+   * same transaction see them, {@link #publishTo} copies them to the global-variables map from the transaction's
+   * after-commit callback, and a rollback drops the transaction's attachments and callbacks together, so a write
+   * made by an attempt that did not commit is never published. Only absolute values are kept: a SET, and a
+   * GETDEL/INCR/DECR on a key this transaction already SET. Keyed to the transaction that really commits - a
+   * MULTI/EXEC block's own, the one the HTTP command endpoint wraps the request in, or one the application opened -
+   * not to whether one was already active when the block began, which left the block under the HTTP wrapper
+   * writing straight through.
    */
   private static final class RamOverlay {
-    private final Map<String, Object>              values = new HashMap<>();
-    private final Map<String, UnaryOperator<Object>> remaps = new HashMap<>();
+    private final Map<String, Object> values = new HashMap<>();
 
     boolean hasKey(final String key) {
       return values.containsKey(key);
@@ -388,33 +371,53 @@ public class RedisQueryEngine implements QueryEngine {
       return values.get(key);
     }
 
-    void setAbsolute(final String key, final Object value) {
+    void set(final String key, final Object value) {
       values.put(key, value);
-      remaps.remove(key);
-    }
-
-    void setComputed(final String key, final Object newValue, final UnaryOperator<Object> remapping) {
-      // PR #8309 review: a key this same attempt already fixed to an absolute value (SET/GETDEL, no remap
-      // recorded since) has a fully known base - baking the new value in as another absolute overwrite keeps
-      // it, whereas recording a remap here would replay `remapping` against whatever is in the real map at
-      // publish time instead, silently discarding the SET/GETDEL this same block just did.
-      final boolean absoluteBase = values.containsKey(key) && !remaps.containsKey(key);
-      values.put(key, newValue);
-      if (absoluteBase)
-        return;
-      final UnaryOperator<Object> existing = remaps.get(key);
-      remaps.put(key, existing == null ? remapping : value -> remapping.apply(existing.apply(value)));
     }
 
     void publishTo(final DatabaseInternal database) {
-      for (final Map.Entry<String, Object> entry : values.entrySet()) {
-        final UnaryOperator<Object> remap = remaps.get(entry.getKey());
-        if (remap != null)
-          database.computeGlobalVariable(entry.getKey(), remap);
-        else
-          database.setGlobalVariable(entry.getKey(), entry.getValue());
-      }
+      for (final Map.Entry<String, Object> entry : values.entrySet())
+        database.setGlobalVariable(entry.getKey(), entry.getValue());
     }
+  }
+
+  /**
+   * The value an INCR/DECR/GETDEL at one position of a MULTI/EXEC block took from the shared map (issue #8254).
+   * Those commands answer with a value the caller acts on - a sequence number, a claimed token - so they are applied
+   * atomically to the shared map when they run, as in Redis: buffering them in the transaction and replaying the
+   * increment at commit let two concurrent callers receive the same number. A retry of the block reuses the value
+   * reserved here instead of applying the command again. A block that finally fails does not give it back, the
+   * way a database sequence does not: giving it back could hand the same number to a later caller.
+   */
+  private static final class RamSlot {
+    private boolean reserved;
+    private Object  value;
+
+    Object reserve(final Object value) {
+      this.reserved = true;
+      this.value = value;
+      return value;
+    }
+  }
+
+  private static final String RAM_OVERLAY_ATTACHMENT = "redis.ramOverlay";
+
+  /**
+   * @return the RAM overlay of the active transaction, created and bound to its commit on first use, or null when no
+   * transaction is active and a RAM command applies to the global-variables map directly
+   */
+  private RamOverlay ramOverlay() {
+    if (!database.isTransactionActive())
+      return null;
+    final TransactionContext tx = database.getTransaction();
+    RamOverlay overlay = (RamOverlay) tx.getAttachment(RAM_OVERLAY_ATTACHMENT);
+    if (overlay == null) {
+      final RamOverlay created = new RamOverlay();
+      tx.setAttachment(RAM_OVERLAY_ATTACHMENT, created);
+      tx.addAfterCommitCallback(() -> created.publishTo(database));
+      overlay = created;
+    }
+    return overlay;
   }
 
   /**
@@ -433,12 +436,9 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   /**
-   * @param ramOverlay {@code null} outside {@link #executeTransaction} (or when it is nested, see there): a RAM
-   *                   command then reads/writes {@code database}'s global-variables map directly. Non-null inside an
-   *                   outermost MULTI/EXEC attempt: a RAM command reads/writes this overlay instead, so a discarded
-   *                   attempt's mutations never reach the real one (issue #8254).
+   * @param slot the command's {@link RamSlot} inside a MULTI/EXEC block, null outside one
    */
-  private Object executeSingleCommandInternal(final String query, final RamOverlay ramOverlay) {
+  private Object executeSingleCommandInternal(final String query, final RamSlot slot) {
     final List<String> parts = parseCommand(query);
     if (parts.isEmpty()) {
       throw new CommandParsingException("Empty Redis command");
@@ -447,15 +447,15 @@ public class RedisQueryEngine implements QueryEngine {
     final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
     return switch (cmd) {
       case "PING" -> ping(parts);
-      case "SET" -> set(parts, ramOverlay);
-      case "GET" -> get(parts, ramOverlay);
-      case "GETDEL" -> getDel(parts, ramOverlay);
-      case "EXISTS" -> exists(parts, ramOverlay);
-      case "INCR" -> incrBy(parts, false, ramOverlay);
-      case "INCRBY" -> incrBy(parts, false, ramOverlay);
-      case "INCRBYFLOAT" -> incrBy(parts, true, ramOverlay);
-      case "DECR" -> decrBy(parts, ramOverlay);
-      case "DECRBY" -> decrBy(parts, ramOverlay);
+      case "SET" -> set(parts);
+      case "GET" -> get(parts);
+      case "GETDEL" -> getDel(parts, slot);
+      case "EXISTS" -> exists(parts);
+      case "INCR" -> incrBy(parts, false, slot);
+      case "INCRBY" -> incrBy(parts, false, slot);
+      case "INCRBYFLOAT" -> incrBy(parts, true, slot);
+      case "DECR" -> decrBy(parts, slot);
+      case "DECRBY" -> decrBy(parts, slot);
       case "HSET", "HMSET" -> hSet(parts);
       case "HGET" -> hGet(parts);
       case "HMGET" -> hMGet(parts);
@@ -509,92 +509,99 @@ public class RedisQueryEngine implements QueryEngine {
    * The single normalization point for a RAM key (PR #8309 review): {@code LocalDatabase.getGlobalVariable}/
    * {@code setGlobalVariable}/{@code computeGlobalVariable} all strip a leading {@code $} and refuse a reserved
    * name via {@code SQLQueryEngine.validateVariableName}. Called once per command, on the raw key from the
-   * parsed command, before it ever reaches {@code ramOverlay} or the real map - so both agree on the same key
-   * (an overlay entry stored under the raw {@code "$seq"} would never be found by a later {@code GET seq} in the
-   * same block) and a reserved name is refused at the point the offending command runs, not deferred to publish
-   * time after other commands in the same block may already have committed real document writes.
+   * parsed command, before it ever reaches the transaction's {@link RamOverlay} or the real map - so both agree on
+   * the same key (an overlay entry stored under the raw {@code "$seq"} would never be found by a later
+   * {@code GET seq} in the same transaction) and a reserved name is refused at the point the offending command runs,
+   * which rolls back the rest of its block, rather than when the overlay is published after the commit.
    */
   private String normalizeRamKey(final String key) {
     return SQLQueryEngine.validateVariableName(key);
   }
 
   /**
-   * Reads a RAM key: from {@code ramOverlay} if this key was already written earlier in the same MULTI/EXEC
-   * attempt (a {@code hasKey} check, since a buffered {@code null} - GETDEL's delete - is a real value here,
-   * not "absent"), otherwise from the database's global-variables map. See {@link #executeSingleCommandInternal}.
+   * The key a read-only RAM command (GET/EXISTS) looks up: the leading {@code $} stripped as {@link #normalizeRamKey}
+   * does, but a reserved name is not refused, since it can never hold a value. Answering it as absent is what
+   * {@code LocalDatabase.getGlobalVariable} and the RESP wire path do, so both surfaces agree on the same read.
    */
-  private Object readRamVariable(final String key, final RamOverlay ramOverlay) {
-    if (ramOverlay != null && ramOverlay.hasKey(key))
-      return ramOverlay.get(key);
+  private static String normalizeRamReadKey(final String key) {
+    return key.startsWith("$") ? key.substring(1) : key;
+  }
+
+  /** Reads a RAM key: the active transaction's own write first (a buffered null is GETDEL's delete, not "absent"). */
+  private Object readRamVariable(final String key, final RamOverlay overlay) {
+    if (overlay != null && overlay.hasKey(key))
+      return overlay.get(key);
     return database.getGlobalVariable(key);
   }
 
-  /** Writes a RAM key: buffered in {@code ramOverlay} when inside a MULTI/EXEC attempt, applied immediately otherwise. */
-  private void writeRamVariable(final String key, final Object value, final RamOverlay ramOverlay) {
-    if (ramOverlay != null)
-      ramOverlay.setAbsolute(key, value);
-    else
-      database.setGlobalVariable(key, value);
-  }
-
   /**
-   * Applies the INCR/DECR remapping to a RAM key: computed and buffered in {@code ramOverlay} when inside a
-   * MULTI/EXEC attempt (that map is private to this attempt, so there is no concurrent access to race reading
-   * it back within the block - {@link RamOverlay#publishTo} is what keeps the update atomic against the OUTSIDE
-   * world once the block commits), or applied as one atomic {@code computeGlobalVariable} otherwise - the same
-   * primitive #8248 gave the wire path, because a plain read-then-write would let two concurrent INCR calls both
-   * read the same starting value.
+   * INCR/DECR on a RAM key. On a key the active transaction already SET, the base is that transaction's own value and
+   * the result stays in its overlay. Otherwise it is one atomic {@code computeGlobalVariable} on the shared map - the
+   * primitive #8248 gave the wire path, because a read followed by a write lets two concurrent INCR calls read the
+   * same starting value - applied once per {@link RamSlot}.
    */
-  private Number computeRamVariable(final String key, final UnaryOperator<Object> remapping, final RamOverlay ramOverlay) {
-    if (ramOverlay != null) {
-      final Object newValue = remapping.apply(readRamVariable(key, ramOverlay));
-      ramOverlay.setComputed(key, newValue, remapping);
+  private Number computeRamVariable(final String key, final UnaryOperator<Object> remapping, final RamSlot slot) {
+    if (slot != null && slot.reserved)
+      return (Number) slot.value;
+    final RamOverlay overlay = ramOverlay();
+    if (overlay != null && overlay.hasKey(key)) {
+      final Object newValue = remapping.apply(overlay.get(key));
+      overlay.set(key, newValue);
       return (Number) newValue;
     }
-    return (Number) database.computeGlobalVariable(key, remapping);
+    final Object newValue = database.computeGlobalVariable(key, remapping);
+    return (Number) (slot != null ? slot.reserve(newValue) : newValue);
   }
 
-  private String set(final List<String> parts, final RamOverlay ramOverlay) {
+  private String set(final List<String> parts) {
     if (parts.size() < 3) {
       throw new CommandParsingException("SET requires key and value: SET <key> <value>");
     }
     final String key = normalizeRamKey(parts.get(1));
     final String value = parts.get(2);
-    writeRamVariable(key, value, ramOverlay);
+    final RamOverlay overlay = ramOverlay();
+    if (overlay != null)
+      overlay.set(key, value);
+    else
+      database.setGlobalVariable(key, value);
     return "OK";
   }
 
-  private Object get(final List<String> parts, final RamOverlay ramOverlay) {
+  private Object get(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("GET requires a key: GET <key>");
     }
-    return readRamVariable(normalizeRamKey(parts.get(1)), ramOverlay);
+    return readRamVariable(normalizeRamReadKey(parts.get(1)), ramOverlay());
   }
 
-  private Object getDel(final List<String> parts, final RamOverlay ramOverlay) {
+  /** See {@link #computeRamVariable} for when GETDEL stays in the transaction and when it claims from the shared map. */
+  private Object getDel(final List<String> parts, final RamSlot slot) {
     if (parts.size() < 2) {
       throw new CommandParsingException("GETDEL requires a key: GETDEL <key>");
     }
     final String key = normalizeRamKey(parts.get(1));
-    if (ramOverlay != null) {
-      // ramOverlay is private to this MULTI/EXEC attempt - no concurrent access to race, so a plain
-      // read-then-write is safe here even though it would not be against the real global-variables map below.
-      final Object previous = readRamVariable(key, ramOverlay);
-      ramOverlay.setAbsolute(key, null);
+    if (slot != null && slot.reserved)
+      return slot.value;
+    final RamOverlay overlay = ramOverlay();
+    if (overlay != null && overlay.hasKey(key)) {
+      final Object previous = overlay.get(key);
+      overlay.set(key, null);
       return previous;
     }
     // setGlobalVariable atomically returns the previous value - the same reason GETDEL needs it that INCR needs
     // computeGlobalVariable (issue #8248): two concurrent GETDEL calls on the same key must not both read it.
-    return database.setGlobalVariable(key, null);
+    final Object previous = database.setGlobalVariable(key, null);
+    return slot != null ? slot.reserve(previous) : previous;
   }
 
-  private int exists(final List<String> parts, final RamOverlay ramOverlay) {
+  private int exists(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("EXISTS requires at least one key: EXISTS <key> [key ...]");
     }
+    final RamOverlay overlay = ramOverlay();
     int count = 0;
     for (int i = 1; i < parts.size(); i++) {
-      if (readRamVariable(normalizeRamKey(parts.get(i)), ramOverlay) != null) {
+      if (readRamVariable(normalizeRamReadKey(parts.get(i)), overlay) != null) {
         count++;
       }
     }
@@ -604,9 +611,10 @@ public class RedisQueryEngine implements QueryEngine {
   /**
    * #8271: THE ARITHMETIC AND VALIDATION ARE THE SAME REMAPPING {@code RedisNetworkExecutor} (THE RESP WIRE
    * PATH) USES, so the two surfaces cannot answer this command differently again - a 64-bit increment, a checked
-   * add that refuses to overflow silently, and real Redis' own error text.
+   * add that refuses to overflow silently, and real Redis' own error text. See {@link #computeRamVariable} for
+   * atomicity.
    */
-  private Number incrBy(final List<String> parts, final boolean decimal, final RamOverlay ramOverlay) {
+  private Number incrBy(final List<String> parts, final boolean decimal, final RamSlot slot) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
     }
@@ -614,22 +622,22 @@ public class RedisQueryEngine implements QueryEngine {
 
     if (decimal) {
       final double increment = parts.size() > 2 ? Double.parseDouble(parts.get(2)) : 1D;
-      return computeRamVariable(key, RedisCounterOperations.incrementByFloat(increment), ramOverlay);
+      return computeRamVariable(key, RedisCounterOperations.incrementByFloat(increment), slot);
     }
 
     final long increment = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
-    return computeRamVariable(key, RedisCounterOperations.incrementBy(increment), ramOverlay);
+    return computeRamVariable(key, RedisCounterOperations.incrementBy(increment), slot);
   }
 
   /** See {@link #incrBy}. */
-  private Number decrBy(final List<String> parts, final RamOverlay ramOverlay) {
+  private Number decrBy(final List<String> parts, final RamSlot slot) {
     if (parts.size() < 2) {
       throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
     }
     final String key = normalizeRamKey(parts.get(1));
     final long decrement = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
 
-    return computeRamVariable(key, RedisCounterOperations.decrementBy(decrement), ramOverlay);
+    return computeRamVariable(key, RedisCounterOperations.decrementBy(decrement), slot);
   }
 
   // --- Persistent Commands (database operations) ---

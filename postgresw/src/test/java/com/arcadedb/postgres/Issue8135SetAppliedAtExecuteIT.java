@@ -209,8 +209,8 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
    * an explicit block the refusal aborts the block with no way to recover it and retry the same portal, since
    * {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846). The test still passes whether the marker is cleared
    * before or after the apply - only the weaker assertion below (an error either way, never a false success) is
-   * still real and wire-observable, so that is what it now asserts and documents. The marker-clearing order itself
-   * is pinned only by the javadoc on {@code applyPendingSetting()}, which explains why it cannot regress silently.
+   * still real and wire-observable, so that is what it now asserts. The marker-clearing order itself is pinned at
+   * unit level by {@link PostgresApplyPendingSettingTest}.
    */
   @Test
   @DisplayName("[#8135] a SET refused at Execute, then replayed, is never answered as CommandComplete")

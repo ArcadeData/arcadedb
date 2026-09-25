@@ -24,6 +24,7 @@ import com.arcadedb.gremlin.support.TraversalPlans;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -161,6 +162,14 @@ class Issue8258TraversalStrategyLabelPreservationTest {
 
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().has("name", "Alice").out("KNOWS").out("KNOWS").path());
+  }
+
+  @Test
+  void gavChainInAChildTraversalDoesNotFuseWhenTheRootNeedsThePath() {
+    // The chain lives in local()'s child traversal, but the path() that needs every hop is on the root: a child's
+    // traversers come from the root's generator, so the requirement to honour is the root's, not the child's own.
+    DifferentialTraversal.on(graph)
+        .assertSameResults(g -> g.V().has("name", "Alice").local(__.out("KNOWS").out("KNOWS")).path());
   }
 
   private static Step<?, ?> lastStepOf(final org.apache.tinkerpop.gremlin.process.traversal.Traversal<?, ?> traversal) {

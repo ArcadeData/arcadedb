@@ -758,7 +758,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (!applyTransactionControl(portal))
         beginImplicitTransactionBlock(portal);
       // A SET is applied here and not at Parse (issue #8135), for the same reason as the transaction control above.
-      applyPendingSetting(portal);
+      applyPendingSetting(sessionSettings, portal);
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
@@ -3264,22 +3264,20 @@ public class PostgresNetworkExecutor extends Thread {
    * new Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
    * a SET can be refused ({@link PostgresSessionSettings#set} refuses a read-only parameter or an invalid value, as
    * PostgreSQL does), and a marker consumed by the refused attempt would let a retry of the same portal answer
-   * {@code CommandComplete SET} having applied nothing - {@code sessionSettings.apply()} throwing skips the assignment below
-   * by ordinary Java control flow, so this ordering cannot regress by itself; only reordering the two statements
-   * (or wrapping the apply in a try/finally that always clears the marker) could break it.
+   * {@code CommandComplete SET} having applied nothing.
    * <p>
    * Issue #8261: this ordering has no wire-observable form any more. In autocommit, the Sync after a refused
    * Execute ends the implicit transaction and drops the portal with it (#8212), so a retry is answered {@code
    * 34000} (portal missing) before it ever reaches this method. Inside an explicit block, the refusal aborts the
    * block and {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846), so nothing can recover the block and retry
-   * the same portal either. {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} still pins the
-   * weaker, still-real guarantee that a replay in either shape is answered as an error and never as {@code
-   * CommandComplete SET} - see that test's javadoc for why a test of this exact ordering was not added instead.
+   * the same portal either. Static and package-private so {@code PostgresApplyPendingSettingTest} pins the ordering
+   * directly; {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
+   * that a replay is answered as an error and never as {@code CommandComplete SET}.
    * <p>
    * Recorded in this connection's own settings (issue #8217), never in the database: a {@code SET datestyle} used to
    * rewrite the schema's date-time format, shared by every session on every protocol.
    */
-  private void applyPendingSetting(final PostgresPortal portal) {
+  static void applyPendingSetting(final PostgresSessionSettings sessionSettings, final PostgresPortal portal) {
     final PostgresSessionSettings.Assignment setting = portal.setting;
     if (setting == null)
       return;
