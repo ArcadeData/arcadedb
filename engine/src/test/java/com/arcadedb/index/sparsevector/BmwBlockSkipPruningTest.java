@@ -157,7 +157,7 @@ class BmwBlockSkipPruningTest extends TestHelper {
         // A single group with capacity k reduces the grouped scorer to plain top-K: the threshold
         // is NEGATIVE_INFINITY until the group fills, then tracks the group's worst score, so BMW
         // block-skip must engage exactly as in the non-grouped path.
-        final List<RidScore> bmw = BmwScorer.topKGrouped(queryDims, queryWeights, cursors, 1, k, rid -> "g", null);
+        final List<RidScore> bmw = BmwScorer.topKGrouped(queryDims, queryWeights, () -> cursors, 1, k, rid -> "g", null);
 
         long decodedBlocks = 0;
         for (final PaginatedSegmentDimCursor c : sources)

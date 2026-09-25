@@ -35,6 +35,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.GroupAdmissionState;
+import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -312,34 +313,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (k <= 0)
       throw new IndexException("k must be > 0");
 
-    final boolean useIDF = sparseMetadata != null
-        && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
-
-    final float[] effectiveWeights = new float[queryValues.length];
-    if (useIDF) {
-      final long n = totalDocuments();
-      // df is computed against engine.totalPostings under each dim. Cached per dim within this
-      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf
-      // mid-query don't multiply the cost.
-      final HashMap<Integer, Long> dfCache = new HashMap<>();
-      for (int i = 0; i < queryIndices.length; i++) {
-        final int qDim = queryIndices[i];
-        if (qDim < 0)
-          throw new IndexException("Query dimension must be >= 0, found: " + qDim);
-        if (queryValues[i] == 0.0f) {
-          effectiveWeights[i] = 0.0f;
-          continue;
-        }
-        Long df = dfCache.get(qDim);
-        if (df == null) {
-          df = countPostings(qDim);
-          dfCache.put(qDim, df);
-        }
-        effectiveWeights[i] = queryValues[i] * idf(n, df);
-      }
-    } else {
-      System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
-    }
+    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
 
     // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
     // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
@@ -511,12 +485,159 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (groupKeyResolver == null)
       throw new IndexException("groupKeyResolver must not be null");
 
+    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+
+    final List<RidScore> committed;
+    try {
+      // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
+      // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
+      // with candidates still available (issue #7966).
+      committed = engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs,
+          overlay != null ? overlay.touchedRIDs() : null);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse vector grouped top-K failed", e);
+    }
+
+    if (overlay == null)
+      return committed;
+
+    // EVERY pending row, not the best limit * groupSize of them (PR #8001 review). A global-score cut here happens
+    // BEFORE the per-group caps are applied, so it can spend the whole budget on the surplus of one good group and
+    // starve another of its only candidate: with limit 2, groupSize 1 and pending A:0.99, A:0.98, B:0.50, a budget of
+    // two returns both A rows, admission keeps one and rejects the other, and B is never offered - while the same
+    // search after the commit returns A and B. Only the admission pass knows which rows a cap can still take, so it
+    // is the only thing allowed to drop one. The overlay already scores its whole pending set to sort it, so this
+    // costs list length rather than work, and the admission loop stops as soon as the groups are full.
+    final List<RidScore> pending = overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE);
+    if (pending.isEmpty())
+      return committed;
+
+    // The committed pass chose ITS best `limit` groups, and a pending row can promote a group it ranked out, whose
+    // committed members that pass therefore never returned. Those groups are asked for again (issue #8002), which is
+    // what makes this answer the one the same search gives after the commit - the contract of issue #7966.
+    final GroupedTopUpPlanner planner = new GroupedTopUpPlanner(limit, groupSize);
+    addSource(planner, committed, groupKeyResolver, true);
+    addSource(planner, pending, groupKeyResolver, false);
+    List<RidScore> committedRows = committed;
+    for (final GroupedTopUpPlanner.TopUp topUp : planner.plan()) {
+      final List<RidScore> topUpRows;
+      try {
+        topUpRows = engine.topKForGroups(queryIndices, effectiveWeights, topUp.groupKeys(), groupSize, topUp.floor(),
+            groupKeyResolver, allowedRIDs, overlay.touchedRIDs());
+      } catch (final IOException e) {
+        throw new IndexException("Sparse vector grouped top-K failed", e);
+      }
+      // Disjoint from `committed`: a restricted search returns only groups the first pass left out.
+      committedRows = new ArrayList<>(committed.size() + topUpRows.size());
+      committedRows.addAll(committed);
+      committedRows.addAll(topUpRows);
+      committedRows.sort(BmwScorer.BY_SCORE_DESC);
+    }
+
+    final List<RidScore> merged = mergeByScore(committedRows, pending, Integer.MAX_VALUE);
+
+    // The transaction's rows carry no group accounting of their own, so the caps are re-applied over the union. The
+    // engine already enforced them on the committed half, which makes this pass idempotent there - the same
+    // relationship the SQL layer's own re-application has with a single-bucket result.
+    //
+    // long, not int (PR #8001 review): limit and groupSize are validated as positive and nothing bounds them from
+    // above, so their product overflows to a negative int at around 46341 each. It is a CAPACITY HINT for the list
+    // below and nothing more: what bounds the admitted rows is the GroupAdmissionState, at most limit groups of
+    // groupSize each, and an ArrayList given a small hint grows, it does not truncate.
+    final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS);
+    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
+    final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), rowBudget));
+    for (final RidScore candidate : merged) {
+      if (groups.isFull())
+        break;
+      if (groups.admit(groupKeyResolver.apply(candidate.rid())))
+        out.add(candidate);
+    }
+    return out;
+  }
+
+  /**
+   * The best {@code groupSize} members of each of a fixed set of groups, committed rows plus what the calling
+   * transaction has queued (issue #8002). The second phase of a grouped search merged across several indexes: an
+   * index that ranked a group winning overall out of its own top {@code limit} may still hold members that group
+   * needs.
+   *
+   * @param groupKeys the groups to fill; no other group is ever returned
+   * @param floor     only scores strictly above this matter to the caller; {@link Float#NEGATIVE_INFINITY} for none
+   * @param overlay   what this transaction has queued for this index, or {@code null} for the committed state alone
+   *
+   * @return (RID, score) pairs sorted by score descending, at most {@code groupSize} per group, every one above
+   *         {@code floor}
+   */
+  public List<RidScore> topKForGroups(final int[] queryIndices, final float[] queryValues, final Set<Object> groupKeys,
+      final int groupSize, final float floor, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final SparseTransactionOverlay overlay) {
+    if (queryIndices == null || queryValues == null)
+      throw new IndexException("Query indices and values must not be null");
+    if (queryIndices.length != queryValues.length)
+      throw new IndexException(
+          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+    if (groupKeys == null || groupKeys.isEmpty())
+      return List.of();
+
+    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+
+    final List<RidScore> committed;
+    try {
+      committed = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor, groupKeyResolver,
+          allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse vector grouped top-K failed", e);
+    }
+    if (overlay == null)
+      return committed;
+
+    final List<RidScore> merged = mergeByScore(committed,
+        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE), Integer.MAX_VALUE);
+    final HashMap<Object, Integer> perGroup = new HashMap<>();
+    final List<RidScore> out = new ArrayList<>();
+    for (final RidScore candidate : merged) {
+      if (candidate.score() <= floor)
+        break;
+      final Object key = groupKeyResolver.apply(candidate.rid());
+      if (groupKeys.contains(key) && perGroup.merge(key, 1, Integer::sum) <= groupSize)
+        out.add(candidate);
+    }
+    return out;
+  }
+
+  private static void addSource(final GroupedTopUpPlanner planner, final List<RidScore> rows,
+      final Function<RID, Object> groupKeyResolver, final boolean capped) {
+    final List<RID> rids = new ArrayList<>(rows.size());
+    final float[] scores = new float[rows.size()];
+    final List<Object> keys = new ArrayList<>(rows.size());
+    for (int i = 0; i < rows.size(); i++) {
+      final RidScore row = rows.get(i);
+      rids.add(row.rid());
+      scores[i] = row.score();
+      keys.add(groupKeyResolver.apply(row.rid()));
+    }
+    planner.addSource(rids, scores, keys, capped);
+  }
+
+  /**
+   * The query weights actually scored: the caller's, times each dim's IDF when the index was created with
+   * {@code modifier = "IDF"}.
+   */
+  private float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
     final boolean useIDF = sparseMetadata != null
         && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
 
     final float[] effectiveWeights = new float[queryValues.length];
     if (useIDF) {
       final long n = totalDocuments();
+      // df is computed against engine.totalPostings under each dim. Cached per dim within this
+      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf
+      // mid-query don't multiply the cost.
       final HashMap<Integer, Long> dfCache = new HashMap<>();
       for (int i = 0; i < queryIndices.length; i++) {
         final int qDim = queryIndices[i];
@@ -536,64 +657,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     } else {
       System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
     }
-
-    final List<RidScore> committed;
-    try {
-      // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
-      // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
-      // with candidates still available (issue #7966).
-      //
-      // `limit` and not `limit + <groups the pending rows can promote>`, though the two-stage admission CAN leave a
-      // group short of its cap when a pending row promotes a group the committed-only pass had ranked out (PR
-      // #8001 review). Widening it was tried and reverted: the committed-only pass has the same shortfall on its
-      // own, so widening made the in-transaction answer BETTER than the one the same search gives after the
-      // commit - and "the two agree" is the contract issue #7966 exists to establish, which an answer that is
-      // better in one direction breaks just as surely as one that is worse. The shortfall is real on both sides
-      // and is issue #8002; fixing it belongs where the admission is decided, not here.
-      committed = engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs,
-          overlay != null ? overlay.touchedRIDs() : null);
-    } catch (final IOException e) {
-      throw new IndexException("Sparse vector grouped top-K failed", e);
-    }
-
-    if (overlay == null)
-      return committed;
-
-    // The transaction's rows carry no group accounting of their own, so the caps are re-applied over the union. The
-    // engine already enforced them on the committed half, which makes this pass idempotent there - the same
-    // relationship the SQL layer's own re-application has with a single-bucket result.
-    //
-    // long, not int (PR #8001 review): limit and groupSize are validated as positive and nothing bounds them from
-    // above, so their product overflows to a negative int at around 46341 each. That would hand a negative k to the
-    // overlay - which answers List.of(), silently dropping the transaction's own rows - and a negative capacity to
-    // the ArrayList below, which throws. The SQL function that reaches this today caps the product long before
-    // that, but this method is public and an embedded caller is not going through it. Same cast the sibling code
-    // already makes for the same product (LSMVectorIndex, SQLFunctionVectorNeighbors).
-    // A CAPACITY HINT for the list below, and nothing more (PR #8001 review). What actually bounds the admitted
-    // rows is the GroupAdmissionState: at most limit groups of groupSize each. The cap is here so a caller passing
-    // two large numbers cannot turn their product into the allocation, not to decide what comes back - an
-    // ArrayList given a small hint grows, it does not truncate.
-    final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS);
-
-    // EVERY pending row, not the best rowBudget of them (PR #8001 review). A global-score cut here happens BEFORE
-    // the per-group caps are applied, so it can spend the whole budget on the surplus of one good group and starve
-    // another of its only candidate: with limit 2, groupSize 1 and pending A:0.99, A:0.98, B:0.50, a budget of two
-    // returns both A rows, admission keeps one and rejects the other, and B is never offered - while the same
-    // search after the commit returns A and B. Only the admission pass knows which rows a cap can still take, so
-    // it is the only thing allowed to drop one. The overlay already scores its whole pending set to sort it, so
-    // this costs list length rather than work, and the loop below stops as soon as the groups are full.
-    final List<RidScore> merged = mergeByScore(committed,
-        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE), Integer.MAX_VALUE);
-
-    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
-    final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), rowBudget));
-    for (final RidScore candidate : merged) {
-      if (groups.isFull())
-        break;
-      if (groups.admit(groupKeyResolver.apply(candidate.rid())))
-        out.add(candidate);
-    }
-    return out;
+    return effectiveWeights;
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */

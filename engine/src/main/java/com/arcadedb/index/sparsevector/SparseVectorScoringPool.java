@@ -19,6 +19,8 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DedicatedThreadPool;
 
@@ -182,6 +184,39 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
 
   public static SparseVectorScoringPool getInstance() {
     return Holder.INSTANCE;
+  }
+
+  /**
+   * True when the calling thread sits in a transaction on {@code databasePath} that has already modified pages.
+   * <p>
+   * Such a query must not be split, whether into RID ranges by the engine or into one search per bucket by the SQL
+   * function. A worker resolves its page reads through its own transaction
+   * context, so it sees committed pages only - it cannot see what the caller's open transaction has
+   * written but not committed. That is invisible for the usual read-only query, and wrong for the
+   * one that matters: a {@code put} heavy enough to trigger a memtable flush writes a whole new
+   * segment inside the caller's transaction, and a query issued later in that same transaction has
+   * to score it. Staying serial in that case costs a query that was already paying for a flush
+   * nothing measurable, and removes the whole class of "sees stale data inside its own transaction"
+   * bug. The same holds for records: a group key resolved on a worker reads the committed record, never the
+   * caller's pending or updated one, so a grouped search would bucket the transaction's own rows under the wrong group
+   * (issue #8002).
+   */
+  public static boolean callerHoldsUncommittedChanges(final String databasePath) {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (ctx == null)
+      return false;
+    // Every transaction on the stack, not just the innermost. begin() on an already-active
+    // transaction pushes a nested one, so a caller can sit in a fresh inner transaction with no
+    // changes of its own while an outer one holds modified pages. Asking only the innermost would
+    // report "clean" and let the query split, and the workers - reading committed pages through a
+    // context of their own - would silently not see the outer transaction's writes. That is the
+    // exact class of bug this guard exists to remove, so it has to look at all of them.
+    for (int i = 0; i < ctx.transactions.size(); i++) {
+      final TransactionContext tx = ctx.transactions.get(i);
+      if (tx != null && tx.isActive() && tx.hasChanges())
+        return true;
+    }
+    return false;
   }
 
   /**

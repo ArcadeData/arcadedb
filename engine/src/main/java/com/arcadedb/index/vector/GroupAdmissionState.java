@@ -19,6 +19,7 @@
 package com.arcadedb.index.vector;
 
 import java.util.HashMap;
+import java.util.Set;
 
 /**
  * Mutable accounting for the {@code groupBy} / {@code groupSize} cap: at most {@code limit} distinct group keys, at
@@ -28,7 +29,9 @@ import java.util.HashMap;
  * One instance is shared by the index-level cap in {@code LSMVectorIndex.findNeighborsFromVectorGrouped} and by the
  * SQL-layer cap in the {@code vector.neighbors} / {@code vector.sparseNeighbors} / {@code vector.fuse} functions, so
  * the two cannot drift apart: the index applies it per sub-index and the SQL layer re-applies it across sub-indexes,
- * and a candidate the index admitted must never be one the SQL layer would have counted differently.
+ * and a candidate the index admitted must never be one the SQL layer would have counted differently. Re-applying it
+ * over per-index answers picks the right groups but can leave one short of members another index ranked out;
+ * {@link GroupedTopUpPlanner} fetches those first (issue #8002).
  * <p>
  * Lifetime is one query: instantiate, call {@link #admit(Object)} per candidate row in rank order, call
  * {@link #isFull()} to decide whether the loop can stop, discard. Not thread-safe.
@@ -39,19 +42,35 @@ public final class GroupAdmissionState {
   private final HashMap<Object, Integer> perGroup = new HashMap<>();
   private final int                      limit;
   private final int                      groupSize;
+  /** The only group keys this state may admit, or {@code null} for any. */
+  private final Set<Object>              onlyGroups;
   private       int                      filledGroups = 0;
 
   public GroupAdmissionState(final int limit, final int groupSize) {
     this.limit = limit;
     this.groupSize = groupSize;
+    this.onlyGroups = null;
+  }
+
+  /**
+   * Admission restricted to a group set chosen beforehand (issue #8002): a candidate of any other key is refused, and
+   * the state is full once every one of {@code onlyGroups} holds {@code groupSize} rows. This is the second phase of a
+   * grouped search merged from several indexes, asking one of them for the members of groups that won overall.
+   */
+  public GroupAdmissionState(final Set<Object> onlyGroups, final int groupSize) {
+    this.limit = onlyGroups.size();
+    this.groupSize = groupSize;
+    this.onlyGroups = onlyGroups;
   }
 
   /**
    * Decides whether a candidate row with the given group key should be kept. Side-effects the internal counters when
-   * admitting. Returns {@code true} if admitted, {@code false} if the row must be skipped (group already full, or this
-   * would open a {@code (limit + 1)}-th group).
+   * admitting. Returns {@code true} if admitted, {@code false} if the row must be skipped (group already full, this
+   * would open a {@code (limit + 1)}-th group, or the key is outside a restricted group set).
    */
   public boolean admit(final Object groupKey) {
+    if (onlyGroups != null && !onlyGroups.contains(groupKey))
+      return false;
     final int existing = perGroup.getOrDefault(groupKey, 0);
     if (existing == 0 && perGroup.size() >= limit)
       return false;

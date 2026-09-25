@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -160,37 +161,56 @@ public final class BmwScorer {
   }
 
   /**
+   * Opens the per-dim cursors of one traversal. A grouped search can need two traversals over the same snapshot (issue
+   * #8002) and a {@link DimCursor} only moves forward, so the grouped entry points take this rather than an array of
+   * already-open cursors.
+   */
+  @FunctionalInterface
+  public interface CursorSource {
+    /**
+     * Returns one fresh cursor per query dim, parallel to {@code queryDims}, with {@code null} for a dim absent from
+     * every source. Every call must read the same snapshot. The scorer closes what it gets.
+     */
+    DimCursor[] open() throws IOException;
+  }
+
+  /**
    * Top-K with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071). Replaces the
    * global K-heap with a per-group min-heap so the post-traversal filter that the MVP applied on top
    * of {@link #topK} no longer needs an over-fetched candidate pool. The {@code groupKeyResolver} is
    * consulted once per scored document; the resolver typically reads the group field off the
    * materialised record, so callers should keep it cheap.
    * <p>
+   * <b>What the answer is.</b> The rule the caller asked for is the score-ordered, first-come-first-served
+   * {@link com.arcadedb.index.vector.GroupAdmissionState}: at most {@code limit} distinct group keys, at most
+   * {@code groupSize} rows each. Walked in score order that is exactly "the {@code limit} groups with the highest
+   * peaks, each with its {@code groupSize} best members", and that is what this method returns.
+   * <p>
    * <b>Threshold semantics with per-group state.</b> The pruning threshold is a lower bound on any
    * score that could still enter the result set. For non-grouped top-K that is the K-th best score
    * so far; for grouped top-K the analogue is "the lowest score that could replace any group's
    * worst member". Until {@code limit} groups have all reached {@code groupSize} (so any candidate
    * could open a new group or fill an empty slot), the threshold stays at
-   * {@link Float#NEGATIVE_INFINITY}, which keeps every term essential and the traversal exhaustive -
-   * exactly the behaviour correctness requires. Once globally full, the threshold is the minimum
-   * across per-group worst scores - any score below it cannot beat any group's worst, so the
-   * essential/non-essential split and the block-max skip can prune against it. The threshold is
-   * conservative (a candidate above it may still be rejected because its specific group has a higher
-   * worst), which is fine: pruning is correct, just slightly less aggressive than non-grouped top-K.
+   * {@link Float#NEGATIVE_INFINITY}, which keeps every term essential and the traversal exhaustive.
+   * Once globally full, the threshold is the minimum across per-group worst scores, and the
+   * essential/non-essential split and the block-max skip can prune against it.
    * <p>
-   * <b>Group admission is not first-come-first-served (issue #6936).</b> Candidates reach this
-   * traversal in ascending RID order, not score order, so the first {@code limit} distinct group
-   * keys encountered are not necessarily the highest-scoring groups - a much later (higher-RID)
-   * document could hold the single best-scoring group in the corpus. Once all {@code limit} slots
-   * are taken, a genuinely new group key is admitted anyway if its score beats the weakest currently
-   * open group's <i>best</i> member, evicting that group entirely to make room; a key that loses
-   * that comparison is rejected exactly as before. This makes the selected {@code limit} groups
-   * exactly the {@code limit} highest-peaking groups seen, mirroring how #5761 redefined "best
-   * group" for the dense (HNSW) grouped search. One trade-off remains: once the threshold above has
-   * risen, the traversal may already have skipped documents on the assumption that the group set was
-   * settled; a group evicted-then-later-reinstated after that point can end up with fewer than
-   * {@code groupSize} members even if the corpus holds more for it. Which {@code limit} groups win is
-   * always exact; a reinstated group's composition is best-effort from the point of reinstatement.
+   * <b>Which groups win (issue #6936).</b> Candidates reach this traversal in ascending RID order, not
+   * score order, so the first {@code limit} distinct group keys encountered are not necessarily the
+   * highest-peaking ones. Once all {@code limit} slots are taken, a genuinely new group key is admitted
+   * anyway if its score beats the weakest currently open group's <i>peak</i>, evicting that group
+   * entirely. The pruning above never hides a group that should win: every open group's peak is at
+   * least the threshold, so a document at or below it cannot beat any of them.
+   * <p>
+   * <b>What each winning group holds (issue #8002).</b> Picking the right groups is not the same as
+   * filling them. A group that entered by eviction may have had members earlier in RID order, which
+   * were rejected while it was not open, or skipped by a threshold raised on the assumption that the
+   * group set was settled - and the threshold cannot be walked back. The first traversal therefore marks
+   * every group it opens after a rejection, an eviction, or the first rise of the threshold as
+   * possibly short; a group open from before any of those saw every document that could enter it.
+   * When a winner is marked, a second traversal restricted to the marked keys (see
+   * {@link #topKForGroups}) refills them, seeded with the members the first traversal already holds so
+   * it can prune from the start. The common case - no winner marked - costs one traversal as before.
    * <p>
    * <b>{@code allowedRIDs} filter.</b> Applied inline in the scoring branch: a candidate RID outside
    * the whitelist is dropped before the non-essential probe walk even starts (cursors still advance
@@ -199,8 +219,7 @@ public final class BmwScorer {
    *
    * @param queryDims        query dim ids
    * @param queryWeights     query weights, parallel to {@code queryDims}; must be non-negative
-   * @param cursors          per-dim cursors, parallel to {@code queryDims}; nulls allowed for dims
-   *                         absent from every source
+   * @param cursors          opens the per-dim cursors, once per traversal
    * @param limit            max number of distinct groups to return
    * @param groupSize        max records per group
    * @param groupKeyResolver maps a candidate RID to its group key; {@code null} group keys are
@@ -216,14 +235,14 @@ public final class BmwScorer {
    *                                  infinite / negative, or {@code groupKeyResolver} is null.
    * @throws IOException              propagated from the underlying cursor reads.
    */
-  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
+  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
       final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs)
       throws IOException {
     return topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs, null);
   }
 
   /**
-   * {@link #topKGrouped(int[], float[], DimCursor[], int, int, Function, Set)} with a set of RIDs the traversal
+   * {@link #topKGrouped(int[], float[], CursorSource, int, int, Function, Set)} with a set of RIDs the traversal
    * must skip (issue #7966).
    * <p>
    * A caller reading its own uncommitted writes scores those records itself, from what its transaction has queued,
@@ -233,22 +252,83 @@ public final class BmwScorer {
    *
    * @param excludedRIDs RIDs to skip, or {@code null}/empty for none
    */
-  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
+  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
       final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
       final Set<RID> excludedRIDs) throws IOException {
-    validate(queryDims, queryWeights, cursors);
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
-    if (limit <= 0 || groupSize <= 0)
+    if (limit <= 0 || groupSize <= 0) {
+      validate(queryDims, queryWeights);
       return List.of();
-
-    final DimEntry[] terms = openTerms(queryWeights, cursors, null);
-    if (terms.length == 0)
-      return List.of();
+    }
 
     final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs, excludedRIDs);
-    scan(terms, collector, null);
+    scan(queryDims, queryWeights, cursors, collector);
+
+    final HashMap<Object, GroupState> shortGroups = collector.possiblyShortGroups();
+    if (!shortGroups.isEmpty()) {
+      final FixedGroupsCollector refill = new FixedGroupsCollector(shortGroups.keySet(), groupSize, Float.NEGATIVE_INFINITY,
+          groupKeyResolver, allowedRIDs, excludedRIDs);
+      for (final Map.Entry<Object, GroupState> e : shortGroups.entrySet())
+        refill.seed(e.getKey(), e.getValue().heap);
+      scan(queryDims, queryWeights, cursors, refill);
+      for (final Map.Entry<Object, RidScoreMinHeap> e : refill.groups.entrySet())
+        shortGroups.get(e.getKey()).heap = e.getValue();
+    }
     return collector.drain();
+  }
+
+  /**
+   * The best {@code groupSize} members of each of a FIXED set of groups (issue #8002): no group outside
+   * {@code groupKeys} is ever admitted, and no limit on distinct groups applies because the caller already chose them.
+   * <p>
+   * This is the second half of a grouped search whose group choice is settled but whose members may not all have been
+   * seen: {@link #topKGrouped} uses it on its own snapshot, and a caller merging the grouped answers of several indexes
+   * (one per bucket, or committed rows plus a transaction's own) uses it on an index that ranked a winning group out
+   * of its local top {@code limit}.
+   *
+   * @param groupKeys the groups to fill; a key with no member here simply comes back absent
+   * @param floor     only scores strictly above this can matter to the caller - typically the worst member it already
+   *                  holds for the weakest of {@code groupKeys} - so the traversal prunes against it from the start;
+   *                  {@link Float#NEGATIVE_INFINITY} for none
+   *
+   * @return at most {@code groupKeys.size() * groupSize} (RID, score) pairs sorted by score descending, every one above
+   *         {@code floor}
+   */
+  public static List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
+      final Set<Object> groupKeys, final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver,
+      final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) throws IOException {
+    if (groupKeyResolver == null)
+      throw new IllegalArgumentException("groupKeyResolver must not be null");
+    if (Float.isNaN(floor))
+      throw new IllegalArgumentException("floor must not be NaN");
+    if (groupKeys == null || groupKeys.isEmpty() || groupSize <= 0) {
+      validate(queryDims, queryWeights);
+      return List.of();
+    }
+
+    final FixedGroupsCollector collector = new FixedGroupsCollector(groupKeys, groupSize, floor, groupKeyResolver,
+        allowedRIDs, excludedRIDs);
+    scan(queryDims, queryWeights, cursors, collector);
+    return collector.drain();
+  }
+
+  /** One full traversal: opens the cursors, scans them into {@code collector}, and closes them whatever happens. */
+  private static void scan(final int[] queryDims, final float[] queryWeights, final CursorSource source,
+      final Collector collector) throws IOException {
+    validate(queryDims, queryWeights);
+    final DimCursor[] cursors = source.open();
+    try {
+      if (cursors.length != queryDims.length)
+        throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
+      final DimEntry[] terms = openTerms(queryWeights, cursors, null);
+      if (terms.length > 0)
+        scan(terms, collector, null);
+    } finally {
+      for (final DimCursor c : cursors)
+        if (c != null)
+          c.close();
+    }
   }
 
   // ---------- traversal ----------
@@ -702,7 +782,13 @@ public final class BmwScorer {
   // ---------- setup ----------
 
   private static void validate(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors) {
-    if (queryDims.length != queryWeights.length || queryWeights.length != cursors.length)
+    if (queryWeights.length != cursors.length)
+      throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
+    validate(queryDims, queryWeights);
+  }
+
+  private static void validate(final int[] queryDims, final float[] queryWeights) {
+    if (queryDims.length != queryWeights.length)
       throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
     // Dynamic pruning relies on the accumulated {@code queryWeight * upperBound} being monotonically
     // non-decreasing per added dim, so a negative query weight would let the running sum drop, the
@@ -846,7 +932,7 @@ public final class BmwScorer {
    * <p>
    * Admission of a brand-new group key once {@code limit} slots are taken is a comparison against
    * the weakest currently open group's <i>peak</i> (its own best member) - see {@link #topKGrouped}
-   * for why (issue #6936).
+   * for why (issue #6936), and for what {@link GroupState#possiblyShort} records (issue #8002).
    */
   private static final class GroupedCollector implements Collector {
     private final int                                        limit;
@@ -860,6 +946,12 @@ public final class BmwScorer {
     private final HashMap<Object, GroupState>                groups;
     private int                                              filledGroups;
     private float                                            threshold = Float.NEGATIVE_INFINITY;
+    /**
+     * Whether some candidate has already been turned away for its group - a new key that lost to the weakest open
+     * group, or a whole group evicted. From then on a key opened by eviction may be one whose earlier members were
+     * among those turned away (issue #8002).
+     */
+    private boolean                                          displaced;
 
     GroupedCollector(final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver,
         final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) {
@@ -893,6 +985,8 @@ public final class BmwScorer {
       if (group != null) {
         stateChanged = admit(group, rid, score);
       } else if (groups.size() < limit) {
+        // A free slot exists only before the first eviction and before the threshold first rises (both need every
+        // slot taken), and no key has been rejected yet, so this key has never been seen: the group is complete.
         group = new GroupState(groupSize);
         groups.put(groupKey, group);
         stateChanged = admit(group, rid, score);
@@ -914,17 +1008,23 @@ public final class BmwScorer {
             filledGroups--;
           groups.remove(weakestKey);
           group = new GroupState(groupSize);
+          // Earlier members of this key may have been rejected while it was not open, or skipped by a threshold
+          // raised while the group set looked settled. Neither can have happened if nothing was ever turned away
+          // and nothing was ever pruned.
+          group.possiblyShort = displaced || threshold != Float.NEGATIVE_INFINITY;
           groups.put(groupKey, group);
           stateChanged = admit(group, rid, score);
         } else
           stateChanged = false;
+        displaced = true;
       }
       // Recompute the global threshold once every group has reached capacity. Until then it stays
       // at NEGATIVE_INFINITY: a candidate could still open a new group, evict a weaker one, or fill
       // an empty slot inside an existing one, so pruning against a per-group watermark would be
       // incorrect. Never lowered once raised: an eviction that drops filledGroups back under limit
       // simply skips this block on the next call rather than walking the threshold back, since a
-      // DAAT traversal cannot un-skip documents it has already pruned past.
+      // DAAT traversal cannot un-skip documents it has already pruned past - which is why a group
+      // opened after that point is marked possibly short above.
       if (stateChanged && filledGroups == limit && groups.size() == limit) {
         float min = Float.POSITIVE_INFINITY;
         for (final GroupState g : groups.values()) {
@@ -947,6 +1047,19 @@ public final class BmwScorer {
       return changed;
     }
 
+    /** The winning groups whose members this traversal may not all have seen, by key. Empty in the common case. */
+    HashMap<Object, GroupState> possiblyShortGroups() {
+      HashMap<Object, GroupState> out = null;
+      for (final Map.Entry<Object, GroupState> e : groups.entrySet()) {
+        if (e.getValue().possiblyShort) {
+          if (out == null)
+            out = new HashMap<>();
+          out.put(e.getKey(), e.getValue());
+        }
+      }
+      return out != null ? out : new HashMap<>(0);
+    }
+
     List<RidScore> drain() {
       int total = 0;
       for (final GroupState g : groups.values())
@@ -959,11 +1072,111 @@ public final class BmwScorer {
     }
   }
 
-  /** One open group's retained members plus its peak (best member ever admitted), tracked apart from
-   *  the min-heap since {@link RidScoreMinHeap} exposes only the current minimum. */
+  /**
+   * Per-group top-{@code groupSize} for a fixed set of group keys (issue #8002): candidates of any other key are
+   * ignored, and there is no distinct-group limit to enforce because the keys were chosen beforehand. The threshold is
+   * the caller's {@code floor} until every group is full, then the weakest group's worst member if that is higher.
+   */
+  private static final class FixedGroupsCollector implements Collector {
+    private final int                                groupSize;
+    private final Function<RID, Object>              groupKeyResolver;
+    private final Set<RID>                           allowedRIDs;
+    private final boolean                            filterActive;
+    private final Set<RID>                           excludedRIDs;
+    private final boolean                            exclusionActive;
+    private final HashMap<Object, RidScoreMinHeap>   groups;
+    /** Members handed over by a previous traversal of the same snapshot, which must not be counted twice. */
+    private       HashSet<RID>                       seeded;
+    private       int                                filledGroups;
+    private       float                              threshold;
+
+    FixedGroupsCollector(final Set<Object> groupKeys, final int groupSize, final float floor,
+        final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) {
+      this.groupSize = groupSize;
+      this.groupKeyResolver = groupKeyResolver;
+      this.allowedRIDs = allowedRIDs;
+      this.filterActive = allowedRIDs != null && !allowedRIDs.isEmpty();
+      this.excludedRIDs = excludedRIDs;
+      this.exclusionActive = excludedRIDs != null && !excludedRIDs.isEmpty();
+      this.groups = new HashMap<>(groupKeys.size() * 2);
+      for (final Object key : groupKeys)
+        groups.put(key, new RidScoreMinHeap(groupSize));
+      this.threshold = floor;
+    }
+
+    /** Pre-loads {@code key}'s heap with members already scored on this snapshot, so pruning can start at once. */
+    void seed(final Object key, final RidScoreMinHeap members) {
+      final List<RidScore> list = new ArrayList<>(members.size());
+      members.drainInto(list);
+      if (seeded == null)
+        seeded = new HashSet<>();
+      final RidScoreMinHeap heap = groups.get(key);
+      for (final RidScore m : list) {
+        seeded.add(m.rid());
+        offer(heap, m.rid(), m.score());
+      }
+    }
+
+    @Override
+    public float threshold() {
+      return threshold;
+    }
+
+    @Override
+    public boolean accepts(final RID rid) {
+      if (filterActive && !allowedRIDs.contains(rid))
+        return false;
+      if (exclusionActive && excludedRIDs.contains(rid))
+        return false;
+      return seeded == null || !seeded.contains(rid);
+    }
+
+    @Override
+    public void collect(final RID rid, final float score) {
+      if (score <= threshold)
+        return;
+      final RidScoreMinHeap heap = groups.get(groupKeyResolver.apply(rid));
+      if (heap != null)
+        offer(heap, rid, score);
+    }
+
+    private void offer(final RidScoreMinHeap heap, final RID rid, final float score) {
+      final boolean wasFull = heap.isFull();
+      if (!heap.offer(rid, score))
+        return;
+      if (!wasFull && heap.isFull())
+        filledGroups++;
+      if (filledGroups == groups.size()) {
+        float min = Float.POSITIVE_INFINITY;
+        for (final RidScoreMinHeap g : groups.values())
+          if (g.minScore() < min)
+            min = g.minScore();
+        if (min > threshold)
+          threshold = min;
+      }
+    }
+
+    List<RidScore> drain() {
+      int total = 0;
+      for (final RidScoreMinHeap g : groups.values())
+        total += g.size();
+      final List<RidScore> out = new ArrayList<>(total);
+      for (final RidScoreMinHeap g : groups.values())
+        g.drainInto(out);
+      out.sort(BY_SCORE_DESC);
+      return out;
+    }
+  }
+
+  /**
+   * One open group's retained members plus its peak (best member ever admitted), tracked apart from
+   * the min-heap since {@link RidScoreMinHeap} exposes only the current minimum.
+   */
   private static final class GroupState {
-    final RidScoreMinHeap heap;
-    float                 peak = Float.NEGATIVE_INFINITY;
+    RidScoreMinHeap heap;
+    float           peak = Float.NEGATIVE_INFINITY;
+    /** Opened when earlier members of its key may already have been turned away or pruned (issue #8002). */
+    boolean         possiblyShort;
 
     GroupState(final int groupSize) {
       this.heap = new RidScoreMinHeap(groupSize);
