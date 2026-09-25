@@ -67,11 +67,15 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
         final Property property = type.getPolymorphicPropertyIfExists(fieldName);
         final Type propType;
-        if (property != null)
+        final Type elementType;
+        if (property != null) {
           propType = property.getType();
-        else {
+          elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+        } else {
+          // Schemaless field: the @props hint is all there is, element type included (e.g. "dates:9(6)").
           final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
           propType = hint != null ? hint.type() : null;
+          elementType = hint != null ? hint.elementType() : null;
         }
 
         Class javaImplementation = value != null ? value.getClass() : null;
@@ -90,8 +94,9 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         // ISSUE #4735: for LIST/MAP properties with a declared primitive ofType (e.g. `MAP OF LONG`), the JSON parser
         // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type. Convert the
         // nested entries to the declared ofType so the remote client matches what the schema promises.
-        if ((propType == Type.MAP || propType == Type.LIST) && property != null)
-          value = convertNestedOfType(value, property.getOfType());
+        // The same holds for a schemaless collection whose @props hint names its element type.
+        if (propType == Type.MAP || propType == Type.LIST)
+          value = convertNestedOfType(value, elementType);
 
         map.put(fieldName, value);
       }
@@ -211,12 +216,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
    * Converts the entries of a LIST/MAP value to the declared primitive {@code ofType}. If {@code ofType} is null or not a
    * primitive type (e.g. it references a document type), the value is returned unchanged.
    */
-  private Object convertNestedOfType(final Object value, final String ofTypeName) {
-    if (value == null || ofTypeName == null)
-      return value;
-
-    final Type ofType = Type.getTypeByName(ofTypeName);
-    if (ofType == null)
+  private Object convertNestedOfType(final Object value, final Type ofType) {
+    if (value == null || ofType == null)
       // NOT A PRIMITIVE TYPE (E.G. AN EMBEDDED DOCUMENT TYPE): NOTHING TO CONVERT
       return value;
 
