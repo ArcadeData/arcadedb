@@ -83,6 +83,23 @@ public interface HAServerPlugin extends ServerPlugin {
 
   String getLeaderName();
 
+  /**
+   * The Raft peer id of the current leader, or null when no leader is known or the plugin has no such notion.
+   * Unlike {@link #getLeaderName()} - a display name every node builds for itself, which can embed a per-node
+   * derived HTTP address - a peer id is the same string on every member, so it is what one node can send another
+   * to say which node it meant (issue #7603).
+   */
+  default String getLeaderPeerId() {
+    return null;
+  }
+
+  /**
+   * This node's own Raft peer id, in the same form {@link #getLeaderPeerId()} reports it, or null when unknown.
+   */
+  default String getLocalPeerId() {
+    return null;
+  }
+
   ELECTION_STATUS getElectionStatus();
 
   /**
@@ -238,6 +255,26 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default String getCriticalHaltReason() {
     return null;
+  }
+
+  /**
+   * Whether this node was added to the cluster's membership by a change it applied while running - an
+   * {@code addPeer}, a {@code connect cluster} or a {@code KubernetesAutoJoin} self-join - rather than being a
+   * member from the first configuration it observed (issue #7819).
+   * <p>
+   * It is what arms the security-convergence readiness gate of issue #7532. That gate's other input, "this node
+   * has never installed a replicated security document", is equally true of a freshly admitted peer whose seed
+   * has not landed and of every node of a cluster that has simply never replicated one; only the first of them
+   * joined at runtime, so only the first is held. Once {@code true} it stays {@code true} for the life of the
+   * process: what releases the gate is convergence or its bounded window, not a later membership change.
+   * <p>
+   * {@code false} when this HA implementation cannot tell - HA disabled, a non-Raft implementation, or a Raft
+   * server that is not running - which leaves the gate disarmed, i.e. readiness as it was before issue #7532.
+   *
+   * @return {@code true} when this node joined the cluster at runtime
+   */
+  default boolean hasJoinedClusterAtRuntime() {
+    return false;
   }
 
   String getClusterName();

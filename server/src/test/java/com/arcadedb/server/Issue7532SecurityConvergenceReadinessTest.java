@@ -51,8 +51,11 @@ import static org.mockito.Mockito.when;
  * answer is also "no" on every node of a cluster that has simply never replicated a security document - nobody
  * has run a {@code create user}, or the node self-joined through {@code KubernetesAutoJoin}, which seeds nothing
  * (issue #7531). Unbounded, those nodes would stall a rolling restart forever; hence the window, hence the
- * {@code 0} default, and hence the single SEVERE line when the window expires, which is the explicit decision
- * the issue asked for rather than a silent deadlock or a silent pass.
+ * {@code 0} default it shipped with, and hence the single SEVERE line when the window expires, which is the
+ * explicit decision the issue asked for rather than a silent deadlock or a silent pass.
+ * <p>
+ * Issue #7819 armed the gate on a runtime join and moved the default off zero; every test here drives a node
+ * that joined at runtime, and {@code Issue7819RuntimeJoinArmsSecurityGateTest} covers the ones that did not.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -116,16 +119,14 @@ class Issue7532SecurityConvergenceReadinessTest {
   }
 
   /**
-   * A window that has not been asked for does not exist. The default is {@code 0} because "has never installed a
-   * replicated document" is also true of every node of a statically configured cluster that has never replicated
-   * one, and holding all of those off the load balancer at every start would be a regression rather than a fix.
+   * {@code 0} still switches the gate off, for an operator who wants readiness exactly as it was before issue
+   * #7532. Issue #7819 moved the DEFAULT off zero, not the meaning of zero.
    */
   @Test
-  void theGateIsOffByDefault() {
-    // -1 leaves the setting untouched, so the value read is GlobalConfiguration's own default.
+  void aZeroWindowDisablesTheGate() {
     assertThat(new ServerControlPlane(
         onlineServerWith(caughtUpHaWith(3), securityMissing("users", "groups", "API tokens"),
-            configurationWith(true, -1L))).notReadyReason()).isNull();
+            configurationWith(true, 0L))).notReadyReason()).isNull();
   }
 
   /**
@@ -140,34 +141,26 @@ class Issue7532SecurityConvergenceReadinessTest {
         .notReadyReason()).isNull();
   }
 
-  /** A single-node cluster has no peer for the documents to have come from, so there is nothing to wait for. */
-  @Test
-  void aSingleNodeClusterIsNeverGated() {
-    assertThat(new ServerControlPlane(
-        onlineServerWith(caughtUpHaWith(1), securityMissing("users", "groups", "API tokens"),
-            configurationWith(true, WINDOW_MS))).notReadyReason()).isNull();
-  }
-
   /**
-   * A bound that can be restarted is not a bound. {@code getConfiguredServers()} answers {@code 1} whenever the
-   * Raft server is not readable this tick - {@code RaftHAPlugin} returns it literally when its
-   * {@code raftHAServer} is null - so a node whose HA layer is flapping would, if that reading reset the
-   * window, start the wait again after every blip and never reach the give-up branch. Only convergence resets
-   * it.
+   * A bound that can be restarted is not a bound. {@code hasJoinedClusterAtRuntime()} answers {@code false}
+   * whenever the Raft server is not readable this tick - {@code RaftHAPlugin} returns it literally when its
+   * {@code raftHAServer} is null - so a node whose HA layer is flapping would, if that reading reset the window,
+   * start the wait again after every blip and never reach the give-up branch. Only convergence resets it.
    */
   @Test
-  void aTransientSingleNodeReadingDoesNotRestartTheBound() {
+  void aTransientDisarmedReadingDoesNotRestartTheBound() {
     final HAServerPlugin flapping = mock(HAServerPlugin.class);
     when(flapping.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
     when(flapping.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.READY);
-    when(flapping.getConfiguredServers()).thenReturn(3, 1, 3);
+    when(flapping.getConfiguredServers()).thenReturn(3);
+    when(flapping.hasJoinedClusterAtRuntime()).thenReturn(true, false, true);
 
     final ServerControlPlane controlPlane = new ServerControlPlane(
         onlineServerWith(flapping, securityMissing("users"), configurationWith(true, 1L)));
 
-    controlPlane.notReadyReason();  // opens the window on a 3-peer reading
+    assertThat(controlPlane.notReadyReason()).as("opens the window on an armed reading").isNotNull();
     await(2L);
-    controlPlane.notReadyReason();  // an unreadable tick: must not forget the deadline
+    assertThat(controlPlane.notReadyReason()).as("an unreadable tick is not gated").isNull();
 
     assertThat(controlPlane.notReadyReason())
         .as("the deadline opened on the first reading has passed and must still count")
@@ -304,6 +297,9 @@ class Issue7532SecurityConvergenceReadinessTest {
     when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
     when(ha.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.READY);
     when(ha.getConfiguredServers()).thenReturn(configuredServers);
+    // Issue #7819: the gate is armed only on a node that joined the cluster at runtime, which is the node every
+    // test in this class is about.
+    when(ha.hasJoinedClusterAtRuntime()).thenReturn(true);
     return ha;
   }
 

@@ -452,18 +452,26 @@ public class ServerControlPlane {
    * credentials, groups and API tokens in its own config directory. Issue #7521's bounded retry shortens the
    * failure case; it cannot close the window, because the window opens before the seed's first attempt.
    * <p>
-   * <b>Why it is bounded, and why the bound defaults to zero.</b> "This node has never installed a replicated
+   * <b>Why it is armed only on a runtime join (issue #7819).</b> "This node has never installed a replicated
    * copy" is the only form of the question a node can answer by itself, and it is also true of every node of a
-   * cluster that has simply never replicated a security document - nobody has run a {@code create user} since
-   * the cluster was built, or the node self-joined through {@code KubernetesAutoJoin}, which issues its own
-   * configuration change and no seed at all (issue #7531). Left unbounded, those nodes would report NOT_READY
-   * forever and a rolling restart would stall; defaulted non-zero, every such deployment would lose this window
-   * off the front of each start for a condition that is not a fault. So the wait is
-   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, it is {@code 0} unless an operator asks for it, and
-   * when it expires the node reports READY with a single SEVERE line naming the documents - the explicit,
-   * logged decision, rather than a silent deadlock or a silent pass.
+   * cluster that has simply never replicated a security document - nobody has run a {@code create user} since the
+   * cluster was built. Gating on it alone would hold every such deployment's readiness for the whole window at
+   * every start, for a condition that is not a fault, which is why issue #7532 had to ship it off by default. The
+   * event that tells the two apart is {@link HAServerPlugin#hasJoinedClusterAtRuntime()}: this node was added to
+   * the Raft configuration by a change it applied, having not been in it before. A statically configured member,
+   * restarted or not, never is; a peer admitted by {@code addPeer}, {@code connect cluster} or a
+   * {@code KubernetesAutoJoin} self-join always is. So the gate is armed only there, and the window can default
+   * on. Being armed also proves the cluster has another peer the documents can come from - it was added to a
+   * configuration that did not contain it - so no separate single-node test is needed, and none is made: the
+   * static peer count {@code getConfiguredServers()} reads is the node's own declared
+   * {@code arcadedb.ha.serverList}, not the live configuration, and a joiner's declared list is whatever its
+   * operator wrote rather than the cluster it was added to.
    * <p>
-   * Single-node clusters are never gated: there is no peer for the documents to have come from.
+   * <b>Why it is bounded.</b> A joiner that is never seeded - the leader-side seed dropped, the retry budget
+   * exhausted - must not stall a rolling restart or a scale-up forever. So the wait is
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, and when it expires the node reports READY with a
+   * single SEVERE line naming the documents - the explicit, logged decision, rather than a silent deadlock or a
+   * silent pass. {@code 0} still disables the gate entirely.
    */
   private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
     final long window = server.getConfiguration()
@@ -472,9 +480,9 @@ public class ServerControlPlane {
       return null;
 
     final List<String> unconverged;
-    final int configuredServers;
+    final boolean joinedAtRuntime;
     try {
-      configuredServers = ha.getConfiguredServers();
+      joinedAtRuntime = ha.hasJoinedClusterAtRuntime();
       final ServerSecurity security = server.getSecurity();
       unconverged = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
     } catch (final Exception e) {
@@ -486,18 +494,20 @@ public class ServerControlPlane {
     }
 
     if (unconverged.isEmpty()) {
-      // Converged: forget the window, which is the only condition that may reset it. A single-node reading
-      // must NOT, and that is not a detail - getConfiguredServers() answers 1 whenever the Raft server is not
-      // readable this tick, so resetting on it would restart the bound on every such blip and a node whose HA
-      // layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
+      // Converged: forget the window, which is the only condition that may reset it. A disarmed reading must
+      // NOT, and that is not a detail - hasJoinedClusterAtRuntime() answers false whenever the Raft server is
+      // not readable this tick (RaftHAPlugin returns it literally while raftHAServer is null), so resetting on
+      // it would restart the bound on every such blip and a node whose HA layer is flapping would never reach
+      // the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;
       return null;
     }
 
-    // Nothing to converge WITH. Not gated, and the window is left exactly as it was: a node that reads 1 here
+    // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
+    // fault (issue #7819). Not gated, and the window is left exactly as it was: a node that reads false here
     // because its Raft state was unreadable keeps the deadline it already opened.
-    if (configuredServers <= 1)
+    if (!joinedAtRuntime)
       return null;
 
     final long now = System.currentTimeMillis();

@@ -7058,8 +7058,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
         // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
         // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
-        final int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
-        final int expectedResults = Math.min(k, availableVectors);
+        //
+        // Issue #8057: the rows the calling transaction removed or rewrote are still in vectorIndex().size() - the
+        // tombstones are written only when commit() replays the queued REMOVEs - but the walk, the loop above and the
+        // scan below all exclude them, so counting them expected rows no search can return, and every search of the
+        // transaction paid a full scan that found nothing and logged a WARNING about a healthy graph. They are netted
+        // out only once a shortfall is seen, so a search that is not short never pays for resolving them.
+        int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
+        int expectedResults = Math.min(k, availableVectors);
+        if (results.size() < expectedResults && overlay != null) {
+          // Counting stops at the rows the answer is short of: past that the netted budget can no longer exceed it
+          final int live = vectorIndex().size();
+          availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
+          expectedResults = Math.min(k, availableVectors);
+        }
         if (results.size() < expectedResults) {
           // Issue #6502: see shortfallIsAllowListDriven's javadoc for why this is split.
           if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
@@ -8197,6 +8209,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@code overlay.pendingCount()}, or 0 when there is no overlay. */
   private static int pendingCount(final TransactionVectorOverlay overlay) {
     return overlay == null ? 0 : overlay.pendingCount();
+  }
+
+  /**
+   * How many live vectors of the committed index the calling transaction supersedes (issue #8057): the rows
+   * {@code vectorIndex().size()} still counts that no search inside the transaction may return. A superseded RID the
+   * committed index does not hold - a row inserted and removed by the same transaction - contributes nothing.
+   * <p>
+   * Stops once {@code cap} is reached: the only question the caller asks is whether the answer is still short once they
+   * are netted out, and that is settled as soon as the count reaches the gap. A transaction that superseded many rows
+   * therefore pays for at most the gap per short search, not for its whole write set.
+   */
+  private int countSupersededLive(final TransactionVectorOverlay overlay, final int cap) {
+    int count = 0;
+    for (final RID rid : overlay.supersededRIDs()) {
+      if (count >= cap)
+        break;
+      count += vectorIndex().getVectorIdsForRid(rid).length;
+    }
+    return count;
   }
 
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */

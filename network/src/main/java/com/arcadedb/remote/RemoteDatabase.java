@@ -122,6 +122,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected final  List<MutableDocument>                txCreatedRecords          = new ArrayList<>();
   private          RemoteTransactionExplicitLock        explicitLock;
   private          int                                  cachedHashCode            = 0;
+  private volatile ParsedPropertyTypes                  lastParsedPropertyTypes;
   private volatile ReadConsistency                      readConsistency           = ReadConsistency.EVENTUAL;
   private final    AtomicLong                           lastCommitIndex           = new AtomicLong(-1L);
   // #8062: set - and only ever set, never cleared by a response - when the server answers a request made inside
@@ -1592,32 +1593,58 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   protected Result json2Result(final JSONObject result) {
-    final Record record = json2Record(result);
-    if (record == null) {
+    // Issue #8332: every row is converted to a Map exactly once. Whether it is a record is answered on the parsed
+    // JSON, so a projection row, which carries no @cat, no longer pays a toMap() in json2Record() only to learn that,
+    // and then a second one below.
+    if (result.has(CAT_PROPERTY)) {
+      final Record record = json2Record(result);
+      if (record != null)
+        return new ResultInternal(record);
+    }
+
+    // toMap() hands back a fresh LinkedHashMap nobody else holds, so the row is typed and stripped in place.
+    final Map<String, Object> map = result.toMap();
+    if (map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
       // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
       // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
       // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
       // behavior of the gRPC client, which already routes the value through a typed channel.
-      final Map<String, Object> map = result.toMap();
-      final Map<String, ColumnTypeHint> propTypes = parsePropertyTypes((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
-      if (!propTypes.isEmpty() || map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
-        final Map<String, Object> converted = new LinkedHashMap<>(map.size());
-        for (final Map.Entry<String, Object> entry : map.entrySet()) {
-          final String fieldName = entry.getKey();
-          if (Property.METADATA_PROPERTIES.contains(fieldName))
-            continue;
-          final ColumnTypeHint hint = propTypes.get(fieldName);
-          Object value = entry.getValue();
-          if (hint != null && value != null)
-            value = convertWithHint(value, hint);
-          converted.put(fieldName, value);
+      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
+      final Iterator<Map.Entry<String, Object>> it = map.entrySet().iterator();
+      while (it.hasNext()) {
+        final Map.Entry<String, Object> entry = it.next();
+        if (Property.METADATA_PROPERTIES.contains(entry.getKey())) {
+          it.remove();
+          continue;
         }
-        return new ResultInternal(converted);
+        final ColumnTypeHint hint = propTypes.get(entry.getKey());
+        final Object value = entry.getValue();
+        if (hint != null && value != null)
+          entry.setValue(convertWithHint(value, hint));
       }
-      return new ResultInternal(map);
     }
+    return new ResultInternal(map);
+  }
 
-    return new ResultInternal(record);
+  /**
+   * Returns the parsed form of a row's {@code @props} hint. Every row of a projection carries the identical string, so
+   * the last one parsed is kept and handed back while the rows keep matching it, instead of splitting and parsing the
+   * string again for every row (issue #8332). A row of a different shape simply replaces it.
+   * <p>
+   * The cache is one immutable holder swapped as a whole, so a thread reading it sees either a complete pair or the
+   * previous one, and the worst a race costs is one extra parse.
+   */
+  Map<String, ColumnTypeHint> propertyTypeHints(final String propTypesAsString) {
+    if (propTypesAsString == null || propTypesAsString.isEmpty())
+      return Collections.emptyMap();
+
+    final ParsedPropertyTypes last = lastParsedPropertyTypes;
+    if (last != null && last.source().equals(propTypesAsString))
+      return last.hints();
+
+    final Map<String, ColumnTypeHint> parsed = parsePropertyTypes(propTypesAsString);
+    lastParsedPropertyTypes = new ParsedPropertyTypes(propTypesAsString, parsed);
+    return parsed;
   }
 
   /**
@@ -1656,7 +1683,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return type.getDefaultJavaType();
   }
 
-  private static Map<String, ColumnTypeHint> parsePropertyTypes(final String propTypesAsString) {
+  /**
+   * Parses a {@code @props} hint ({@code "name:typeId,..."}, a collection column optionally followed by its element type
+   * id in parentheses) into an unmodifiable map. Shared with {@link RemoteImmutableDocument}.
+   */
+  static Map<String, ColumnTypeHint> parsePropertyTypes(final String propTypesAsString) {
     if (propTypesAsString == null || propTypesAsString.isEmpty())
       return Collections.emptyMap();
 
@@ -1687,29 +1718,37 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // skip malformed entries rather than fail the whole result row
       }
     }
-    return propTypes;
+    return Collections.unmodifiableMap(propTypes);
   }
 
   /**
    * Per-column type metadata parsed from the {@code @props} hint: the column {@link Type} and, for a
    * collection column, the optional element {@link Type} (issue #4849).
    */
-  private record ColumnTypeHint(Type type, Type elementType) {
+  record ColumnTypeHint(Type type, Type elementType) {
   }
 
-  protected Record json2Record(final JSONObject result) {
-    final Map<String, Object> map = result.toMap();
+  /** The last {@code @props} string parsed, with its parsed form (issue #8332). */
+  private record ParsedPropertyTypes(String source, Map<String, ColumnTypeHint> hints) {
+  }
 
-    if (map.containsKey(CAT_PROPERTY)) {
-      final String cat = result.getString(CAT_PROPERTY);
-      return switch (cat) {
-        case "d" -> new RemoteImmutableDocument(this, map);
-        case "v" -> new RemoteImmutableVertex(this, map);
-        case "e" -> new RemoteImmutableEdge(this, map);
-        default -> null; // Or throw an exception for unknown category
-      };
-    }
-    return null;
+  /**
+   * Builds the record a result row describes, or returns null when the row is not a record. {@link #json2Result} calls
+   * it only for a row that carries {@code @cat}: a row without it is a projection and is never offered here (#8332).
+   */
+  protected Record json2Record(final JSONObject result) {
+    // Answered on the parsed JSON first: a row without @cat is not a record, and converting it just to find out is
+    // the cost issue #8332 measured.
+    if (!result.has(CAT_PROPERTY))
+      return null;
+
+    final String cat = result.getString(CAT_PROPERTY);
+    return switch (cat) {
+      case "d" -> new RemoteImmutableDocument(this, result.toMap());
+      case "v" -> new RemoteImmutableVertex(this, result.toMap());
+      case "e" -> new RemoteImmutableEdge(this, result.toMap());
+      default -> null; // Or throw an exception for unknown category
+    };
   }
 
   protected RID saveRecord(final MutableDocument record) {

@@ -1457,7 +1457,7 @@ public enum GlobalConfiguration {
       Boolean.class, false),
 
   SERVER_READINESS_HA_MAX_LAG("arcadedb.server.readinessHAMaxLag", SCOPE.SERVER,
-      "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
+      "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. The lag is checked against both the follower's own commit index and the one its leader reports (read by the health monitor every arcadedb.ha.healthCheckInterval), so a follower whose replication channel is wedged is not reported as caught up. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
       Long.class, 100L),
 
   // The console formatter is chosen once, on the first log record the JVM emits, which is almost always before a
@@ -2095,19 +2095,17 @@ public enum GlobalConfiguration {
 
   HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT("arcadedb.ha.securityConvergenceReadinessTimeout", SCOPE.SERVER,
       """
-      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that is a member of a \
-      multi-node cluster and has never installed any of the cluster's replicated security documents - \
-      server-users.jsonl, server-groups.json, server-api-tokens.json (issue #7532). Such a node enforces \
-      credentials from its own config directory rather than the cluster's, which is what a peer looks like \
-      between the moment its membership change commits and the moment the admission seed of issue #7521 lands, \
-      and what it stays like when that seed never lands at all. Requires \
-      arcadedb.server.readinessRequiresHA, and is bounded on purpose: when the window expires the node reports \
-      READY and logs, once, at SEVERE, exactly which documents never converged, so a rolling restart cannot \
-      stall behind a seed nobody is going to send. 0, the default, disables the wait entirely and leaves \
-      readiness exactly as it was - a cluster that has never replicated a security document has no node with \
-      one, so a non-zero default would hold every statically configured deployment's readiness for this window \
-      on every start.""",
-      Long.class, 0L),
+      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that was added to the cluster \
+      while running - by POST /api/v1/cluster/peer, 'connect cluster' or a Kubernetes auto-join - and has not yet \
+      installed all of the cluster's replicated security documents: server-users.jsonl, server-groups.json, \
+      server-api-tokens.json (issues #7532, #7819). Until they land such a node enforces credentials from its own \
+      config directory rather than the cluster's. A node that has been a member since the first configuration \
+      it observed - a statically configured cluster, restarted or not - is never held, even when its cluster has \
+      never replicated a security document. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
+      purpose: when the window expires the node reports READY and logs, once, at SEVERE, exactly which documents \
+      never converged, so a scale-up or a rolling restart cannot stall behind a seed nobody is going to send. 0 \
+      disables the wait entirely.""",
+      Long.class, 30_000L),
 
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
@@ -2324,14 +2322,17 @@ public enum GlobalConfiguration {
   HA_PROXY_BATCH_READ_TIMEOUT("arcadedb.ha.proxyBatchReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a /api/v1/batch load it relayed via \
-      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 504. Deliberately \
+      PostBatchHandler (issues #7526/#7542), before giving up: the client is answered HTTP 504 while no status \
+      has been sent yet, and a streamed answer already under way is ended without a terminal line. Deliberately \
       its own setting rather than arcadedb.ha.proxyReadTimeout: a bulk load's legitimate duration is a function \
       of the payload the client is still streaming, so the same generous order of magnitude as \
       arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \
       applies here to the OUTGOING hop instead - a short control-plane deadline would abort large loads that are \
-      working correctly. On the streaming encoding this bounds only the wait for the leader's first response \
-      line, since the JDK client returns as soon as headers arrive and the upload keeps publishing after that; \
-      on the non-streaming path it bounds the whole exchange. 0 or a negative value does not disable it - an \
+      working correctly. On the non-streaming path it bounds the wait for the leader's answer. On the streaming \
+      encoding it bounds the wait for the leader's first response line and then, separately, every later wait \
+      for the leader's data (issue #7738): it is a limit on how long the leader may stay SILENT, not on the \
+      length of the load, so a leader that keeps emitting progress lines is never cut off, and one that stalls \
+      mid-stream is given up on and its connection closed. 0 or a negative value does not disable it - an \
       outgoing forward must never be unbounded - it is clamped to 1 ms instead, so set a positive value. \
       Re-read on every forward.""",
       Long.class, 600_000L),

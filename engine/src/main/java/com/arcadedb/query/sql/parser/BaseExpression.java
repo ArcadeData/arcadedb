@@ -262,22 +262,9 @@ public class BaseExpression extends MathExpression {
         // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
         // @author Luca Garulli
         // @see Postgres Driver
-        if (params != null && !params.isEmpty() && //
-            identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
-          final String v = identifier.getSuffix().identifier.getValue();
-          if (v.startsWith("$") && v.length() > 1) {
-            final String toParse = v.substring(1);
-
-            final Integer pos = NumberUtils.parsePositiveInteger(toParse);
-            if (pos != null && params.containsKey(String.valueOf(pos - 1)))
-              // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
-              result = params.get(String.valueOf(pos - 1));
-            else
-              result = identifier.execute(currentRecord, context);
-          } else
-            result = identifier.execute(currentRecord, context);
-        } else
-          result = identifier.execute(currentRecord, context);
+        final String positionalKey = postgresPositionalParameterKey(identifier, params);
+        // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
+        result = positionalKey != null ? params.get(positionalKey) : identifier.execute(currentRecord, context);
       } else if (string != null && string.length() > 1) {
         result = decode(string.substring(1, string.length() - 1));
       } else if (inputParam != null) {
@@ -463,7 +450,42 @@ public class BaseExpression extends MathExpression {
     if (expression != null)
       return expression.isEarlyCalculated(context);
 
+    // `$1`, `$2`... from a Postgres client: execute() resolves it from the input parameters, so it is as constant
+    // for the query as `?` is, and an index can serve it. Without this the planner saw an undeclared identifier and
+    // fell back to a full scan (issue #8288).
+    if (isPostgresPositionalParameter(context))
+      return true;
+
     return identifier != null && identifier.isEarlyCalculated(context);
+  }
+
+  /**
+   * True when this expression is the {@code $N} that {@link #execute(Result, CommandContext)} reads from the input
+   * parameters: the Postgres wire's positional parameter, which the SQL lexer tokenizes as an identifier rather than
+   * as an input parameter.
+   */
+  private boolean isPostgresPositionalParameter(final CommandContext context) {
+    return postgresPositionalParameterKey(identifier, context != null ? context.getInputParameters() : null) != null;
+  }
+
+  /**
+   * The input-parameter key ({@code "N-1"}, zero-based) that a Postgres client's {@code $N} addresses, when
+   * {@code identifier} is exactly that shape AND a parameter is actually bound at that position - the single test
+   * {@link #execute(Result, CommandContext)} and {@link #isPostgresPositionalParameter(CommandContext)} must agree
+   * on, kept as one method so they cannot drift apart again (issue #8288 review).
+   */
+  private static String postgresPositionalParameterKey(final BaseIdentifier identifier, final Map<String, Object> params) {
+    if (params == null || params.isEmpty() || identifier == null || identifier.getSuffix() == null
+        || identifier.getSuffix().identifier == null)
+      return null;
+    final String v = identifier.getSuffix().identifier.getValue();
+    if (v == null || !v.startsWith("$") || v.length() < 2)
+      return null;
+    final Integer pos = NumberUtils.parsePositiveInteger(v.substring(1));
+    if (pos == null)
+      return null;
+    final String key = String.valueOf(pos - 1);
+    return params.containsKey(key) ? key : null;
   }
 
   /**

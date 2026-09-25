@@ -569,6 +569,24 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public String getLeaderPeerId() {
+    final RaftHAServer s = raftHAServer;
+    if (s == null)
+      return null;
+    final RaftPeerId leaderId = s.getLeaderId();
+    return leaderId != null ? leaderId.toString() : null;
+  }
+
+  @Override
+  public String getLocalPeerId() {
+    final RaftHAServer s = raftHAServer;
+    if (s == null)
+      return null;
+    final RaftPeerId localId = s.getLocalPeerId();
+    return localId != null ? localId.toString() : null;
+  }
+
+  @Override
   public HAServerPlugin.ELECTION_STATUS getElectionStatus() {
     if (raftHAServer == null)
       return ELECTION_STATUS.DONE;
@@ -605,6 +623,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public String getBootstrapWindowReason() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getBootstrapWindowReason() : null;
+  }
+
+  @Override
+  public boolean hasJoinedClusterAtRuntime() {
+    final RaftHAServer s = raftHAServer;
+    return s != null && s.hasJoinedClusterAtRuntime();
   }
 
   @Override
