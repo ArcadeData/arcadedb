@@ -153,14 +153,20 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
    *
    * @return false once the build has published: the caller applies the delta to the view as usual
    */
-  synchronized boolean offer(final TxDelta delta) {
-    if (!open)
-      return false;
-    if (bufferedDeltas.size() >= maxBufferedDeltas)
-      overflowed = true;
-    else if (!overflowed)
-      bufferedDeltas.add(delta);
-    return true;
+  boolean offer(final TxDelta delta) {
+    final BuildWatch next;
+    synchronized (this) {
+      if (open) {
+        if (bufferedDeltas.size() >= maxBufferedDeltas)
+          overflowed = true;
+        else if (!overflowed)
+          bufferedDeltas.add(delta);
+        return true;
+      }
+      next = successor;
+    }
+    // Superseded since the caller read it: the build that took over buffers it, as it takes the registrations
+    return next != null && next.offer(delta);
   }
 
   /**

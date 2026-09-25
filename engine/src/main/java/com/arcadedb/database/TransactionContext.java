@@ -688,9 +688,10 @@ public class TransactionContext implements Transaction {
 
   /**
    * @return whether THIS transaction's commit is written to the WAL: the per-transaction override when one is set,
-   * otherwise the session's setting. To save the session's setting and put it back later through
-   * {@link #setUseWAL(boolean)}, read {@link #isSessionUseWAL()} instead: this value may carry a one-transaction
-   * override, and restoring it would make that override permanent (issue #8129).
+   * otherwise the session's setting. To save the thread's setting and put it back later, read
+   * {@link #getThreadUseWAL()} and restore it through {@link #setThreadUseWAL(Boolean)}: this value may carry a
+   * one-transaction override (issue #8129), and {@link #isSessionUseWAL()} resolves the database's setting too, so
+   * restoring either would pin the thread to a value it only inherited (issue #8352).
    */
   @Override
   public boolean isUseWAL() {
