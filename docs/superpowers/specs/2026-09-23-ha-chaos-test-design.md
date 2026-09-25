@@ -111,7 +111,11 @@ Each op is attempted exactly once (no client retry):
 1. **Quiesce**: writers stop at an op boundary; in-flight ops complete or time out.
 2. **Converge**: poll every node with a local read (`arcadedb.ha.readConsistency` defaults to `eventual`, so a follower
    answers from its own applied state) for its `ChaosOp` and `NEXT` counts; wait until all nodes report equal counts on
-   two consecutive polls. Not converging within the bound is a `SAFETY` violation (`CONVERGENCE`).
+   two consecutive polls. Not converging within the bound is a `SAFETY` violation (`CONVERGENCE`). Its
+   `ledger-diff.txt` lists the keys that differ between the readable nodes' index scans, and each node's records read
+   from the buckets in RID order (`SELECT @rid, id ... ORDER BY @rid`, bypassing the index) compared with that node's
+   own index: a duplicate id, a record the index has no entry for, a record without an id, an index entry without a
+   record. `count(*)` reads the buckets, so these explain a count mismatch that the index scans cannot see.
 3. **Scan and diff**: page every key of every node, then re-read the counts. If they changed (a legal late commit
    landed during the scan) go back to step 2 within the same deadline. Otherwise any key that differs between node 0
    and another node is a `SAFETY` violation (`DIVERGENCE`). A 5xx while scanning is `SAFETY` (`SCAN_ERROR`: the node is

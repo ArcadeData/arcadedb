@@ -31,4 +31,10 @@ public interface NodeReader {
 
   /** Streams every ChaosOp row of the node into the snapshot, in key order. */
   void scan(int node, NodeSnapshot sink) throws IOException;
+
+  /**
+   * Streams every ChaosOp record of the node from its buckets, in RID order and without the unique index, so a record
+   * the index does not reach still shows (see {@link RecordScan}).
+   */
+  void scanRecords(int node, RecordScan sink) throws IOException;
 }
