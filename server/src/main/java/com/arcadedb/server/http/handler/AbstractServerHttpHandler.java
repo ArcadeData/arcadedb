@@ -126,6 +126,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
   // Tags the forward-ordinal section of an idempotency key (issue #8323).
   private static final byte[]     FORWARD_ORDINAL_KEY_TAG = "forward-ordinal".getBytes(StandardCharsets.US_ASCII);
+  // Ends that section: non-zero, so its input can never equal an untagged key's, which always ends in a zero byte.
+  private static final byte       FORWARD_ORDINAL_KEY_END = (byte) 0x01;
   // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
   // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
   // fail in practice; if it ever did the digest would be unusable, so we fail fast.
@@ -1401,11 +1403,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   /**
    * The same, for a follower's SQL write forward after the first within one client request (issue #8323): a positive
-   * {@code forwardOrdinal}, taken only from a request carrying a valid cluster token, is digested after both bodies, so
-   * the forward's key differs from the first forward's and from every key a client can produce - a client cannot add
-   * bytes after the byte-body separator of a route whose body is text, and no client-supplied {@code X-Request-Id}
-   * reaches this field. {@code 0} digests nothing, leaving every other key exactly as it was. Package-private for
-   * direct unit testing.
+   * {@code forwardOrdinal}, taken only from a request carrying a valid cluster token, is digested after both bodies as
+   * a tagged section ending in a non-zero sentinel byte. Every untagged key's input ends in the zero separator that
+   * follows the byte body, so the two forms can never be the same input, whatever the ordinal and whatever a client
+   * puts in a body (the bodies carry no length prefix, so a client could otherwise spell the tagged section inside its
+   * own body). {@code 0} digests nothing, leaving every other key exactly as it was. Package-private for direct unit
+   * testing.
    */
   static String buildIdempotencyKey(final String requestId, final String method, final String path,
       final String database, final String body, final byte[] binaryBody, final int forwardOrdinal) {
@@ -1431,6 +1434,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       md.update((byte) (forwardOrdinal >>> 16));
       md.update((byte) (forwardOrdinal >>> 8));
       md.update((byte) forwardOrdinal);
+      md.update(FORWARD_ORDINAL_KEY_END);
     }
     final byte[] digest = md.digest();
     final StringBuilder sb = new StringBuilder(digest.length * 2);

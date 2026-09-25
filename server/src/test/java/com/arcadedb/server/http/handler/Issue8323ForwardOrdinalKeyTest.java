@@ -78,6 +78,27 @@ class Issue8323ForwardOrdinalKeyTest extends BaseGraphServerTest {
         "{\"command\":\"x\"}", null));
   }
 
+  /**
+   * The bodies are digested with no length prefix, so a client can spell the tagged ordinal section inside its own
+   * body. For an ordinal whose low byte is zero (256, 512, ...) that spelling used to reproduce the forward's key input
+   * byte for byte, because the section then ended in the same zero byte every untagged key ends in.
+   */
+  @Test
+  void aBodyThatSpellsTheOrdinalSectionDoesNotReproduceTheForwardsKey() {
+    final String body = "{\"command\":\"x\"}";
+    for (final int ordinal : new int[] { 2, 256, 512, 65_536 }) {
+      final String forward = AbstractServerHttpHandler.buildIdempotencyKey("order", "POST", "/api/v1/command/db", "db",
+          body, null, ordinal);
+      // The untagged input is <...body> 0x00; the tagged one is <...body> 0x00 0x00 "forward-ordinal" b3 b2 b1 b0 ...
+      final String crafted = body + '\0' + '\0' + "forward-ordinal" + (char) ((ordinal >>> 24) & 0xFF)
+          + (char) ((ordinal >>> 16) & 0xFF) + (char) ((ordinal >>> 8) & 0xFF);
+      final String client = AbstractServerHttpHandler.buildIdempotencyKey("order", "POST", "/api/v1/command/db", "db",
+          crafted, null, 0);
+
+      assertThat(client).as("ordinal %d", ordinal).isNotEqualTo(forward);
+    }
+  }
+
   @Test
   void aSecondForwardUnderTheTokenExecutesAndIsItselfDeduplicated() throws Exception {
     final String body = insert("forward");
