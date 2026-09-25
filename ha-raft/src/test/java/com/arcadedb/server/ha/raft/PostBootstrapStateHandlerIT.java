@@ -63,6 +63,23 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Issue #8360: the peer's own latest Raft snapshot {@link org.apache.ratis.server.protocol.TermIndex} rides
+   * along on this same RPC so a leader-driven install elsewhere can register the real boundary term instead of
+   * approximating it. Both fields are present together or both absent - never one without the other - regardless
+   * of whether this short-lived test cluster has taken a snapshot yet, which this assertion does not depend on.
+   */
+  @Test
+  void rpcExposesSnapshotTermIndexConsistently() throws Exception {
+    final JSONObject response = postBootstrapState(0);
+
+    assertThat(response.has("snapshotTerm")).isEqualTo(response.has("snapshotIndex"));
+    if (response.has("snapshotIndex")) {
+      assertThat(response.getLong("snapshotIndex")).isGreaterThanOrEqualTo(0L);
+      assertThat(response.getLong("snapshotTerm")).isGreaterThanOrEqualTo(0L);
+    }
+  }
+
   @Test
   void rpcRejectsMissingAuth() throws Exception {
     final URL url = new URL(getServerHttpUrl("/api/v1/cluster/bootstrap-state"));
