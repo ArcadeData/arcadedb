@@ -127,6 +127,27 @@ class Issue8341ZeroProgressCatchUpTest {
     assertThat(monitor.getReplicaStatus(REPLICA)).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
   }
 
+  /**
+   * A replica still at the never-appended sentinel keeps the dedicated #5295 rule and its longer grace: the
+   * zero-progress path must not flag it after only {@link ClusterMonitor#ZERO_PROGRESS_STALL_GRACE_MS}.
+   */
+  @Test
+  void neverAppendedReplicaKeepsItsOwnGrace() {
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(1000L);
+    monitor.setClock(now::get);
+    for (long t = 0; t < ClusterMonitor.NEVER_APPENDED_STALL_GRACE_MS; t += 5_000) {
+      now.set(t);
+      monitor.updateLeaderCommitIndex(50_000);
+      monitor.updateReplicaMatchIndex(REPLICA, -1, 0L);
+      assertThat(monitor.getReplicaStatus(REPLICA)).as("t=%d", t).isNotEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+    }
+    now.set(ClusterMonitor.NEVER_APPENDED_STALL_GRACE_MS);
+    monitor.updateLeaderCommitIndex(50_000);
+    monitor.updateReplicaMatchIndex(REPLICA, -1, 0L);
+    assertThat(monitor.getReplicaStatus(REPLICA)).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+  }
+
   /** An idle cluster where the replica is within the lag threshold stays HEALTHY: no progress is needed there. */
   @Test
   void idleCaughtUpReplicaStaysHealthy() {

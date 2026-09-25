@@ -246,8 +246,10 @@ public class ClusterMonitor {
 
     // Issue #8341: how long the replica has been over the threshold without its matchIndex moving at all. Tracked
     // on every tick, independently of whether the leader advanced and of the leader-driven recovery streak (which
-    // exists only when recovery is enabled), so the classification below does not depend on either.
-    if (lag <= lagWarningThreshold || replicaDelta > 0)
+    // exists only when recovery is enabled), so the classification below does not depend on either. A replica still
+    // at the never-appended sentinel is left to its own rule above (#5295), whose longer grace absorbs a join or a
+    // snapshot install and whose log line names the real problem.
+    if (neverAppended || lag <= lagWarningThreshold || replicaDelta > 0)
       state.zeroProgressSinceMs = -1;
     else if (state.zeroProgressSinceMs == -1)
       state.zeroProgressSinceMs = now;
