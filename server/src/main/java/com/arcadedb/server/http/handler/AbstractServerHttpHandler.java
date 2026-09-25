@@ -119,9 +119,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
   // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
   private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
-  // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
-  // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
+  // Bounded wait for a concurrent identical retry to observe the in-flight winner's result. Caps worker-thread
+  // blocking so a slow request cannot pile up retries: when the winner is still running at the end of it, the
+  // retry is answered 409 + Retry-After instead of executing the request a second time (issue #8324).
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
+  // Seconds a retry refused because its twin is still executing is told to wait before asking again.
+  private static final String     IN_FLIGHT_RETRY_AFTER_SECONDS = "5";
   // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
   // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
   // fail in practice; if it ever did the digest would be unusable, so we fail fast.
@@ -684,11 +687,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             return;
           // Principal mismatch: fall through and execute as this caller, without owning the reservation.
         } else if (reservation.isInFlight()) {
-          // A concurrent identical retry is already executing. Wait briefly for its result rather than
-          // running the write a second time; if it does not settle in time, fall through and execute uncached.
-          if (reservation.entry().await(IN_FLIGHT_WAIT_MS)
-              && replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(idempotencyKey), currentPrincipal))
+          // A concurrent identical retry is already executing. Wait briefly for its result rather than running
+          // the write a second time.
+          if (!reservation.entry().await(IN_FLIGHT_WAIT_MS)) {
+            // Still running (or this thread was interrupted while waiting). Executing now would run the same
+            // write twice, side by side - for a long 'restore database' behind a follower's 504, the case a
+            // retry is most likely in, that is a second restore over the first (issue #8324). Say so instead:
+            // once the first execution settles, the same retry is replayed from the cache (or, if it failed,
+            // executes afresh).
+            sendStillInFlight(exchange);
             return;
+          }
+          if (replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(idempotencyKey), currentPrincipal))
+            return;
+          // Settled without a replayable answer (it failed, or its response was not cacheable), or cached for a
+          // different principal: execute as this caller, without owning the reservation.
         } else if (reservation.isReserved())
           idempotencyReservation = reservation;
       }
@@ -1297,6 +1310,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * false (nothing written) when there is no usable entry or the principal does not match, so the caller
    * can fall back to executing the request.
    */
+  /**
+   * Answers a request whose identical twin (same {@code X-Request-Id}, method, path, database and body) is still
+   * executing on this server: {@code 409 Conflict} with {@code Retry-After}. Nothing was executed for this request,
+   * so the client may retry it as it is, with the same id, and gets the first execution's answer once it settles.
+   */
+  private void sendStillInFlight(final HttpServerExchange exchange) {
+    exchange.setStatusCode(409);
+    exchange.getResponseHeaders().put(HttpString.tryFromString("Retry-After"), IN_FLIGHT_RETRY_AFTER_SECONDS);
+    exchange.getResponseSender().send(error2json("A request with the same " + IdempotencyCache.HEADER_REQUEST_ID
+            + " is still executing",
+        "The request was not executed again. Retry it later with the same " + IdempotencyCache.HEADER_REQUEST_ID
+            + " to receive the result of the execution in progress", null, null, null));
+  }
+
   private boolean replayCachedResponse(final HttpServerExchange exchange, final IdempotencyCache.CachedEntry cached,
       final String currentPrincipal) {
     if (cached == null)
