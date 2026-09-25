@@ -20,7 +20,10 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.Schema;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Contains;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
@@ -41,76 +44,151 @@ import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
 import java.util.*;
-import java.util.function.Supplier;
+import java.util.function.BiPredicate;
 
+/**
+ * Candidate generator for {@code g.V().hasLabel(X).has(key, predicate)} backed by one index. It is a pure candidate
+ * generator: the {@code has()} containers stay in the {@code HasStep} that follows, which re-checks every emitted
+ * element, so the step only has to emit a SUPERSET of the matches that belongs to the label.
+ * <ul>
+ *   <li>The label: the index may belong to a super type of {@code X} (it is found walking up the hierarchy) and then
+ *   spans the super type and every sibling sub-type. Candidates outside {@code X}'s polymorphic buckets are dropped
+ *   by bucket id, before their record is loaded (#8249).</li>
+ *   <li>Timing: the cursor is opened when the step executes, once per incoming traverser, never when the traversal
+ *   is compiled. A write made by an earlier step of the same traversal is therefore visible, and a branch that never
+ *   runs never pays for a scan (#8299).</li>
+ *   <li>Memory: the cursor is streamed, never drained into a set, so {@code limit(n)} stops the scan after
+ *   {@code n} candidates.</li>
+ * </ul>
+ */
 public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
-  private final       List<IndexCursor>     indexCursors;
-  protected           Parameters            parameters = new Parameters();
-  protected final     Class<E>              returnClass;
-  protected           boolean               isStart;
-  protected           boolean               done       = false;
-  private             Traverser.Admin<S>    head       = null;
-  private             Iterator<E>           iterator   = EmptyIterator.instance();
-  protected transient Supplier<Iterator<E>> iteratorSupplier;
+  private final   TypeIndex                            index;
+  private final   BiPredicate<?, ?>                    predicate;
+  private final   Object[]                             keys;
+  private final   String                               typeName;
+  protected       Parameters                           parameters = new Parameters();
+  protected final Class<E>                             returnClass;
+  protected       boolean                              isStart;
+  protected       boolean                              done       = false;
+  private         Traverser.Admin<S>                   head       = null;
+  private         Iterator<E>                          iterator   = EmptyIterator.instance();
 
-  public ArcadeFilterByIndexStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart, final List<IndexCursor> indexCursors) {
+  /**
+   * @param index     the index to scan; it may belong to {@code typeName} or to one of its super types
+   * @param predicate one of {@link Compare#eq}, {@link Compare#gt}, {@link Compare#gte}, {@link Compare#lt} and
+   *                  {@link Compare#lte}
+   * @param keys      the index key the predicate compares against
+   * @param typeName  the type named by {@code hasLabel()}: only its elements, or its sub-types', are emitted
+   */
+  public ArcadeFilterByIndexStep(final Traversal.Admin traversal, final Class returnClass, final boolean isStart, final TypeIndex index,
+      final BiPredicate<?, ?> predicate, final Object[] keys, final String typeName) {
     super(traversal);
-    this.indexCursors = indexCursors;
-
+    if (!isSupported(predicate))
+      throw new IllegalArgumentException("Unsupported index predicate '" + predicate + "'");
+    this.index = index;
+    this.predicate = predicate;
+    this.keys = keys;
+    this.typeName = typeName;
     this.returnClass = returnClass;
     this.isStart = isStart;
+  }
 
-    final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
+  /** Whether the predicate can be answered by an index cursor. */
+  public static boolean isSupported(final BiPredicate<?, ?> predicate) {
+    return predicate == Compare.eq || predicate == Compare.gt || predicate == Compare.gte || predicate == Compare.lt
+        || predicate == Compare.lte;
+  }
 
-    final Set<Identifiable> resultSet = new HashSet<>();
+  private IndexCursor openCursor() {
+    if (predicate == Compare.eq)
+      return index.get(keys);
+    if (predicate == Compare.gt)
+      return index.iterator(true, keys, false);
+    if (predicate == Compare.gte)
+      return index.iterator(true, keys, true);
+    if (predicate == Compare.lt)
+      return index.iterator(false, keys, false);
+    return index.iterator(false, keys, true);
+  }
 
-    for (int i = 0; i < indexCursors.size(); i++) {
-      // #5662: the cursors are materialized here and never touched again, so each is released as soon as it has been
-      // read. Draining one already releases its per-series file registrations, but an exception partway through the
-      // intersection would otherwise abandon it - and a compacted-series cursor left registered keeps a retired index
-      // file undroppable until the next restart
-      try (final IndexCursor cursor = indexCursors.get(i)) {
-        if (i == 0) {
-          // FIRST CURSOR: ADD ALL THE RESULTS
-          while (cursor.hasNext())
-            resultSet.add(cursor.next());
-        } else {
-          // INTERSECT WITH THE PREVIOUS RESULTS
-          final Set<Identifiable> currentResultSet = new HashSet<>();
-          while (cursor.hasNext())
-            currentResultSet.add(cursor.next());
+  /**
+   * The bucket ids a candidate may live in, indexed by bucket id, or null when every entry of the index qualifies.
+   * An index declared on the named type itself already spans exactly that type's polymorphic buckets.
+   */
+  private boolean[] allowedBuckets(final Schema schema) {
+    if (typeName.equals(index.getTypeName()))
+      return null;
 
-          resultSet.retainAll(currentResultSet);
+    final List<Bucket> buckets = schema.getType(typeName).getBuckets(true);
+    int max = -1;
+    for (final Bucket b : buckets)
+      max = Math.max(max, b.getFileId());
+    final boolean[] allowed = new boolean[max + 1];
+    for (final Bucket b : buckets)
+      allowed[b.getFileId()] = true;
+    return allowed;
+  }
+
+  private Iterator<E> openIterator() {
+    final ArcadeGraph graph = (ArcadeGraph) getTraversal().getGraph().get();
+    final boolean[] allowed = allowedBuckets(graph.getDatabase().getSchema());
+    final IndexCursor cursor = openCursor();
+
+    return new CloseableIterator<>() {
+      private E       next;
+      private boolean closed;
+
+      @Override
+      public boolean hasNext() {
+        if (next != null)
+          return true;
+        if (closed)
+          return false;
+
+        while (cursor.hasNext()) {
+          final Identifiable candidate = cursor.next();
+          final int bucketId = candidate.getIdentity().getBucketId();
+          if (allowed != null && (bucketId < 0 || bucketId >= allowed.length || !allowed[bucketId]))
+            continue;
+
+          final Record rec = candidate.getRecord();
+          if (rec instanceof com.arcadedb.graph.Vertex vertex)
+            next = (E) new ArcadeVertex(graph, vertex);
+          else if (rec instanceof com.arcadedb.graph.Edge edge)
+            next = (E) new ArcadeEdge(graph, edge);
+          else if (rec != null)
+            throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
+          if (next != null)
+            return true;
+        }
+        // #5662: RELEASE THE CURSOR AS SOON AS IT IS EXHAUSTED, NOT WHEN THE TRAVERSAL IS CLOSED: A COMPACTED-SERIES
+        // CURSOR LEFT REGISTERED KEEPS A RETIRED INDEX FILE UNDROPPABLE UNTIL THE NEXT RESTART
+        close();
+        return false;
+      }
+
+      @Override
+      public E next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final E result = next;
+        next = null;
+        return result;
+      }
+
+      @Override
+      public void close() {
+        if (!closed) {
+          closed = true;
+          cursor.close();
         }
       }
-    }
-
-
-    iteratorSupplier = () -> {
-      final Iterator<Identifiable> rawIterator = resultSet.iterator();
-
-      return new Iterator<>() {
-            @Override
-            public boolean hasNext() {
-                return rawIterator.hasNext();
-            }
-
-            @Override
-            public E next() {
-                final Record rec = rawIterator.next().getRecord();
-                if (rec instanceof com.arcadedb.graph.Vertex)
-                    return (E) new ArcadeVertex(graph, rec.asVertex());
-                else if (rec instanceof com.arcadedb.graph.Edge)
-                    return (E) new ArcadeEdge(graph, rec.asEdge());
-                else
-                    throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
-            }
-        };
-      };
+    };
   }
 
   public String toString() {
-    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(Locale.ENGLISH), indexCursors);
+    return StringFactory.stepString(this, this.returnClass.getSimpleName().toLowerCase(Locale.ENGLISH), typeName, index.getName(),
+        predicate + "(" + Arrays.toString(keys) + ")");
   }
 
   @Override
@@ -156,11 +234,12 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
             throw FastNoSuchElementException.instance();
           else {
             this.done = true;
-            this.iterator = null == this.iteratorSupplier ? EmptyIterator.instance() : this.iteratorSupplier.get();
+            this.iterator = openIterator();
           }
         } else {
           this.head = this.starts.next();
-          this.iterator = null == this.iteratorSupplier ? EmptyIterator.instance() : this.iteratorSupplier.get();
+          // ONE SCAN PER INCOMING TRAVERSER, AT THE TIME IT ARRIVES: WHAT THE PREVIOUS STEPS WROTE IS VISIBLE
+          this.iterator = openIterator();
         }
       }
     }
@@ -169,6 +248,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   @Override
   public void reset() {
     super.reset();
+    // NOT CLOSED HERE: AbstractStep.clone() RESETS THE CLONE WHILE IT STILL SHARES THIS STEP'S ITERATOR
     this.head = null;
     this.done = false;
     this.iterator = EmptyIterator.instance();
@@ -176,7 +256,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
 
   @Override
   public int hashCode() {
-    return Objects.hash(returnClass, indexCursors);
+    return Objects.hash(returnClass, index.getName(), predicate, Arrays.hashCode(keys), typeName);
   }
 
   @Override
@@ -188,7 +268,8 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     if (!super.equals(o))
       return false;
     final ArcadeFilterByIndexStep<?, ?> that = (ArcadeFilterByIndexStep<?, ?>) o;
-    return Objects.equals(indexCursors, that.indexCursors) && Objects.equals(returnClass, that.returnClass);
+    return Objects.equals(index.getName(), that.index.getName()) && predicate == that.predicate && Arrays.equals(keys, that.keys)
+        && Objects.equals(typeName, that.typeName) && Objects.equals(returnClass, that.returnClass);
   }
 
   /**

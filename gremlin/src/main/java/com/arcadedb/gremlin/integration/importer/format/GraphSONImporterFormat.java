@@ -155,11 +155,11 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // First pass: create vertices and collect edge data
-    inTransaction(database, ownsTransaction, () -> createVertices(lines, database, idMapping, pendingEdges, context));
+    inTransaction(database, ownsTransaction, context, () -> createVertices(lines, database, idMapping, pendingEdges, context));
 
     // Second pass: create edges using the ID mapping
     if (!pendingEdges.isEmpty())
-      inTransaction(database, ownsTransaction, () -> createEdges(pendingEdges, database, idMapping, context));
+      inTransaction(database, ownsTransaction, context, () -> createEdges(pendingEdges, database, idMapping, context));
   }
 
   /**
@@ -184,11 +184,20 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
    * back whatever is active even when it JOINED the caller's transaction rather than creating one, which is the very
    * thing this must not do (the #7860 / #7328 mechanism).
    */
-  private static void inTransaction(final DatabaseInternal database, final boolean ownsTransaction, final Runnable pass) {
+  private static void inTransaction(final DatabaseInternal database, final boolean ownsTransaction, final ImporterContext context,
+      final Runnable pass) {
     if (!ownsTransaction) {
       pass.run();
       return;
     }
+
+    // THE PASS COUNTS EVERY RECORD AS IT SAVES IT, BUT THE PASS IS ONE ALL-OR-NOTHING TRANSACTION: WHEN IT DOES NOT
+    // COMMIT, WHAT THE REPORT CALLS "CREATED" MUST GO BACK TO WHAT IT WAS BEFORE THE PASS, OR A FAILED IMPORT REPORTS
+    // EVERY RECORD IT READ AS CREATED (#8160). A FAILED commit() DISCARDS THE PASS TOO, SO IT RESTORES AS WELL
+    final long verticesBefore = context.createdVertices.get();
+    final long edgesBefore = context.createdEdges.get();
+    final long parsedBefore = context.parsed.get();
+    boolean committed = false;
 
     database.begin();
     // Whether the level just pushed is still the current one. Cleared right BEFORE the commit, not after:
@@ -200,9 +209,15 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       pass.run();
       txOpen = false;
       database.commit();
+      committed = true;
     } finally {
       if (txOpen && database.isTransactionActive())
         database.rollback();
+      if (!committed) {
+        context.createdVertices.set(verticesBefore);
+        context.createdEdges.set(edgesBefore);
+        context.parsed.set(parsedBefore);
+      }
     }
   }
 
