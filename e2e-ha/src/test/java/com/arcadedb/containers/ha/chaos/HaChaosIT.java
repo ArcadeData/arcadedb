@@ -454,8 +454,7 @@ class HaChaosIT extends ContainersTestTemplate {
             if (status == 200) {
               final JSONObject json = new JSONObject(
                   new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
-              view.append(" isLeader=").append(json.getBoolean("isLeader", false))
-                  .append(" leader=").append(json.isNull("leaderHttpAddress") ? "none" : json.getString("leaderHttpAddress"));
+              view.append(' ').append(ClusterStatusSummary.describe(json));
             }
           } finally {
             connection.disconnect();
