@@ -294,10 +294,14 @@ public class CypherDateTime implements CypherTemporalValue {
       final int offsetCmp = Integer.compare(value.getOffset().getTotalSeconds(), cdt.value.getOffset().getTotalSeconds());
       return offsetCmp != 0 ? offsetCmp : value.getZone().getId().compareTo(cdt.value.getZone().getId());
     }
-    // Cross-type with naive LocalDateTime: treat it as UTC, mirroring datetime(localDatetimeValue). Equality across
-    // the two types is therefore instant-only, while DISTINCT and GROUP BY (equals/hashCode) keep them apart.
-    if (other instanceof CypherLocalDateTime cld)
-      return value.toInstant().compareTo(cld.getValue().toInstant(ZoneOffset.UTC));
+    // Cross-type with naive LocalDateTime: treat it as UTC, mirroring datetime(localDatetimeValue), and at the same
+    // instant sort the LocalDateTime first. This is the total order ORDER BY needs: answering 0 made a local value
+    // "equal" to two zoned values that are not equal to each other. The = and < operators keep comparing the two
+    // types by instant only, in ComparisonExpression.
+    if (other instanceof CypherLocalDateTime cld) {
+      final int cmp = value.toInstant().compareTo(cld.getValue().toInstant(ZoneOffset.UTC));
+      return cmp != 0 ? cmp : 1;
+    }
     throw new IllegalArgumentException("Cannot compare DateTime with " + other.getClass().getSimpleName());
   }
 

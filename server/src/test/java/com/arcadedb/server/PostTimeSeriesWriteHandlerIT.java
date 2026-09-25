@@ -180,6 +180,59 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #8302: a line the parser rejects (here truncated after a field key) is reported as a partial write naming
+   * its line number, not answered 204 alongside the valid line that was stored.
+   */
+  @Test
+  void malformedLineIsReportedAsPartialWrite() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE pw_malformed TIMESTAMP ts TAGS (city STRING) FIELDS (temp DOUBLE, hum DOUBLE)");
+
+      final String lineProtocol = """
+          pw_malformed,city=rome temp=21.5 1000
+          # a comment still counts as a line
+          pw_malformed,city=rome temp=22.5,hum
+          """;
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write(lineProtocol.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("unable to parse 1 line");
+      assertThat(error.getInt("written")).isEqualTo(1);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("malformedLines").getInt(0)).isEqualTo(3);
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_malformed");
+      assertThat(result.getJSONObject("result").getJSONArray("records").length()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void onlyMalformedLinesAreReportedNot204() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("pw_nothing,city=rome temp\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getInt("written")).isEqualTo(0);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("malformedLines").getInt(0)).isEqualTo(1);
+    });
+  }
+
   @Test
   void allDroppedReportsPartialWritePayloadShape() throws Exception {
     // Regression for issue #5036: the all-dropped case (written=0) keeps returning 400 and now carries
@@ -243,7 +296,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   private HttpURLConnection openWriteConnection(final int serverIndex, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
         .openConnection();
 
@@ -257,7 +310,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   private int postLineProtocolGzip(final int serverIndex, final byte[] compressedBody, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
         .openConnection();
 

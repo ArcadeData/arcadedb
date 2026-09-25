@@ -166,9 +166,12 @@ public class CypherLocalDateTime implements CypherTemporalValue {
   public int compareTo(final CypherTemporalValue other) {
     if (other instanceof CypherLocalDateTime cld)
       return value.compareTo(cld.value);
-    // Cross-type with zoned DateTime: treat LocalDateTime as UTC, mirroring datetime(localDatetimeValue).
-    if (other instanceof CypherDateTime cdt)
-      return value.toInstant(ZoneOffset.UTC).compareTo(cdt.getValue().toInstant());
+    // Cross-type with zoned DateTime: treat LocalDateTime as UTC, mirroring datetime(localDatetimeValue), and at the
+    // same instant sort the LocalDateTime first: the mirror of CypherDateTime.compareTo, so the order stays total.
+    if (other instanceof CypherDateTime cdt) {
+      final int cmp = value.toInstant(ZoneOffset.UTC).compareTo(cdt.getValue().toInstant());
+      return cmp != 0 ? cmp : -1;
+    }
     throw new IllegalArgumentException("Cannot compare LocalDateTime with " + other.getClass().getSimpleName());
   }
 

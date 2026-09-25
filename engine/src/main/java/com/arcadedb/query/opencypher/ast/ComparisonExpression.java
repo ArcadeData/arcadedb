@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -32,6 +33,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.temporal.Temporal;
 import java.util.Date;
 import java.util.List;
@@ -183,7 +185,15 @@ public class ComparisonExpression implements BooleanExpression {
       rightTemporal = adoptZone(right, (CypherDateTime) rightTemporal, zoned.getValue().getZone());
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
-        final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
+        // A LocalDateTime and a zoned DateTime compare by instant (the LocalDateTime read as UTC): compareTo also
+        // orders the two types apart at one instant, which ORDER BY needs and = must not see.
+        final int cmp;
+        if (leftTemporal instanceof CypherLocalDateTime local && rightTemporal instanceof CypherDateTime zoned)
+          cmp = local.getValue().toInstant(ZoneOffset.UTC).compareTo(zoned.getValue().toInstant());
+        else if (leftTemporal instanceof CypherDateTime zoned && rightTemporal instanceof CypherLocalDateTime local)
+          cmp = zoned.getValue().toInstant().compareTo(local.getValue().toInstant(ZoneOffset.UTC));
+        else
+          cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
         return switch (operator) {
           case EQUALS -> cmp == 0;
           case NOT_EQUALS -> cmp != 0;
