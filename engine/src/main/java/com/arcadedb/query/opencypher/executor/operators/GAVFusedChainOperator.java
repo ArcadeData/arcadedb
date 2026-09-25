@@ -100,6 +100,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private boolean[] hopTracked;
   private int[][]   hopConflictsWith;
 
+  // The hops this chain replaced, in traversal order: a source the view does not map (a vertex created after the build
+  // of a stale view still in use) is expanded through a fresh copy of them, which walks its edge records, rather than
+  // dropped. Never executed themselves, so a cached plan shares no state between executions.
+  private List<GAVExpandAll> unfusedHops;
+
   public GAVFusedChainOperator(final PhysicalOperator child,
       final GraphTraversalProvider provider,
       final String sourceVariable,
@@ -153,6 +158,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     this.hopConflictsWith = hopConflictsWith;
   }
 
+  /** The hops this chain replaced, in traversal order, used for the sources the view does not map. */
+  public void setUnfusedHops(final List<GAVExpandAll> unfusedHops) {
+    this.unfusedHops = unfusedHops;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Built once on the calling thread and handed to the workers: reading the deadline from the shared context
@@ -175,6 +185,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
     int[] sourceNodeIdsBuf = new int[1024];
     int sourceCount = 0;
+    List<Result> unmappedSources = null;
     while (inputResults.hasNext()) {
       guard.check();
       final Result inputResult = inputResults.next();
@@ -190,9 +201,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         if (sourceCount == sourceNodeIdsBuf.length)
           sourceNodeIdsBuf = Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
         sourceNodeIdsBuf[sourceCount++] = nodeId;
+      } else if (unfusedHops != null) {
+        if (unmappedSources == null)
+          unmappedSources = new ArrayList<>();
+        unmappedSources.add(inputResult);
       }
     }
     inputResults.close();
+    final List<Result> unmappedRows = unmappedSources != null ? expandUnmappedSources(unmappedSources, context) : null;
 
     final int[] sourceNodeIds = sourceNodeIdsBuf;
     final int totalSources = sourceCount; // effectively final for lambda capture
@@ -203,7 +219,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
-          hopViews, trackedTypes, chainLength, db, context, guard);
+          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows);
 
     // Parallel DFS: each thread processes a chunk of source vertices with its own stack
     @SuppressWarnings("unchecked")
@@ -247,6 +263,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int t = 0; t < threadCount; t++)
       if (threadResults[t] != null)
         merged.addAll(threadResults[t]);
+    if (unmappedRows != null)
+      merged.addAll(unmappedRows);
 
     final Iterator<Result> mergedIter = merged.iterator();
     return new ResultSet() {
@@ -274,7 +292,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    */
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
       final int parallelism, final int chunkSize, final NeighborView[] hopViews, final TrackedTypes trackedTypes,
-      final int chainLength, final Database db, final CommandContext context, final WorkGuard guard) {
+      final int chainLength, final Database db, final CommandContext context, final WorkGuard guard,
+      final List<Result> unmappedRows) {
 
     // Resolve which nodeId slot each group key variable maps to:
     // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
@@ -329,6 +348,45 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       if (threadMaps[t] != null)
         merged.mergeFrom(threadMaps[t]);
 
+    // The paths of the sources the view does not map: counted into the same groups when every key is a view node, into
+    // groups of their own, keyed by the records, otherwise
+    Map<List<RID>, Object[]> recordGroups = null;
+    if (unmappedRows != null)
+      for (final Result row : unmappedRows) {
+        boolean mapped = true;
+        final Object[] keys = new Object[groupKeyVariables.length];
+        final int[] nodeIds = new int[groupKeyVariables.length];
+        for (int g = 0; g < groupKeyVariables.length; g++) {
+          keys[g] = row.getProperty(groupKeyVariables[g]);
+          nodeIds[g] = keys[g] instanceof GAVVertex gav ? gav.getNodeId() :
+              keys[g] instanceof Vertex v ? provider.getNodeId(v.getIdentity()) : -1;
+          if (nodeIds[g] < 0)
+            mapped = false;
+        }
+        if (mapped) {
+          // Packed exactly as the DFS packs its keys
+          long packedKey = 0;
+          if (nodeIds.length == 2)
+            packedKey = ((long) nodeIds[0] << 32) | (nodeIds[1] & 0xFFFFFFFFL);
+          else if (nodeIds.length == 1)
+            packedKey = nodeIds[0];
+          merged.increment(packedKey);
+          continue;
+        }
+        final List<RID> recordKey = new ArrayList<>(keys.length);
+        for (final Object key : keys)
+          recordKey.add(key instanceof Vertex v ? v.getIdentity() : null);
+        if (recordGroups == null)
+          recordGroups = new HashMap<>();
+        final Object[] group = recordGroups.computeIfAbsent(recordKey, k -> {
+          final Object[] entry = new Object[keys.length + 1];
+          System.arraycopy(keys, 0, entry, 0, keys.length);
+          entry[keys.length] = 0L;
+          return entry;
+        });
+        group[keys.length] = (Long) group[keys.length] + 1;
+      }
+
     // Build output results — one per group (only ~50K allocations, not 740K)
     final List<Result> results = new ArrayList<>(merged.size());
     merged.forEach((packedKey, count) -> {
@@ -345,6 +403,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       result.setProperty(countOutputName, count);
       results.add(result);
     });
+    if (recordGroups != null)
+      for (final Object[] group : recordGroups.values()) {
+        final ResultInternal result = new ResultInternal();
+        for (int g = 0; g < groupKeyOutputNames.length; g++)
+          result.setProperty(groupKeyOutputNames[g], group[g]);
+        result.setProperty(countOutputName, group[groupKeyOutputNames.length]);
+        results.add(result);
+      }
 
     final Iterator<Result> iter = results.iterator();
     return new ResultSet() {
@@ -352,6 +418,33 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       @Override public Result next() { return iter.next(); }
       @Override public void close() { }
     };
+  }
+
+  /**
+   * Expands the sources the view does not map through a fresh copy of the hops this chain replaced, which walk their
+   * edge records, and applies the filter pushed into the chain. The copies enforce relationship uniqueness with the
+   * same labels the fused walk compares (issue #8394).
+   */
+  private List<Result> expandUnmappedSources(final List<Result> sources, final CommandContext context) {
+    PhysicalOperator chain = new RowsOperator(sources);
+    for (final GAVExpandAll hop : unfusedHops) {
+      final GAVExpandAll copy = new GAVExpandAll(chain, hop.getProvider(), hop.getSourceVariable(),
+          hop.getTargetVariable(), hop.getDirection(), hop.getEdgeTypes(), hop.getEstimatedCost(),
+          hop.getEstimatedCardinality());
+      copy.setTargetLabel(hop.getTargetLabel());
+      if (hop.getEdgeTrackingVar() != null)
+        copy.setEdgeTracking(hop.getEdgeTrackingVar(), hop.getSameClausePrecedingRelVars());
+      chain = copy;
+    }
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet expanded = chain.execute(context, -1)) {
+      while (expanded.hasNext()) {
+        final Result row = expanded.next();
+        if (pushedFilter == null || Boolean.TRUE.equals(pushedFilter.evaluate(row, context)))
+          rows.add(row);
+      }
+    }
+    return rows;
   }
 
   /**

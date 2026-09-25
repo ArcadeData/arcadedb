@@ -1350,6 +1350,12 @@ public class CypherOptimizer {
         rootOperator.getEstimatedCost() * 0.5, // fusion is cheaper
         rootOperator.getEstimatedCardinality());
 
+    // A source the view does not map is expanded through these instead of being dropped
+    final List<GAVExpandAll> unfusedHops = new ArrayList<>(chainLen);
+    for (int i = chainLen - 1; i >= 0; i--)
+      unfusedHops.add(chain.get(i));
+    fused.setUnfusedHops(unfusedHops);
+
     if (!chainTrackingVars.isEmpty()) {
       final boolean[] hopTracked = new boolean[chainLen];
       final int[][] hopConflictsWith = new int[chainLen][];

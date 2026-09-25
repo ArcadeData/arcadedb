@@ -269,6 +269,15 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
     assertThat(plan(branching)).contains("GAVExpandAll").contains("unique relationships");
     assertThat(answer(branching)).containsExactly("n=2;");
 
+    // A linear chain is fused: the source the view does not map is expanded on its records, not dropped
+    final String chain = "MATCH (a:P {id:100})-[:K]->(b:P)-[:K]->(c:P) RETURN count(*) AS n";
+    assertThat(plan(chain)).contains("GAVFusedChain");
+    assertThat(answer(chain)).containsExactly("n=2;");
+    final String grouped = "MATCH (a:P {id:100})-[:K]->(b:P)-[:K]->(c:P) WITH a, count(*) AS n RETURN a.id AS a, n";
+    assertThat(answer(grouped)).containsExactly("a=100;n=2;");
+    final String rows = "MATCH (a:P {id:100})-[:K]->(b:P)-[:K]->(c:P) RETURN c.id AS c";
+    assertThat(answer(rows)).containsExactly("c=100;", "c=100;");
+
     final String cycle = "MATCH (a:P {id:100})-[:K]->(b:P)-[:K]->(a) RETURN count(*) AS n";
     assertThat(plan(cycle)).contains("GAVExpandInto");
     assertThat(answer(cycle)).containsExactly("n=2;");
