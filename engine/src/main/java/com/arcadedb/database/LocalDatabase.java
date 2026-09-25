@@ -2766,6 +2766,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * write-locked section itself. The CAS below makes the teardown run AT MOST ONCE: a losing thread waits for
    * the winner instead of repeating (or interleaving with) any part of it, which is the "one shutdown path
    * owns the closing" behaviour the class Javadoc already promised but this method did not yet provide.
+   * <p>
+   * The winner's {@code drop} flag decides for both: a {@code close()} racing a {@code drop()} keeps or deletes the
+   * files according to whichever took the CAS, and the loser's intent is discarded (as the old {@code open} check did).
    */
   private final AtomicBoolean   closing      = new AtomicBoolean(false);
   private final CountDownLatch  closedSignal = new CountDownLatch(1);

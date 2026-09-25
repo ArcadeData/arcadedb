@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -769,11 +768,8 @@ class BootstrapElection {
           "Bootstrap source for '%s': peer=%s, lastTxId=%d, fingerprint=%s",
           dbName, local.peerId, local.lastTxId, abbreviate(local.fingerprint));
       try {
-        // #8356: RaftHAServer.stop() clears the broker while leader-change notifications can still arrive
-        final RaftTransactionBroker broker = haServer.getTransactionBroker();
-        if (broker == null)
-          throw new NeedRetryException("Raft transaction broker is not available (server may be stopping)");
-        broker.replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
+        RaftHAServer.requireTransactionBroker(haServer)
+            .replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
         anyCommitted = true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,

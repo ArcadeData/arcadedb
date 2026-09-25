@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
@@ -265,19 +264,6 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     }
   }
 
-  /**
-   * {@code raftHAServer} being non-null only rules out "never started". {@code RaftHAServer.stop()} clears its
-   * {@code transactionBroker} field separately, and can do so while this plugin's own {@code raftHAServer}
-   * reference is still set - the HTTP server may still be accepting admin requests in that window (issue
-   * #8356). Dereferencing {@link RaftHAServer#getTransactionBroker()} without this check hits a bare NPE.
-   */
-  private RaftTransactionBroker requireTransactionBroker(final RaftHAServer raft) {
-    final RaftTransactionBroker broker = raft.getTransactionBroker();
-    if (broker == null)
-      throw new NeedRetryException("Raft transaction broker is not available (server may be stopping)");
-    return broker;
-  }
-
   @Override
   public void replicateSecurityUsers(final String usersJsonArray) {
     // Overridden alongside the two-argument form because the interface's default for THIS one is the no-op:
@@ -293,7 +279,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = requireTransactionBroker(raftHAServer)
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityUsers(usersJsonArray, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
@@ -326,7 +312,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = requireTransactionBroker(raftHAServer)
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityGroups(groupsJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;
@@ -358,7 +344,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     final boolean applied;
     try {
-      applied = requireTransactionBroker(raftHAServer)
+      applied = RaftHAServer.requireTransactionBroker(raftHAServer)
           .replicateSecurityApiTokens(apiTokensJson, preconditionEveryPeerCanRead(expectedFingerprint));
     } catch (final TransactionException e) {
       throw e;

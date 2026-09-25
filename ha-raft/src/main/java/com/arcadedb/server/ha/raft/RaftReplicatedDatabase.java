@@ -487,19 +487,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return s;
   }
 
-  /**
-   * {@code raftHAServer} is a {@code final} field, so {@link #requireRaftServer()} only rules out the
-   * never-had-one case. Its {@code transactionBroker} is a separate, later-nulled field: {@code RaftHAServer.stop()}
-   * clears it while the HTTP server may still be accepting write requests (issue #8356), so a caller that
-   * dereferences {@link RaftHAServer#getTransactionBroker()} without this check hits a bare NPE instead of a
-   * retryable failure the caller (and, through {@code AbstractServerHttpHandler}, the client) can act on.
-   */
-  private RaftTransactionBroker requireTransactionBroker(final RaftHAServer raft) {
-    final RaftTransactionBroker broker = raft.getTransactionBroker();
-    if (broker == null)
-      throw new NeedRetryException("Raft transaction broker is not available (server may be stopping)");
-    return broker;
-  }
 
   /**
    * Commits the current transaction through Raft consensus.
@@ -713,7 +700,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     long committedLogIndex = -1;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = requireTransactionBroker(raft)
+      committedLogIndex = RaftHAServer.requireTransactionBroker(raft)
           .replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide and this leader's state
@@ -2021,7 +2008,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (!addFiles.isEmpty() || !removeFiles.isEmpty() || schemaChanged || !walEntries.isEmpty()
           || shippedInstalments > 0) {
         final RaftHAServer raft = requireRaftServer();
-        requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries,
+        RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles, walEntries,
             bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta);
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
@@ -2164,7 +2151,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     return retireAbandonedInstalments(this, getName(), state.instalments, state.shippedFiles,
         proxied.getFileManager()::existsFile,
-        filesToRemove -> requireTransactionBroker(requireRaftServer()).replicateSchema(getName(), "",
+        filesToRemove -> RaftHAServer.requireTransactionBroker(requireRaftServer()).replicateSchema(getName(), "",
             Collections.emptyMap(), filesToRemove, Collections.emptyList(), Collections.emptyList()),
         this::isLeader);
   }
@@ -2334,12 +2321,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
 
     if (state.threshold == 0)
-      state.threshold = requireTransactionBroker(requireRaftServer()).walChunkBudget();
+      state.threshold = RaftHAServer.requireTransactionBroker(requireRaftServer()).walChunkBudget();
 
     if (state.bufferedBytes < state.threshold)
       return;
 
-    final RaftTransactionBroker broker = requireTransactionBroker(requireRaftServer());
+    final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(requireRaftServer());
 
     // Only the files created since the previous instalment: an already-announced one exists on the followers, and
     // re-announcing it would make createNewFiles run over a file that is being written into.
@@ -2808,7 +2795,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // store is not a paginated file, so it contributes none here - it ships as a blob instead.
       // #4743: chunked against the maximum replicated entry size so a big compacted index does not
       // produce one oversized Raft entry (which would make the leader step down, over and over).
-      final RaftTransactionBroker broker = requireTransactionBroker(requireRaftServer());
+      final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(requireRaftServer());
       final long walChunkBudget = broker.walChunkBudget();
       for (final int fileId : addFiles.keySet())
         appendFilePagesAsWal(fileId, walChunkBudget, walEntries, bucketDeltas, 0);
@@ -3500,7 +3487,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas() {
     try {
       final RaftHAServer raft = requireRaftServer();
-      requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -3513,7 +3500,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public void createInReplicas(final boolean forceSnapshot) {
     try {
       final RaftHAServer raft = requireRaftServer();
-      requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -3548,7 +3535,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final long committedLogIndex;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = requireTransactionBroker(raft).replicateDropDatabase(getName());
+      committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
       raft.waitForAppliedIndex(getName(), committedLogIndex, true);
     } catch (final TransactionException e) {
       throw e;

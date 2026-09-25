@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
@@ -2167,6 +2168,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public RaftTransactionBroker getTransactionBroker() {
     return transactionBroker;
+  }
+
+  /**
+   * {@link #stop()} clears {@code transactionBroker} while callers holding this instance - HTTP writes, admin
+   * requests, leader-change notifications - can still reach it (issue #8356). Static so a Mockito double of this
+   * class still runs the check against its stubbed {@link #getTransactionBroker()}.
+   */
+  static RaftTransactionBroker requireTransactionBroker(final RaftHAServer raft) {
+    final RaftTransactionBroker broker = raft.getTransactionBroker();
+    if (broker == null)
+      throw new NeedRetryException("Raft transaction broker is not available (server may be stopping)");
+    return broker;
   }
 
   /**
