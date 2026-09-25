@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Timeout;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -152,6 +154,35 @@ class BackupCoordinatorTest {
 
     assertThat(settings.file).matches("mydb-backup-\\d{8}-\\d{9}\\.zip");
     assertThat(BackupCoordinator.parseArchiveTimestamp(settings.file)).isNotNull();
+  }
+
+  /**
+   * Issue #8301: the CLI/SQL default name was built with a {@code SimpleDateFormat} that took the default locale's
+   * calendar and digits, so under th-TH it carried the Buddhist year (543 years in the future to retention) and under
+   * ar-EG or the Japanese imperial calendar a name retention could not read at all.
+   */
+  @Test
+  void bothArchiveNamesAreLocaleIndependent() {
+    final Locale saved = Locale.getDefault();
+    try {
+      for (final String tag : new String[] { "th-TH", "ar-EG", "ja-JP-u-ca-japanese", "hi-IN-u-nu-deva", "en-US" }) {
+        Locale.setDefault(Locale.forLanguageTag(tag));
+
+        final LocalDateTime before = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
+        final BackupSettings settings = new BackupSettings();
+        settings.databaseName = "mydb";
+        settings.validateSettings();
+        final String serverName = new BackupCoordinator().newArchiveName("mydb");
+        final LocalDateTime after = LocalDateTime.now();
+
+        for (final String name : new String[] { settings.file, serverName }) {
+          assertThat(name).as("locale %s", tag).matches("mydb-backup-\\d{8}-\\d{9}\\.zip");
+          assertThat(BackupCoordinator.parseArchiveTimestamp(name)).as("locale %s: %s", tag, name).isBetween(before, after);
+        }
+      }
+    } finally {
+      Locale.setDefault(saved);
+    }
   }
 
   @Test

@@ -23,12 +23,14 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.Instant;
 import java.time.temporal.Temporal;
 import java.util.Date;
 import java.util.List;
@@ -165,8 +167,15 @@ public class ComparisonExpression implements BooleanExpression {
     // a raw java.time value) compares against a stored temporal instead of silently not matching.
     // Hot path: coerceTemporal short-circuits on the common numeric/string/boolean operand with a
     // single instanceof pair, and memoizes an invariant temporal operand to avoid per-row allocation.
-    final Object leftTemporal = coerceTemporal(left);
-    final Object rightTemporal = coerceTemporal(right);
+    Object leftTemporal = coerceTemporal(left);
+    Object rightTemporal = coerceTemporal(right);
+    // A java.util.Date or Instant carries an instant and no zone, and coerces to UTC only for want of one. Against a
+    // zoned datetime it takes that operand's zone, so it equals every datetime at its instant rather than only the
+    // UTC ones: datetimes at one instant in different zones are distinct values (issue #8300).
+    if ((left instanceof Date || left instanceof Instant) && rightTemporal instanceof CypherDateTime zoned)
+      leftTemporal = new CypherDateTime(((CypherDateTime) leftTemporal).getValue().withZoneSameInstant(zoned.getValue().getZone()));
+    else if ((right instanceof Date || right instanceof Instant) && leftTemporal instanceof CypherDateTime zoned)
+      rightTemporal = new CypherDateTime(((CypherDateTime) rightTemporal).getValue().withZoneSameInstant(zoned.getValue().getZone()));
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
         final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);

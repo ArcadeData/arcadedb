@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -263,5 +264,39 @@ class LineProtocolParserTest {
     // Should skip the malformed line and return nothing (or throw)
     final List<Sample> samples = LineProtocolParser.parse(text, Precision.MILLISECONDS);
     assertThat(samples).isEmpty();
+  }
+
+  /**
+   * Issue #8302: a line that ended after a field key, or after its '=', was accepted with a fabricated 0.0 for the
+   * missing value; a key with no '=' before the next separator was read on across it.
+   */
+  @Test
+  void fieldWithoutValueIsRejected() {
+    for (final String line : new String[] { //
+        "weather,city=rome temp", //
+        "weather,city=rome temp=", //
+        "weather,city=rome temp=,hum=5", //
+        "weather,city=rome temp=21.5,hum", //
+        "weather,city=rome temp=21.5,hum 1700000000000", //
+        "weather,city=rome temp 1700000000000", //
+        "weather,city temp=1", //
+        "weather,city=rome =5", //
+        "weather temp=\"unterminated" })
+      assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
+  }
+
+  @Test
+  void completeLinesStillParse() {
+    final List<Sample> samples = LineProtocolParser.parse("""
+        weather,city=rome temp=21.5,hum=40i 1700000000000
+        weather temp=1i
+        weather,city\\ name=new\\ york,=skipped temp\\=x=2.5,label="a b" 1700000000001
+        """, Precision.MILLISECONDS);
+
+    assertThat(samples).hasSize(3);
+    assertThat(samples.get(0).getFields()).containsEntry("temp", 21.5).containsEntry("hum", 40L);
+    assertThat(samples.get(1).getFields()).containsEntry("temp", 1L);
+    assertThat(samples.get(2).getTags()).containsExactlyEntriesOf(Map.of("city name", "new york"));
+    assertThat(samples.get(2).getFields()).containsEntry("temp=x", 2.5).containsEntry("label", "a b");
   }
 }
