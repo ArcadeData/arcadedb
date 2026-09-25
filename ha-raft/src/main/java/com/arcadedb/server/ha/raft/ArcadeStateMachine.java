@@ -6068,9 +6068,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // marker after close() had returned, i.e. after the caller believed the database directory was quiet - JUnit's
     // @TempDir teardown in the unit tests, and a restartRatis() about to start a new state machine installing into
     // the same directory in production. One deadline for both executors, so the bound is the whole wait.
+    //
+    // shutdownNow() also interrupts the caller when the caller is one of those workers (a task closing its own state
+    // machine). That interrupt is taken off for the wait and put back afterwards: left on, it would short-circuit the
+    // wait for the OTHER executor too, whose task runs on a different thread and is exactly what this barrier is for
+    // (review of PR #8366). The wait for the caller's OWN executor is skipped instead - it cannot terminate while its
+    // worker is here waiting for it.
+    final boolean callerInterrupted = Thread.interrupted();
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_AWAIT_MS);
-    awaitTermination(lifecycleExecutor, LIFECYCLE_THREAD_NAME, deadline);
-    awaitTermination(snapshotInstallExecutor, SNAPSHOT_INSTALL_THREAD_NAME, deadline);
+    final boolean interruptedWhileWaiting = !awaitTermination(lifecycleExecutor, LIFECYCLE_THREAD_NAME, deadline)
+        || !awaitTermination(snapshotInstallExecutor, SNAPSHOT_INSTALL_THREAD_NAME, deadline);
+    if (callerInterrupted || interruptedWhileWaiting)
+      Thread.currentThread().interrupt();
     membershipSecuritySeeder.close();
     securityCatchUp.close();
     deferredDatabaseDeleter.close();
@@ -6078,21 +6087,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down.
-   * <p>
-   * Cannot turn into a self-wait when a task closes its own state machine: {@code close()} calls
-   * {@code shutdownNow()} on both executors before waiting on either, and that interrupts the calling worker too, so
-   * its {@code awaitTermination} throws at once instead of waiting out the bound for a thread that cannot terminate
-   * while it waits - itself. The interrupt is restored for the task to observe, as {@code shutdownNow()} meant.
+   * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down. Skipped when the caller
+   * is that executor's own worker: a task closing its own state machine would otherwise wait out the whole bound for
+   * the one thread that cannot terminate while it waits - itself. The name is shared by every state machine's executor
+   * of that kind, so the check can also skip a wait that was merely possible; it only ever makes close() return
+   * sooner, never hang.
+   *
+   * @return false if the caller was interrupted while waiting, so the caller stops waiting and restores the flag
    */
-  private void awaitTermination(final ExecutorService executor, final String threadName, final long deadlineNanos) {
+  private boolean awaitTermination(final ExecutorService executor, final String threadName, final long deadlineNanos) {
+    if (threadName.equals(Thread.currentThread().getName()))
+      return true;
     try {
       if (!executor.awaitTermination(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS))
         LogManager.instance().log(this, Level.WARNING,
             "State machine closed while a task on '%s' was still running after %d ms; it keeps running in the "
                 + "background and may still write under the database directory", null, threadName, CLOSE_AWAIT_MS);
+      return true;
     } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
+      return false;
     }
   }
 

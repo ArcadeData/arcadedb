@@ -86,18 +86,21 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
   /**
    * A server on which the database was applied in a previous session and is gone now, so the bootstrap entry takes
    * the reinstall arm. The first install runs on the caller and fails (no leader); the retry it schedules runs on the
-   * lifecycle thread, where {@code onLifecycleThread} runs as the first thing the install does.
+   * lifecycle thread, where {@code onLifecycleThread} runs as the first thing the install does. It holds no databases
+   * and auto-acquire is off, so a leader-initiated install reconciles nothing and completes without dialling anyone.
    */
   private ArcadeDBServer serverWhoseRetryRuns(final Runnable onLifecycleThread) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
+    config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     config.setValue(GlobalConfiguration.NETWORK_USE_SSL, false);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(config);
     when(server.existsDatabase(DB_NAME)).thenReturn(false);
+    when(server.getDatabaseNames()).thenReturn(Set.of());
     // SnapshotInstaller.install asks for the backup coordinator before it touches the filesystem, so this is the
     // first thing the retry does. A null coordinator is tolerated there (no maintenance slot to take).
     when(server.getBackupCoordinator()).thenAnswer(invocation -> {
@@ -108,12 +111,81 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     return server;
   }
 
-  private void applyEntryThatSchedulesTheRetry(final ArcadeDBServer server) throws Exception {
+  /**
+   * A follower's view of a leader whose address resolution - the first thing a leader-initiated install does on the
+   * snapshot-install thread - runs {@code onInstallThread}.
+   */
+  private static RaftHAServer raftHAWhoseInstallRuns(final Runnable onInstallThread) {
+    final RaftHAServer raftHA = mock(RaftHAServer.class);
+    when(raftHA.isLeader()).thenReturn(false);
+    when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
+    when(raftHA.getLeaderId()).thenReturn(LEADER);
+    when(raftHA.getClusterToken()).thenReturn("cluster-token");
+    when(raftHA.getUnambiguousPeerHttpAddress(LEADER)).thenAnswer(invocation -> {
+      // Only there: the bootstrap install resolves the leader through the same accessor, on other threads.
+      if (Thread.currentThread().getName().equals(ArcadeStateMachine.SNAPSHOT_INSTALL_THREAD_NAME))
+        onInstallThread.run();
+      return "leader-host:2480";
+    });
+    when(raftHA.getLocalHttpAddress()).thenReturn("local-host:2480");
+    when(raftHA.getUnambiguousPeerHttpsAddress(LEADER)).thenReturn(null);
+    when(raftHA.getLocalHttpsAddress()).thenReturn(null);
+    return raftHA;
+  }
+
+  /** A state machine initialized against Ratis storage, which a leader-initiated install needs. */
+  private RaftStorage initializeStateMachine(final ArcadeDBServer server, final RaftHAServer raftHA,
+      final Path raftDirectory) throws IOException {
+    final RaftStorage storage = RaftStorage.newBuilder()
+        .setDirectory(raftDirectory.toFile())
+        .setOption(RaftStorage.StartupOption.FORMAT)
+        .build();
     sm = new ArcadeStateMachine();
     sm.setServer(server);
+    sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), storage);
+    sm.setRaftHAServer(raftHA);
+    return storage;
+  }
+
+  private void applyEntryThatSchedulesTheRetry() throws Exception {
     sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB_NAME, "0".repeat(64), 7L);
     sm.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encoded), ENTRY_INDEX);
+  }
+
+  private void applyEntryThatSchedulesTheRetry(final ArcadeDBServer server) throws Exception {
+    sm = new ArcadeStateMachine();
+    sm.setServer(server);
+    applyEntryThatSchedulesTheRetry();
+  }
+
+  private CompletableFuture<TermIndex> startLeaderInstall() {
+    return sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(), TermIndex.valueOf(3L, 10L));
+  }
+
+  /**
+   * Runs {@code sm.close()} on the current (executor) thread, asserting there that it did not wait out the close bound
+   * for itself, and hands any failure back to the test thread through {@code outcome}.
+   */
+  private void closeFromWithin(final AtomicReference<Throwable> outcome, final CountDownLatch done,
+      final Runnable afterClose) {
+    try {
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      sm.close();
+      stopwatch.assertGaveUpWithin(ArcadeStateMachine.CLOSE_AWAIT_MS / 2,
+          "a close that skips waiting for its own thread from one that waits out the whole close bound");
+      afterClose.run();
+    } catch (final Throwable t) {
+      outcome.set(t);
+    } finally {
+      done.countDown();
+    }
+  }
+
+  private static void rethrow(final AtomicReference<Throwable> outcome) {
+    if (outcome.get() instanceof AssertionError e)
+      throw e;
+    assertThat(outcome.get()).as("close() from an executor thread must not throw").isNull();
   }
 
   /** Sleeps through interrupts: a task past its last interruption point is exactly what shutdownNow() cannot stop. */
@@ -164,9 +236,7 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
   /**
    * The barrier must not turn into a self-wait. A task on the lifecycle thread that ends up closing its own state
    * machine (a stop or a Ratis restart driven from a lifecycle task) must not wait out the whole close bound for the
-   * one thread that can never terminate while it is waiting: itself. What prevents it is that close() shuts both
-   * executors down before waiting on either, which interrupts the calling worker as well - so a reordering of close()
-   * that waits first, or clears the interrupt, turns this red.
+   * one thread that can never terminate while it is waiting: itself.
    */
   @Test
   void closeCalledFromTheLifecycleThreadDoesNotWaitForItself() throws Exception {
@@ -174,24 +244,11 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     final AtomicBoolean closedFromWithin = new AtomicBoolean();
     final CountDownLatch done = new CountDownLatch(1);
 
-    applyEntryThatSchedulesTheRetry(serverWhoseRetryRuns(() -> {
-      try {
-        final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-        sm.close();
-        closedFromWithin.set(true);
-        stopwatch.assertGaveUpWithin(ArcadeStateMachine.CLOSE_AWAIT_MS / 2,
-            "a close that skips waiting for its own thread from one that waits out the whole close bound");
-      } catch (final Throwable t) {
-        outcome.set(t);
-      } finally {
-        done.countDown();
-      }
-    }));
+    applyEntryThatSchedulesTheRetry(serverWhoseRetryRuns(() -> closeFromWithin(outcome, done,
+        () -> closedFromWithin.set(true))));
 
     assertThat(done.await(30, TimeUnit.SECONDS)).as("the retry must reach the install and close").isTrue();
-    if (outcome.get() instanceof AssertionError e)
-      throw e;
-    assertThat(outcome.get()).as("close() from the lifecycle thread must not throw").isNull();
+    rethrow(outcome);
     assertThat(closedFromWithin.get()).isTrue();
   }
 
@@ -204,40 +261,14 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
   @Test
   void closeReturnsOnlyAfterTheRunningLeaderSnapshotInstallHasFinished(@TempDir final Path raftDirectory)
       throws Exception {
-    final ContextConfiguration configuration = new ContextConfiguration();
-    configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
-    configuration.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(configuration);
-    when(server.getDatabaseNames()).thenReturn(Set.of());
-
     final CountDownLatch installEntered = new CountDownLatch(1);
-    final RaftHAServer raftHA = mock(RaftHAServer.class);
-    when(raftHA.isLeader()).thenReturn(false);
-    when(raftHA.getLocalPeerId()).thenReturn(LOCAL);
-    when(raftHA.getLeaderId()).thenReturn(LEADER);
-    when(raftHA.getClusterToken()).thenReturn("cluster-token");
-    when(raftHA.getUnambiguousPeerHttpAddress(LEADER)).thenAnswer(invocation -> {
+    final RaftStorage storage = initializeStateMachine(serverWhoseRetryRuns(() -> {
+    }), raftHAWhoseInstallRuns(() -> {
       installEntered.countDown();
       holdIgnoringInterrupts(HOLD_MS);
-      return "leader-host:2480";
-    });
-    when(raftHA.getLocalHttpAddress()).thenReturn("local-host:2480");
-    when(raftHA.getUnambiguousPeerHttpsAddress(LEADER)).thenReturn(null);
-    when(raftHA.getLocalHttpsAddress()).thenReturn(null);
-
-    final RaftStorage storage = RaftStorage.newBuilder()
-        .setDirectory(raftDirectory.toFile())
-        .setOption(RaftStorage.StartupOption.FORMAT)
-        .build();
+    }), raftDirectory);
     try {
-      sm = new ArcadeStateMachine();
-      sm.setServer(server);
-      sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), storage);
-      sm.setRaftHAServer(raftHA);
-
-      final CompletableFuture<TermIndex> install = sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(),
-          TermIndex.valueOf(3L, 10L));
+      final CompletableFuture<TermIndex> install = startLeaderInstall();
       assertThat(installEntered.await(30, TimeUnit.SECONDS)).as("the install must reach its source resolution").isTrue();
 
       sm.close();
@@ -245,6 +276,65 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
       assertThat(install.isDone())
           .as("the leader-initiated install must have returned, one way or the other, before close() returned")
           .isTrue();
+    } finally {
+      storage.close();
+    }
+  }
+
+  /**
+   * Skipping the wait for its OWN executor must not also skip the wait for the other one (review of PR #8366).
+   * {@code shutdownNow()} interrupts a caller that is one of the lifecycle workers; the first revision let that
+   * interrupt short-circuit its own wait, restored it, and so short-circuited the snapshot-install wait right after
+   * it - returning, silently, while a leader-initiated install on another thread was still writing under the
+   * database directories.
+   */
+  @Test
+  void closeFromALifecycleTaskStillWaitsForARunningLeaderInstall(@TempDir final Path raftDirectory) throws Exception {
+    final CountDownLatch installEntered = new CountDownLatch(1);
+    final AtomicReference<Throwable> outcome = new AtomicReference<>();
+    final AtomicReference<CompletableFuture<TermIndex>> install = new AtomicReference<>();
+    final AtomicBoolean installDoneWhenCloseReturned = new AtomicBoolean();
+    final CountDownLatch done = new CountDownLatch(1);
+
+    final RaftStorage storage = initializeStateMachine(serverWhoseRetryRuns(() -> closeFromWithin(outcome, done,
+        () -> installDoneWhenCloseReturned.set(install.get().isDone()))), raftHAWhoseInstallRuns(() -> {
+      installEntered.countDown();
+      // Long enough that close() is certainly called while it is held; well inside CLOSE_AWAIT_MS.
+      holdIgnoringInterrupts(HOLD_MS * 2);
+    }), raftDirectory);
+    try {
+      install.set(startLeaderInstall());
+      assertThat(installEntered.await(30, TimeUnit.SECONDS)).as("the install must reach its source resolution").isTrue();
+
+      applyEntryThatSchedulesTheRetry();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("the retry must reach the install and close").isTrue();
+      rethrow(outcome);
+      assertThat(installDoneWhenCloseReturned.get())
+          .as("close() called from a lifecycle task must still wait for the install running on the OTHER executor")
+          .isTrue();
+    } finally {
+      storage.close();
+    }
+  }
+
+  /** The self-wait guard on the other executor: a leader-initiated install that closes its own state machine. */
+  @Test
+  void closeCalledFromTheSnapshotInstallThreadDoesNotWaitForItself(@TempDir final Path raftDirectory)
+      throws Exception {
+    final AtomicReference<Throwable> outcome = new AtomicReference<>();
+    final AtomicBoolean closedFromWithin = new AtomicBoolean();
+    final CountDownLatch done = new CountDownLatch(1);
+
+    final RaftStorage storage = initializeStateMachine(serverWhoseRetryRuns(() -> {
+    }), raftHAWhoseInstallRuns(() -> closeFromWithin(outcome, done, () -> closedFromWithin.set(true))),
+        raftDirectory);
+    try {
+      startLeaderInstall();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("the install must reach its source resolution and close").isTrue();
+      rethrow(outcome);
+      assertThat(closedFromWithin.get()).isTrue();
     } finally {
       storage.close();
     }
