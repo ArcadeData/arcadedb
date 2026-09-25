@@ -74,4 +74,53 @@ class LeaderForwardContextTest {
     assertThat(seenElsewhere).isFalse();
     assertThat(LeaderForwardContext.isAlreadyForwarded()).as("and this thread keeps its own marker").isTrue();
   }
+
+  // Issue #7603: the refusal of a second hop has two causes, told apart by which node the forwarding peer meant.
+
+  @Test
+  void aPeerThatMeantThisNodeReportsALeadershipChange() {
+    LeaderForwardContext.markAlreadyForwarded("peer-1");
+
+    assertThat(LeaderForwardContext.intendedLeaderId()).isEqualTo("peer-1");
+    assertThat(LeaderForwardContext.classifyRefusal("peer-1")).isEqualTo(LeaderForwardContext.Refusal.LEADERSHIP_MOVED);
+  }
+
+  @Test
+  void aPeerThatMeantAnotherNodeReportsAnAddressThatDoesNotIdentifyTheLeader() {
+    LeaderForwardContext.markAlreadyForwarded("peer-2");
+
+    assertThat(LeaderForwardContext.classifyRefusal("peer-1"))
+        .isEqualTo(LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER);
+  }
+
+  @Test
+  void withoutBothIdsTheCauseIsUndetermined() {
+    LeaderForwardContext.markAlreadyForwarded();
+    assertThat(LeaderForwardContext.classifyRefusal("peer-1")).isEqualTo(LeaderForwardContext.Refusal.UNDETERMINED);
+
+    LeaderForwardContext.markAlreadyForwarded("  ");
+    assertThat(LeaderForwardContext.classifyRefusal("peer-1")).isEqualTo(LeaderForwardContext.Refusal.UNDETERMINED);
+
+    LeaderForwardContext.markAlreadyForwarded("peer-1");
+    assertThat(LeaderForwardContext.classifyRefusal(null)).isEqualTo(LeaderForwardContext.Refusal.UNDETERMINED);
+  }
+
+  /** A pooled worker thread must not carry the previous request's intended leader into the next one. */
+  @Test
+  void clearingAlsoReleasesTheIntendedLeader() {
+    LeaderForwardContext.markAlreadyForwarded("peer-1");
+    LeaderForwardContext.clear();
+
+    assertThat(LeaderForwardContext.intendedLeaderId()).isNull();
+    LeaderForwardContext.markAlreadyForwarded();
+    assertThat(LeaderForwardContext.intendedLeaderId()).as("a later marker without an id must not inherit one").isNull();
+  }
+
+  @Test
+  void aLeaderIdIsSentOnlyWhenItDidNotChangeWhileTheAddressWasResolved() {
+    assertThat(LeaderForwardContext.stableLeaderId("peer-1", "peer-1")).isEqualTo("peer-1");
+    assertThat(LeaderForwardContext.stableLeaderId("peer-1", "peer-2")).isNull();
+    assertThat(LeaderForwardContext.stableLeaderId("peer-1", null)).isNull();
+    assertThat(LeaderForwardContext.stableLeaderId(null, null)).isNull();
+  }
 }

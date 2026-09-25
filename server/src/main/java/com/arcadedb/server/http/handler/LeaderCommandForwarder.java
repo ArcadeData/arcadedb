@@ -26,25 +26,38 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
+import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Flow;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -74,8 +87,23 @@ import java.util.logging.Level;
  * parked thread.
  */
 public final class LeaderCommandForwarder {
+  /**
+   * What {@link #forwardIfReplica(HttpServerExchange, ServerSecurityUser, String, String, boolean, boolean)} returns
+   * once it has relayed the leader's progress stream to the client itself: the response is already on the wire, so
+   * the caller answers nothing more and returns {@code null} to its handler loop. Never sent, and never cached - the
+   * handler loop never sees it.
+   */
+  public static final ExecutionResponse STREAMED = new ExecutionResponse(200, "");
+
+  static final         String     ACCEPT_HEADER     = "Accept";
+  static final         String     EVENT_STREAM      = "text/event-stream";
+  private static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
+
   private final HttpServer httpServer;
   private final Transport  transport;
+
+  /** Builds the target a relayed progress stream is written to. Package-private and swappable for tests only. */
+  Function<HttpServerExchange, StreamTarget> streamTargetFactory = LeaderCommandForwarder::exchangeTarget;
 
   /**
    * Emits the "a peer forwarded a request here and this node is not the leader either" notice only once
@@ -94,6 +122,11 @@ public final class LeaderCommandForwarder {
    */
   public void close() {
     transport.close();
+  }
+
+  /** Whether the one-shot "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
   }
 
   /** The bounded transport this forwarder sends through. Package-private, for tests. */
@@ -142,6 +175,24 @@ public final class LeaderCommandForwarder {
    */
   public ExecutionResponse forwardIfReplica(final HttpServerExchange exchange, final ServerSecurityUser user,
       final String targetPath, final String body, final boolean longRunningCommand) throws IOException {
+    return forwardIfReplica(exchange, user, targetPath, body, longRunningCommand, false);
+  }
+
+  /**
+   * As {@link #forwardIfReplica(HttpServerExchange, ServerSecurityUser, String, String, boolean)}, optionally
+   * relaying a Server-Sent Events progress stream as it arrives instead of buffering it (issue #7603).
+   *
+   * @param relayEventStream true for a caller whose route can answer {@code Accept: text/event-stream} with a
+   *                         progress stream - {@code POST /api/v1/server}'s restore and import commands. When the
+   *                         client asked for one and the leader answers with one, the stream is written straight
+   *                         to {@code exchange} as each event arrives and {@link #STREAMED} is returned: the
+   *                         caller must then answer nothing more, and must return {@code null} to its own
+   *                         handler loop. A route that cannot stream passes false, and is never handed
+   *                         {@link #STREAMED}
+   */
+  public ExecutionResponse forwardIfReplica(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String targetPath, final String body, final boolean longRunningCommand, final boolean relayEventStream)
+      throws IOException {
     final HAServerPlugin ha = httpServer.getServer().getHA();
     if (ha == null || ha.isLeader())
       return null;
@@ -150,16 +201,39 @@ public final class LeaderCommandForwarder {
     // that is not the leader either. Forwarding it on would send it round the cycle that wrong address
     // created; refuse in one hop with the typed error instead (issue #6191).
     if (LeaderForwardContext.isAlreadyForwarded()) {
+      // That refusal has two causes, and they need opposite answers (issue #7603). The peer says which node it meant
+      // to reach; if that is this node, the address was right and this node simply stopped being the leader while
+      // the request travelled - an ordinary election, which the same request retried gets past. Answered 503 by
+      // leaving the leader address out of the exception (AbstractServerHttpHandler maps an unnamed refusal to the
+      // retryable arm), and without touching the warning latch below: a routine election must not use up the one
+      // notice the genuine misconfiguration gets.
+      final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
+      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+        final String currentLeader = ha.getLeaderName();
+        throw new ServerIsNotTheLeaderException(
+            "A cluster peer forwarded this server command here as the leader, and leadership moved away from this node "
+                + "while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
+                + ". The command was not executed: retry it", null);
+      }
+
+      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Also said once in this node's log: the refusal goes back to the peer and from there to the client, so
       // otherwise the only node that can name the misconfiguration never mentions it.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a server command to this node as the leader, but this node is not the leader. "
-                + "Unless leadership just moved, the HTTP address that peer resolved for the leader does not identify "
+                + (misidentified ?
+                "That peer meant to reach another node, so " :
+                "Unless leadership just moved, ")
+                + "the HTTP address that peer resolved for the leader does not identify "
                 + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
                 + "command is refused rather than forwarded on. This notice is logged only once.",
             GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(
+      throw new ServerIsNotTheLeaderException(misidentified ?
+          "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
+              + "this node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
+              + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
           "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
               + "this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
               + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
@@ -170,7 +244,12 @@ public final class LeaderCommandForwarder {
     // Where to dial the leader and on which scheme: the HTTPS endpoint when the cluster has one for it,
     // the plain-HTTP one otherwise (issue #7508). On an SSL cluster the plain branch would relay the
     // credentials below in cleartext.
+    //
+    // The leader's peer id is read on both sides of that resolution, so the id this forward names below is the one
+    // the address was resolved for - or, when leadership changed in between, no id at all (issue #7603).
+    final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, transport.client());
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
     if (dial == null)
       throw new ServerIsNotTheLeaderException("Leader address is unknown", ha.getLeaderName());
 
@@ -237,7 +316,19 @@ public final class LeaderCommandForwarder {
       // left a Basic/API-token forward with no bound at all when two peers name each other as the leader: the
       // dial-side self-address check does not fire there, because each node is dialling the OTHER one.
       builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+      // Which node this forward means to reach, so a node that has to refuse the hop can tell a leadership change
+      // in flight from an address that names the wrong node (issue #7603). Same gate as the marker.
+      if (intendedLeaderId != null)
+        builder.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeaderId);
     }
+
+    // The client's request id, so the leader runs the command inside its own idempotency cache (issue #7603). This
+    // node reserves the id too, but it caches only what the leader answered: without the relay a retry after a
+    // 504 - the outcome that most invites one - executed on the leader again, because nothing there had seen the id.
+    relayHeader(exchange, builder, IdempotencyCache.HEADER_REQUEST_ID);
+    // The encoding the client negotiated, so the leader streams a restore's or an import's progress when it was
+    // asked to rather than answering one buffered object at the end (issue #7603).
+    relayHeader(exchange, builder, ACCEPT_HEADER);
 
     if (authHeader != null && authHeader.startsWith("Bearer AU-")) {
       // Per-node session token: the leader cannot resolve it, so this node names the principal instead. The
@@ -255,7 +346,59 @@ public final class LeaderCommandForwarder {
     // Sent on the client the dial chose - the plugin's trust-carrying one on an HTTPS cluster, this
     // transport's own bounded client otherwise - while the deadline and the 504 translation stay here, so
     // neither scheme can produce an unbounded forward (issues #7507 and #7508).
-    return transport.send(dial.client(), builder.build(), dial.address(), longRunningCommand);
+    final HttpRequest request = builder.build();
+    if (relayEventStream && isEventStreamRequested(exchange))
+      return transport.stream(dial.client(), request, dial.address(), longRunningCommand,
+          streamTargetFactory.apply(exchange));
+    return transport.send(dial.client(), request, dial.address(), longRunningCommand);
+  }
+
+  /**
+   * Copies one request header onto the forward, as the client sent it. A value the JDK client refuses to put on
+   * the wire is left off rather than failing the whole forward with an unchecked exception: neither header this
+   * relays is needed for the command to run, only for how its answer is delivered.
+   */
+  private static void relayHeader(final HttpServerExchange exchange, final HttpRequest.Builder builder,
+      final String name) {
+    final String value = exchange.getRequestHeaders().getFirst(name);
+    if (value == null || value.isBlank())
+      return;
+    try {
+      builder.header(name, value);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(LeaderCommandForwarder.class, Level.FINE,
+          "Header %s is not relayed to the leader: the HTTP client refuses its value (%s)", name, e.getMessage());
+    }
+  }
+
+  static boolean isEventStreamRequested(final HttpServerExchange exchange) {
+    final String accept = exchange.getRequestHeaders().getFirst(ACCEPT_HEADER);
+    return accept != null && accept.toLowerCase(Locale.ROOT).contains(EVENT_STREAM);
+  }
+
+  /**
+   * Where a relayed progress stream is written. The production target is the exchange being served; tests hand in
+   * their own, since a bare {@link HttpServerExchange} has no connection to write to.
+   */
+  interface StreamTarget {
+    /**
+     * Starts the response - status 200 and the leader's content type - and returns the stream the events are
+     * written to. Called once, and only when the leader has answered with a stream.
+     */
+    OutputStream open(String contentType) throws IOException;
+  }
+
+  /** The production {@link StreamTarget}: the client's own exchange, set up the way the leader set up its stream. */
+  static StreamTarget exchangeTarget(final HttpServerExchange exchange) {
+    return contentType -> {
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
+      exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
+      exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
+      exchange.setStatusCode(200);
+      if (!exchange.isBlocking())
+        exchange.startBlocking();
+      return exchange.getOutputStream();
+    };
   }
 
   /**
@@ -343,16 +486,143 @@ public final class LeaderCommandForwarder {
         final boolean longRunningCommand) throws IOException {
       // The deadline that actually applied, taken from the request rather than re-read, so the message cannot
       // quote a number the forward was never given.
-      final long deadlineMs = request.timeout().orElseGet(() -> responseTimeout(longRunningCommand)).toMillis();
+      final long deadlineMs = deadlineOf(request, longRunningCommand);
 
-      final CompletableFuture<HttpResponse<String>> pending = dialClient.sendAsync(request,
-          HttpResponse.BodyHandlers.ofString());
+      final Awaited<String> awaited = await(dialClient,
+          dialClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()), leaderHttpAddress, deadlineMs,
+          longRunningCommand);
+      if (awaited.answer() != null)
+        return awaited.answer();
+      return new ExecutionResponse(awaited.response().statusCode(), awaited.response().body());
+    }
+
+    /**
+     * As {@link #send}, for a client that asked for a Server-Sent Events progress stream (issue #7603). The leader's
+     * events are written to {@code target} as each one arrives, instead of being read whole with
+     * {@code BodyHandlers.ofString()} and handed to the client at the end - which, for a restore that takes minutes,
+     * turned the progress stream the client asked for into an open socket and one JSON object.
+     * <p>
+     * Bounded exactly as {@link #send} is, by the same deadline over the whole exchange, body included: the body is
+     * consumed through {@link RelaySubscriber}, whose every wait is a timed poll, so a leader that stops writing
+     * mid-stream cannot park this worker thread past the deadline (issue #7507). Once the stream has begun there is
+     * no status left to change, so a deadline that expires then, or a leader connection that breaks, is reported as
+     * an SSE {@code error} frame - the same frame the leader itself writes when a restore fails part-way.
+     * <p>
+     * A leader that answers with anything but a stream - a refusal issued before the operation started, which is a
+     * status-carrying error response, or an older node - is relayed as the buffered answer it is, so this node never
+     * invents a stream the leader did not send.
+     *
+     * @return {@link #STREAMED} when the stream was relayed, otherwise the leader's buffered answer or a 504
+     */
+    ExecutionResponse stream(final HttpClient dialClient, final HttpRequest request, final String leaderHttpAddress,
+        final boolean longRunningCommand, final StreamTarget target) throws IOException {
+      final long deadlineMs = deadlineOf(request, longRunningCommand);
+      // Captured BEFORE the wait for the headers on purpose: the headers and the body share this one budget, as they
+      // do in send(). Taking it after await() would hand the body a second full deadline.
+      final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMs);
+
+      final Awaited<Flow.Publisher<List<ByteBuffer>>> awaited = await(dialClient,
+          dialClient.sendAsync(request, HttpResponse.BodyHandlers.ofPublisher()), leaderHttpAddress, deadlineMs,
+          longRunningCommand);
+      if (awaited.answer() != null)
+        return awaited.answer();
+
+      final HttpResponse<Flow.Publisher<List<ByteBuffer>>> response = awaited.response();
+      final RelaySubscriber relay = new RelaySubscriber();
+      response.body().subscribe(relay);
+
+      final String contentType = response.headers().firstValue("Content-Type").orElse("");
+      if (response.statusCode() != 200 || !contentType.toLowerCase(Locale.ROOT).contains(EVENT_STREAM)) {
+        // Not a stream: read it whole, under what is left of the deadline, and answer it the way every other
+        // forwarded response is answered.
+        final ByteArrayOutputStream whole = new ByteArrayOutputStream();
+        try {
+          if (!relay.drainTo(whole, deadlineNanos))
+            return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+        } catch (final InterruptedException e) {
+          relay.cancel();
+          Thread.currentThread().interrupt();
+          throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
+        }
+        return new ExecutionResponse(response.statusCode(), whole.toString(StandardCharsets.UTF_8));
+      }
+
+      final OutputStream out;
       try {
-        final HttpResponse<String> response = pending.get(deadlineMs, TimeUnit.MILLISECONDS);
-        return new ExecutionResponse(response.statusCode(), response.body());
+        out = target.open(contentType);
+      } catch (final IOException | RuntimeException e) {
+        // Nothing reached the client, so the failure can still become a status code - but the leader's side of the
+        // relay is already subscribed and must not be left holding its connection until the deadline.
+        relay.cancel();
+        throw e;
+      }
+      try {
+        final String failure = relay.drainTo(out, deadlineNanos) ?
+            null :
+            gaveUpMessage(leaderHttpAddress, deadlineMs, longRunningCommand);
+        if (failure != null) {
+          logGaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+          writeErrorEvent(out, failure);
+        }
+      } catch (final RelaySubscriber.UpstreamFailure e) {
+        // The leader's side of the relay broke after the stream began: the connection dropped, or the leader
+        // closed it without a terminal event. Say so in the stream, which is the only place left to say it.
+        LogManager.instance().log(this, Level.WARNING,
+            "The progress stream relayed from the cluster leader at %s broke: %s", leaderHttpAddress,
+            e.getCause() != null ? e.getCause().toString() : e.getMessage());
+        writeErrorEvent(out, "The connection to the cluster leader at " + leaderHttpAddress + " broke while relaying "
+            + "the progress of the forwarded server command. It may still be running on the leader: check there before "
+            + "retrying");
+      } catch (final InterruptedException e) {
+        relay.cancel();
+        Thread.currentThread().interrupt();
+      } catch (final IOException e) {
+        // The client went away: nothing is left to write to, and the leader's side must not be left open for it.
+        relay.cancel();
+      } finally {
+        try {
+          out.close();
+        } catch (final IOException ignored) {
+          // Client disconnected
+        }
+      }
+      return STREAMED;
+    }
+
+    /**
+     * Writes the SSE {@code error} frame this node owes the client when a relayed stream ends badly. In the shape
+     * the leader's own error frame has, so a client reads one kind of failure frame whichever node wrote it.
+     */
+    private static void writeErrorEvent(final OutputStream out, final String message) {
+      try {
+        out.write(("data: " + new JSONObject().put("status", "error").put("message", message) + "\n\n")
+            .getBytes(StandardCharsets.UTF_8));
+        out.flush();
+      } catch (final IOException ignored) {
+        // Client disconnected
+      }
+    }
+
+    private long deadlineOf(final HttpRequest request, final boolean longRunningCommand) {
+      return request.timeout().orElseGet(() -> responseTimeout(longRunningCommand)).toMillis();
+    }
+
+    /** The leader's response, or - when there is none to relay - the answer this node gives instead. */
+    private record Awaited<T>(HttpResponse<T> response, ExecutionResponse answer) {
+    }
+
+    /**
+     * Waits for the leader's response under the deadline, turning a blown deadline or a failure to connect into the
+     * 504 that names it. Shared by {@link #send} and {@link #stream}; the former's documentation says why the wait is
+     * bounded here and not only by {@code HttpRequest.timeout}.
+     */
+    private <T> Awaited<T> await(final HttpClient dialClient, final CompletableFuture<HttpResponse<T>> pending,
+        final String leaderHttpAddress, final long deadlineMs, final boolean longRunningCommand) throws IOException {
+      try {
+        return new Awaited<>(pending.get(deadlineMs, TimeUnit.MILLISECONDS), null);
       } catch (final TimeoutException e) {
         pending.cancel(true);
-        return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+        return new Awaited<>(null, gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand));
       } catch (final ExecutionException e) {
         final Throwable cause = e.getCause();
         // ORDER IS LOAD-BEARING: HttpConnectTimeoutException is a SUBCLASS of HttpTimeoutException, so this arm
@@ -361,9 +631,9 @@ public final class LeaderCommandForwarder {
         // ran. Swapping the two arms is caught only by
         // Issue7507LeaderForwardTimeoutTest#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
         if (cause instanceof HttpConnectTimeoutException)
-          return couldNotConnect(dialClient, leaderHttpAddress);
+          return new Awaited<>(null, couldNotConnect(dialClient, leaderHttpAddress));
         if (cause instanceof HttpTimeoutException)
-          return gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+          return new Awaited<>(null, gaveUp(leaderHttpAddress, deadlineMs, longRunningCommand));
         if (cause instanceof IOException io)
           throw io;
         if (cause instanceof RuntimeException runtime)
@@ -382,17 +652,27 @@ public final class LeaderCommandForwarder {
      */
     private ExecutionResponse gaveUp(final String leaderHttpAddress, final long deadlineMs,
         final boolean longRunningCommand) {
-      final String setting = deadlineSetting(longRunningCommand).getKey();
+      logGaveUp(leaderHttpAddress, deadlineMs, longRunningCommand);
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", gaveUpMessage(leaderHttpAddress, deadlineMs, longRunningCommand))
+          .toString());
+    }
+
+    private void logGaveUp(final String leaderHttpAddress, final long deadlineMs, final boolean longRunningCommand) {
       LogManager.instance().log(this, Level.WARNING,
           "Gave up waiting for the cluster leader at %s to answer a forwarded server command after %,d ms. "
               + "The command may still be running there. Raise %s if the operation is legitimately slower than "
-              + "that, otherwise the leader is unresponsive.", leaderHttpAddress, deadlineMs, setting);
-      return new ExecutionResponse(504, new JSONObject()
-          .put("error", "The cluster leader at " + leaderHttpAddress + " did not answer the forwarded server "
-              + "command within " + deadlineMs + " ms (" + setting + "). The command was not executed on this "
-              + "node, but it may still be running on the leader: check there before retrying, or raise "
-              + setting + " if the operation is legitimately slower than that")
-          .toString());
+              + "that, otherwise the leader is unresponsive.", leaderHttpAddress, deadlineMs,
+          deadlineSetting(longRunningCommand).getKey());
+    }
+
+    private static String gaveUpMessage(final String leaderHttpAddress, final long deadlineMs,
+        final boolean longRunningCommand) {
+      final String setting = deadlineSetting(longRunningCommand).getKey();
+      return "The cluster leader at " + leaderHttpAddress + " did not answer the forwarded server command within "
+          + deadlineMs + " ms (" + setting + "). The command was not executed on this node, but it may still be "
+          + "running on the leader: check there before retrying, or raise " + setting + " if the operation is "
+          + "legitimately slower than that";
     }
 
     /**
@@ -460,6 +740,109 @@ public final class LeaderCommandForwarder {
                 + "once per setting.", setting.getKey(), configuredMs, MIN_TIMEOUT_MS);
 
       return Duration.ofMillis(MIN_TIMEOUT_MS);
+    }
+  }
+
+  /**
+   * The consuming half of a relayed progress stream (issue #7603): a {@link Flow.Subscriber} over the leader's
+   * response body whose every wait is a timed poll, so the thread relaying it can always give up at the deadline.
+   * {@code BodyHandlers.ofInputStream()} offers no such bound - a read on it blocks for as long as the leader holds
+   * the socket open - which is the hazard issue #7507 removed from the buffered path.
+   * <p>
+   * One body chunk is requested at a time and the next only once the previous one has been written on, so a client
+   * that reads slowly slows the leader down through ordinary flow control instead of filling this node's heap.
+   */
+  static final class RelaySubscriber implements Flow.Subscriber<List<ByteBuffer>> {
+    private static final Object COMPLETE = new Object();
+
+    private final    BlockingQueue<Object> signals = new LinkedBlockingQueue<>();
+    private volatile Flow.Subscription     subscription;
+    private volatile boolean               cancelled;
+
+    /** A failure on the leader's side of the relay, as opposed to one writing to the client. */
+    static final class UpstreamFailure extends IOException {
+      UpstreamFailure(final Throwable cause) {
+        super("The leader's response stream failed", cause);
+      }
+    }
+
+    @Override
+    public void onSubscribe(final Flow.Subscription subscription) {
+      this.subscription = subscription;
+      if (cancelled)
+        subscription.cancel();
+      else
+        subscription.request(1);
+    }
+
+    @Override
+    public void onNext(final List<ByteBuffer> item) {
+      signals.add(item);
+    }
+
+    @Override
+    public void onError(final Throwable throwable) {
+      signals.add(throwable);
+    }
+
+    @Override
+    public void onComplete() {
+      signals.add(COMPLETE);
+    }
+
+    /** Stops the leader's side of the relay: the JDK client aborts the exchange and releases the connection. */
+    void cancel() {
+      cancelled = true;
+      final Flow.Subscription s = subscription;
+      if (s != null)
+        s.cancel();
+    }
+
+    /**
+     * Copies the body to {@code out} until it ends or the deadline passes, flushing after every chunk.
+     *
+     * @return true when the whole body was copied, false when the deadline passed first - in which case the leader's
+     * side has already been cancelled
+     *
+     * @throws UpstreamFailure when the leader's side failed
+     * @throws IOException     when writing to {@code out} failed
+     */
+    @SuppressWarnings("unchecked")
+    boolean drainTo(final OutputStream out, final long deadlineNanos) throws IOException, InterruptedException {
+      byte[] chunk = null;
+      while (true) {
+        final long remaining = deadlineNanos - System.nanoTime();
+        // Past the deadline, a signal already queued - the leader's last chunk, or its completion - is still taken
+        // rather than reported as a timeout: only a wait that would have to BLOCK is refused.
+        final Object signal = remaining > 0 ? signals.poll(remaining, TimeUnit.NANOSECONDS) : signals.poll();
+        if (signal == null) {
+          cancel();
+          return false;
+        }
+        if (signal == COMPLETE)
+          return true;
+        if (signal instanceof Throwable failure)
+          throw new UpstreamFailure(failure);
+
+        for (final ByteBuffer buffer : (List<ByteBuffer>) signal) {
+          if (buffer.hasArray()) {
+            out.write(buffer.array(), buffer.arrayOffset() + buffer.position(), buffer.remaining());
+            buffer.position(buffer.limit());
+          } else {
+            if (chunk == null)
+              chunk = new byte[8192];
+            while (buffer.hasRemaining()) {
+              final int length = Math.min(chunk.length, buffer.remaining());
+              buffer.get(chunk, 0, length);
+              out.write(chunk, 0, length);
+            }
+          }
+        }
+        out.flush();
+        final Flow.Subscription s = subscription;
+        if (s != null)
+          s.request(1);
+      }
     }
   }
 }
