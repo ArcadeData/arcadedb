@@ -101,6 +101,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
+import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -359,7 +360,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(ValidationException.class.getName(), ValidationException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
-  /** The back-off an in-flight refusal from the leader is relayed with when its body does not carry one (issue #8343). */
+  /**
+   * The back-off a refusal from the leader is relayed with when the leader did not state one this node can read: an
+   * in-flight refusal whose body carries none (issue #8343), or an untyped 503 with no delta-seconds
+   * {@code Retry-After} (issue #8355). Five seconds is what the leader itself sends for both.
+   */
   static final long DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS = 5L;
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
@@ -3927,7 +3932,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
-        throw reconstructLeaderException(response.statusCode(), response.body());
+        throw reconstructLeaderException(response.statusCode(), response.body(),
+            response.headers().firstValue("Retry-After").orElse(null));
 
       return parseResultSetFromJson(response.body());
     } catch (final ArcadeDBException e) {
@@ -4051,15 +4057,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * The back-off the leader put in the {@code exceptionArgs} of an in-flight refusal, in seconds. A value that is
-   * missing or not a number - an answer from a node that phrased it differently - falls back to
+   * The back-off the leader stated for a refusal, in seconds: the {@code exceptionArgs} of a typed refusal, or the
+   * {@code Retry-After} header of an untyped 503. A value that is missing or not a number - an answer from a node that
+   * phrased it differently, or a {@code Retry-After} given as an HTTP date - falls back to
    * {@link #DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS} rather than failing the reconstruction: the refusal itself is what
    * the client must not lose.
    */
-  static long parseRetryAfterSeconds(final String exceptionArgs) {
-    if (exceptionArgs != null)
+  static long parseRetryAfterSeconds(final String retryAfter) {
+    if (retryAfter != null)
       try {
-        return Math.max(1L, Long.parseLong(exceptionArgs.trim()));
+        return Math.max(1L, Long.parseLong(retryAfter.trim()));
       } catch (final NumberFormatException ignored) {
         // fall back below
       }
@@ -4074,19 +4081,45 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link TransactionException} message string. Other known types are reconstructed via
    * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
    * <p>
-   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
+   * An untyped {@code 503} - a JSON body naming no exception, or no body at all - is the one exception to that
+   * fallback: see {@link #reconstructLeaderException(int, String, String)}.
+   * <p>
+   * If the body is non-JSON, or the exception class is missing or not recognised, a generic
    * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
    */
   static RuntimeException reconstructLeaderException(final int httpStatus, final String body) {
+    return reconstructLeaderException(httpStatus, body, null);
+  }
+
+  /**
+   * As {@link #reconstructLeaderException(int, String)}, with the {@code Retry-After} header the leader sent, or
+   * {@code null} when it sent none.
+   * <p>
+   * An untyped {@code 503} is rebuilt as a {@link RetryLaterException} carrying that back-off (issue #8355). ArcadeDB
+   * answers a 503 with no exception class only for refusals it issues before any handler runs - above all a node
+   * installing a snapshot, which answers {@code 503} + {@code Retry-After: 5} from
+   * {@code AbstractServerHttpHandler.handleRequest} - so the forwarded command did not run: the same
+   * refusal-before-execution contract {@code RemoteHttpComponent.manageException} applies to an untyped 503. As a
+   * plain {@link TransactionException} it left this node as a 500 "Error on transaction commit" with no back-off, for
+   * a write that is safe to retry. It is a {@link com.arcadedb.exception.NeedRetryException}, so a server-side retry
+   * loop on this node may forward the command again under a new forward ordinal (issue #8323); that is safe because
+   * the refusing node answered before its idempotency gate, so it neither ran the command nor reserved its id.
+   * <p>
+   * A 503 whose body is not JSON did not come from ArcadeDB's own gate - a proxy in between, say - and nothing proves
+   * the command did not run behind it, so it keeps the generic fallback.
+   */
+  static RuntimeException reconstructLeaderException(final int httpStatus, final String body, final String retryAfterHeader) {
     final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
     String detail = null;
+    String reason = null;
     String exceptionClass = null;
     String exceptionArgs = null;
 
     try {
       if (body != null && !body.isEmpty()) {
         final JSONObject json = new JSONObject(body);
-        detail = json.getString("detail", json.getString("error", null));
+        reason = json.getString("error", null);
+        detail = json.getString("detail", reason);
         exceptionClass = json.getString("exception", null);
         exceptionArgs = json.getString("exceptionArgs", null);
       }
@@ -4094,8 +4127,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return new TransactionException(message);
     }
 
-    if (exceptionClass == null)
+    if (exceptionClass == null) {
+      if (httpStatus == 503)
+        return new RetryLaterException("The leader refused the forwarded command without executing it: "
+            + (detail != null && !detail.isBlank() ? detail : reason != null && !reason.isBlank() ? reason :
+            "service unavailable") + ". Retry it", parseRetryAfterSeconds(retryAfterHeader));
       return new TransactionException(message);
+    }
 
     // ServerIsNotTheLeaderException carries the leader address as its second constructor argument (the HTTP
     // layer sends it as exceptionArgs), so it too is rebuilt explicitly. Without this arm a leader-side "I am
@@ -4113,6 +4151,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // NeedRetryException, see RequestStillInFlightException.
     if (RequestStillInFlightException.class.getName().equals(exceptionClass))
       return new RequestStillInFlightException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
+
+    // A refusal-before-execution with a back-off that another hop already rebuilt and answered typed (issue #8355).
+    if (RetryLaterException.class.getName().equals(exceptionClass))
+      return new RetryLaterException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
     // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
     // reconstructed explicitly rather than from a plain message.

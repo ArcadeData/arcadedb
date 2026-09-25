@@ -1,0 +1,133 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.server.http.RetryLaterException;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Issue #8355: a follower that forwarded a SQL write to a node answering {@code 503} + {@code Retry-After: 5} because
+ * it is installing a snapshot - refused in {@code AbstractServerHttpHandler.handleRequest} before any handler, and so
+ * before the write, ran - rebuilt that answer as a plain {@link TransactionException}: the body names no exception
+ * class. The follower then answered its client 500 "Error on transaction commit" with no {@code Retry-After}, for a
+ * write that never ran and is safe to retry.
+ * <p>
+ * {@link #SNAPSHOT_INSTALL_BODY} is the exact body the snapshot-install gate sends ({@code error2json} with an empty
+ * detail).
+ */
+class Issue8355UntypedLeader503ReconstructionTest {
+
+  private static final String SNAPSHOT_INSTALL_BODY = "{\"error\":\"Server is installing a snapshot, please retry\",\"detail\":\"\"}";
+
+  @Test
+  void theSnapshotInstallRefusalIsRebuiltAsARetryLaterWithTheLeadersBackOff() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY, "5");
+
+    assertThat(rebuilt).isInstanceOf(RetryLaterException.class);
+    assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds()).isEqualTo(5L);
+    assertThat(rebuilt.getMessage())
+        .as("the empty detail must not hide the reason the leader gave")
+        .contains("Server is installing a snapshot, please retry");
+  }
+
+  /**
+   * Retryable on the server side too, deliberately, unlike the in-flight 409 (issue #8343): the refusing node answered
+   * before its idempotency gate ran, so it neither executed the write nor reserved its {@code X-Request-Id}. A retry
+   * loop on the follower that re-forwards it under a new forward ordinal (issue #8323) sends the write for the first
+   * time, not the second.
+   */
+  @Test
+  void theRebuiltRefusalIsANeedRetryExceptionAndNotAFailedTransaction() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY, "5");
+
+    assertThat(rebuilt).isInstanceOf(NeedRetryException.class);
+    assertThat(rebuilt).isNotInstanceOf(TransactionException.class);
+  }
+
+  @Test
+  void aBackOffTheLeaderDidNotStateOrStatedAsADateFallsBackToTheDefault() {
+    for (final String header : new String[] { null, "", "Wed, 21 Oct 2026 07:28:00 GMT", "-1" }) {
+      final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY,
+          header);
+
+      assertThat(rebuilt).as("Retry-After=%s", header).isInstanceOf(RetryLaterException.class);
+      assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds()).as("Retry-After=%s", header)
+          .isGreaterThanOrEqualTo(1L);
+    }
+    assertThat(((RetryLaterException) RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY,
+        "12")).getRetryAfterSeconds()).isEqualTo(12L);
+  }
+
+  /** An untyped 503 with no body at all: the same contract {@code RemoteHttpComponent} applies to one. */
+  @Test
+  void anUntyped503WithAnEmptyBodyIsARetryLaterToo() {
+    for (final String body : new String[] { null, "" }) {
+      final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, body, null);
+
+      assertThat(rebuilt).as("body=%s", body).isInstanceOf(RetryLaterException.class);
+      assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds())
+          .isEqualTo(RaftReplicatedDatabase.DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS);
+    }
+  }
+
+  /**
+   * One more hop: a node that forwarded the write to a follower that itself rebuilt the refusal gets the follower's
+   * typed answer, whose back-off travels in {@code exceptionArgs}, and must keep both.
+   */
+  @Test
+  void aTypedRetryLaterFromAnotherHopIsRebuiltWithItsBackOff() {
+    final String body = "{\"error\":\"Cannot execute command\",\"exception\":\"" + RetryLaterException.class.getName()
+        + "\",\"exceptionArgs\":\"7\",\"detail\":\"Server is installing a snapshot, please retry\"}";
+
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, body, null);
+
+    assertThat(rebuilt).isInstanceOf(RetryLaterException.class);
+    assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds()).isEqualTo(7L);
+    assertThat(rebuilt.getMessage()).contains("installing a snapshot");
+  }
+
+  /**
+   * What stays as it was. A 503 whose body is not JSON did not come from ArcadeDB's own gate - a proxy in between, say
+   * - and nothing proves the write did not run behind it. Every other untyped status is not a refusal-before-execution
+   * contract at all.
+   */
+  @Test
+  void aNonJsonBodyOrAnotherUntypedStatusIsStillAFailedTransaction() {
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(503, "<html>Service Unavailable</html>", "5"))
+        .isExactlyInstanceOf(TransactionException.class);
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(500, SNAPSHOT_INSTALL_BODY, "5"))
+        .isExactlyInstanceOf(TransactionException.class);
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(502, "", null))
+        .isExactlyInstanceOf(TransactionException.class);
+  }
+
+  /** The two-argument form every existing caller and test uses keeps its meaning: no header, default back-off. */
+  @Test
+  void theFormWithoutAHeaderStillRebuildsTheRefusal() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY);
+
+    assertThat(rebuilt).isInstanceOf(RetryLaterException.class);
+    assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds())
+        .isEqualTo(RaftReplicatedDatabase.DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS);
+  }
+}
