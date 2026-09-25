@@ -578,6 +578,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * is a deadlock. It reads plain atomics today; keep it that way.
    */
   @Override
+  public void countRecordsRead(final long count) {
+    stats.readRecord.addAndGet(count);
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
