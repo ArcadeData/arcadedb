@@ -131,6 +131,17 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return true;
   }
 
+  /**
+   * The body is one command, and a follower forwards that command to the leader as it is (issue #8347), so the
+   * forward is the client's whole request and relays its key: a retry sent straight to the leader is then replayed
+   * from the forward's entry instead of executing the write a second time. The replay is the leader's answer to the
+   * forward, rendered with the forward's defaults rather than with the retry's own 'serializer' or 'limit'.
+   */
+  @Override
+  protected boolean commandForwardIsWholeRequest() {
+    return true;
+  }
+
   /** Answers {@code Accept: application/x-ndjson} with a streamed result set (issue #7306). */
   @Override
   protected boolean supportsNdJsonEncoding() {

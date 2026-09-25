@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
@@ -92,6 +93,7 @@ class Issue7603LeaderForwardHopTest {
   void stopLeader() {
     leader.close();
     LeaderForwardContext.clear();
+    ForwardedRequestIdContext.clear();
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -122,6 +124,38 @@ class Issue7603LeaderForwardHopTest {
     forwarder.forwardIfReplica(exchange("/api/v1/server"), user("root"), "/api/v1/server", "{}", false);
 
     assertThat(leader.header(IdempotencyCache.HEADER_REQUEST_ID)).isNull();
+  }
+
+  /**
+   * Issue #8347: the body relayed is the payload re-serialized, not the client's bytes, so the leader keys the forward
+   * differently from a retry the client sends it directly. The key the client's request has on this node travels too,
+   * and the leader claims it beside the forward's own.
+   */
+  @Test
+  void theClientsKeyTravelsToTheLeaderSoADirectRetryFindsTheForward() throws Exception {
+    leader.answerJson(200, "{\"result\":\"ok\"}");
+    final String key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(30_000L)));
+    final HttpServerExchange exchange = exchange("/api/v1/server");
+    exchange.getRequestHeaders().put(new HttpString(IdempotencyCache.HEADER_REQUEST_ID), "issue8347-request");
+    ForwardedRequestIdContext.set("issue8347-request", key, false);
+
+    forwarder.forwardIfReplica(exchange, user("root"), "/api/v1/server", "{\"command\":\"create database Foo\"}", false);
+
+    assertThat(leader.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER)).isEqualTo(key);
+  }
+
+  /** A request this node did not treat as idempotent published no key, and none is invented. */
+  @Test
+  void aForwardOfARequestThatPublishedNoKeySendsNone() throws Exception {
+    leader.answerJson(200, "{\"result\":\"ok\"}");
+    final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(30_000L)));
+    final HttpServerExchange exchange = exchange("/api/v1/server");
+    exchange.getRequestHeaders().put(new HttpString(IdempotencyCache.HEADER_REQUEST_ID), "issue8347-request");
+
+    forwarder.forwardIfReplica(exchange, user("root"), "/api/v1/server", "{}", false);
+
+    assertThat(leader.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER)).isNull();
   }
 
   // ---------------------------------------------------------------------------------------------------------------

@@ -134,4 +134,71 @@ class ForwardedRequestIdContextTest {
     assertThat(ForwardedRequestIdContext.parseForwardOrdinal("2a")).isZero();
     assertThat(ForwardedRequestIdContext.parseForwardOrdinal("9999999999")).isZero();
   }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Issue #8347: the key of the client's own request, relayed by a forward that is the whole of it
+  // ---------------------------------------------------------------------------------------------------------------
+
+  private static final String KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  @Test
+  void theFirstCommandForwardOfAOneCommandRouteRelaysTheClientKey() {
+    ForwardedRequestIdContext.set("req-8347", KEY, true);
+
+    assertThat(ForwardedRequestIdContext.clientKey()).isEqualTo(KEY);
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal()))
+        .isEqualTo(KEY);
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal()))
+        .as("a second forward is a part of the request, never the whole of it").isNull();
+  }
+
+  /** On any other route the key names more than one statement, so no command forward may settle it. */
+  @Test
+  void aRouteWhoseBodyIsNotOneCommandRelaysNoKeyOnACommandForward() {
+    ForwardedRequestIdContext.set("req-8347", KEY, false);
+
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+    assertThat(ForwardedRequestIdContext.clientKey()).as("the whole-request forwarder still relays it").isEqualTo(KEY);
+  }
+
+  /** A write issued by a command this node executes itself is a part of the request, whatever its ordinal. */
+  @Test
+  void aCommandExecutedLocallyStopsTheKeyFromTravellingOnACommandForward() {
+    ForwardedRequestIdContext.set("req-8347", KEY, true);
+    ForwardedRequestIdContext.markExecutedLocally();
+
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
+
+    // An auto-commit retry runs the same command locally again: restarting the ordinals does not bring the key back.
+    ForwardedRequestIdContext.restartOrdinals();
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
+  }
+
+  @Test
+  void noIdMeansNoKeyAndClearingDropsIt() {
+    ForwardedRequestIdContext.set("  ", KEY, true);
+    assertThat(ForwardedRequestIdContext.clientKey()).isNull();
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+
+    ForwardedRequestIdContext.set("req-8347", KEY, true);
+    ForwardedRequestIdContext.clear();
+    assertThat(ForwardedRequestIdContext.clientKey()).isNull();
+    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+  }
+
+  /** Only a value an idempotency key can be - a lower-case hex SHA-256 digest - is parsed or published. */
+  @Test
+  void onlyAValueAnIdempotencyKeyCanBeIsAccepted() {
+    assertThat(ForwardedRequestIdContext.parseClientKey(KEY)).isEqualTo(KEY);
+    assertThat(ForwardedRequestIdContext.parseClientKey(null)).isNull();
+    assertThat(ForwardedRequestIdContext.parseClientKey("")).isNull();
+    assertThat(ForwardedRequestIdContext.parseClientKey(KEY.substring(1))).isNull();
+    assertThat(ForwardedRequestIdContext.parseClientKey(KEY + "0")).isNull();
+    assertThat(ForwardedRequestIdContext.parseClientKey(KEY.toUpperCase())).isNull();
+    assertThat(ForwardedRequestIdContext.parseClientKey("g" + KEY.substring(1))).isNull();
+
+    ForwardedRequestIdContext.set("req-8347", "not-a-key", true);
+    assertThat(ForwardedRequestIdContext.clientKey()).isNull();
+    assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8347");
+  }
 }

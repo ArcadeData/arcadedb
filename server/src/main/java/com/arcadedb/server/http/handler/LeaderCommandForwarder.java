@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
@@ -340,6 +341,15 @@ public final class LeaderCommandForwarder {
     // node reserves the id too, but it caches only what the leader answered: without the relay a retry after a
     // 504 - the outcome that most invites one - executed on the leader again, because nothing there had seen the id.
     relayHeader(exchange, builder, IdempotencyCache.HEADER_REQUEST_ID);
+    // With it the key the client's request has on this node (issue #8347). The body relayed above is the payload
+    // re-serialized, not the client's bytes, so the leader keys this forward differently from a retry the client sends
+    // it directly; the leader claims this key too, and that retry then finds the forward's entry. This forward is the
+    // client's whole request, answered by the same handler on the leader, so the entry is the answer the retry would
+    // have got. Published only for a request this node itself treats as idempotent, and sent only beside the cluster
+    // token, the one form in which the leader honors it.
+    final String clientKey = ForwardedRequestIdContext.clientKey();
+    if (clientKey != null && clusterToken != null && !clusterToken.isBlank())
+      builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, clientKey);
     // The encoding the client negotiated, so the leader streams a restore's or an import's progress when it was
     // asked to rather than answering one buffered object at the end (issue #7603).
     relayHeader(exchange, builder, ACCEPT_HEADER);
