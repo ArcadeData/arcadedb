@@ -2546,8 +2546,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay base = current.overlay != null ? current.overlay : new DeltaOverlay(current.nodeMapping.size());
     // Deduplicated against the scan that produced the base while that scan may still be racing a late-delivered
     // commit (issue #8378)
-    if (baseWatch != null && !baseWatch.describes(current.csrPerType))
-      baseWatch = null; // the base it described was replaced: let its CSR go
+    // Cleared by every path that replaces the base, so it always describes the scan of the one being served
     final BuildWatch watch = baseWatch;
     final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch);
     this.snapshot = current.withOverlay(merged);
