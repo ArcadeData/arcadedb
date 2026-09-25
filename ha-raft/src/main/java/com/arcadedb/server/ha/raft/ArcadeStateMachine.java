@@ -4185,6 +4185,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * a database whose baseline this node already applied, which the pass has settled. The baseline is re-checked
    * after the hold is taken because the apply thread can record it and release the hold between the first check and
    * the put, which would otherwise leave a hold that only the deadline clears.
+   * <p>
+   * A repeated announce from the same pass replaces the hold and so restarts its deadline. That renewal is bounded by
+   * the leader, not here: {@code BootstrapElection.collectRemoteStatesWithRetry} re-probes only a peer that has not
+   * answered yet, and only inside its {@code arcadedb.ha.bootstrapTimeoutMs} budget, so the last renewal lands within
+   * that budget of the pass starting and the hold ends at most {@code holdMs} after it.
    */
   void announceBootstrapPass(final String passId, final Collection<String> dbNames, final long holdMs) {
     if (passId == null || dbNames == null || dbNames.isEmpty() || !hasNeverAppliedApplicationEntry())
