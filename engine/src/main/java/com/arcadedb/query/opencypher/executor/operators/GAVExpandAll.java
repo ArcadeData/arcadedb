@@ -181,7 +181,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               // Vertex not in GAV mapping (created after last build) — fall back to OLTP
               if (sourceObj instanceof Vertex) {
                 final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-                oltpFallbackEdges = ((Vertex) sourceObj).getEdges(arcadeDirection, edgeTypes).iterator();
+                final Iterator<Edge> edges = ((Vertex) sourceObj).getEdges(arcadeDirection, edgeTypes).iterator();
+                // A self-loop sits in both lists of an undirected walk: one row per relationship, as ExpandAll yields
+                oltpFallbackEdges = direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(edges) : edges;
               }
               neighborIds = null;
               continue;

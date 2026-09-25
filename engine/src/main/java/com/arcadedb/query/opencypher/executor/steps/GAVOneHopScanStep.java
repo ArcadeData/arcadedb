@@ -250,7 +250,9 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
 
       if (nodeId < 0) {
         // Not in the view: its edges are walked on the record, as the expansion this step replaces does
-        recordNeighbors = vertex.getVertices(direction, edgeTypes).iterator();
+        final Iterator<Vertex> adjacent = vertex.getVertices(direction, edgeTypes).iterator();
+        // A self-loop is in both lists of an undirected walk: once per relationship, as ExpandAll does
+        recordNeighbors = direction == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicating(adjacent, rid) : adjacent;
         return true;
       }
       int[] adjacent = provider.getNeighborIds(nodeId, direction, edgeTypes);
