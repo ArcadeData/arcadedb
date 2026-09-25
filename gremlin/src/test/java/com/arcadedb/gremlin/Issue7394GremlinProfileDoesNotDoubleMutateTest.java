@@ -37,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * plan. For a read that costs double; for a mutation the second run <i>applies the mutation again</i>, so
  * switching on a diagnostic silently doubled every Gremlin write on the server.
  * <p>
- * The tests below pin both halves of the fix: a mutating traversal is executed exactly once and reports no
- * plan, and a read-only traversal still gets its plan (Studio's {@code profileExecution: "detailed"} is
- * unchanged for reads, which is the behaviour the skip must not take away).
+ * The tests below pin both halves of the fix: a mutating traversal is executed exactly once, and a read-only
+ * traversal still gets its plan (Studio's {@code profileExecution: "detailed"} is unchanged for reads). Since
+ * issue #7408 the plan is collected from the one run the caller drains, so a mutation gets a plan too - without
+ * a second mutation.
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7394">issue #7394</a>
  */
@@ -107,14 +108,14 @@ class Issue7394GremlinProfileDoesNotDoubleMutateTest {
   }
 
   @Test
-  void aMutatingTraversalReportsNoExecutionPlanRatherThanBuyingOneWithASecondMutation() {
+  void aMutatingTraversalReportsTheExecutionPlanOfItsOnlyRun() {
     graph.getDatabase().transaction(() -> {
       try (final ResultSet rs = graph.gremlin("g.addV('Person').property('name','Carol')")
           .setParameters(Map.of("$profileExecution", true))
           .execute()) {
         rs.stream().forEach(r -> {
         });
-        assertThat(rs.getExecutionPlan()).isEmpty();
+        assertThat(rs.getExecutionPlan()).isPresent();
       }
     });
 
