@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
@@ -483,34 +482,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return partitionedQueries.get();
   }
 
-  /**
-   * True when the calling thread sits in a transaction that has already modified pages.
-   * <p>
-   * Such a query must not be split. A worker resolves its page reads through its own transaction
-   * context, so it sees committed pages only - it cannot see what the caller's open transaction has
-   * written but not committed. That is invisible for the usual read-only query, and wrong for the
-   * one that matters: a {@code put} heavy enough to trigger a memtable flush writes a whole new
-   * segment inside the caller's transaction, and a query issued later in that same transaction has
-   * to score it. Staying serial in that case costs a query that was already paying for a flush
-   * nothing measurable, and removes the whole class of "sees stale data inside its own transaction"
-   * bug.
-   */
   private boolean callerHoldsUncommittedChanges() {
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    if (ctx == null)
-      return false;
-    // Every transaction on the stack, not just the innermost. begin() on an already-active
-    // transaction pushes a nested one, so a caller can sit in a fresh inner transaction with no
-    // changes of its own while an outer one holds modified pages. Asking only the innermost would
-    // report "clean" and let the query split, and the workers - reading committed pages through a
-    // context of their own - would silently not see the outer transaction's writes. That is the
-    // exact class of bug this guard exists to remove, so it has to look at all of them.
-    for (int i = 0; i < ctx.transactions.size(); i++) {
-      final TransactionContext tx = ctx.transactions.get(i);
-      if (tx != null && tx.isActive() && tx.hasChanges())
-        return true;
-    }
-    return false;
+    return SparseVectorScoringPool.callerHoldsUncommittedChanges(database.getDatabasePath());
   }
 
   /**
@@ -774,7 +747,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@link #topKGrouped(int[], float[], int, int, Function, Set)} with a set of RIDs the traversal must skip, for a
    * caller superseding their committed copy with its own uncommitted one (issue #7966).
    *
-   * @see BmwScorer#topKGrouped(int[], float[], DimCursor[], int, int, Function, Set, Set)
+   * @see BmwScorer#topKGrouped(int[], float[], BmwScorer.CursorSource, int, int, Function, Set, Set)
    */
   public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
       final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
@@ -785,6 +758,40 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (queryDims.length != queryWeights.length)
       throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
 
+    return groupedSearch(queryDims, cursors -> BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize,
+        groupKeyResolver, allowedRIDs, excludedRIDs));
+  }
+
+  /**
+   * The best {@code groupSize} members of each of a fixed set of groups (issue #8002). Used by a caller merging the
+   * grouped answers of several sources, when this one ranked a group that wins overall out of its own top
+   * {@code limit}: it may still hold members that group needs.
+   *
+   * @see BmwScorer#topKForGroups
+   */
+  public List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final Set<Object> groupKeys,
+      final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs) throws IOException {
+    ensureOpen();
+    if (groupKeys == null || groupKeys.isEmpty() || groupSize <= 0)
+      return List.of();
+    if (queryDims.length != queryWeights.length)
+      throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
+
+    return groupedSearch(queryDims, cursors -> BmwScorer.topKForGroups(queryDims, queryWeights, cursors, groupKeys,
+        groupSize, floor, groupKeyResolver, allowedRIDs, excludedRIDs));
+  }
+
+  @FunctionalInterface
+  private interface GroupedSearch {
+    List<RidScore> run(BmwScorer.CursorSource cursors) throws IOException;
+  }
+
+  /**
+   * Runs a grouped search against one snapshot of the memtable and segments. The search may traverse more than once
+   * (issue #8002), and every traversal must read the same snapshot, so the cursors are opened from it on demand.
+   */
+  private List<RidScore> groupedSearch(final int[] queryDims, final GroupedSearch search) throws IOException {
     refreshSegmentsFromFileManager();
 
     final Memtable mtSnapshot = memtable.get();
@@ -800,16 +807,21 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (pool != null)
       pool.queryStarted();
 
-    final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
-      for (int i = 0; i < queryDims.length; i++)
-        cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
-      return BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs,
-          excludedRIDs);
+      return search.run(() -> {
+        final DimCursor[] cursors = new DimCursor[queryDims.length];
+        try {
+          for (int i = 0; i < queryDims.length; i++)
+            cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
+        } catch (final IOException | RuntimeException e) {
+          for (final DimCursor c : cursors)
+            if (c != null)
+              c.close();
+          throw e;
+        }
+        return cursors;
+      });
     } finally {
-      for (final DimCursor c : cursors)
-        if (c != null)
-          c.close();
       if (pool != null)
         pool.queryFinished();
     }

@@ -181,7 +181,7 @@ class MaxScorePruningTest extends TestHelper {
         }
 
         // One group of capacity K degenerates to plain top-K, so the same pruning must engage.
-        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, cursors, 1, K, rid -> "g", null);
+        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, () -> cursors, 1, K, rid -> "g", null);
 
         long fatDecoded = 0;
         for (int i = 0; i < FAT_DIMS; i++)

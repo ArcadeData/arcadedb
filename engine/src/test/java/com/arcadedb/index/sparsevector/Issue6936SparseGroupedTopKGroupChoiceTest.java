@@ -83,7 +83,7 @@ class Issue6936SparseGroupedTopKGroupChoiceTest extends TestHelper {
         for (int i = 0; i < queryDims.length; i++)
           cursors[i] = new DimCursor(queryDims[i], List.of(reader.openCursor(queryDims[i])));
 
-        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, cursors, 3, 2,
+        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, () -> cursors, 3, 2,
             rid -> groupOf.get(rid), null);
 
         final List<String> groups = got.stream().map(rs -> groupOf.get(rs.rid())).distinct().toList();

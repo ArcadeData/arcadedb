@@ -30,6 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.GroupAdmissionState;
+import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -199,7 +200,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * When {@code groupBy} is set, each index applies the {@code limit} / {@code groupSize} cap to its own
    * score-ordered search output, resuming the graph walk until it has {@code limit} distinct groups or runs
    * out of candidate budget (#5761), and the {@link GroupAdmissionState} below re-applies the same cap once
-   * across every index so the caller never sees a {@code (limit + 1)}-th group. Still best-effort: an index
+   * across every index so the caller never sees a {@code (limit + 1)}-th group. In between, a {@link GroupedTopUpPlanner}
+   * asks an index that ranked an overall winner outside its own top {@code limit} for that winner's members, which it
+   * would otherwise never have returned (issue #8002). Still best-effort: an index
    * whose nearest group is denser than its candidate budget returns fewer groups and counts the query in
    * {@code groupedSearchesShortOfLimit}, which is the signal to raise the index's {@code efSearch}. A short answer
    * for the other reason - the corpus or the allow-list simply has fewer than {@code limit} distinct groups to give,
@@ -253,6 +256,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // relies on the SQL-layer global GroupAdmissionState to reduce cross-bucket overlap.
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
 
+    final GroupedTopUpPlanner planner = groupBy != null && vectorIndexes.size() > 1 ? new GroupedTopUpPlanner(limit, groupSize) : null;
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
       final List<Pair<RID, Float>> neighbors;
       if (groupBy == null)
@@ -261,7 +265,29 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, limit, groupSize, efSearch, allowedRIDs,
             groupKeyResolver);
       allNeighbors.addAll(neighbors);
+      if (planner != null) {
+        final List<RID> rids = new ArrayList<>(neighbors.size());
+        final float[] values = new float[neighbors.size()];
+        final List<Object> keys = new ArrayList<>(neighbors.size());
+        for (int i = 0; i < neighbors.size(); i++) {
+          final RID rid = neighbors.get(i).getFirst();
+          rids.add(rid);
+          values[i] = -neighbors.get(i).getSecond(); // the planner ranks higher-is-better
+          keys.add(groupKeyResolver.apply(rid));
+        }
+        planner.addSource(rids, values, keys, true);
+      }
     }
+
+    // Second phase over several indexes (issue #8002). Each index answered with ITS nearest `limit` groups, which
+    // settles the winners overall but not their members: an index that ranked a winner outside its own top `limit` may
+    // still hold members of it, and never returned them. The planner names the indexes that may, for which winners,
+    // and beyond what distance nothing they hold could matter; it asks none in the common case.
+    if (planner != null)
+      for (final GroupedTopUpPlanner.TopUp topUp : planner.plan())
+        allNeighbors.addAll(vectorIndexes.get(topUp.source())
+            .findNeighborsFromVectorForGroups(queryVector, topUp.groupKeys(), groupSize, efSearch, allowedRIDs,
+                groupKeyResolver, -topUp.floor()));
 
     // Sort by distance (ascending - closer is better for similarity search)
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
