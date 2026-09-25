@@ -129,6 +129,57 @@ class Issue8391Issue8379ShowTimeZoneAndDescribeNoDataIT extends PostgresWireProt
   }
 
   @Test
+  @DisplayName("[#8379] a portal bound BEFORE its statement was described with NoData is held to that NoData too")
+  void portalBoundBeforeStatementDescribeKeepsTheNoDataPromise() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        simple(out, in, "CREATE DOCUMENT TYPE B8379 IF NOT EXISTS");
+
+        sendParse(out, "S1", "INSERT INTO B8379 SET name = 'a'");
+        sendBind(out, "P1", "S1");
+        sendDescribe(out, 'S', "S1");
+        sendExecute(out, "P1");
+        sendSync(out);
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(response)).containsExactly('1', '2', 't', 'n', 'C', 'Z');
+        assertThat(commandTagOf(response)).isEqualTo("INSERT 0 1");
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("[#8379] an UPDATE described as NoData is tagged with the records it changed, zero included")
+  void updateDescribedAsNoDataIsTaggedWithTheAffectedCount() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        simple(out, in, "CREATE DOCUMENT TYPE U8379 IF NOT EXISTS");
+        simple(out, in, "INSERT INTO U8379 SET name = 'a'");
+        simple(out, in, "INSERT INTO U8379 SET name = 'a'");
+
+        for (final String[] c : new String[][] { { "UPDATE U8379 SET name = 'b' WHERE name = 'a'", "UPDATE 2" },
+            { "UPDATE U8379 SET name = 'c' WHERE name = 'none'", "UPDATE 0" }, { "DELETE FROM U8379 WHERE name = 'b'", "DELETE 2" } }) {
+          sendParse(out, "", c[0]);
+          sendDescribe(out, 'S', "");
+          sendBind(out, "", "");
+          sendExecute(out, "");
+          sendSync(out);
+          final List<WireMessage> response = readUntilReadyForQuery(in);
+          assertThat(messageTypesOf(response)).as(c[0]).containsExactly('1', 't', 'n', '2', 'C', 'Z');
+          assertThat(commandTagOf(response)).as(c[0]).isEqualTo(c[1]);
+        }
+      });
+    }
+  }
+
+  @Test
   @DisplayName("[#8379] a DELETE is not described by the type its FROM names, and answers no DataRow")
   void deleteIsDescribedAsNoData() throws Exception {
     try (final Socket socket = connect()) {
