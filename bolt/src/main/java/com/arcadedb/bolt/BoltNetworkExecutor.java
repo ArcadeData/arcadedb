@@ -1353,7 +1353,9 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Checked before the database is resolved, so a name the user is not granted is refused the same way whether
-    // or not the database exists: the answer must not tell a user which databases the server hosts
+    // or not the database exists: the answer must not tell a user which databases the server hosts. Redundant for the
+    // fallback just above, which only picks a granted database, and kept on purpose: this is the single check every
+    // other way of naming a database (RUN, BEGIN, HELLO routing, the configured default) relies on.
     if (!authorizeDatabase(targetName))
       return false;
 
@@ -1496,7 +1498,9 @@ public class BoltNetworkExecutor extends Thread {
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
           "constituents");
       stream.syntheticResults = new ArrayList<>();
-      // Narrowed to the databases the user is granted, as every other listener lists them.
+      // Narrowed to the databases the user is granted, as every other listener lists them. filterAuthorizedDatabases()
+      // reads a null user as "security disabled"; it cannot be null here, because ensureDatabase() already refused
+      // this request through authorizeDatabase() had no user been bound.
       // The port this connection reached, as the routing table advertises: the configured one may be 0, which asks
       // the operating system for a free port and is not an address anyone can dial (issue #8209)
       for (final String dbName : ServerControlPlane.filterAuthorizedDatabases(user, server.getDatabaseNames())) {
