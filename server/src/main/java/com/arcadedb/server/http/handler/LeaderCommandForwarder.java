@@ -72,7 +72,9 @@ import java.util.logging.Level;
  * {@code PUT} and {@code DELETE /api/v1/server/users} - running {@code ServerSecurity.*ClusterWide} on
  * whichever node served the request, and from there submitting a Raft entry from a follower (issue #7380).
  * One HTTP API cannot answer the same request two ways depending on which route the client picked, so the
- * forwarding moved here and all four call sites share it.
+ * forwarding moved here and all four call sites share it. The group and API-token routes -
+ * {@code POST}/{@code DELETE /api/v1/server/groups} and {@code /api/v1/server/api-tokens} - joined them in issue
+ * #8109, so every HTTP security mutation runs on the leader.
  * <p>
  * gRPC refuses these calls rather than forwarding them ({@code ArcadeDbGrpcAdminService.requireLeader},
  * issues #7304 and #7309). That is not a different policy: gRPC has no request proxy, so a refusal that
@@ -81,8 +83,8 @@ import java.util.logging.Level;
  * <b>This class performs no authorization.</b> The caller checks it first - every current call site runs
  * {@code AbstractServerHttpHandler.checkRootUser} before asking to forward.
  * <p>
- * <b>Every forward is bounded.</b> {@code forwardIfReplica} runs on an Undertow worker thread - all four call
- * sites return {@code true} from {@code mustExecuteOnWorkerThread()} - so a leader that accepts the connection
+ * <b>Every forward is bounded.</b> {@code forwardIfReplica} runs on an Undertow worker thread - every call
+ * site returns {@code true} from {@code mustExecuteOnWorkerThread()} - so a leader that accepts the connection
  * and then never answers would hold that worker until the OS tore the socket down, and enough of them would
  * stop the follower serving anything (issue #7507). {@link Transport} therefore gives the client a connect
  * timeout and every request a response deadline, and turns a blown deadline into an HTTP 504 rather than a

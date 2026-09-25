@@ -5517,11 +5517,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * schema-delta decision. Since issue #7549 it runs in every role, so on a node that has been up for one
    * refresh period the cached answer below is already the full one and nothing is dialled here; what remains is
    * the window before a freshly started node's first round lands, and the round below is what covers it. The
-   * consumer this exists for is not leader-side: the group and API-token REST routes do not forward, so
-   * {@code ServerSecurity.saveGroupClusterWide} and friends run on whichever node the client or load balancer
-   * picked, and submit through a Raft client that routes to the leader. On a FOLLOWER the registry is empty by
-   * design, so a refusal built on the cached answer alone would refuse every group change ever made on a
-   * follower, on a perfectly healthy single-version cluster.
+   * consumer this exists for was not leader-side when it was written: the group and API-token REST routes did not
+   * forward, so {@code ServerSecurity.saveGroupClusterWide} and friends ran on whichever node the client or load
+   * balancer picked. They forward to the leader since issue #8109, but a submission can still be decided on a node
+   * that lost leadership between the forward and the submit, so a node's answer still has to be right in any
+   * role.
    * <p>
    * So the cached answer is consulted first and one synchronous round is run only when it is not already a full
    * "yes". That keeps the leader's hot path free - a warm registry answers without dialling anything - and makes

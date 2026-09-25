@@ -219,8 +219,12 @@ final class SecurityEntryCapabilityGate {
     LAST_REFUSAL_LOG.clear();
   }
 
-  /** Reads the interlock off the SERVER configuration, the scope the setting is declared in. */
-  private static boolean gateEnabled(final ArcadeDBServer server) {
+  /**
+   * Reads the interlock off the SERVER configuration, the scope the setting is declared in. Also read by
+   * {@code RaftHAPlugin.preconditionEveryPeerCanRead}, whose synchronous probe round the same setting switches off
+   * (issue #8109).
+   */
+  static boolean gateEnabled(final ArcadeDBServer server) {
     if (server == null || server.getConfiguration() == null)
       return GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE.getValueAsBoolean();
     return server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_SECURITY_ENTRY_CAPABILITY_GATE);
