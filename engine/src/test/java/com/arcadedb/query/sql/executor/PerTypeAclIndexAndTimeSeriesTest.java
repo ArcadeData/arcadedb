@@ -165,6 +165,49 @@ class PerTypeAclIndexAndTimeSeriesTest {
     return database.getSchema().getType(PUBLIC_TYPE).getPolymorphicIndexByProperties("code").getName();
   }
 
+  /**
+   * The Cypher schema procedures answer from the schema rather than from records, so they have to hide a type the
+   * user cannot read exactly as {@code schema:types} does, instead of naming it and its property keys.
+   */
+  @Test
+  void cypherSchemaProceduresHideRestrictedType() {
+    bindUser(Set.of(SECRET_TYPE), Set.of());
+
+    final List<String> propertyKeys = new ArrayList<>();
+    database.query("opencypher", "CALL db.propertyKeys()").forEachRemaining(r -> propertyKeys.add(r.getProperty("propertyKey")));
+    assertThat(propertyKeys).contains("code").doesNotContain("ssn");
+
+    final List<String> typeNames = new ArrayList<>();
+    database.query("opencypher", "CALL db.schema.visualization()").forEachRemaining(r -> typeNames.add(r.getProperty("name")));
+    assertThat(typeNames).contains(PUBLIC_TYPE).doesNotContain(SECRET_TYPE);
+
+    unbindUser();
+    final List<String> allKeys = new ArrayList<>();
+    database.query("opencypher", "CALL db.propertyKeys()").forEachRemaining(r -> allKeys.add(r.getProperty("propertyKey")));
+    assertThat(allKeys).as("with no user bound every type stays visible").contains("code", "ssn");
+  }
+
+  /**
+   * A type the user can read may extend one it cannot: {@code schema:types} lists the child but must not name the
+   * hidden parent in its {@code parentTypes}.
+   */
+  @Test
+  void schemaTypesHidesUnreadableParentType() {
+    database.command("sql", "CREATE DOCUMENT TYPE SecretChild EXTENDS " + SECRET_TYPE);
+    bindUser(Set.of(SECRET_TYPE), Set.of());
+
+    final List<Result> rows = new ArrayList<>();
+    database.query("sql", "SELECT FROM schema:types WHERE name = 'SecretChild'").forEachRemaining(rows::add);
+    assertThat(rows).hasSize(1);
+    final List<String> parents = rows.getFirst().getProperty("parentTypes");
+    assertThat(parents).doesNotContain(SECRET_TYPE);
+
+    unbindUser();
+    final List<String> allParents = database.query("sql", "SELECT FROM schema:types WHERE name = 'SecretChild'").next()
+        .getProperty("parentTypes");
+    assertThat(allParents).contains(SECRET_TYPE);
+  }
+
   private void bindUser(final Set<String> deniedTypesByBucket, final Set<String> deniedTypesByName) {
     DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(restrictedUser(deniedTypesByBucket, deniedTypesByName));
   }
