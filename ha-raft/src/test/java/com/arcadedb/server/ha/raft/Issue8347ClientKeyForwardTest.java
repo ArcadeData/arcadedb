@@ -46,7 +46,8 @@ import static org.mockito.Mockito.when;
  */
 class Issue8347ClientKeyForwardTest {
 
-  private static final String KEY = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+  private static final String KEY  = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+  private static final String BODY = "{\"language\":\"sql\",\"command\":\"INSERT INTO V SET id = 1\"}";
 
   @AfterEach
   void clearContext() {
@@ -58,6 +59,7 @@ class Issue8347ClientKeyForwardTest {
     try (final RecordingLeader leader = new RecordingLeader()) {
       final RaftReplicatedDatabase db = database(leader);
       ForwardedRequestIdContext.set("client-8347", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
 
       forward(db, "INSERT INTO V SET id = 1");
 
@@ -71,6 +73,7 @@ class Issue8347ClientKeyForwardTest {
     try (final RecordingLeader leader = new RecordingLeader()) {
       final RaftReplicatedDatabase db = database(leader);
       ForwardedRequestIdContext.set("client-8347", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
 
       forward(db, "INSERT INTO V SET id = 1");
       forward(db, "INSERT INTO V SET id = 2");
@@ -85,6 +88,7 @@ class Issue8347ClientKeyForwardTest {
     try (final RecordingLeader leader = new RecordingLeader()) {
       final RaftReplicatedDatabase db = database(leader);
       ForwardedRequestIdContext.set("client-8347", KEY, false);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
 
       forward(db, "INSERT INTO V SET id = 1");
 
@@ -99,6 +103,7 @@ class Issue8347ClientKeyForwardTest {
     try (final RecordingLeader leader = new RecordingLeader()) {
       final RaftReplicatedDatabase db = database(leader, false, null);
       ForwardedRequestIdContext.set("client-8347", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
 
       forward(db, "INSERT INTO V SET id = 1");
 
@@ -112,6 +117,7 @@ class Issue8347ClientKeyForwardTest {
     try (final RecordingLeader leader = new RecordingLeader()) {
       final RaftReplicatedDatabase db = database(leader, true);
       ForwardedRequestIdContext.set("client-8347", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
 
       forward(db, "INSERT INTO V SET id = 1");
 
@@ -142,10 +148,12 @@ class Issue8347ClientKeyForwardTest {
       });
 
       ForwardedRequestIdContext.set("client-8347", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "INSERT INTO V SET id = 1", BODY);
       db.command("sql", "INSERT INTO V SET id = 1");
       assertThat(leader.clientKeys()).as("the write command is the whole request").containsExactly(KEY);
 
       ForwardedRequestIdContext.set("client-8347-b", KEY, true);
+      ForwardedRequestIdContext.declareWholeRequestCommand("sql", "SELECT nested()", BODY);
       db.command("sql", "SELECT nested()");
       assertThat(leader.requestIds()).containsExactly("client-8347", "client-8347-b");
       assertThat(leader.clientKeys()).as("the nested write is a part of the request").containsExactly(KEY, null);

@@ -141,14 +141,23 @@ class ForwardedRequestIdContextTest {
 
   private static final String KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+  private static final String CMD  = "INSERT INTO V SET id = 1";
+  private static final String BODY = "{ \"serializer\": \"studio\", \"language\": \"sql\", \"command\": \"" + CMD + "\" }";
+
+  /** The key of the request, when the forward with this ordinal of the declared statement is the whole of it. */
+  private static String keyFor(final int ordinal) {
+    final ForwardedRequestIdContext.WholeRequest whole = ForwardedRequestIdContext.wholeRequestForward(ordinal, "sql", CMD);
+    return whole != null ? whole.clientKey() : null;
+  }
+
   @Test
   void theFirstCommandForwardOfAOneCommandRouteRelaysTheClientKey() {
     ForwardedRequestIdContext.set("req-8347", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
 
     assertThat(ForwardedRequestIdContext.clientKey()).isEqualTo(KEY);
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal()))
-        .isEqualTo(KEY);
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal()))
+    assertThat(keyFor(ForwardedRequestIdContext.nextForwardOrdinal())).isEqualTo(KEY);
+    assertThat(keyFor(ForwardedRequestIdContext.nextForwardOrdinal()))
         .as("a second forward is a part of the request, never the whole of it").isNull();
   }
 
@@ -156,8 +165,9 @@ class ForwardedRequestIdContextTest {
   @Test
   void aRouteWhoseBodyIsNotOneCommandRelaysNoKeyOnACommandForward() {
     ForwardedRequestIdContext.set("req-8347", KEY, false);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
 
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+    assertThat(keyFor(1)).isNull();
     assertThat(ForwardedRequestIdContext.clientKey()).as("the whole-request forwarder still relays it").isEqualTo(KEY);
   }
 
@@ -165,25 +175,100 @@ class ForwardedRequestIdContextTest {
   @Test
   void aCommandExecutedLocallyStopsTheKeyFromTravellingOnACommandForward() {
     ForwardedRequestIdContext.set("req-8347", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
     ForwardedRequestIdContext.markExecutedLocally();
 
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
+    assertThat(keyFor(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
 
     // An auto-commit retry runs the same command locally again: restarting the ordinals does not bring the key back.
     ForwardedRequestIdContext.restartOrdinals();
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+    assertThat(keyFor(ForwardedRequestIdContext.nextForwardOrdinal())).isNull();
   }
 
   @Test
   void noIdMeansNoKeyAndClearingDropsIt() {
     ForwardedRequestIdContext.set("  ", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
     assertThat(ForwardedRequestIdContext.clientKey()).isNull();
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+    assertThat(keyFor(1)).isNull();
 
     ForwardedRequestIdContext.set("req-8347", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
     ForwardedRequestIdContext.clear();
     assertThat(ForwardedRequestIdContext.clientKey()).isNull();
-    assertThat(ForwardedRequestIdContext.clientKeyForCommandForward(1)).isNull();
+    assertThat(keyFor(1)).isNull();
+  }
+
+  // Issue #8359 ------------------------------------------------------------------------------------------------------
+
+  /** The whole-request forward carries the client's own body, so the leader answers it in the client's rendering. */
+  @Test
+  void theWholeRequestForwardCarriesTheClientsOwnBody() {
+    ForwardedRequestIdContext.set("req-8359", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+
+    final ForwardedRequestIdContext.WholeRequest whole = ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD);
+    assertThat(whole).isNotNull();
+    assertThat(whole.clientKey()).isEqualTo(KEY);
+    assertThat(whole.clientBody()).isEqualTo(BODY);
+  }
+
+  /**
+   * Nothing is the whole request unless the handler declared it: a route that runs its statement some other way - a
+   * query, which a follower runs itself - declares nothing, and a write that statement issues from inside is a part.
+   */
+  @Test
+  void nothingIsTheWholeRequestUntilTheHandlerDeclaresIt() {
+    ForwardedRequestIdContext.set("req-8359", KEY, true);
+
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD)).isNull();
+  }
+
+  /** A first forward of a statement other than the declared one - a write a function issues - is a part of it. */
+  @Test
+  void aForwardOfAnotherStatementIsNotTheWholeRequest() {
+    ForwardedRequestIdContext.set("req-8359", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", "SELECT writes()", BODY);
+
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD)).isNull();
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "cypher", "SELECT writes()"))
+        .as("the same text in another language is another statement").isNull();
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", "SELECT writes()")).isNotNull();
+  }
+
+  /** The leader's answer is read once, dropped by a new declaration (an auto-commit retry) and by clearing. */
+  @Test
+  void theLeadersAnswerIsConsumedOnceAndNeverOutlivesTheRequest() {
+    ForwardedRequestIdContext.set("req-8359", KEY, true);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+
+    assertThat(ForwardedRequestIdContext.takeWholeRequestAnswer()).isNull();
+
+    ForwardedRequestIdContext.publishWholeRequestAnswer("{\"result\":{}}");
+    assertThat(ForwardedRequestIdContext.takeWholeRequestAnswer()).isEqualTo("{\"result\":{}}");
+    assertThat(ForwardedRequestIdContext.takeWholeRequestAnswer()).as("consumed").isNull();
+
+    ForwardedRequestIdContext.publishWholeRequestAnswer("{\"result\":{}}");
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+    assertThat(ForwardedRequestIdContext.takeWholeRequestAnswer()).as("a retried attempt starts without one").isNull();
+
+    ForwardedRequestIdContext.publishWholeRequestAnswer("{\"result\":{}}");
+    ForwardedRequestIdContext.clear();
+    assertThat(ForwardedRequestIdContext.takeWholeRequestAnswer()).isNull();
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD)).isNull();
+  }
+
+  /** A request that cannot be forwarded whole holds no body: the declaration records nothing. */
+  @Test
+  void aDeclarationOnARequestThatCannotBeForwardedWholeRecordsNothing() {
+    ForwardedRequestIdContext.set("req-8359", KEY, false);
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD)).isNull();
+
+    ForwardedRequestIdContext.clear();
+    ForwardedRequestIdContext.declareWholeRequestCommand("sql", CMD, BODY);
+    assertThat(ForwardedRequestIdContext.wholeRequestForward(1, "sql", CMD)).isNull();
   }
 
   /** Only a value an idempotency key can be - a lower-case hex SHA-256 digest - is parsed or published. */

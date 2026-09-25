@@ -29,6 +29,16 @@ public class PostQueryHandler extends PostCommandHandler {
     super(httpServer);
   }
 
+  /**
+   * A query is run on this node and never forwarded whole, so a write it issues from inside - through a function it
+   * calls - is a part of the request and must not relay the client's key or body (issues #8347, #8359).
+   */
+  @Override
+  protected boolean commandForwardIsWholeRequest() {
+    return false;
+  }
+
+  @Override
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
     if (params instanceof Object[] objects)

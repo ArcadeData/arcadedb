@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import java.util.Objects;
+
 /**
  * Carries, for the duration of one HTTP request, the client's {@code X-Request-Id} to a follower-to-leader forward
  * taken deep inside the engine, where the HTTP exchange is no longer in reach (issue #8323).
@@ -50,6 +52,16 @@ package com.arcadedb.server;
  * that is only a part of the request - a write issued by a command this node executed locally, or any forward after
  * the first - relays no key: the client's key there names the whole request, and settling it with the answer to one
  * statement inside it would replay that answer to a direct retry of the whole.
+ * <p>
+ * The key settles one answer, so that answer has to be the one the client's request asks for. A forward rebuilt from
+ * the statement is answered in the leader's default rendering ({@code serializer: "record"}, the default row limit, no
+ * type hints), not in the {@code serializer}, {@code limit} or {@code typeHints} the client's body names, and a direct
+ * retry was replayed from it in the wrong shape; the other way round, a forward that found the client's key settled by a
+ * direct attempt got an answer in the client's rendering, which the follower then parsed as the default one (issue
+ * #8359). So a forward that relays the key is the client's request itself: the handler declares, with
+ * {@link #declareWholeRequestCommand}, the statement it is about to run and the body it came in, the forward of exactly
+ * that statement posts that body unchanged, and the leader's answer - rendered for that body, whichever node settled the
+ * key - is handed back through {@link #publishWholeRequestAnswer} and sent to the client as it is.
  */
 public final class ForwardedRequestIdContext {
   /**
@@ -76,6 +88,20 @@ public final class ForwardedRequestIdContext {
     // Whether an engine-level command forward can be the client's whole request: true only for a route whose body
     // is one command, and cleared as soon as this node executes a command locally (a forward then is a part of it).
     private boolean commandForwardIsWholeRequest;
+    // The statement the handler runs as the whole request, and the client's own body it came in (issue #8359).
+    private String  wholeRequestLanguage;
+    private String  wholeRequestCommand;
+    private String  wholeRequestBody;
+    // The leader's answer to the forward that posted that body, to be sent to the client as it is.
+    private String  wholeRequestAnswer;
+  }
+
+  /**
+   * An engine-level command forward that is the client's whole request (issue #8359): the key the client's request has
+   * on this node, and the client's own body, which the forward posts unchanged so the leader answers - and settles the
+   * key with - exactly what the client asked for.
+   */
+  public record WholeRequest(String clientKey, String clientBody) {
   }
 
   private ForwardedRequestIdContext() {
@@ -104,6 +130,7 @@ public final class ForwardedRequestIdContext {
     state.forwards = 0;
     state.clientKey = state.requestId != null && isClientKey(clientKey) ? clientKey : null;
     state.commandForwardIsWholeRequest = state.clientKey != null && commandForwardIsWholeRequest;
+    clearWholeRequest(state);
   }
 
   /**
@@ -115,13 +142,60 @@ public final class ForwardedRequestIdContext {
   }
 
   /**
-   * The idempotency key of the client's request, for the engine-level command forward with the given ordinal: only the
-   * first forward, only on a route whose body is one command, and only while this node has executed no command of the
-   * request locally. Null otherwise.
+   * Declares the statement the handler is about to run as the client's whole request, and the body the client sent it in
+   * (issue #8359). A forward of exactly that statement then posts that body instead of one rebuilt from the statement.
+   * Also drops the answer a previous attempt of the request may have left: an auto-commit retry declares again. Records
+   * nothing when no forward of this request can be the whole of it, so the body is held only when it can be used.
+   *
+   * @param language   the language the statement is run in
+   * @param command    the statement exactly as the handler passes it to the database
+   * @param clientBody the client's request body, unchanged
    */
-  public static String clientKeyForCommandForward(final int forwardOrdinal) {
+  public static void declareWholeRequestCommand(final String language, final String command, final String clientBody) {
     final State state = STATE.get();
-    return forwardOrdinal == 1 && state.commandForwardIsWholeRequest ? state.clientKey : null;
+    if (!state.commandForwardIsWholeRequest) {
+      clearWholeRequest(state);
+      return;
+    }
+    state.wholeRequestLanguage = language;
+    state.wholeRequestCommand = command;
+    state.wholeRequestBody = clientBody;
+    state.wholeRequestAnswer = null;
+  }
+
+  /**
+   * The client's key and body, for the engine-level command forward with the given ordinal of the given statement, when
+   * that forward is the client's whole request: only the first forward, only on a route whose body is one command, only
+   * while this node has executed no command of the request locally, and only for the statement the handler declared
+   * with {@link #declareWholeRequestCommand}. Null otherwise: a write that something else issues - a function the
+   * statement calls, a query that runs locally - is a part of the request even when it is the first to be forwarded.
+   */
+  public static WholeRequest wholeRequestForward(final int forwardOrdinal, final String language, final String query) {
+    final State state = STATE.get();
+    if (forwardOrdinal != 1 || !state.commandForwardIsWholeRequest || state.wholeRequestBody == null
+        || state.wholeRequestCommand == null || !state.wholeRequestCommand.equals(query)
+        || !Objects.equals(state.wholeRequestLanguage, language))
+      return null;
+    return new WholeRequest(state.clientKey, state.wholeRequestBody);
+  }
+
+  /**
+   * Records the leader's answer to the forward that posted the client's whole request (issue #8359): the handler sends
+   * it to the client as it is, rather than rendering again what this node parsed back out of it.
+   */
+  public static void publishWholeRequestAnswer(final String answer) {
+    STATE.get().wholeRequestAnswer = answer;
+  }
+
+  /**
+   * The leader's answer to the client's whole request, or null when the request was not forwarded whole. Consumed: a
+   * second read answers null.
+   */
+  public static String takeWholeRequestAnswer() {
+    final State state = STATE.get();
+    final String answer = state.wholeRequestAnswer;
+    state.wholeRequestAnswer = null;
+    return answer;
   }
 
   /**
@@ -131,6 +205,13 @@ public final class ForwardedRequestIdContext {
    */
   public static void markExecutedLocally() {
     STATE.get().commandForwardIsWholeRequest = false;
+  }
+
+  private static void clearWholeRequest(final State state) {
+    state.wholeRequestLanguage = null;
+    state.wholeRequestCommand = null;
+    state.wholeRequestBody = null;
+    state.wholeRequestAnswer = null;
   }
 
   /**
@@ -199,5 +280,6 @@ public final class ForwardedRequestIdContext {
     state.forwards = 0;
     state.clientKey = null;
     state.commandForwardIsWholeRequest = false;
+    clearWholeRequest(state);
   }
 }

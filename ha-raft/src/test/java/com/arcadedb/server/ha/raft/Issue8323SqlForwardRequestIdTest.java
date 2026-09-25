@@ -31,6 +31,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
@@ -187,14 +188,25 @@ class Issue8323SqlForwardRequestIdTest {
     private final List<String> requestIds = new CopyOnWriteArrayList<>();
     private final List<String> ordinals   = new CopyOnWriteArrayList<>();
     private final List<String> clientKeys = new CopyOnWriteArrayList<>();
+    private final List<String> bodies     = new CopyOnWriteArrayList<>();
+    private final String       answer;
 
     RecordingLeader() throws IOException {
+      this(new JSONObject().put("result", new JSONArray()).toString());
+    }
+
+    /** A leader that answers every command with the given body (issue #8359). */
+    RecordingLeader(final String answer) throws IOException {
+      this.answer = answer;
       server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16);
       server.createContext("/", exchange -> {
         requestIds.add(exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID));
         ordinals.add(exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
         clientKeys.add(exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.CLIENT_KEY_HEADER));
-        final byte[] bytes = new JSONObject().put("result", new JSONArray()).toString().getBytes(StandardCharsets.UTF_8);
+        try (final InputStream in = exchange.getRequestBody()) {
+          bodies.add(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        final byte[] bytes = this.answer.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);
         try (final OutputStream out = exchange.getResponseBody()) {
@@ -214,6 +226,10 @@ class Issue8323SqlForwardRequestIdTest {
 
     List<String> clientKeys() {
       return clientKeys;
+    }
+
+    List<String> bodies() {
+      return bodies;
     }
 
     String address() {
