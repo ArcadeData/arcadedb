@@ -61,6 +61,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -103,6 +104,8 @@ import java.util.logging.Level;
  * {@code GrpcMetricsInterceptor}.
  */
 public class ServerControlPlane {
+  /** The security documents in the order every source of the convergence signal names them (issue #8317). */
+  private static final List<String> SECURITY_DOCUMENT_ORDER = List.of("users", "groups", "API tokens");
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   private final ArcadeDBServer server;
@@ -467,6 +470,14 @@ public class ServerControlPlane {
    * {@code arcadedb.ha.serverList}, not the live configuration, and a joiner's declared list is whatever its
    * operator wrote rather than the cluster it was added to.
    * <p>
+   * <b>What counts as converged on a joiner (issue #8317).</b> Not a recorded replicated fingerprint alone: a node
+   * removed from the cluster and re-added with its config volume retained holds one for every document, from its
+   * previous membership, and would be released on the first probe while enforcing a user dropped, a group
+   * narrowed or a token revoked while it was out. So on an armed node a document also has to have been installed
+   * from an entry committed after the configuration change that (last) added it -
+   * {@link HAServerPlugin#securityDocumentsNotInstalledSinceRuntimeJoin()} - which is the admission seed or a
+   * later change to that document.
+   * <p>
    * <b>Why it is bounded.</b> A joiner that is never seeded - the leader-side seed dropped, the retry budget
    * exhausted - must not stall a rolling restart or a scale-up forever. So the wait is
    * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, and when it expires the node reports READY with a
@@ -484,7 +495,13 @@ public class ServerControlPlane {
     try {
       joinedAtRuntime = ha.hasJoinedClusterAtRuntime();
       final ServerSecurity security = server.getSecurity();
-      unconverged = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+      final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+      // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
+      // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
+      // the document must also have been installed after the change that (last) added it.
+      unconverged = joinedAtRuntime ?
+          unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin()) :
+          neverInstalled;
     } catch (final Exception e) {
       // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
@@ -529,6 +546,19 @@ public class ServerControlPlane {
               + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
     }
     return null;
+  }
+
+  /** The documents named by either list, in the order users, groups, API tokens both of them report. */
+  private static List<String> unionInDocumentOrder(final List<String> a, final List<String> b) {
+    if (b == null || b.isEmpty())
+      return a;
+    if (a.isEmpty())
+      return b;
+    final List<String> union = new ArrayList<>(3);
+    for (final String document : SECURITY_DOCUMENT_ORDER)
+      if (a.contains(document) || b.contains(document))
+        union.add(document);
+    return union;
   }
 
   /**
