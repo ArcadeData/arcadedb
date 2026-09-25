@@ -73,6 +73,8 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   // Past this many buffered deltas the build is published STALE rather than reconciled: the same bound the
   // compaction path puts on its own buffer.
   private final int maxBufferedDeltas;
+  // True for a blocking build(), whose scan holds the view's monitor: a commit callback must not wait on it
+  private final boolean scanHoldsMonitor;
 
   // Sources whose out-edges a transaction changed while this watch was open. Concurrent: registered from the
   // committing threads, read by the scan.
@@ -98,8 +100,14 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
   // The answers for the delta being merged, by EdgeDelta instance: set by account(), read by the merge right after
   private final Map<TxDelta.EdgeDelta, Boolean> answers = new IdentityHashMap<>();
 
-  BuildWatch(final int maxBufferedDeltas) {
+  BuildWatch(final int maxBufferedDeltas, final boolean scanHoldsMonitor) {
     this.maxBufferedDeltas = maxBufferedDeltas;
+    this.scanHoldsMonitor = scanHoldsMonitor;
+  }
+
+  /** Whether the build's scan runs holding the view's monitor (a blocking {@code build()}). */
+  boolean scanHoldsMonitor() {
+    return scanHoldsMonitor;
   }
 
   /**
@@ -218,7 +226,8 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
 
   /**
    * Answers, for each edge change of one delta, whether the scan read it. Must be called for every delta, in order,
-   * right before it is merged against the CSR this watch is bound to.
+   * right before it is merged against the CSR this watch is bound to, and under the view's monitor: the answers and
+   * the per-source maps it trims carry no synchronization of their own.
    */
   void account(final TxDelta delta) {
     answers.clear();

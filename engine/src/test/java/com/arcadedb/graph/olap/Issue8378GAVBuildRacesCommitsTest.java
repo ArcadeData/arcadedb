@@ -99,6 +99,19 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
   }
 
   @Test
+  void synchronousBlockingRebuildDoesNotStallCommitsAndKeepsThem() {
+    // REBUILD GRAPH ANALYTICAL VIEW runs build() on a view that already has a CSR: the commits racing it must still
+    // complete while it scans (raceBuild() counts only commits that began and ended during the build)
+    final GraphAnalyticalView view = builder(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).build();
+    raceBuild(() -> {
+      view.build();
+      return view;
+    });
+    assertThat(view.isReady()).isTrue();
+    assertDegreesMatchTheRecords(view);
+  }
+
+  @Test
   void offBuildRacedByACommitIsPublishedStale() {
     final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.OFF).buildAsync());
     // Not kept up to date, so it cannot hold the raced commits: it must say so rather than claim to be current
