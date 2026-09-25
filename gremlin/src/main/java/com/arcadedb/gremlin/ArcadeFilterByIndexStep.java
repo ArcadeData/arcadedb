@@ -21,6 +21,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
@@ -159,14 +160,20 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
           if (allowed != null && (bucketId < 0 || bucketId >= allowed.length || !allowed[bucketId]))
             continue;
 
-          final Record rec = candidate.getRecord();
+          // AN INDEX ENTRY WHOSE RECORD IS GONE IS SKIPPED, THE SAME AS A RECORD THAT NO LONGER MATCHES: getRecord() EITHER
+          // ANSWERS NULL OR RAISES RecordNotFoundException FOR IT, DEPENDING ON WHERE THE LOOKUP FINDS IT MISSING
+          final Record rec;
+          try {
+            rec = candidate.getRecord();
+          } catch (final RecordNotFoundException e) {
+            continue;
+          }
           if (rec instanceof com.arcadedb.graph.Vertex vertex)
             next = (E) new ArcadeVertex(graph, vertex);
           else if (rec instanceof com.arcadedb.graph.Edge edge)
             next = (E) new ArcadeEdge(graph, edge);
           else if (rec != null)
             throw new IllegalStateException("Record of type '" + rec.getClass() + "' is not a graph element");
-          // A NULL RECORD IS AN INDEX ENTRY WHOSE RECORD IS GONE: SKIPPED, THE SAME AS A RECORD THAT NO LONGER MATCHES
           if (next != null)
             return true;
         }
