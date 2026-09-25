@@ -70,7 +70,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private boolean adaptive;
   /**
    * How the calling thread's last execution was served, for the PROFILE that follows it on the same thread. Per thread
-   * because the operator belongs to a cached plan that concurrent executions share; null before it decided.
+   * because the operator belongs to a cached plan that concurrent executions share; null before it decided. Not cleared
+   * on close(): the PROFILE text is rendered after the execution closes. What stays behind is one Boolean per worker
+   * thread per cached plan, weakly keyed on this operator, so it goes with the plan.
    */
   private final ThreadLocal<Boolean> servedByScan = new ThreadLocal<>();
 
@@ -201,6 +203,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
        * range scan to run
        */
       private boolean chooseAdaptively() {
+        // Read per execution, not at planning: the plan is cached, and buckets can be added to the type in between
         final DocumentType type = context.getDatabase().getSchema().getType(label);
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
