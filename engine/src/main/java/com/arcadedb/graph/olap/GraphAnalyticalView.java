@@ -401,7 +401,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
       // Opened before the scan, with the listeners armed: see publishBuild() (issue #8378). This method holds the
       // monitor for the whole scan, so the commit callbacks only buffer into the watch (see onCommittedDelta()).
-      final BuildWatch watch = openBuildWatch();
+      final BuildWatch watch = openBuildWatch(true);
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
@@ -433,8 +433,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * of the scan and the listeners being armed at publication was in neither, and lost from the view for good
    * (issue #8378). Must be called under this instance's monitor.
    */
-  private BuildWatch openBuildWatch() {
-    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS);
+  private BuildWatch openBuildWatch(final boolean scanHoldsMonitor) {
+    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS, scanHoldsMonitor);
     final BuildWatch previous = buildWatch;
     if (previous != null)
       previous.handOverTo(watch); // superseded: its build will not publish
@@ -553,7 +553,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
-    final BuildWatch watch = openBuildWatch();
+    final BuildWatch watch = openBuildWatch(false);
     // Track the queued task synchronously so a concurrent close()/drop() can wait for it
     // even before the virtual thread has had a chance to mount.
     inFlightTasks.incrementAndGet();
@@ -2518,14 +2518,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Entry point of the SYNCHRONOUS commit callback. While a full build is in flight the delta is buffered for the
    * build to re-apply on the CSR it publishes (issue #8378) - without taking this instance's monitor, which a
    * synchronous {@link #build()} holds for its whole scan. The snapshot the build will replace, if there is one,
-   * keeps serving reads meanwhile, so it takes the delta too unless the build publishes first.
+   * keeps serving reads meanwhile, so it takes the delta too unless the build publishes first - except under a
+   * blocking {@link #build()}, whose monitor the merge would wait on for the whole scan: that snapshot then lags
+   * the commits until the rebuild publishes them, rather than stalling every committer behind the scan.
    */
   void onCommittedDelta(final TxDelta delta) {
     final BuildWatch watch = buildWatch;
     // The base being served when the delta was buffered: it takes the delta only if still served when merged
     final Snapshot served = snapshot;
     if (watch != null && watch.offer(delta)) {
-      if (served != null)
+      if (served != null && !watch.scanHoldsMonitor())
         applyDelta(delta, served.csrPerType);
       return;
     }

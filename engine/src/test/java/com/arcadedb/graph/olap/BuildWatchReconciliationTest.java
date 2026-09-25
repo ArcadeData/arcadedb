@@ -59,7 +59,7 @@ class BuildWatchReconciliationTest extends TestHelper {
     // Commit callbacks can arrive out of commit order: the deletion of e0 (after the scan) is delivered before the
     // addition of e1 (before the scan)
     final RID e0 = newEdge();
-    final BuildWatch watch = new BuildWatch(1_000);
+    final BuildWatch watch = new BuildWatch(1_000, false);
     watch.watchSource(a);
     final RID e1 = newEdge();
 
@@ -87,7 +87,7 @@ class BuildWatchReconciliationTest extends TestHelper {
     // Before the scan: e0 exists. The transactions below registered 'a' before committing, so before the scan read it
     final RID e0 = newEdge();
     final RID deletedBeforeScan = newEdge();
-    final BuildWatch watch = new BuildWatch(1_000);
+    final BuildWatch watch = new BuildWatch(1_000, false);
     watch.watchSource(a);
 
     // Committed before the scan reached 'a': the scan sees e1 and no longer sees the deleted edge
