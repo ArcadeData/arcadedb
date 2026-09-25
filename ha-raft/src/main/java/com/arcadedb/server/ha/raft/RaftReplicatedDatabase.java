@@ -29,6 +29,7 @@ import com.arcadedb.database.DocumentIndexer;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.LocalTransactionExplicitLock;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -522,6 +523,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   @Override
   public void commit() {
+    // Before anything is prepared (issue #8363): a transaction a client began before its database started being
+    // replaced read the copy the cluster is discarding, and its page deltas are computed against those pages. It is
+    // rolled back here rather than left open, the same end a conflict at commit gives it, so the retry the refusal
+    // asks for starts from a clean slate.
+    try {
+      refuseClientWhileDirectoryIsReplaced();
+    } catch (final NeedRetryException e) {
+      if (proxied.isTransactionActive())
+        proxied.rollback();
+      throw e;
+    }
+
     proxied.incrementStatsWriteTx();
 
     final boolean leader = isLeader();
@@ -1161,6 +1174,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Object... args) {
+    refuseClientWhileDirectoryIsReplaced();
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
@@ -1205,6 +1219,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Map<String, Object> args) {
+    refuseClientWhileDirectoryIsReplaced();
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
@@ -1467,6 +1482,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public DatabaseAsyncExecutor async() {
+    // A client handing work to the async executor (POST /api/v1/command with awaitResponse=false): the work runs on
+    // the executor's own threads, which read as the engine, so this is the last point it can be refused (#8363).
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.async();
   }
 
@@ -1567,11 +1585,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void begin() {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.begin();
   }
 
   @Override
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.begin(isolationLevel);
   }
 
@@ -1587,53 +1607,63 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.scanType(typeName, polymorphic, callback);
   }
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
       final ErrorRecordCallback errorRecordCallback) {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback) {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.scanBucket(bucketName, callback);
   }
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback,
       final ErrorRecordCallback errorRecordCallback) {
+    refuseClientWhileDirectoryIsReplaced();
     proxied.scanBucket(bucketName, callback, errorRecordCallback);
   }
 
   @Override
   public boolean existsRecord(final RID rid) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.existsRecord(rid);
   }
 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.lookupByRID(rid, loadContent);
   }
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.iterateType(typeName, polymorphic);
   }
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.iterateBucket(bucketName);
   }
 
   @Override
   public IndexCursor lookupByKey(final String type, final String keyName, final Object keyValue) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.lookupByKey(type, keyName, keyValue);
   }
 
   @Override
   public IndexCursor lookupByKey(final String type, final String[] keyNames, final Object[] keyValues) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.lookupByKey(type, keyNames, keyValues);
   }
 
@@ -1644,11 +1674,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public long countType(final String typeName, final boolean polymorphic) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.countType(typeName, polymorphic);
   }
 
   @Override
   public long countBucket(final String bucketName) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.countBucket(bucketName);
   }
 
@@ -1755,18 +1787,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public ResultSet query(final String language, final String query) {
+    refuseClientWhileDirectoryIsReplaced();
     waitForReadConsistency();
     return proxied.query(language, query);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... args) {
+    refuseClientWhileDirectoryIsReplaced();
     waitForReadConsistency();
     return proxied.query(language, query, args);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> args) {
+    refuseClientWhileDirectoryIsReplaced();
     waitForReadConsistency();
     return proxied.query(language, query, args);
   }
@@ -1798,6 +1833,57 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     applyReadConsistencyForReadOnlyCommand(queryEngine.analyze(query));
   }
 
+  /**
+   * Refuses a CLIENT request on this database while its directory is being replaced from the leader's snapshot
+   * (issue #8363), with a {@link NeedRetryException} - what every wire protocol already answers as retryable (HTTP
+   * 503, Bolt {@code TransientError}, gRPC {@code ABORTED}, ...), not the {@code DatabaseIsClosedException} a client
+   * would otherwise meet at the swap.
+   * <p>
+   * <b>Why here.</b> Every protocol's request reaches the database through this wrapper, including the sessions that
+   * hold on to it for their whole life - a Bolt session, a Postgres connection, a gRPC transaction - which the
+   * readiness gate of issue #7519 cannot reach: that one only stops an orchestrator routing NEW connections to the
+   * node. The node-wide {@code snapshotInstallInProgress} 503 covers neither the download (it opens only around the
+   * swap at the end) nor anything but HTTP, and widening it to the download would refuse every database on the
+   * node for minutes on an ordinary resync. This refuses one database, for exactly as long as it is being replaced.
+   * <p>
+   * <b>What "being replaced" means.</b> Either of two registries says so:
+   * <ul>
+   *   <li>{@link SnapshotInstaller#isInstallInFlight(String)} - an install of this directory is running, from
+   *       before its download to the end of its swap. Every driver goes through that one method: the bootstrap
+   *       installs, the operator resync ({@code POST /api/v1/cluster/resync}), the leader-driven full resync, the
+   *       reconciler and the forced-snapshot arm of an install-database entry. For each, what is on disk for the
+   *       length of the download is a copy the cluster has decided to discard.</li>
+   *   <li>{@link ArcadeStateMachine#isBootstrapInstallInFlight(String)} - the first-formation bootstrap holds the
+   *       database, which also covers the gap between a failed bootstrap download and the retry it scheduled, when
+   *       no install is registered above.</li>
+   * </ul>
+   * <p>
+   * <b>Clients only.</b> The engine's own paths go through these same objects - the apply thread, the install
+   * itself (which reopens the database at the end of its swap), the reconciler, the health monitor - and refusing
+   * them would turn the replacement into a divergence. What tells them apart is {@link ProtocolContext}: every wire
+   * listener tags its request threads with its protocol and clears the tag afterwards, and everything else reads
+   * {@link ProtocolContext#INTERNAL}. {@link SnapshotInstaller#install} re-tags its own thread INTERNAL for its
+   * duration, because the operator resync runs it on the HTTP worker that received the request.
+   * <p>
+   * Allocation-free and a map read or two when nothing is being replaced, which is every request on a healthy node.
+   */
+  private void refuseClientWhileDirectoryIsReplaced() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return;
+    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    final boolean anyInstall = SnapshotInstaller.hasInstallsInFlight();
+    if (!anyInstall && (stateMachine == null || !stateMachine.isBootstrapInstallInFlight(getName())))
+      return;
+    if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
+      return;
+    if ((anyInstall && SnapshotInstaller.isInstallInFlight(getDatabasePath()))
+        || (stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName())))
+      throw new NeedRetryException("Database '" + getName() + "' is being replaced on this server from the leader's "
+          + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
+          + "Retry shortly, or send the request to another server of the cluster");
+  }
+
   private void waitForReadConsistency() {
     if (raftHAServer == null)
       return;
@@ -1826,12 +1912,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.execute(language, script, args);
   }
 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> args) {
+    refuseClientWhileDirectoryIsReplaced();
     return proxied.execute(language, script, server.getConfiguration(), args);
   }
 

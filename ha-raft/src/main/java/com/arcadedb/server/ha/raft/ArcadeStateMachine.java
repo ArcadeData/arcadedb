@@ -4023,6 +4023,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Whether {@code dbName}'s directory is held by the first-formation bootstrap right now (issue #8363): an install
+   * replacing it is running, or a failed one has handed its holder to the retry it scheduled. The second half is why
+   * {@code RaftReplicatedDatabase} asks this as well as {@link SnapshotInstaller#isInstallInFlight(String)}: between
+   * a failed download and its retry no install is registered there, and the copy on disk is still the one the
+   * committed baseline decided against.
+   * <p>
+   * Asked on every client request, so the common answer - nothing in flight at all - costs one map read.
+   */
+  public boolean isBootstrapInstallInFlight(final String dbName) {
+    return !bootstrapInstallsInFlight.isEmpty() && bootstrapInstallsInFlight.containsKey(dbName);
+  }
+
+  /**
    * Databases this node is replacing from the leader's bootstrap snapshot right now, sorted for deterministic
    * output (issue #7519). Package-private: the readiness gate reaches it through {@link #bootstrapWindowReason()}
    * and the tests read it directly.

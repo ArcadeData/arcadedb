@@ -572,9 +572,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         requireTransactionStillActive(txCtx);
         final com.arcadedb.database.TransactionContext engineTx = txCtx.engineTransaction;
         final long commitCountAtStart = engineTx != null ? engineTx.getCommitCount() : 0;
+        // Tagged as the client request it is (issue #8363): this thread runs outside the call's listener callbacks,
+        // where GrpcProtocolContextInterceptor tags the work, and RaftReplicatedDatabase tells a client from the
+        // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
+        ProtocolContext.set(GRPC_PROTOCOL);
         try {
           return task.call();
         } finally {
+          ProtocolContext.clear();
           // In a finally, because the statement that publishes half the block is often the same one that then
           // fails: a verdict only reported on the success path would miss the case the guard exists for.
           //
@@ -1825,7 +1830,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // and DatabaseContext.init() does not clear an already-bound user.
         bindPrincipalToCurrentThread(database, txOwner);
 
-        database.begin(isolationLevel);
+        // A client request, on a thread no listener callback runs on (issue #8363): see submitToActiveTransaction.
+        ProtocolContext.set(GRPC_PROTOCOL);
+        try {
+          database.begin(isolationLevel);
+        } finally {
+          ProtocolContext.clear();
+        }
 
         // #8134: the engine's transaction object, taken on the thread whose DatabaseContext owns it and
         // therefore the only thread that can see it. Held for the transaction's whole life so that every RPC
@@ -1946,7 +1957,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
-        txCtx.db.commit();
+        // A client request, on a thread no listener callback runs on (issue #8363): see submitToActiveTransaction.
+        ProtocolContext.set(GRPC_PROTOCOL);
+        try {
+          txCtx.db.commit();
+        } finally {
+          ProtocolContext.clear();
+        }
       });
       commitFuture.get(); // Wait for commit to complete
 
