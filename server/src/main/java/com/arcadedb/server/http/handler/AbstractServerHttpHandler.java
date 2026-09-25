@@ -33,6 +33,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
@@ -667,6 +668,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           && bodyReachesIdempotencyKey();
 
       if (idempotentPost) {
+        // The same id, for a SQL write this request forwards to the leader from deep in the engine, where this
+        // exchange is out of reach (issue #8323): the leader then runs that write inside its own cache, which is
+        // what makes a retry that lands on another node a replay rather than a second execution. Published for
+        // exactly the requests this node itself treats as idempotent, before the reservation, so a request that
+        // falls through to executing uncached below still relays it. Cleared in the finally block.
+        ForwardedRequestIdContext.set(rawRequestId);
+
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
         // request's response (the core defect: same X-Request-Id across distinct writes).
         // The RAW path parameter, not the bounded metric tag: this key is an identity, so it must keep
@@ -773,6 +781,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ProtocolContext.clear();
       LeaderForwardContext.clear();
+      ForwardedRequestIdContext.clear();
       LogManager.instance().setContext(null);
       // Invariant: the correlation context stays populated until here, AFTER observation.stop() above
       // has fired the tracing/observation handlers. LogCorrelationIT relies on reading the requestId

@@ -94,9 +94,11 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
+import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -3774,6 +3776,29 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
                 + "This notice is logged only once.", getName());
     }
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
+
+    // The client's request id, so the leader executes this write inside its own idempotency cache (issue #8323). The
+    // HTTP handler that served the request on this node reserves the id too, but it caches only what the leader
+    // answered: without the relay a retry after a lost answer - above all after the deadline below expires - that
+    // lands on another node, or here again once the reservation is gone, ran the write on the leader a second time.
+    // Published by AbstractServerHttpHandler only for a request it treats as idempotent, so a session-scoped or
+    // streamed request, a request with no id, and an embedded caller relay nothing. A second forward taken by the
+    // same request carries the id with its ordinal (see ForwardedRequestIdContext), so two forwards of one statement
+    // never share a cache key on the leader.
+    //
+    // Not when this node became the leader while waiting above and the POST goes to itself: this node's cache is then
+    // the leader's cache and the request being served already holds its reservation, and a forward whose body happens
+    // to match the client's would find that reservation pending and wait out the in-flight timeout for nothing.
+    final String forwardRequestId = ForwardedRequestIdContext.nextForwardRequestId();
+    if (forwardRequestId != null && !raft.isLeader()) {
+      try {
+        builder.header(IdempotencyCache.HEADER_REQUEST_ID, forwardRequestId);
+      } catch (final IllegalArgumentException e) {
+        // A value the JDK client refuses to put on the wire: the write still runs, only without the leader-side
+        // replay protection, exactly as it did before the relay existed.
+        LogManager.instance().log(this, Level.FINE, "Request id not relayed on the forward to the leader: %s", e.getMessage());
+      }
+    }
 
     try {
       final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
