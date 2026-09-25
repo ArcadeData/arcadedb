@@ -572,8 +572,9 @@ public class ClusterAlerts {
   /**
    * Pure alert builder (package-private for unit testing): appends a "lagging follower" alert when any
    * follower is {@code FALLING_BEHIND} or {@code STALLED} (issue #4812). A {@code STALLED} follower
-   * (matchIndex stuck while the leader advances) is {@code critical} because it will eventually force
-   * an election; a merely {@code FALLING_BEHIND} one is a {@code warning}. The alert names each slow
+   * (matchIndex stuck while the leader advances, or behind with no progress at all for
+   * {@link ClusterMonitor#ZERO_PROGRESS_STALL_GRACE_MS}, issue #8341) is {@code critical} because it does not
+   * count toward the quorum; a merely {@code FALLING_BEHIND} one is a {@code warning}. The alert names each slow
    * node with its lag and how long it has been lagging, so the operator can act on the right node.
    */
   static void addLaggingFollowerAlert(final List<FollowerSample> samples, final JSONArray alerts) {
@@ -606,8 +607,11 @@ public class ClusterAlerts {
             : "Follower(s) falling behind the leader")
         .put("message", nodes.length() + " follower(s) cannot keep up with the leader's write rate. "
             + (anyStalled
-                ? "At least one is STALLED (its matchIndex is stuck while the leader advances), which will eventually "
-                    + "trigger a leader election and stalls quorum acknowledgements, forcing replication backpressure."
+                ? "At least one is STALLED (its matchIndex is not moving, either while the leader advances or for long "
+                    + "enough that it is not catching up), so it does not count toward the quorum. If the remaining "
+                    + "replicas cannot form an advancing quorum, quorum acknowledgements stall and replication backpressure "
+                    + "follows; otherwise the cluster has lost its fault tolerance, and losing one more node can stop all "
+                    + "writes."
                 : "They are FALLING_BEHIND (lag is growing), which raises replication backpressure and risks election "
                     + "churn if it continues.")
             + " The slowest node is the bottleneck for the whole cluster.")

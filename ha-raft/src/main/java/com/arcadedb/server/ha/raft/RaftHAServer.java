@@ -1361,7 +1361,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Stale-follower detection for the {@link HealthMonitor} (issue #3893): true only when this node
    * is a running follower lagging more than {@code lagThreshold} entries behind the commit index,
-   * is NOT actively catching up, has no snapshot download already pending, AND is not making forward
+   * is NOT actively catching up (a catch-up whose applied index stopped moving no longer counts, issue #8341),
+   * has no snapshot download already pending, AND is not making forward
    * progress on its applied index (issue #4840). Returns false for the leader and whenever the Raft
    * state cannot be read.
    * <p>
@@ -1380,16 +1381,49 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     }
     final ArcadeStateMachine sm = stateMachine;
-    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending()) {
-      lastLagCheckAppliedIndex = -1; // already known to be catching up: re-baseline when normal checks resume
+    if (sm == null || sm.isSnapshotDownloadPending()) {
+      lastLagCheckAppliedIndex = -1; // already known to be resyncing: re-baseline when normal checks resume
       return false;
     }
     final long commit = getCommitIndex();
     final long applied = getLastAppliedIndex();
+    // The catch-up flag exempts the follower only while the catch-up is actually applying (issue #8341). The flag is
+    // cleared only by an apply that reaches the commit index, so a catch-up that stops applying kept it set, and
+    // kept this check off, for as long as the stall lasted. The baseline is kept across the catch-up so a stall is
+    // seen on the next tick.
+    if (catchUpExemptsLagCheck(sm.isCatchingUp(), applied, lastLagCheckAppliedIndex)) {
+      lastLagCheckAppliedIndex = applied;
+      return false;
+    }
     final boolean lagging = isPersistentlyLagging(commit, applied, lagThreshold, lastLagCheckAppliedIndex);
     if (applied >= 0)
       lastLagCheckAppliedIndex = applied;
     return lagging;
+  }
+
+  /**
+   * Whether the state machine's catch-up flag still exempts this follower from the persistent-lag check (issue
+   * #8341): only while the applied index moves. {@code previousAppliedIndex < 0} means no prior sample, so progress
+   * cannot be judged yet and the flag is trusted for this tick. Package-private for testing.
+   */
+  static boolean catchUpExemptsLagCheck(final boolean catchingUp, final long appliedIndex,
+      final long previousAppliedIndex) {
+    return catchingUp && (previousAppliedIndex < 0 || appliedIndex > previousAppliedIndex);
+  }
+
+  /**
+   * Whether the state machine's catch-up flag describes a catch-up that still has something to apply (issue
+   * #8341). The flag is set on an applied-index jump and cleared only by an apply that reaches the commit index,
+   * so a follower that stopped applying can carry it with {@code appliedIndex >= commitIndex}, where there is
+   * nothing left to catch up on. A negative index (state not readable) keeps the flag's answer. Package-private
+   * for testing.
+   */
+  static boolean isActivelyCatchingUp(final boolean catchingUp, final long appliedIndex, final long commitIndex) {
+    if (!catchingUp)
+      return false;
+    if (appliedIndex < 0 || commitIndex < 0)
+      return true;
+    return commitIndex > appliedIndex;
   }
 
   /**
@@ -1472,7 +1506,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * ({@code currentTerm > appliedTerm}). The {@link HealthMonitor} requires this to persist for
    * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
    * around an election before the no-op commits. Returns false for the leader, when no leader is
-   * known, while actively catching up or installing a snapshot, and whenever the state cannot be read.
+   * known, while actively catching up (a catch-up that has applied everything it committed no longer counts, issue
+   * #8341) or installing a snapshot, and whenever the state cannot be read.
    */
   @Override
   public boolean isFollowerStuckDiverged() {
@@ -1488,8 +1523,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // different moments during an election. We deliberately do not take an atomic snapshot: the
     // HealthMonitor requires the stuck condition to persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS
     // before acting, which absorbs any one-tick inconsistency here.
-    return isStuckDivergedState(getLeaderId() != null, sm.isCatchingUp(), sm.isSnapshotDownloadPending(),
-        getCurrentTerm(), applied.getTerm(), applied.getIndex(), getCommitIndex());
+    // The catch-up flag counts only while there is something left to apply (issue #8341): a stale flag with
+    // commitIndex == appliedIndex hid exactly the signature below.
+    final long commitIndex = getCommitIndex();
+    return isStuckDivergedState(getLeaderId() != null, isActivelyCatchingUp(sm.isCatchingUp(), applied.getIndex(), commitIndex),
+        sm.isSnapshotDownloadPending(), getCurrentTerm(), applied.getTerm(), applied.getIndex(), commitIndex);
   }
 
   /**
