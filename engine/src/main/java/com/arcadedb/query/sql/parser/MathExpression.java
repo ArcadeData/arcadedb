@@ -95,10 +95,21 @@ public class MathExpression extends SimpleNode {
    * very instance the record already held.
    */
   private static Collection<Object> copyOf(final Collection<?> source) {
+    // a sorted operand stays sorted by the same comparator
+    if (source instanceof SortedSet<?> sorted) {
+      final TreeSet<Object> copy = new TreeSet<>((Comparator<Object>) sorted.comparator());
+      copy.addAll(sorted);
+      return copy;
+    }
     return source instanceof Set<?> ? new LinkedHashSet<>(source) : new ArrayList<>(source);
   }
 
   private static Map<Object, Object> copyOf(final Map<?, ?> source) {
+    if (source instanceof SortedMap<?, ?> sorted) {
+      final TreeMap<Object, Object> copy = new TreeMap<>((Comparator<Object>) sorted.comparator());
+      copy.putAll(sorted);
+      return copy;
+    }
     return new LinkedHashMap<>(source);
   }
 
