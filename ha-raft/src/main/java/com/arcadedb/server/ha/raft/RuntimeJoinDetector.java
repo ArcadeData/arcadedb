@@ -21,6 +21,11 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -65,9 +70,15 @@ import java.util.logging.Level;
  * Suppressing the replay instead would need the log index this process started from, which Ratis does not hand
  * the state machine before it starts applying.
  * <p>
- * The converse is a known gap: the armed state is not persisted, so a joiner that restarts AFTER the entry that
- * added it was compacted into a snapshot observes only configurations containing itself and comes back unarmed
- * (issue #8329).
+ * <b>Persisted, because the replay does not always happen (issue #8329).</b> A joiner that restarts AFTER the entry
+ * that added it was compacted into a snapshot observes only configurations containing itself, so neither rule can
+ * fire again. When constructed with a marker file, the detector writes it the moment it arms and a later process
+ * reading it back starts armed. {@link RaftHAServer} places the marker NEXT TO the Raft storage directory rather
+ * than inside it, so the divergence reformat of {@code RaftHAServer.restartRatis(true)} - which deletes that
+ * directory - does not take the marker with it. A marker that outlives convergence is inert for the same reason
+ * the replay re-arm is: the gate also requires an absent replicated fingerprint. A marker that could not be
+ * written is logged and leaves the in-memory arm in place; a restart after compaction then comes back unarmed,
+ * which is the behaviour before issue #8329, not a new failure.
  * <p>
  * <b>Ordering between the two callers.</b> The monitor makes each observation atomic, not the two Ratis call
  * sites ordered with respect to each other, so the snapshot-install callback can land a configuration older than
@@ -76,8 +87,9 @@ import java.util.logging.Level;
  * it can do is let the second rule see "without me" last and arm on the next configuration that names this node -
  * which is only ever true of a node that really was outside the configuration, i.e. a joiner.
  * <p>
- * Never cleared. Once a node has joined at runtime the gate is armed for the rest of the process, and what
- * releases it is convergence (or the gate's own bounded window), not a later configuration.
+ * Never cleared. Once a node has joined at runtime the gate is armed for the rest of the process - and, with a
+ * marker, for the life of that marker - and what releases it is convergence (or the gate's own bounded window),
+ * not a later configuration.
  * <p>
  * <b>Convergence is measured from the join, not from the fingerprints (issue #8317).</b> A recorded replicated
  * fingerprint only says that the cluster installed a document here at some point. A node removed from the cluster
@@ -112,6 +124,8 @@ public final class RuntimeJoinDetector {
   /** Stands for "no index known": no join recorded, or no install of that document observed. */
   private static final long NO_INDEX = -1L;
 
+  /** Where the armed state is persisted; {@code null} keeps it in memory only. */
+  private final    File    marker;
   /** Whether the last configuration observed contained this node; {@code null} before the first one. */
   private          Boolean lastObservedMembership;
   private volatile boolean joinedAtRuntime;
@@ -127,6 +141,36 @@ public final class RuntimeJoinDetector {
   public boolean onConfiguration(final RaftPeerId self, final Collection<RaftPeerId> peers,
       final Collection<RaftPeerId> oldPeers) {
     return onConfiguration(self, peers, oldPeers, NO_INDEX);
+  }
+
+  /** A detector whose armed state lives only as long as this instance. */
+  public RuntimeJoinDetector() {
+    this(null, false);
+  }
+
+  /**
+   * A detector that persists its armed state in {@code marker} (issue #8329).
+   *
+   * @param marker  the file written when this detector arms; {@code null} keeps the state in memory only
+   * @param restore {@code true} to start armed when {@code marker} already exists - the process restart of a node
+   *                that joined at runtime. {@code false} discards an existing marker instead: the owner is starting
+   *                from Raft state it does not keep across restarts, so nothing it recorded about a previous
+   *                membership still describes this node
+   */
+  public RuntimeJoinDetector(final File marker, final boolean restore) {
+    this.marker = marker;
+    if (marker == null || !marker.exists())
+      return;
+
+    if (restore) {
+      joinedAtRuntime = true;
+      LogManager.instance().log(this, Level.INFO,
+          "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the cluster "
+              + "security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
+          marker.getAbsolutePath());
+    } else if (!marker.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete the stale runtime-join marker %s",
+          marker.getAbsolutePath());
   }
 
   /**
@@ -167,11 +211,13 @@ public final class RuntimeJoinDetector {
         joinIndex = index;
     }
 
-    if (armedNow)
+    if (armedNow) {
       LogManager.instance().log(this, Level.INFO,
           "Peer %s was added to the Raft configuration while running: readiness waits for the cluster security "
               + "documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)", self);
-    else if (rearmedNow)
+      // Outside the monitor, and only by the one call that armed, so there is a single writer.
+      persist(self);
+    } else if (rearmedNow)
       LogManager.instance().log(this, Level.INFO,
           "Peer %s was added to the Raft configuration again at index %d: the security documents it installed "
               + "before no longer count, and readiness waits for the cluster's current ones to reach it "
@@ -218,6 +264,32 @@ public final class RuntimeJoinDetector {
   /** The log index of the configuration that last added this node, {@code -1} when none did. For tests. */
   synchronized long joinIndex() {
     return joinIndex;
+  }
+
+  /**
+   * Writes the marker. A failure is logged, never thrown: this runs on a Ratis callback thread, and the in-memory
+   * arm stays in place for the rest of the process either way.
+   * <p>
+   * The file content is written with {@code SYNC}, but the parent directory is not fsynced, so an OS crash in the
+   * instant after the arm can lose the new directory entry. That restart then comes back unarmed, which is the
+   * behaviour before issue #8329.
+   */
+  private void persist(final RaftPeerId self) {
+    if (marker == null)
+      return;
+    try {
+      final File parent = marker.getAbsoluteFile().getParentFile();
+      if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
+        throw new IOException("cannot create directory " + parent);
+      Files.writeString(marker.toPath(), "peer=" + self + "\narmedAt=" + System.currentTimeMillis() + "\n",
+          StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+          StandardOpenOption.WRITE, StandardOpenOption.SYNC);
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not persist the runtime-join marker %s: a restart after the Raft log is compacted past the entry "
+              + "that added this peer will not hold readiness for the cluster security documents (%s)",
+          marker.getAbsolutePath(), e.toString());
+    }
   }
 
   /** Whether this node was added to the Raft configuration by a change it applied while running. */
