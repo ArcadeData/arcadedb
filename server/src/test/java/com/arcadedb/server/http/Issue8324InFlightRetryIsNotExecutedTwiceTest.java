@@ -69,6 +69,10 @@ class Issue8324InFlightRetryIsNotExecutedTwiceTest extends BaseGraphServerTest {
     assertThat(retry.status).as("body=%s", retry.body).isEqualTo(409);
     assertThat(retry.retryAfter).isEqualTo("5");
     assertThat(new JSONObject(retry.body).getString("error")).contains("still executing");
+    // Issue #8343: the body names the refusal and its back-off, so a follower that forwarded this request to the
+    // leader can rebuild it and answer its own client 409 + Retry-After instead of a generic 500.
+    assertThat(new JSONObject(retry.body).getString("exception")).isEqualTo(RequestStillInFlightException.class.getName());
+    assertThat(new JSONObject(retry.body).getString("exceptionArgs")).isEqualTo("5");
 
     final Answer original = first.get(60, TimeUnit.SECONDS);
     assertThat(original.status).as("body=%s", original.body).isEqualTo(200);

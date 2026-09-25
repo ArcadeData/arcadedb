@@ -39,6 +39,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
@@ -98,6 +99,19 @@ public final class LeaderCommandForwarder {
   static final         String     ACCEPT_HEADER     = "Accept";
   static final         String     EVENT_STREAM      = "text/event-stream";
   private static final HttpString X_ACCEL_BUFFERING = new HttpString("X-Accel-Buffering");
+
+  /**
+   * The response headers of the leader's answer that a follower relays to its client along with the status and the
+   * body (issue #8343). An allow-list, the mirror of the request headers {@code relayHeader} copies onto the forward:
+   * the leader's other response headers describe the leader's own connection and exchange - its content length, its
+   * correlation id, its session - and must not be passed off as this node's.
+   * <p>
+   * {@code Retry-After} is the machine-readable back-off of the answers that ask the client to come back later: the
+   * {@code 409} for a retry whose {@code X-Request-Id} twin is still executing (issue #8324) and the {@code 503}
+   * during a snapshot install. A client that reached the leader through a follower used to see the status and the
+   * body that says "retry later", but not the back-off a client talking to the leader gets.
+   */
+  static final String[] RELAYED_RESPONSE_HEADERS = { "Retry-After" };
 
   private final HttpServer httpServer;
   private final Transport  transport;
@@ -371,6 +385,18 @@ public final class LeaderCommandForwarder {
     }
   }
 
+  /**
+   * The leader's answer as this node relays it: its status, its body and the {@link #RELAYED_RESPONSE_HEADERS} it
+   * carries. The one place a relayed answer is built, so the buffered, the non-stream and the batch relays cannot
+   * disagree about which headers cross the hop.
+   */
+  static ExecutionResponse relayedResponse(final int statusCode, final String body, final HttpHeaders leaderHeaders) {
+    final ExecutionResponse response = new ExecutionResponse(statusCode, body);
+    for (final String name : RELAYED_RESPONSE_HEADERS)
+      leaderHeaders.firstValue(name).ifPresent(value -> response.setHeader(name, value));
+    return response;
+  }
+
   static boolean isEventStreamRequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst(ACCEPT_HEADER);
     return accept != null && accept.toLowerCase(Locale.ROOT).contains(EVENT_STREAM);
@@ -493,7 +519,7 @@ public final class LeaderCommandForwarder {
           longRunningCommand);
       if (awaited.answer() != null)
         return awaited.answer();
-      return new ExecutionResponse(awaited.response().statusCode(), awaited.response().body());
+      return relayedResponse(awaited.response().statusCode(), awaited.response().body(), awaited.response().headers());
     }
 
     /**
@@ -544,7 +570,7 @@ public final class LeaderCommandForwarder {
           Thread.currentThread().interrupt();
           throw new IOException("Interrupted while forwarding server command to leader at " + leaderHttpAddress, e);
         }
-        return new ExecutionResponse(response.statusCode(), whole.toString(StandardCharsets.UTF_8));
+        return relayedResponse(response.statusCode(), whole.toString(StandardCharsets.UTF_8), response.headers());
       }
 
       final OutputStream out;
