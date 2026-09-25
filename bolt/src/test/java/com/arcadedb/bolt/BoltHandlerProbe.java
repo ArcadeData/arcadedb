@@ -23,7 +23,9 @@ import com.arcadedb.bolt.message.BeginMessage;
 import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -33,6 +35,7 @@ import java.lang.reflect.Proxy;
 import java.net.Socket;
 import java.util.Map;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -88,6 +91,7 @@ final class BoltHandlerProbe {
       set(executor, "output", new BoltChunkedOutput(wire));
       set(executor, "protocolVersion", 0x00000405);
       set(executor, "database", throwingDatabase(failure));
+      set(executor, "user", grantedEverywhere());
       set(executor, "state", stateNamed(state));
 
       // handleBegin takes the BEGIN message, the other two take nothing; invoked with the real signature so
@@ -136,6 +140,7 @@ final class BoltHandlerProbe {
       set(executor, "output", new BoltChunkedOutput(wire));
       set(executor, "protocolVersion", 0x00000405);
       set(executor, "databaseName", databaseName);
+      set(executor, "user", grantedEverywhere());
       set(executor, "state", stateNamed(READY));
 
       final Method ensureDatabase = BoltNetworkExecutor.class.getDeclaredMethod("ensureDatabase");
@@ -159,19 +164,32 @@ final class BoltHandlerProbe {
    * handle and raises {@code failure} from the three transaction methods. A dynamic proxy rather than a mock so
    * the default for every other method of a very wide interface is an explicit, loud failure.
    */
+  /**
+   * An authenticated user granted every database, as root is: the handler refuses to serve a database to a connection
+   * with no user, and these probes are about what it answers once the database has been authorized.
+   */
+  private static ServerSecurityUser grantedEverywhere() {
+    final ServerSecurityUser user = mock(ServerSecurityUser.class);
+    when(user.getName()).thenReturn("root");
+    when(user.canAccessToDatabase(anyString())).thenReturn(true);
+    return user;
+  }
+
   private static Database throwingDatabase(final RuntimeException failure) {
     final InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
       case "begin", "commit", "rollback" -> throw failure;
       case "isOpen" -> true;
       case "getName" -> "probe";
+      // No database context is ever registered under this path, so the handler binds no user to one
+      case "getDatabasePath" -> "probe";
       case "toString" -> "throwingDatabase";
       case "hashCode" -> System.identityHashCode(proxy);
       case "equals" -> proxy == args[0];
       default -> throw new UnsupportedOperationException(
           "the handler under test called Database." + method.getName() + "(), which this probe does not model");
     };
-    return (Database) Proxy.newProxyInstance(BoltHandlerProbe.class.getClassLoader(), new Class<?>[] { Database.class },
-        handler);
+    return (Database) Proxy.newProxyInstance(BoltHandlerProbe.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, handler);
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })

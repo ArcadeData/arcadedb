@@ -83,15 +83,22 @@ public final class BoltWireConnection implements AutoCloseable {
     out = new BoltChunkedOutput(rawOut);
     in = new BoltChunkedInput(socket.getInputStream());
 
-    sendMap(BoltMessage.HELLO, Map.of("user_agent", userAgent, "routing", Map.of("db", database)));
+    // A null database sends no routing context at all, so the server resolves the database itself
+    sendMap(BoltMessage.HELLO, database != null ?
+        Map.of("user_agent", userAgent, "routing", Map.of("db", database)) :
+        Map.of("user_agent", userAgent));
     assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
     logon();
   }
 
   public void logon() throws IOException {
-    sendMap(BoltMessage.LOGON,
-        Map.of("scheme", "basic", "principal", "root", "credentials", DEFAULT_PASSWORD_FOR_TESTS));
+    logon("root", DEFAULT_PASSWORD_FOR_TESTS);
+  }
+
+  /** LOGON as {@code principal}, asserting it is accepted: after a LOGOFF this re-authenticates the connection. */
+  public void logon(final String principal, final String credentials) throws IOException {
+    sendMap(BoltMessage.LOGON, Map.of("scheme", "basic", "principal", principal, "credentials", credentials));
     assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
   }
 
