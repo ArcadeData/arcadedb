@@ -231,8 +231,11 @@ public class OrderByStep extends AbstractExecutionStep {
         // First check if the expression text matches a property name in the result
         // This handles ORDER BY on aliased/computed columns (e.g., count(*), n.division)
         final String expression = item.getExpression();
+        // A projected column already holds what its Cypher expression evaluated to - a property read restored its
+        // temporal there - so a String in it IS a string: sniffing it again turned a declared STRING "P10D" (or a
+        // string literal) into a duration and sorted it as one (issue #8384)
         if (expression != null && result.getPropertyNames().contains(expression))
-          return convertFromStorage(result.getProperty(expression));
+          return convertFromStorage(result.getProperty(expression), false);
 
         // If we have a parsed Expression AST, use ExpressionEvaluator for full expression support
         final Expression exprAST = item.getExpressionAST();
@@ -250,11 +253,11 @@ public class OrderByStep extends AbstractExecutionStep {
             // A schema-declared STRING property is never sniffed as a temporal (issue #8384)
             if (value instanceof String str && TemporalUtil.mayBeTemporalString(str) && TemporalUtil.isDeclaredString(document, parts[1]))
               return value;
-            return convertFromStorage(value);
+            return convertFromStorage(value, true);
           }
         }
 
-        return convertFromStorage(result.getProperty(expression));
+        return convertFromStorage(result.getProperty(expression), true);
       }
 
       /**
@@ -262,7 +265,7 @@ public class OrderByStep extends AbstractExecutionStep {
        * Duration, LocalTime, and Time are stored as Strings because ArcadeDB
        * doesn't have native binary types for them.
        */
-      private static Object convertFromStorage(final Object value) {
+      private static Object convertFromStorage(final Object value, final boolean sniffStrings) {
         // Fast path: common non-temporal types don't need conversion
         if (value == null || value instanceof Number || value instanceof Boolean)
           return value;
@@ -277,20 +280,20 @@ public class OrderByStep extends AbstractExecutionStep {
         if (value instanceof Collection<?> collection) {
           final List<Object> converted = new ArrayList<>(collection.size());
           for (final Object item : collection) {
-            converted.add(convertFromStorage(item));
+            converted.add(convertFromStorage(item, sniffStrings));
           }
           return converted;
         }
         if (value instanceof Object[] array) {
           final Object[] converted = new Object[array.length];
           for (int i = 0; i < array.length; i++) {
-            converted[i] = convertFromStorage(array[i]);
+            converted[i] = convertFromStorage(array[i], sniffStrings);
           }
           return converted;
         }
 
         // One sniff for every Cypher read path: this copy had drifted from TemporalUtil's (it missed the short HH:MM form)
-        if (value instanceof String)
+        if (sniffStrings && value instanceof String)
           return TemporalUtil.convertFromStorage(value);
         return value;
       }

@@ -189,6 +189,21 @@ class Issue8387Issue8386Issue8385Issue8384TemporalTest extends TestHelper {
     assertThat(names("MATCH (s:Shop8384) RETURN s.name AS n ORDER BY s.hours DESC")).containsExactly("a", "b");
   }
 
+  /** A projected alias holds what its expression evaluated to: ORDER BY on it must not re-sniff the String. */
+  @Test
+  void orderByProjectedAliasKeepsDeclaredStrings() {
+    database.getSchema().createVertexType("Part8384").createProperty("code", Type.STRING);
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Part8384 {code: 'P10D'})");
+      database.command("opencypher", "CREATE (:Part8384 {code: 'P2D'})");
+    });
+
+    // Lexical order: "P10D" < "P2D". As durations it would be the reverse.
+    assertThat(names("MATCH (p:Part8384) RETURN p.code AS n ORDER BY n")).containsExactly("P10D", "P2D");
+    assertThat(names("MATCH (p:Part8384) RETURN p.code AS n ORDER BY p.code")).containsExactly("P10D", "P2D");
+    assertThat(names("UNWIND ['P2D', 'P10D'] AS n RETURN n ORDER BY n")).containsExactly("P10D", "P2D");
+  }
+
   /** A declared property inherited from a supertype is honoured too. */
   @Test
   void inheritedDeclaredStringPropertyIsNotSniffed() {

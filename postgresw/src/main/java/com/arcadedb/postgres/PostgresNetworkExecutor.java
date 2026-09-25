@@ -531,7 +531,7 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           resolvePortalColumns(portal);
           answerWithColumns(portal);
-          portal.describedNoData = false;
+          portal.rowsDescribed = true;
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -554,7 +554,7 @@ public class PostgresNetworkExecutor extends Thread {
         // per row and a client that negotiated binary transfer off the promise cannot have it swapped
         // underneath (issue #6725).
         answerWithColumns(portal);
-        portal.describedNoData = false;
+        portal.rowsDescribed = true;
       } else
         // In practice SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK (issues #6930, #7905): they are the
         // portals that carry no statement, never produce a result, and never get columns - ROLLBACK TO used to
@@ -783,7 +783,7 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
-        if (portal.describedNoData && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
+        if (portal.promisedNoData() && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
           answerDescribedNoData(portal);
           return;
         }
@@ -895,13 +895,24 @@ public class PostgresNetworkExecutor extends Thread {
     portal.resultCursor = rows;
     portal.suspended = false;
     if (isRowlessWrite(portal.sqlStatement))
-      writeCommandComplete(portal.query, rows);
+      writeCommandComplete(portal.query, affectedRecords(portal.sqlStatement, portal.fullResultSet));
     else {
       setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
           + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
           "0A000"); // feature_not_supported
     }
+  }
+
+  /**
+   * The affected-record count a row-less write's CommandComplete tag carries: an UPDATE or DELETE with no RETURN answers
+   * one row carrying the {@code count} of records it changed (zero included), every other write one row per record.
+   */
+  private static int affectedRecords(final Statement statement, final List<Result> rows) {
+    if ((statement instanceof UpdateStatement || statement instanceof DeleteStatement) && rows.size() == 1
+        && rows.getFirst().getProperty("count") instanceof Number count)
+      return count.intValue();
+    return rows.size();
   }
 
   /**
