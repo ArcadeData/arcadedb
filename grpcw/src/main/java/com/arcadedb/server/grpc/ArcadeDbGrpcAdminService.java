@@ -421,9 +421,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // ------------------------------------------------------------------------------------
 
   /**
-   * The group document. Not leader-gated: {@code ServerSecurity} writes groups to a node-local file
-   * and submits no Raft entry, so there is no leader for this state to have - a divergence from the
-   * user document that is tracked as issue #7373, not compensated for here.
+   * The group document. A read, so not leader-gated: every node holds the replicated document (issue #7373).
    */
   @Override
   public void listGroups(final ListGroupsRequest req, final StreamObserver<ListGroupsResponse> resp) {
@@ -434,10 +432,15 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     });
   }
 
+  /**
+   * Leader-gated like {@code CreateUser} (issue #8109): the save goes through {@code saveGroupClusterWide}, which on
+   * an HA cluster submits a Raft entry, and the HTTP route forwards the same request to the leader.
+   */
   @Override
   public void saveGroup(final SaveGroupRequest req, final StreamObserver<SaveGroupResponse> resp) {
     respond(resp, "saveGroup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("SaveGroup");
 
       controlPlane.saveGroup(req.getDatabase(), req.getName(), parseDocument(req.getGroupJson(), "group_json"));
 
@@ -450,6 +453,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void deleteGroup(final DeleteGroupRequest req, final StreamObserver<DeleteGroupResponse> resp) {
     respond(resp, "deleteGroup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("DeleteGroup");
 
       controlPlane.deleteGroup(req.getDatabase(), req.getName());
 
@@ -485,12 +489,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * caller is not the problem - a root credential is exactly right, and the same call over a TLS
    * channel succeeds. What is wrong is the connection it arrived on, which is the caller's to fix by
    * reconnecting, not an authorization decision to appeal.
+   * <p>
+   * Leader-gated like {@code CreateUser} (issue #8109), after the transport check so a caller on an unsafe
+   * connection learns that first rather than being sent to the leader to be refused there.
    */
   @Override
   public void createApiToken(final CreateApiTokenRequest req, final StreamObserver<CreateApiTokenResponse> resp) {
     respond(resp, "createApiToken", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
       requireTransportSafeForSecrets();
+      requireLeader("CreateApiToken");
 
       final JSONObject token = controlPlane.createApiToken(req.getName(), req.getDatabase(), req.getExpiresAt(),
           parseDocument(req.getPermissionsJson(), "permissions_json"));
@@ -509,6 +517,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void deleteApiToken(final DeleteApiTokenRequest req, final StreamObserver<DeleteApiTokenResponse> resp) {
     respond(resp, "deleteApiToken", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      requireLeader("DeleteApiToken");
 
       controlPlane.deleteApiToken(req.getTokenHash());
 
@@ -1218,11 +1227,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   /**
    * Refuses an operation that may only run on the cluster leader when this node is a follower.
    * <p>
-   * The HTTP control plane forwards these same commands - create/drop database and create/drop user, the set
-   * {@code PostServerCommandHandler.execute} hands to {@code forwardToLeaderIfReplica} - by proxying the request
-   * to the leader. gRPC has no such proxy, so the equivalent gate is a refusal that names the leader, which is
-   * the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183). Without
-   * it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
+   * The HTTP control plane forwards these same commands to the leader: create/drop database and create/drop user
+   * (the set {@code PostServerCommandHandler.execute} hands to {@code forwardToLeaderIfReplica}), and since issue
+   * #8109 the group and API-token routes too. gRPC has no such proxy, so the equivalent gate is a refusal that names
+   * the leader - the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183).
+   * Without it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
    * which is exactly the state the HTTP path never gets into.
    * <p>
    * A server with HA inactive is always allowed: there is no leader to be, and {@code getHA()} is null.

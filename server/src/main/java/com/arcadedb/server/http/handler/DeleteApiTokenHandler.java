@@ -20,15 +20,21 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+
+import java.io.IOException;
 
 /**
  * {@code DELETE /server/api-tokens?token=<hash>}: revokes a token by its hash. The refusal to accept
  * a plaintext token here - it would land in whatever logged the request, which is the exposure the
  * revocation is ending - lives in {@link ServerControlPlane#deleteApiToken} so the gRPC
  * {@code DeleteApiToken} RPC refuses it too (issue #7309).
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first, as {@code /server/users} is (issue #8109): see
+ * {@link PostGroupHandler}.
  */
 public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
   private final ServerControlPlane controlPlane;
@@ -49,11 +55,25 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
 
+    // A plaintext token is refused HERE, before the forward below: relaying it would copy the live token material
+    // into a second node's request path and logs, which is the exposure the refusal exists to end.
+    final String token = getQueryParameter(exchange, "token");
+    if (token != null && ApiTokenConfiguration.isApiToken(token))
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", ServerControlPlane.PLAINTEXT_TOKEN_DELETE_REFUSAL).toString());
+
+    // Every other check runs on the leader (issue #8109). The token hash travels in the query string, so the leader
+    // reads the same one.
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), null);
+    if (forwarded != null)
+      return forwarded;
+
     try {
-      controlPlane.deleteApiToken(getQueryParameter(exchange, "token"));
+      controlPlane.deleteApiToken(token);
     } catch (final ServerControlPlane.NotFoundException e) {
       // 'error', not 'result': RemoteHttpComponent.manageException promotes 'error'/'detail'/'exception'
       // into the thrown exception's message and nothing else, so a refusal filed under 'result' reached a

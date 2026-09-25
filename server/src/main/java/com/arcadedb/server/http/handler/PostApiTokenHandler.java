@@ -22,12 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.IPAddressBlocklist;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Collection;
@@ -53,6 +55,14 @@ import java.util.logging.Level;
  * reverse proxy can vouch for the leg it terminated, but only from a peer address the operator listed
  * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}.
  * Studio renders the 412 through {@code apiTokenTransportRefusal()} in {@code studio-security.js}.
+ * <p>
+ * <b>On an HA cluster the mint is forwarded to the leader</b>, as {@code /server/users} is (issue #8109), and the
+ * transport is then checked on BOTH legs the plaintext token travels back over. The follower checks the client's
+ * connection before forwarding, because the leader cannot see it - on a cluster whose nodes share a host the hop
+ * even arrives from loopback, which would pass for a safe client. The leader checks the hop it received the forward
+ * on, because that leg carries the token too: with the cluster's inter-node HTTP in cleartext, a mint the client
+ * made over HTTPS still puts the token on a wire in the clear, and the refusal says so rather than telling the client
+ * to reconnect over a TLS connection it is already using.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -68,7 +78,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
 
     final ContextConfiguration configuration = httpServer.getServer().getConfiguration();
@@ -81,7 +91,15 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
         parseTrustedProxies(configuration.getValueAsString(GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES)),
         configuration.getValueAsBoolean(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT));
     if (refusal != null)
-      return refusal;
+      return refusalForThisLeg(refusal);
+
+    // After the transport check, which is about the client's own connection and only this node can see it, and
+    // before any validation of the request, which the leader does (issue #8109).
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange),
+            payload != null ? payload.toString() : null);
+    if (forwarded != null)
+      return forwarded;
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
@@ -102,6 +120,26 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     final JSONObject response = new JSONObject();
     response.put("result", tokenJson);
     return new ExecutionResponse(201, response.toString());
+  }
+
+  /**
+   * The transport refusal to answer on the connection this mint arrived on: {@code refusal} as {@link #checkTransport}
+   * built it for a client, or - when that connection is a trusted hop from a follower that forwarded the mint - the
+   * refusal the leader answers a mint a follower forwarded to it over a connection that is not safe for secrets
+   * (issue #8109). The client's own leg was already checked by the follower, so "connect over TLS" would send the
+   * client after the wrong connection: what is unprotected is the hop between the two nodes.
+   */
+  static ExecutionResponse refusalForThisLeg(final ExecutionResponse refusal) {
+    return LeaderForwardContext.isAlreadyForwarded() ? forwardedHopRefusal() : refusal;
+  }
+
+  private static ExecutionResponse forwardedHopRefusal() {
+    return new ExecutionResponse(412, new JSONObject().put("error",
+        "API tokens can only be minted over HTTPS or from a loopback client, and this mint reached the cluster "
+            + "leader from another node over a connection that is neither: the token would cross the network between "
+            + "the two nodes in the clear. Enable HTTPS between the cluster nodes, send the request to the leader "
+            + "directly, or set " + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey()
+            + "=false to allow it").toString());
   }
 
   /**

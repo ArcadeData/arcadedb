@@ -2227,7 +2227,12 @@ public enum GlobalConfiguration {
       \
       Turn it off only to accept that trade knowingly: when a peer cannot be probed and you know from outside the \
       cluster that every node runs a build that understands these entries. Turning it off does not make an old \
-      peer able to decode the entry - it makes the node halt again.""",
+      peer able to decode the entry - it makes the node halt again. \
+      \
+      Turning it off also stops the synchronous capability probe that the compare-and-set of a user, group or \
+      API-token change runs when a peer's answer is not already known (issue #8109): the decision then reads the \
+      answer the background capability monitor keeps, so an unreachable peer no longer adds a probe timeout to \
+      every security change.""",
       Boolean.class, true),
 
   HA_BOOTSTRAP_FROM_LOCAL_DATABASE("arcadedb.ha.bootstrapFromLocalDatabase", SCOPE.SERVER,

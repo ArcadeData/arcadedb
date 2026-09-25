@@ -24,11 +24,16 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+
 /**
  * {@code DELETE /server/groups?database=<db>&name=<group>}: drops one group. Delegates to
  * {@link ServerControlPlane#deleteGroup}, which also refuses to drop the {@code admin} group of the
  * default database and refreshes the permissions of every open database the group applied to, so the
  * gRPC {@code DeleteGroup} RPC gets both (issue #7309).
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first, as {@code /server/users} is (issue #8109): see
+ * {@link PostGroupHandler}.
  */
 public class DeleteGroupHandler extends AbstractServerHttpHandler {
   private final ServerControlPlane controlPlane;
@@ -50,8 +55,15 @@ public class DeleteGroupHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
+
+    // Before any validation (issue #8109). The query string travels with the path, so the leader reads the same
+    // 'database' and 'name'.
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), null);
+    if (forwarded != null)
+      return forwarded;
 
     final String database = getQueryParameter(exchange, "database");
     final String name = getQueryParameter(exchange, "name");

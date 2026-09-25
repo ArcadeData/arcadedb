@@ -378,15 +378,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * the server and stopped only at shutdown, so a follower's cache is normally as warm as a leader's and the
    * ask-now round below is the cold-start case rather than the ordinary one. It still has to be the ask-now
    * variant: a node whose first round has not landed yet would otherwise read an empty cache and reach the wrong
-   * verdict. A security entry is not a schema delta: any node can submit one, and the entry
-   * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
-   * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
-   * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
-   * forward. They are the ones not already serialised onto a single node, and therefore the ones a
-   * compare-and-set was worth most to. Reading the cache there named every peer as missing and dropped the
-   * precondition silently, leaving the pre-#7509 behaviour behind nothing louder than the throttled line below.
-   * Making those paths reach the leader as {@code /server/users} does is issue #7826, and would make the
-   * question moot for them rather than replace this.
+   * verdict. A security entry is not a schema delta: any node can submit one. When #7559 was written the REST
+   * group and API-token routes did not forward to the leader, so they reached here on a FOLLOWER, and reading the
+   * cache there named every peer as missing and dropped the precondition silently. Since issue #8109 the client
+   * entry points run on the leader: the REST user, group and API-token routes and {@code POST /api/v1/server}
+   * forward, the gRPC admin RPCs refuse off-leader, and openCypher {@code CREATE USER} / {@code ALTER USER} /
+   * {@code DROP USER} reach {@code SecurityManager} only after {@code RaftReplicatedDatabase.command} has forwarded
+   * the non-idempotent statement. A submission can still be decided off the leader - when leadership moves between
+   * the forward and the submit, or from host code (a JavaScript/Java trigger or function) that reaches
+   * {@code SecurityManager} on a follower (issue #8370) - which is why this is still the ask-now variant and not
+   * the cache.
    * <p>
    * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
    * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
@@ -398,13 +399,23 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * republish) pays for it at cluster formation, when peers are least likely to answer. For the two gated
    * documents the round has just been run by {@link SecurityEntryCapabilityGate}, so this call finds a warm cache
    * and dials nothing.
+   * <p>
+   * <b>The round has an off switch, and it is the #7511 gate's</b> (issue #8109, absorbing #7827). A peer that is
+   * DOWN keeps the cached answer short of a full "yes", so every fingerprinted submission pays the round -
+   * {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} per unreachable peer, with the {@code ServerSecurity} monitor
+   * held - and the next user change on the node waits behind it. {@code arcadedb.ha.securityEntryCapabilityGate=false}
+   * is already what an operator sets when a node that cannot be probed is known to be fine, and it already stops the
+   * gated documents' round; with it off, this decision reads the cached answer too, which the capability monitor
+   * keeps current on every node (issue #7549). The direction that costs is the safe one: a cache that is not a full
+   * "yes" withholds the precondition, which is the pre-#7509 behaviour, never a divergence.
    */
   // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
   String preconditionEveryPeerCanRead(final String expectedFingerprint) {
-    return expectedFingerprint == null ?
-        null :
-        preconditionForPeers(expectedFingerprint,
-            raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION));
+    if (expectedFingerprint == null)
+      return null;
+    return preconditionForPeers(expectedFingerprint, SecurityEntryCapabilityGate.gateEnabled(server) ?
+        raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION) :
+        raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
