@@ -244,7 +244,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final String[]   propertyFilter;
   private final String[]   edgePropertyFilter; // null = no edge properties (default)
   private       int        propertySampleSize = CSRBuilder.DEFAULT_PROPERTY_SAMPLE_SIZE;
-  private volatile boolean useWhenStale;
+  // Per-view override of GlobalConfiguration.GAV_USE_WHEN_STALE; null follows the database's configuration, read
+  // live on every isReady() so an ALTER DATABASE reaches views already built (and restored ones) - see #7875.
+  private volatile Boolean useWhenStale;
   private volatile UpdateMode updateMode;
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
@@ -274,8 +276,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // value against the current field: if another, later-dispatched operation has since bumped it, this one
   // has been superseded and skips the commit instead of overwriting a newer result with an older one
   // (issue #6636). Every read and write of this field happens inside a block synchronized on `this`
-  // (build()/buildAsync()/onRelevantCommit()/applyDelta()/dispatchDeferredRestore() are themselves
-  // synchronized methods, and every executor-task commit site below re-enters synchronized(this) to write
+  // (buildAsync()/onRelevantCommit()/applyDelta()/dispatchDeferredRestore() are themselves synchronized
+  // methods, build() and every executor-task commit site below enter synchronized(this) to read or write
   // it), so a plain long - not volatile, not an Atomic - is sufficient: the monitor alone establishes the
   // happens-before edge between one thread's bump and another's later read.
   // Deliberately NOT bumped by applyDelta()'s own synchronous overlay merge (this.snapshot =
@@ -309,6 +311,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // transaction committed during the scan can be delivered after the build published (issue #8378). Accessed
   // only under synchronized(this).
   private BuildWatch             baseWatch;
+  // Test-only: see setBeforeBuildScanForTest()
+  private volatile Runnable      beforeBuildScanForTest;
 
   // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
   // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
@@ -342,7 +346,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     this.propertyFilter = propertyFilter;
     this.edgePropertyFilter = edgePropertyFilter;
     this.updateMode = updateMode;
-    this.useWhenStale = GlobalConfiguration.GAV_USE_WHEN_STALE.getValueAsBoolean();
   }
 
   /**
@@ -367,64 +370,100 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * @param vertexTypes vertex type names to include (null = all)
    * @param edgeTypes   edge type names to include (null = all)
    */
-  public synchronized void build(final String[] vertexTypes, final String[] edgeTypes) {
-    // A direct build() (e.g. REBUILD GRAPH ANALYTICAL VIEW) supersedes any not-yet-resolved deferred
-    // restore-from-disk (see #6632): without clearing this, a later awaitReady() call would still see
-    // pendingDiskRestore == true and dispatch dispatchDeferredRestore(), re-reading a possibly-superseded
-    // persisted file (or a wholly redundant rebuild) right after this scan already produced a fresh,
-    // authoritative snapshot.
-    pendingDiskRestore = false;
-    // Bumping unconditionally (no commit-time check needed here, unlike every other path below): this
-    // whole method is synchronized and runs the scan on the calling thread, so it holds this instance's
-    // monitor for its entire duration - nothing else that reads/writes `generation` can interleave. The
-    // bump alone is what matters: it retroactively supersedes any snapshot-producing task dispatched
-    // earlier but still in flight (issue #6636), e.g. an already-dispatched deferred restore-from-disk.
-    ++generation;
-    final CountDownLatch latch = new CountDownLatch(1);
-    readyLatch = latch;
-    status = Status.BUILDING;
-    buildError = null;
+  public void build(final String[] vertexTypes, final String[] edgeTypes) {
+    // Unlike buildAsync()/onRelevantCommit()/applyDelta()'s rebuild - each of which calls database.begin() on a
+    // fresh worker thread AFTER sampling asOfTransactionId, so the scan's transaction cannot have cached
+    // anything before that point - this method runs the scan on whatever transaction is already active on the
+    // CALLING thread (e.g. REBUILD GRAPH ANALYTICAL VIEW / a caller invoking build() directly inside its own
+    // transaction), or with none active at all. Under the default READ_COMMITTED that's harmless (no per-page
+    // caching, every read is current). Under REPEATABLE_READ, a transaction that was already open - and may
+    // already have cached some of the pages this scan is about to read - can miss a commit that landed between
+    // its own begin() and this sample, while asOfTransactionId (sampled here) claims coverage through it. The
+    // certificate would then be wrong in the direction that matters: a "complete" persisted CSR that is
+    // actually missing something. Since there is no way from here to know which pages (if any) that ambient
+    // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
+    // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
+    // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
+    final boolean certificateMayBeUnsound = database.isTransactionActive()
+        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+
+    // The scan runs on the calling thread but OUTSIDE this instance's monitor, exactly as buildAsync()'s runs on its
+    // worker: holding the monitor for a scan as long as the graph is big stalled every commit callback, status wait
+    // and restore that needed it for that long (issues #8378, #8403). Dispatch and publication take the monitor;
+    // the generation captured here is what orders this build against any other dispatched meanwhile (issue #6636).
+    final long myGeneration;
+    final CountDownLatch latch;
+    final BuildWatch watch;
+    synchronized (this) {
+      // A direct build() (e.g. REBUILD GRAPH ANALYTICAL VIEW) supersedes any not-yet-resolved deferred
+      // restore-from-disk (see #6632): without clearing this, a later awaitReady() call would still see
+      // pendingDiskRestore == true and dispatch dispatchDeferredRestore(), re-reading a possibly-superseded
+      // persisted file (or a wholly redundant rebuild) right after this scan already produced a fresh,
+      // authoritative snapshot.
+      pendingDiskRestore = false;
+      // Retroactively supersedes any snapshot-producing task dispatched earlier but still in flight (issue #6636),
+      // e.g. an already-dispatched deferred restore-from-disk
+      myGeneration = ++generation;
+      latch = new CountDownLatch(1);
+      readyLatch = latch;
+      status = Status.BUILDING;
+      buildError = null;
+      // Opened before the scan, with the listeners armed: see publishBuild() (issue #8378)
+      watch = openBuildWatch();
+      // Counted like an async build, so shutdown() waits for the scan rather than unregistering under it
+      inFlightTasks.incrementAndGet();
+    }
     try {
-      // Unlike buildAsync()/onRelevantCommit()/applyDelta()'s rebuild - each of which calls database.begin() on a
-      // fresh worker thread AFTER sampling asOfTransactionId, so the scan's transaction cannot have cached
-      // anything before that point - this method runs the scan on whatever transaction is already active on the
-      // CALLING thread (e.g. REBUILD GRAPH ANALYTICAL VIEW / a caller invoking build() directly inside its own
-      // transaction), or with none active at all. Under the default READ_COMMITTED that's harmless (no per-page
-      // caching, every read is current). Under REPEATABLE_READ, a transaction that was already open - and may
-      // already have cached some of the pages this scan is about to read - can miss a commit that landed between
-      // its own begin() and this sample, while asOfTransactionId (sampled here) claims coverage through it. The
-      // certificate would then be wrong in the direction that matters: a "complete" persisted CSR that is
-      // actually missing something. Since there is no way from here to know which pages (if any) that ambient
-      // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
-      // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
-      // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
-      final boolean certificateMayBeUnsound = database.isTransactionActive()
-          && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
-      // Opened before the scan, with the listeners armed: see publishBuild() (issue #8378). This method holds the
-      // monitor for the whole scan, so the commit callbacks only buffer into the watch (see onCommittedDelta()).
-      final BuildWatch watch = openBuildWatch(true);
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
+      final Runnable beforeScan = beforeBuildScanForTest;
+      if (beforeScan != null)
+        beforeScan.run();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
       builder.setScanObserver(watch);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
 
-      // Atomic swap — readers see all-or-nothing
-      publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
-      this.notifyAll();
-      invalidateGraphStatisticsCache();
-    } catch (final Exception e) {
-      closeBuildWatch();
-      this.buildError = e;
-      this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
-      // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
-      if (snapshot == null)
-        unregisterChangeListeners();
-      this.notifyAll();
+      boolean committed = false;
+      CountDownLatch newer = null;
+      synchronized (this) {
+        if (myGeneration == generation) {
+          // Atomic swap — readers see all-or-nothing
+          publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
+          this.notifyAll();
+          committed = true;
+        } else {
+          closeBuildWatch(watch);
+          // Superseded by a build dispatched while this one scanned: that one publishes, and this call returns once it
+          // has, so a caller still finds the view at least as fresh as its own scan. None when shut down meanwhile
+          if (readyLatch != latch)
+            newer = readyLatch;
+          LogManager.instance().log(this, Level.FINE,
+              "GraphAnalyticalView '%s': build result discarded (superseded by a newer build/restore)", name);
+        }
+      }
+      if (committed)
+        invalidateGraphStatisticsCache();
+      else if (newer != null)
+        newer.await();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (final RuntimeException e) {
+      synchronized (this) {
+        closeBuildWatch(watch);
+        if (myGeneration == generation) {
+          this.buildError = e;
+          this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+          // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
+          if (snapshot == null)
+            unregisterChangeListeners();
+        }
+        this.notifyAll();
+      }
       throw e;
     } finally {
       latch.countDown();
+      taskCompleted();
     }
   }
 
@@ -434,8 +473,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * of the scan and the listeners being armed at publication was in neither, and lost from the view for good
    * (issue #8378). Must be called under this instance's monitor.
    */
-  private BuildWatch openBuildWatch(final boolean scanHoldsMonitor) {
-    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS, scanHoldsMonitor);
+  private BuildWatch openBuildWatch() {
+    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS);
     final BuildWatch previous = buildWatch;
     if (previous != null)
       previous.handOverTo(watch); // superseded: its build will not publish
@@ -558,7 +597,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
-    final BuildWatch watch = openBuildWatch(false);
+    final BuildWatch watch = openBuildWatch();
     // Track the queued task synchronously so a concurrent close()/drop() can wait for it
     // even before the virtual thread has had a chance to mount.
     inFlightTasks.incrementAndGet();
@@ -571,6 +610,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           database.begin();
           try {
             final long buildStart = System.currentTimeMillis();
+            final Runnable beforeScan = beforeBuildScanForTest;
+            if (beforeScan != null)
+              beforeScan.run();
             final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
             builder.setScanObserver(watch);
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
@@ -723,8 +765,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private void shutdown(final boolean persistCsr) {
     awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
     synchronized (this) {
+      // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
+      // view that is gone (issue #8403)
+      ++generation;
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
-      // awaitReady()/getStatus() caller blocks for the duration of the write, not just of a scan - accepted
+      // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.
       if (persistCsr)
         persistCsrIfPossible();
@@ -1526,7 +1571,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final Status s = status;
     if (s == Status.READY)
       return true;
-    return s == Status.STALE && useWhenStale;
+    return s == Status.STALE && isUseWhenStale();
   }
 
   @Override
@@ -1534,11 +1579,32 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return status == Status.STALE;
   }
 
+  /**
+   * Whether a STALE view still serves queries: the per-view override when one was set, otherwise
+   * {@link GlobalConfiguration#GAV_USE_WHEN_STALE} from the database's own configuration (it is {@code SCOPE.DATABASE}).
+   */
   public boolean isUseWhenStale() {
+    final Boolean override = useWhenStale;
+    if (override != null)
+      return override;
+    return database != null ?
+        database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GAV_USE_WHEN_STALE) :
+        GlobalConfiguration.GAV_USE_WHEN_STALE.getValueAsBoolean();
+  }
+
+  /**
+   * @return the per-view override set by {@link #setUseWhenStale}, or {@code null} when the view follows the database's
+   * configuration
+   */
+  public Boolean getUseWhenStaleOverride() {
     return useWhenStale;
   }
 
-  public void setUseWhenStale(final boolean useWhenStale) {
+  /**
+   * Overrides {@link GlobalConfiguration#GAV_USE_WHEN_STALE} for this view only. {@code null} goes back to following
+   * the database's configuration.
+   */
+  public void setUseWhenStale(final Boolean useWhenStale) {
     this.useWhenStale = useWhenStale;
   }
 
@@ -2406,8 +2472,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Entry point of the ASYNCHRONOUS/OFF commit callback. While a full build is in flight the commit only marks the
    * build's watch, for the build to publish STALE (OFF) or rebuild (ASYNCHRONOUS) - without taking this instance's
-   * monitor, which a synchronous {@link #build()} holds for its whole scan, so the committing thread is not stalled
-   * behind it, and without dispatching a second scan beside the one in flight (issue #8378).
+   * monitor, and without dispatching a second scan beside the one in flight (issue #8378).
    */
   void onRelevantCommitCallback() {
     final BuildWatch watch = buildWatch;
@@ -2521,18 +2586,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * Entry point of the SYNCHRONOUS commit callback. While a full build is in flight the delta is buffered for the
-   * build to re-apply on the CSR it publishes (issue #8378) - without taking this instance's monitor, which a
-   * synchronous {@link #build()} holds for its whole scan. The snapshot the build will replace, if there is one,
-   * keeps serving reads meanwhile, so it takes the delta too unless the build publishes first - except under a
-   * blocking {@link #build()}, whose monitor the merge would wait on for the whole scan: that snapshot then lags
-   * the commits until the rebuild publishes them, rather than stalling every committer behind the scan.
+   * build to re-apply on the CSR it publishes (issue #8378). The snapshot the build will replace, if there is one,
+   * keeps serving reads meanwhile, so it takes the delta too unless the build publishes first. That merge takes this
+   * instance's monitor only for the merge itself: no build scans while holding it, blocking or not (issue #8403).
    */
   void onCommittedDelta(final TxDelta delta) {
     final BuildWatch watch = buildWatch;
     // The base being served when the delta was buffered: it takes the delta only if still served when merged
     final Snapshot served = snapshot;
     if (watch != null && watch.offer(delta)) {
-      if (served != null && !watch.scanHoldsMonitor())
+      if (served != null)
         applyDelta(delta, served.csrPerType);
       return;
     }
@@ -2580,6 +2643,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // date, so that a rebuild discarded as superseded is retried by the next commit rather than leaving the
     // view unable to serve edge properties until the compaction threshold happens to be crossed.
     final boolean forceRebuild = merged.isEdgePropertiesDirty();
+
+    // A full build in flight replaces this base anyway, re-reading the columns and re-applying every delta it
+    // buffered (the dirty edge properties included, see publishBuild()): a compaction beside it would scan the graph
+    // a second time, and supersede the build whose caller is waiting for it (issue #8403)
+    if (buildWatch != null)
+      return;
 
     if (forceRebuild || (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold)) {
       // Guard: only one compaction thread at a time
@@ -3189,6 +3258,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Test-only hook: releases the permits taken by {@link #acquireAllBuildPermitsForTest()}. */
   static void releaseAllBuildPermitsForTest() {
     BUILD_PERMITS.release(MAX_CONCURRENT_BUILDS);
+  }
+
+  /** Test-only hook: run by a full build right before its scan starts, outside this instance's monitor. */
+  void setBeforeBuildScanForTest(final Runnable hook) {
+    this.beforeBuildScanForTest = hook;
   }
 
   /** Test-only hook: exposes {@link #deferredRestoreInFlight} so a test can poll for the dispatch. */

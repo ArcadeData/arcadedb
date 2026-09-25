@@ -58,12 +58,12 @@ class BuildWatchReconciliationTest extends TestHelper {
   void aSupersedingBuildTakesOverTheBufferedDeltas() {
     // A blocking build() may scan inside the caller's REPEATABLE_READ transaction and miss a commit that preceded
     // it: the delta the superseded build buffered is then the only way that commit reaches the new CSR
-    final BuildWatch superseded = new BuildWatch(1_000, false);
+    final BuildWatch superseded = new BuildWatch(1_000);
     superseded.watchSource(a);
     final TxDelta delta = added(newEdge());
     assertThat(superseded.offer(delta)).isTrue();
 
-    final BuildWatch next = new BuildWatch(1_000, true);
+    final BuildWatch next = new BuildWatch(1_000);
     superseded.handOverTo(next);
 
     assertThat(next.isWatched(a)).isTrue();
@@ -75,7 +75,7 @@ class BuildWatchReconciliationTest extends TestHelper {
     // Commit callbacks can arrive out of commit order: the deletion of e0 (after the scan) is delivered before the
     // addition of e1 (before the scan)
     final RID e0 = newEdge();
-    final BuildWatch watch = new BuildWatch(1_000, false);
+    final BuildWatch watch = new BuildWatch(1_000);
     watch.watchSource(a);
     final RID e1 = newEdge();
 
@@ -103,7 +103,7 @@ class BuildWatchReconciliationTest extends TestHelper {
     // Before the scan: e0 exists. The transactions below registered 'a' before committing, so before the scan read it
     final RID e0 = newEdge();
     final RID deletedBeforeScan = newEdge();
-    final BuildWatch watch = new BuildWatch(1_000, false);
+    final BuildWatch watch = new BuildWatch(1_000);
     watch.watchSource(a);
 
     // Committed before the scan reached 'a': the scan sees e1 and no longer sees the deleted edge
