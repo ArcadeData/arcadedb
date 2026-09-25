@@ -27,9 +27,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -156,5 +159,23 @@ class Issue8303MapMinusNullTest {
     assertThat((List<Object>) MathExpression.Operator.PLUS.apply(List.of(1, 2), 3)).containsExactly(1, 2, 3);
     assertThat((Map<String, Object>) MathExpression.Operator.MINUS.apply(Map.of("a", 1), null)).isEqualTo(Map.of("a", 1));
     assertThat((Map<String, Object>) MathExpression.Operator.MINUS.apply(Map.of("a", 1), List.of("a"))).isEmpty();
+  }
+
+  @Test
+  void sortedOperandsStaySortedByTheirComparator() {
+    final TreeSet<Integer> set = new TreeSet<>(Comparator.reverseOrder());
+    set.addAll(List.of(1, 2, 3));
+    final Object plus = MathExpression.Operator.PLUS.apply(set, 4);
+    assertThat(plus).isInstanceOf(TreeSet.class);
+    assertThat((TreeSet<Integer>) plus).containsExactly(4, 3, 2, 1);
+    assertThat(set).containsExactly(3, 2, 1);
+
+    final TreeMap<String, Object> map = new TreeMap<>(Comparator.reverseOrder());
+    map.put("a", 1);
+    map.put("b", 2);
+    final Object minus = MathExpression.Operator.MINUS.apply(map, List.of("a"));
+    assertThat(minus).isInstanceOf(TreeMap.class);
+    assertThat(((TreeMap<String, Object>) minus).comparator()).isEqualTo(Comparator.reverseOrder());
+    assertThat(map).containsOnlyKeys("a", "b");
   }
 }
