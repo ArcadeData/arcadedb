@@ -64,7 +64,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -1298,6 +1301,10 @@ public class BoltNetworkExecutor extends Thread {
         // Database name changed, need to switch
         database = null;
       } else {
+        // LOGOFF/LOGON keeps the connection, and with it the database the previous user had open: the user now
+        // bound to the connection is checked against it too, not only against a database it names.
+        if (!authorizeDatabase(database.getName()))
+          return false;
         // Update current user on the existing context to handle LOGOFF/LOGON re-authentication
         // on the same connection without disrupting any open transactions.
         if (user != null) {
@@ -1320,7 +1327,7 @@ public class BoltNetworkExecutor extends Thread {
       targetName = server.getConfiguration().getValueAsString(GlobalConfiguration.BOLT_DEFAULT_DATABASE);
 
       if (targetName == null || targetName.isEmpty()) {
-        // If no default configured, use the first available database
+        // If no default configured, use the first available database the user is granted
         final Collection<String> databases = server.getDatabaseNames();
         if (databases.isEmpty()) {
           // Not a bad name - the caller named nothing - but a server with no database to fall back on, which is
@@ -1330,9 +1337,25 @@ public class BoltNetworkExecutor extends Thread {
           state = State.FAILED;
           return false;
         }
-        targetName = databases.iterator().next();
+        targetName = null;
+        if (user != null)
+          for (final String name : databases)
+            if (user.canAccessToDatabase(name)) {
+              targetName = name;
+              break;
+            }
+        if (targetName == null) {
+          sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "No database on this server is accessible to the current user");
+          state = State.FAILED;
+          return false;
+        }
       }
     }
+
+    // Checked before the database is resolved, so a name the user is not granted is refused the same way whether
+    // or not the database exists: the answer must not tell a user which databases the server hosts
+    if (!authorizeDatabase(targetName))
+      return false;
 
     try {
       database = server.getDatabase(targetName);
@@ -1372,6 +1395,21 @@ public class BoltNetworkExecutor extends Thread {
       state = State.FAILED;
       return false;
     }
+  }
+
+  /**
+   * Whether the user bound to this connection is granted {@code databaseName}, answering the client with a
+   * {@code Forbidden} failure when it is not. Every database this connection serves is selected through here, as
+   * the HTTP, gRPC, PostgreSQL, Redis and MongoDB listeners do: the deny-all user bound to an ungranted database
+   * only rejects the operations routed through the engine's ACL, while this listener answers database and schema
+   * listings itself. Fails closed on a connection with no authenticated user.
+   */
+  private boolean authorizeDatabase(final String databaseName) throws IOException {
+    if (user != null && user.canAccessToDatabase(databaseName))
+      return true;
+    sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "Access to database '" + databaseName + "' is not allowed");
+    state = State.FAILED;
+    return false;
   }
 
   /**
@@ -1458,9 +1496,10 @@ public class BoltNetworkExecutor extends Thread {
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
           "constituents");
       stream.syntheticResults = new ArrayList<>();
+      // Narrowed to the databases the user is granted, as every other listener lists them.
       // The port this connection reached, as the routing table advertises: the configured one may be 0, which asks
       // the operating system for a free port and is not an address anyone can dial (issue #8209)
-      for (final String dbName : server.getDatabaseNames()) {
+      for (final String dbName : ServerControlPlane.filterAuthorizedDatabases(user, server.getDatabaseNames())) {
         stream.syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
             getBoltAddress(socket.getLocalPort()), "primary",
             true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,
@@ -1598,8 +1637,10 @@ public class BoltNetworkExecutor extends Thread {
     final Set<String> visited = new HashSet<>();
     int idSeq = 1;
 
+    // Types the user cannot read are hidden, as schema:types and schema:indexes hide them in SQL
+    final SecurityDatabaseUser reader = SecurityHelper.currentUser((DatabaseInternal) database);
     for (final DocumentType type : schema.getTypes()) {
-      if (type.getName().contains("~"))
+      if (type.getName().contains("~") || !SecurityHelper.canAccessType(reader, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
         continue;
 
       final String entityType = type instanceof EdgeType ? "RELATIONSHIP" : "NODE";
@@ -1646,8 +1687,10 @@ public class BoltNetworkExecutor extends Thread {
     final Schema schema = database.getSchema();
     int idSeq = 1;
 
+    // Types the user cannot read are hidden, as schema:types and schema:indexes hide them in SQL
+    final SecurityDatabaseUser reader = SecurityHelper.currentUser((DatabaseInternal) database);
     for (final DocumentType type : schema.getTypes()) {
-      if (type.getName().contains("~"))
+      if (type.getName().contains("~") || !SecurityHelper.canAccessType(reader, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
         continue;
 
       final boolean isEdge = type instanceof EdgeType;
