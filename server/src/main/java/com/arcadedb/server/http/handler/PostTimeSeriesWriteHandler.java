@@ -228,7 +228,7 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     // #8302). The samples that did insert are already committed - this is a partial-write signal, not a full
     // rollback. `dropped` counts individual samples plus malformed lines (one sample each), consistent with
     // `written`.
-    if (!malformedLines.isEmpty() || !report.isComplete()) {
+    if (!malformedLines.isEmpty() || (report != null && !report.isComplete())) {
       final StringBuilder msg = new StringBuilder("partial write: ");
       if (!malformedLines.isEmpty())
         msg.append("unable to parse ").append(malformedLines.size()).append(" line(s) (see malformedLines).");
