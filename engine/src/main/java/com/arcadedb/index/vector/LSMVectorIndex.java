@@ -11236,7 +11236,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // retries at the next interval rather than staying stuck with pending mutations.
       if (REBUILD_SEMAPHORE.tryAcquire()) {
         try {
-          buildGraphFromScratch();
+          // Asked again right before the build, not only at the top: a retirement landing in between would
+          // otherwise still pay for one full build on the retired instance (issue #8310). What is left after this
+          // read is the same case as a build already running when the retirement arrives - bounded and finished.
+          if (!superseded)
+            buildGraphFromScratch();
         } finally {
           REBUILD_SEMAPHORE.release();
         }
