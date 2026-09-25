@@ -334,13 +334,20 @@ public class ChatStorage {
     if (ambiguityMarker.exists() || migrationRefusedByAccountList(legacyName, legacyDir, username)) {
       // migrationRefusedByAccountList() may have just created the marker, so this is re-checked rather than
       // reusing the boolean above: only mention a file in the operator-facing message once it is actually there.
-      if (ambiguityMarker.exists())
-        warnOncePerLegacyDirectory(legacyName,
-            "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
-                + "to a single user. This is recorded at '%s' and will keep refusing the migration even if one of the colliding "
-                + "accounts is later deleted; delete that file once you have manually moved each chat under the owner's hashed "
-                + "directory.", ambiguityMarker.getAbsolutePath());
-      else
+      if (ambiguityMarker.exists()) {
+        // The logged path names the marker as it is really spelled on disk (review on PR #8365): on a
+        // case-insensitive volume ambiguityMarker may carry the looked-up spelling instead, which resolves
+        // to the same file there but is not what an operator finds through a case-sensitive tool. Gated on
+        // the once-per-name log set so the directory listing is paid by the one request that logs.
+        if (!reportedLegacyDirectories.contains(legacyName)) {
+          final File markerOnDisk = new File(ambiguityMarker.getParentFile(), spellingOnDisk(ambiguityMarker, ambiguityMarker.getName()));
+          warnOncePerLegacyDirectory(legacyName,
+              "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
+                  + "to a single user. This is recorded at '%s' and will keep refusing the migration even if one of the colliding "
+                  + "accounts is later deleted; delete that file once you have manually moved each chat under the owner's hashed "
+                  + "directory.", markerOnDisk.getAbsolutePath());
+        }
+      } else
         warnOncePerLegacyDirectory(legacyName,
             "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
                 + "to a single user. It has been left untouched - move each chat under the owner's hashed directory by hand to "
@@ -582,7 +589,8 @@ public class ChatStorage {
   }
 
   /**
-   * The name {@code legacyDir}'s entry really carries in its parent's listing: {@code legacyName} itself
+   * The name {@code legacyDir}'s entry really carries in its parent's listing (also used for a marker
+   * file, with the marker's own name): {@code legacyName} itself
    * when an entry is spelled exactly that way, otherwise the first entry equal to it ignoring case -
    * the one a case-insensitive filesystem resolved {@code legacyName} onto - and {@code legacyName}
    * when the listing cannot be read or has neither. Only consulted when an ambiguity marker is written,
