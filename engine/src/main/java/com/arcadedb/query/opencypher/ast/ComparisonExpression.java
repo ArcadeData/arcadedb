@@ -179,9 +179,12 @@ public class ComparisonExpression implements BooleanExpression {
     // A java.util.Date or Instant carries an instant and no zone, and coerces to UTC only for want of one. Against a
     // zoned datetime it takes that operand's zone, so it equals every datetime at its instant rather than only the
     // UTC ones: datetimes at one instant in different zones are distinct values (issue #8300).
-    if ((left instanceof Date || left instanceof Instant) && rightTemporal instanceof CypherDateTime zoned)
+    // Only against a genuinely zoned operand: two zone-less ones are both UTC already.
+    final boolean leftZoneless = left instanceof Date || left instanceof Instant;
+    final boolean rightZoneless = right instanceof Date || right instanceof Instant;
+    if (leftZoneless && !rightZoneless && rightTemporal instanceof CypherDateTime zoned)
       leftTemporal = adoptZone(left, (CypherDateTime) leftTemporal, zoned.getValue().getZone());
-    else if ((right instanceof Date || right instanceof Instant) && leftTemporal instanceof CypherDateTime zoned)
+    else if (rightZoneless && !leftZoneless && leftTemporal instanceof CypherDateTime zoned)
       rightTemporal = adoptZone(right, (CypherDateTime) rightTemporal, zoned.getValue().getZone());
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
