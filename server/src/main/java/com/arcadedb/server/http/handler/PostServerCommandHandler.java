@@ -547,14 +547,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       // Nothing to catch: a failure propagates to AbstractServerHttpHandler, which is what maps it
       // onto a status code, and every control-plane failure is unchecked.
       final JSONObject report = operation.run(ServerControlPlane.ProgressListener.NOOP);
-      return completedResponse(completionMessage, report);
+      return completedResponse(completedEvent(completionMessage, report));
     }
 
     final SSEProgressSink sink = new SSEProgressSink(exchange);
     try {
       final JSONObject report = operation.run(sink);
-      final ExecutionResponse response = completedResponse(completionMessage, report);
-      sink.send(completedEvent(completionMessage, report));
+      final JSONObject completed = completedEvent(completionMessage, report);
+      final ExecutionResponse response = completedResponse(completed);
+      sink.send(completed);
       // Written already: what is returned is only what the idempotency cache keeps of it
       return response.markAlreadySent();
     } catch (final RuntimeException e) {
@@ -569,9 +570,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /** The JSON answer of a completed restore or import, carrying its SSE terminal event for a streamed retry. */
-  private static ExecutionResponse completedResponse(final String completionMessage, final JSONObject report) {
+  private static ExecutionResponse completedResponse(final JSONObject completedEvent) {
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString())
-        .setEventStreamReplay(sseFrame(completedEvent(completionMessage, report)));
+        .setEventStreamReplay(sseFrame(completedEvent));
   }
 
   private static JSONObject completedEvent(final String completionMessage, final JSONObject report) {

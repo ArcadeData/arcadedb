@@ -426,6 +426,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       closeBuildWatch();
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
+      if (snapshot == null)
+        unregisterChangeListeners();
       this.notifyAll();
       throw e;
     } finally {
@@ -628,7 +631,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     } catch (final RejectedExecutionException e) {
       closeBuildWatch(watch);
       this.buildError = e;
-      this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      if (snapshot != null)
+        this.status = Status.STALE;
+      else {
+        // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
+        this.status = Status.NOT_BUILT;
+        unregisterChangeListeners();
+        GraphTraversalProviderRegistry.unregister(database, this);
+        if (name != null)
+          GraphAnalyticalViewRegistry.unregister(database, name);
+      }
       this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
@@ -1455,6 +1467,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public boolean isBuilt() {
     return snapshot != null;
+  }
+
+  /** Whether the change listeners are armed. Package-private for tests. */
+  synchronized boolean hasChangeListeners() {
+    return deltaCollector != null;
   }
 
   /** Whether committed changes to the covered types concern this view: it has a CSR, or a full build is scanning one. */

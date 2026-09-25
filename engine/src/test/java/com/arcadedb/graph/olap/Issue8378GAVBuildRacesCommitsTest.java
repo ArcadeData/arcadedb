@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
   private static final int PERSONS = 20_000;
   private final List<RID>  persons = new ArrayList<>(PERSONS);
@@ -101,6 +103,21 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
     final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.OFF).buildAsync());
     // Not kept up to date, so it cannot hold the raced commits: it must say so rather than claim to be current
     assertThat(view.isStale()).isTrue();
+  }
+
+  @Test
+  void aFailedFirstBuildLeavesNoListenerBehind() {
+    // The listeners are armed before the scan: a first build that fails must take them back, or every later commit
+    // pays for a view that has nothing to keep up to date
+    final GraphAnalyticalView view = new GraphAnalyticalView(database);
+    try {
+      view.build(new String[] { "NoSuchType8378" }, new String[] { "KNOWS" });
+    } catch (final Exception expected) {
+      // the type does not exist
+    }
+    assertThat(view.isBuilt()).isFalse();
+    assertThat(view.hasChangeListeners()).isFalse();
+    view.shutdown();
   }
 
   @Test
