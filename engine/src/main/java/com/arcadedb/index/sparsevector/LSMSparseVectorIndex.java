@@ -522,6 +522,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // can name at most one. Disjoint from `committed`: a restricted search returns only groups the first pass left out.
     List<RidScore> committedRows = committed;
     for (final GroupedTopUpPlanner.TopUp topUp : planner.plan()) {
+      // The committed rows are the only capped source registered here; the pending ones hold every row there is.
+      assert topUp.source() == 0 : "only the committed source can need a top-up, got source " + topUp.source();
       final List<RidScore> topUpRows;
       try {
         topUpRows = engine.topKForGroups(queryIndices, effectiveWeights, topUp.groupKeys(), groupSize, topUp.floor(),

@@ -7402,10 +7402,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
             if (state.isFull())
               break;
-            // A restricted search (issue #8002) has nothing to gain past its distance bound, and every further pass
-            // lies beyond the farthest candidate of this one.
+            // A restricted search (issue #8002) has nothing to gain past its distance bound. Tested on the NEAREST
+            // candidate of the pass, not its farthest: a resumed pass mostly moves outward, but it expands nodes the
+            // previous one left on the frontier and can surface a candidate nearer than that pass's tail (see
+            // finish()). Once even a pass's best is past the bound, the walk has moved beyond it.
             if (returned > 0 && maxDistance != Float.POSITIVE_INFINITY
-                && scoreToDistance(metadata.similarityFunction, searchResult.getNodes()[returned - 1].score) >= maxDistance)
+                && scoreToDistance(metadata.similarityFunction, searchResult.getNodes()[0].score) >= maxDistance)
               break;
             // A pass that could not fill its beam ran the candidate queue dry: the reachable graph is
             // exhausted and no further pass can add anything. This is also what makes the loop terminate -

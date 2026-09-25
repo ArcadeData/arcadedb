@@ -199,6 +199,56 @@ class Issue8002SparseGroupedShortfallTest extends TestHelper {
     });
   }
 
+  /**
+   * The dense twin of the randomised test: {@code vector.neighbors} over four buckets, each small enough that one beam
+   * covers its whole graph, so every per-bucket search is exact and the answer must be the admission rule applied to
+   * the whole corpus by cosine distance.
+   */
+  @Test
+  void randomisedDenseMultiBucketAnswersMatchTheAdmissionRule() {
+    final Random rnd = new Random(80022L);
+    final List<String> buckets = new ArrayList<>();
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().buildDocumentType().withName("DR").withTotalBuckets(4).create();
+      t.createProperty("category", Type.STRING);
+      t.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      database.getSchema().buildTypeIndex("DR", new String[] { "embedding" }).withLSMVectorType().withDimensions(2)
+          .withSimilarity("COSINE").create();
+      for (final Bucket b : t.getBuckets(false))
+        buckets.add(b.getName());
+    });
+    final List<String> categoryOf = new ArrayList<>();
+    final List<Float> scoreOf = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 160; i++) {
+        final String category = "k" + rnd.nextInt(12);
+        // Distinct similarities to [1, 0]: 0.001 steps, shuffled, with the odd group peak far above the rest.
+        final float score = rnd.nextInt(20) == 0 ? 0.9f + i * 0.0005f : 0.1f + i * 0.004f;
+        final MutableDocument d = database.newDocument("DR");
+        d.set("category", category);
+        d.set("embedding", new float[] { score, (float) Math.sqrt(1.0 - score * score) });
+        d.save(buckets.get(rnd.nextInt(buckets.size())));
+        categoryOf.add(category);
+        scoreOf.add(score);
+      }
+    });
+
+    for (int q = 0; q < 20; q++) {
+      final int limit = 1 + rnd.nextInt(5);
+      final int groupSize = 1 + rnd.nextInt(4);
+      final List<String> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT expand(`vector.neighbors`('DR[embedding]', [1.0, 0.0], " + limit + ", { groupBy: 'category', groupSize: "
+              + groupSize + " }))")) {
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          rows.add(r.getProperty("category") + ":" + ((float[]) r.getProperty("embedding"))[0]);
+        }
+      }
+      assertThat(rows).as("limit %d, groupSize %d", limit, groupSize).isEqualTo(expected(categoryOf, scoreOf, limit, groupSize));
+    }
+  }
+
   private static List<String> expected(final List<String> categoryOf, final List<Float> scoreOf, final int limit,
       final int groupSize) {
     final List<Integer> order = new ArrayList<>();
