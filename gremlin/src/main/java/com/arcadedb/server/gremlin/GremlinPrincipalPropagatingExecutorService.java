@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -49,6 +50,8 @@ import java.util.concurrent.TimeUnit;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutorService {
+  static final String GREMLIN_PROTOCOL = "gremlin";
+
   private final ExecutorService delegate;
   private final ArcadeDBServer  server;
 
@@ -63,9 +66,15 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
     final ServerSecurityUser user = GremlinAuthContext.get();
     delegate.execute(() -> {
       final List<DatabaseInternal> bound = user != null ? bindPrincipal(user) : Collections.emptyList();
+      // Tagged as the client request it is (issue #8363): under HA, RaftReplicatedDatabase refuses a CLIENT request
+      // on a database whose directory is being replaced from the leader's snapshot and tells a client from the
+      // engine by this tag, so an untagged traversal read as engine work and was served from the discarded copy.
+      // Cleared afterwards because the pool's threads are reused.
+      ProtocolContext.set(GREMLIN_PROTOCOL);
       try {
         command.run();
       } finally {
+        ProtocolContext.clear();
         unbindPrincipal(bound);
       }
     });
