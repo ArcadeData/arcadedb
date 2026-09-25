@@ -256,8 +256,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Multiplier applied to HA_ELECTION_TIMEOUT_MAX when flooring the watchdog timeout. */
   static final int WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER = 4;
 
+  static final String LIFECYCLE_THREAD_NAME        = "arcadedb-sm-lifecycle";
+  static final String SNAPSHOT_INSTALL_THREAD_NAME = "arcadedb-raft-snapshot-install";
+
+  /**
+   * How long {@link #close()} waits, in total, for the task its executors are still running (issue #8182). Bounded
+   * because a download blocked in a socket read is past every interruption point and would otherwise hold the stop
+   * for as long as the leader takes to answer; the task keeps running past the bound and is only logged.
+   */
+  static final long CLOSE_AWAIT_MS = 5_000L;
+
   private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
-    final Thread t = new Thread(r, "arcadedb-sm-lifecycle");
+    final Thread t = new Thread(r, LIFECYCLE_THREAD_NAME);
     t.setDaemon(true);
     return t;
   });
@@ -281,7 +291,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private static ThreadPoolExecutor createSnapshotInstallExecutor() {
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), r -> {
-      final Thread t = new Thread(r, "arcadedb-raft-snapshot-install");
+      final Thread t = new Thread(r, SNAPSHOT_INSTALL_THREAD_NAME);
       t.setDaemon(true);
       return t;
     }, new ThreadPoolExecutor.AbortPolicy());
@@ -6053,10 +6063,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
+    // shutdownNow() drops the queued tasks and interrupts the running one, and does NOT wait for it (issue #8182).
+    // A snapshot install past its last interruption point went on creating <db>/.snapshot-new and the pending
+    // marker after close() had returned, i.e. after the caller believed the database directory was quiet - JUnit's
+    // @TempDir teardown in the unit tests, and a restartRatis() about to start a new state machine installing into
+    // the same directory in production. One deadline for both executors, so the bound is the whole wait.
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_AWAIT_MS);
+    awaitTermination(lifecycleExecutor, LIFECYCLE_THREAD_NAME, deadline);
+    awaitTermination(snapshotInstallExecutor, SNAPSHOT_INSTALL_THREAD_NAME, deadline);
     membershipSecuritySeeder.close();
     securityCatchUp.close();
     deferredDatabaseDeleter.close();
     super.close();
+  }
+
+  /**
+   * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down.
+   * <p>
+   * Cannot turn into a self-wait when a task closes its own state machine: {@code close()} calls
+   * {@code shutdownNow()} on both executors before waiting on either, and that interrupts the calling worker too, so
+   * its {@code awaitTermination} throws at once instead of waiting out the bound for a thread that cannot terminate
+   * while it waits - itself. The interrupt is restored for the task to observe, as {@code shutdownNow()} meant.
+   */
+  private void awaitTermination(final ExecutorService executor, final String threadName, final long deadlineNanos) {
+    try {
+      if (!executor.awaitTermination(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS))
+        LogManager.instance().log(this, Level.WARNING,
+            "State machine closed while a task on '%s' was still running after %d ms; it keeps running in the "
+                + "background and may still write under the database directory", null, threadName, CLOSE_AWAIT_MS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
