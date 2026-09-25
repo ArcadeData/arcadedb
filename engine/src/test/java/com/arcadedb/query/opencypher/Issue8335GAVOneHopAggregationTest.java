@@ -170,6 +170,52 @@ class Issue8335GAVOneHopAggregationTest extends TestHelper {
   }
 
   @Test
+  void aPlanCachedOutsideTheTransactionDoesNotReadTheViewPastItsWrites() {
+    // Kept up to date on commit, so the view serves the query again once the transaction is over
+    createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age) UPDATE MODE SYNCHRONOUS");
+    final String query = "MATCH (p:Person)-[:KNOWS]->(f:Person) RETURN p.id AS a, f.id AS b";
+    final long before = rows(query); // cached with the view's expansion
+
+    database.transaction(() -> {
+      // A new edge between two vertices the view already maps: only the records know it yet
+      final Vertex a = database.query("sql", "SELECT FROM Person WHERE id = 1").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM Person WHERE id = 2").next().getVertex().get();
+      a.modify().newEdge("KNOWS", b);
+      assertThat(rows(query)).isEqualTo(before + 1);
+    });
+    assertThat(rows(query)).isEqualTo(before + 1);
+    assertThat(plan(query)).contains("GAVExpandAll");
+  }
+
+  @Test
+  void aCachedPlanDropsAViewThatWentStale() {
+    // Not kept up to date: the commit leaves it stale, and a plan cached while it was ready must not keep reading it
+    createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age) UPDATE MODE OFF");
+    final String query = "MATCH (p:Person)-[:KNOWS]->(f:Person) RETURN p.id AS a, f.id AS b";
+    final long before = rows(query);
+
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM Person WHERE id = 1").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM Person WHERE id = 2").next().getVertex().get();
+      a.modify().newEdge("KNOWS", b);
+    });
+    assertThat(rows(query)).isEqualTo(before + 1);
+  }
+
+  @Test
+  void collectKeepsTheOperatorsOrder() {
+    createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age)");
+    assertThat(plan("MATCH (p:Person)-[:KNOWS]->(f:Person) RETURN p.city AS c, collect(f.age) AS ages"))
+        .doesNotContain("GAV ONE-HOP SCAN");
+  }
+
+  private long rows(final String query) {
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      return rs.stream().count();
+    }
+  }
+
+  @Test
   void anIndexSeekOnTheSourceIsKept() {
     createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age)");
     final String query = "MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE p.id = 3 RETURN count(*) AS n";

@@ -227,6 +227,16 @@ public class GraphTraversalProviderRegistry {
     }
   }
 
+  /**
+   * True while {@link #findProvider} withholds every provider from the calling thread: some provider is registered and
+   * the thread's transaction on {@code database} holds uncommitted changes. A caller that caches a plan built around a
+   * provider must neither reuse nor cache one in that state: a cached plan would keep reading the view past the
+   * transaction's writes, and a plan built now, without a view, would keep the acceleration from clean executions.
+   */
+  public static boolean isWithheld(final Database database) {
+    return hasAnyProviders && hasUncommittedChanges(database);
+  }
+
   private static boolean hasUncommittedChanges(final Database database) {
     if (!(database instanceof DatabaseInternal internal))
       return false;
