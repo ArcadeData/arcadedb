@@ -23,9 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
-import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -33,7 +30,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.IOException;
 import java.util.Map;
 
 /**
@@ -82,25 +78,15 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     return Vertex.RECORD_TYPE;
   }
 
+  @Override
+  protected boolean pinsPageOnModify() {
+    return true;
+  }
+
+  @Override
   public MutableVertex modify() {
-    final TransactionContext transaction = database.getTransaction();
-    final Record recordInCache = transaction.getRecordFromCache(rid);
-    if (recordInCache != null) {
-      if (recordInCache instanceof MutableVertex fromCache)
-        return fromCache;
-    } else if (transaction.isActive() && !transaction.hasPageForRecord(rid.getPageId(database))) {
-      // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
-      // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD.
-      // With no transaction open there is no page image to pin the record to: the write that follows opens its own
-      // implicit transaction (auto-transaction mode) and verifies there that the record is still the one read (#6950),
-      // so modifying outside a transaction is legitimate for a vertex, as it already was for a document (issue #7096).
-      try {
-        // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-        pinPageAndReloadIfStale();
-      } catch (final IOException e) {
-        throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
-      }
-    }
+    if (prepareForModify("vertex") instanceof MutableVertex fromCache)
+      return fromCache;
 
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
