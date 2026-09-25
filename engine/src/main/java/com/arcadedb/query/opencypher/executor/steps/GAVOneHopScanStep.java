@@ -211,6 +211,10 @@ public final class GAVOneHopScanStep extends AbstractExecutionStep {
     return table == null || (bucketId >= 0 && bucketId < table.length && table[bucketId]);
   }
 
+  /**
+   * A lookup table indexed by bucket id. Bucket ids are file ids, never negative, and the planner hands over at least
+   * one: a table built from nothing would answer "not a match" for every bucket.
+   */
   private static boolean[] toTable(final int[] bucketIds) {
     int max = -1;
     for (final int id : bucketIds)
