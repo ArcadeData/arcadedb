@@ -266,8 +266,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   static final long CLOSE_AWAIT_MS = 5_000L;
 
+  // The current worker of each executor below, recorded by its thread factory, so close() can tell by identity - not
+  // by the thread name every state machine in the JVM shares - that it is running on one of them (issue #8182). Each
+  // executor has at most one worker at a time, and a worker running a task is never replaced, so the latest thread
+  // the factory made is the one running any task that calls close().
+  private volatile Thread lifecycleWorker;
+  private volatile Thread snapshotInstallWorker;
+
   private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(r -> {
     final Thread t = new Thread(r, LIFECYCLE_THREAD_NAME);
+    lifecycleWorker = t;
     t.setDaemon(true);
     return t;
   });
@@ -289,9 +297,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ThreadPoolExecutor snapshotInstallExecutor = createSnapshotInstallExecutor();
 
-  private static ThreadPoolExecutor createSnapshotInstallExecutor() {
+  private ThreadPoolExecutor createSnapshotInstallExecutor() {
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), r -> {
       final Thread t = new Thread(r, SNAPSHOT_INSTALL_THREAD_NAME);
+      snapshotInstallWorker = t;
       t.setDaemon(true);
       return t;
     }, new ThreadPoolExecutor.AbortPolicy());
@@ -6076,9 +6085,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // worker is here waiting for it.
     final boolean callerInterrupted = Thread.interrupted();
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_AWAIT_MS);
-    final boolean interruptedWhileWaiting = !awaitTermination(lifecycleExecutor, LIFECYCLE_THREAD_NAME, deadline)
-        || !awaitTermination(snapshotInstallExecutor, SNAPSHOT_INSTALL_THREAD_NAME, deadline);
-    if (callerInterrupted || interruptedWhileWaiting)
+    // Both waits run whatever the first one met: an interrupt landing during the first must not skip the second, or
+    // the install on the other executor is left writing exactly as before (review of PR #8366). The deadline still
+    // bounds the whole thing, and the interrupt is restored once both are done.
+    final boolean lifecycleWaitInterrupted = !awaitTermination(lifecycleExecutor, lifecycleWorker, LIFECYCLE_THREAD_NAME,
+        deadline);
+    final boolean installWaitInterrupted = !awaitTermination(snapshotInstallExecutor, snapshotInstallWorker,
+        SNAPSHOT_INSTALL_THREAD_NAME, deadline);
+    if (callerInterrupted || lifecycleWaitInterrupted || installWaitInterrupted)
       Thread.currentThread().interrupt();
     membershipSecuritySeeder.close();
     securityCatchUp.close();
@@ -6088,15 +6102,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down. Skipped when the caller
-   * is that executor's own worker: a task closing its own state machine would otherwise wait out the whole bound for
-   * the one thread that cannot terminate while it waits - itself. The name is shared by every state machine's executor
-   * of that kind, so the check can also skip a wait that was merely possible; it only ever makes close() return
-   * sooner, never hang.
+   * IS that executor's worker: a task closing its own state machine would otherwise wait out the whole bound for the
+   * one thread that cannot terminate while it waits - itself.
    *
-   * @return false if the caller was interrupted while waiting, so the caller stops waiting and restores the flag
+   * @param worker     the executor's current worker as its thread factory recorded it, or null if it never made one
+   * @param threadName the executor's thread name, for the log line only
+   *
+   * @return false if the caller was interrupted while waiting, for {@link #close()} to restore the flag
    */
-  private boolean awaitTermination(final ExecutorService executor, final String threadName, final long deadlineNanos) {
-    if (threadName.equals(Thread.currentThread().getName()))
+  private boolean awaitTermination(final ExecutorService executor, final Thread worker, final String threadName,
+      final long deadlineNanos) {
+    if (worker == Thread.currentThread())
       return true;
     try {
       if (!executor.awaitTermination(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS))

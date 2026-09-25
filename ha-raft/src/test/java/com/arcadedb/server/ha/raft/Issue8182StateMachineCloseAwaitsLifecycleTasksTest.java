@@ -90,8 +90,12 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
    * and auto-acquire is off, so a leader-initiated install reconciles nothing and completes without dialling anyone.
    */
   private ArcadeDBServer serverWhoseRetryRuns(final Runnable onLifecycleThread) {
+    return serverWhoseRetryRuns(serverDir, onLifecycleThread);
+  }
+
+  private static ArcadeDBServer serverWhoseRetryRuns(final Path databaseDirectory, final Runnable onLifecycleThread) {
     final ContextConfiguration config = new ContextConfiguration();
-    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory.toString());
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 0L);
     config.setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
@@ -148,9 +152,13 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
   }
 
   private void applyEntryThatSchedulesTheRetry() throws Exception {
-    sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
+    applyEntryThatSchedulesTheRetry(sm);
+  }
+
+  private static void applyEntryThatSchedulesTheRetry(final ArcadeStateMachine target) throws Exception {
+    target.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB_NAME, "0".repeat(64), 7L);
-    sm.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encoded), ENTRY_INDEX);
+    target.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encoded), ENTRY_INDEX);
   }
 
   private void applyEntryThatSchedulesTheRetry(final ArcadeDBServer server) throws Exception {
@@ -337,6 +345,102 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
       assertThat(closedFromWithin.get()).isTrue();
     } finally {
       storage.close();
+    }
+  }
+
+  /**
+   * An interrupt that lands on the closing thread while it waits for the first executor must not skip the wait for
+   * the second (review of PR #8366): the first revision of the review fix chained the two waits with {@code ||}, so an
+   * interrupt during the lifecycle wait returned without ever looking at a leader install still writing on the other
+   * executor. The lifecycle task here interrupts the closer shortly after {@code shutdownNow()} reaches it, i.e. while
+   * {@code close()} is waiting for it.
+   */
+  @Test
+  void anInterruptDuringTheFirstWaitStillWaitsForTheSecondExecutor(@TempDir final Path raftDirectory)
+      throws Exception {
+    final CountDownLatch installEntered = new CountDownLatch(1);
+    final CountDownLatch retryEntered = new CountDownLatch(1);
+    final AtomicReference<Thread> closer = new AtomicReference<>();
+
+    final RaftStorage storage = initializeStateMachine(serverWhoseRetryRuns(() -> {
+      retryEntered.countDown();
+      final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(HOLD_MS * 2);
+      boolean closerInterrupted = false;
+      long left;
+      while ((left = deadline - System.nanoTime()) > 0)
+        try {
+          TimeUnit.NANOSECONDS.sleep(left);
+        } catch (final InterruptedException e) {
+          // shutdownNow() got here: close() is about to wait for this task. Interrupt it once it is waiting.
+          if (!closerInterrupted) {
+            holdIgnoringInterrupts(HOLD_MS / 5);
+            closer.get().interrupt();
+            closerInterrupted = true;
+          }
+        }
+    }), raftHAWhoseInstallRuns(() -> {
+      installEntered.countDown();
+      holdIgnoringInterrupts(HOLD_MS * 3);
+    }), raftDirectory);
+    try {
+      final CompletableFuture<TermIndex> install = startLeaderInstall();
+      assertThat(installEntered.await(30, TimeUnit.SECONDS)).as("the install must reach its source resolution").isTrue();
+      applyEntryThatSchedulesTheRetry();
+      assertThat(retryEntered.await(30, TimeUnit.SECONDS)).as("the retry must reach the install").isTrue();
+
+      closer.set(Thread.currentThread());
+      sm.close();
+
+      final boolean interruptRestored = Thread.interrupted();
+      assertThat(interruptRestored).as("the interrupt that arrived during close() is handed back to the caller").isTrue();
+      assertThat(install.isDone())
+          .as("an interrupt during the lifecycle wait must not skip the wait for the leader install")
+          .isTrue();
+    } finally {
+      Thread.interrupted();
+      storage.close();
+    }
+  }
+
+  /**
+   * The self-wait skip is decided by thread IDENTITY, not by the thread name every state machine's lifecycle worker
+   * shares (review of PR #8366). Here a lifecycle task of state machine A closes state machine B, whose own lifecycle
+   * task is still running: a same-named thread is not B's worker, so B must still be waited for.
+   */
+  @Test
+  void anotherStateMachinesLifecycleThreadStillWaitsForThisOnesTask(@TempDir final Path otherDatabaseDirectory)
+      throws Exception {
+    final CountDownLatch retryEntered = new CountDownLatch(1);
+    applyEntryThatSchedulesTheRetry(serverWhoseRetryRuns(() -> {
+      retryEntered.countDown();
+      holdIgnoringInterrupts(HOLD_MS * 2);
+    }));
+    assertThat(retryEntered.await(30, TimeUnit.SECONDS)).as("B's retry must reach the install").isTrue();
+
+    final AtomicReference<Throwable> outcome = new AtomicReference<>();
+    final AtomicBoolean bRetryFinishedWhenCloseReturned = new AtomicBoolean();
+    final CountDownLatch done = new CountDownLatch(1);
+    final ArcadeStateMachine other = new ArcadeStateMachine();
+    try {
+      other.setServer(serverWhoseRetryRuns(otherDatabaseDirectory, () -> {
+        try {
+          sm.close();
+          bRetryFinishedWhenCloseReturned.set(sm.getBootstrapInstallsInFlight().isEmpty());
+        } catch (final Throwable t) {
+          outcome.set(t);
+        } finally {
+          done.countDown();
+        }
+      }));
+      applyEntryThatSchedulesTheRetry(other);
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("A's retry must reach the install and close B").isTrue();
+      rethrow(outcome);
+      assertThat(bRetryFinishedWhenCloseReturned.get())
+          .as("closing B from A's lifecycle thread must still wait for B's own lifecycle task")
+          .isTrue();
+    } finally {
+      other.close();
     }
   }
 
