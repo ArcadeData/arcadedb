@@ -1857,6 +1857,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *       database, which also covers the gap between a failed bootstrap download and the retry it scheduled, when
    *       no install is registered above.</li>
    * </ul>
+   * The start of the bootstrap window is refused too (issue #8368): {@link ArcadeStateMachine#isBootstrapPassPending}
+   * says a first-formation pass has announced it is deciding on this database and has not settled it here yet, so
+   * the copy on disk may be the one it is about to reject.
    * <p>
    * <b>Clients only.</b> The engine's own paths go through these same objects - the apply thread, the install
    * itself (which reopens the database at the end of its swap), the reconciler, the health monitor - and refusing
@@ -1880,7 +1883,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
     final ArcadeStateMachine stateMachine = raft.getStateMachine();
     final boolean anyInstall = SnapshotInstaller.hasInstallsInFlight();
-    if (!anyInstall && (stateMachine == null || !stateMachine.isBootstrapInstallInFlight(getName())))
+    if (!anyInstall && (stateMachine == null || (!stateMachine.isBootstrapInstallInFlight(getName())
+        && !stateMachine.isBootstrapPassPending(getName()))))
       return;
     if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
       return;
@@ -1888,6 +1892,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         || (stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName())))
       throw new NeedRetryException("Database '" + getName() + "' is being replaced on this server from the leader's "
           + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
+          + "Retry shortly, or send the request to another server of the cluster");
+    // Issue #8368: the start of the same window, before the baseline reaches this node.
+    if (stateMachine != null && stateMachine.isBootstrapPassPending(getName()))
+      throw new NeedRetryException("Database '" + getName() + "' cannot serve this request yet: the cluster's "
+          + "first-formation bootstrap is still deciding whether the copy on this server is the one the cluster keeps. "
           + "Retry shortly, or send the request to another server of the cluster");
   }
 
