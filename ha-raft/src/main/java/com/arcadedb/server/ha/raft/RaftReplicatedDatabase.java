@@ -1883,8 +1883,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
     final ArcadeStateMachine stateMachine = raft.getStateMachine();
     final boolean anyInstall = SnapshotInstaller.hasInstallsInFlight();
-    if (!anyInstall && (stateMachine == null || (!stateMachine.isBootstrapInstallInFlight(getName())
-        && !stateMachine.isBootstrapPassPending(getName()))))
+    // Read once: it is asked again below only to pick the message, and a hold that lapses in between must not turn a
+    // refusal decided here into a request served against the copy.
+    final boolean passPending = stateMachine != null && stateMachine.isBootstrapPassPending(getName());
+    if (!anyInstall && !passPending && (stateMachine == null || !stateMachine.isBootstrapInstallInFlight(getName())))
       return;
     if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
       return;
@@ -1894,7 +1896,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
           + "Retry shortly, or send the request to another server of the cluster");
     // Issue #8368: the start of the same window, before the baseline reaches this node.
-    if (stateMachine != null && stateMachine.isBootstrapPassPending(getName()))
+    if (passPending)
       throw new NeedRetryException("Database '" + getName() + "' cannot serve this request yet: the cluster's "
           + "first-formation bootstrap is still deciding whether the copy on this server is the one the cluster keeps. "
           + "Retry shortly, or send the request to another server of the cluster");

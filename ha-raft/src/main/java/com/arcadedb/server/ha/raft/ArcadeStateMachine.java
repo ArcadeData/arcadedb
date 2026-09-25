@@ -4202,6 +4202,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (dbName == null || dbName.startsWith(".") || bootstrapBaselines.containsKey(dbName))
         continue;
       bootstrapPassesPending.put(dbName, pending);
+      // No lock spans the two maps, and none is needed: the apply thread records the baseline BEFORE it removes the
+      // hold, and each ConcurrentHashMap operation is a happens-before edge. So either the apply's remove comes after
+      // this put and clears it, or it came before - in which case the baseline it recorded earlier is visible here.
       if (bootstrapBaselines.containsKey(dbName))
         bootstrapPassesPending.remove(dbName, pending);
     }
@@ -4220,12 +4223,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (bootstrapPassesPending.isEmpty())
       return;
     ensureBootstrapBaselinesLoaded();
+    final Set<String> committedNames = committed == null || committed.isEmpty() ? Set.of() : new HashSet<>(committed);
     for (final Map.Entry<String, PendingBootstrapPass> entry : bootstrapPassesPending.entrySet()) {
       final String dbName = entry.getKey();
       final PendingBootstrapPass pending = entry.getValue();
       if (passId != null && !passId.equals(pending.passId()))
         continue;
-      if (committed == null || !committed.contains(dbName) || bootstrapBaselines.containsKey(dbName))
+      if (!committedNames.contains(dbName) || bootstrapBaselines.containsKey(dbName))
         bootstrapPassesPending.remove(dbName, pending);
     }
   }
