@@ -176,10 +176,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile ArcadeStateMachine      stateMachine;
   /**
    * Owned here, not by the state machine, so an in-place Ratis restart - which builds a new state machine - does
-   * not forget that this node joined at runtime (issue #7819). Initialized at declaration because the constructor
-   * builds the first state machine and hands it this instance.
+   * not forget that this node joined at runtime (issue #7819). Persisted in {@link #runtimeJoinMarkerFile}, so a
+   * process restart does not forget it either once the entry that added this node has been compacted away
+   * (issue #8329). Assigned in the constructor before the first state machine is built and handed this instance.
    */
-  private final    RuntimeJoinDetector     runtimeJoinDetector = new RuntimeJoinDetector();
+  private final    RuntimeJoinDetector     runtimeJoinDetector;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
   /**
@@ -508,6 +509,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       this.peerDisplayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
     }
 
+    this.runtimeJoinDetector = createRuntimeJoinDetector();
     this.stateMachine = createStateMachine();
 
     final long stalledResyncDurationMs = configuration.getValueAsLong(
@@ -1728,6 +1730,36 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (index >= 0)
       HALog.log(this, HALog.BASIC, "Raft log purged up to index %d before installing the snapshot of '%s'", index,
           databaseName);
+  }
+
+  /**
+   * The runtime-join detector this server owns, persisted next to the Raft storage directory (issue #8329).
+   * <p>
+   * A restart restores the armed state only when the Raft storage itself survives restarts
+   * ({@code arcadedb.ha.raftPersistStorage}, the default): a node whose log is wiped at every start rejoins from
+   * nothing, and a marker left by its previous membership would describe a node that no longer exists. A storage
+   * location that cannot be resolved here leaves the detector in memory only - the behaviour before issue #8329 -
+   * rather than failing the construction of the server over a readiness refinement.
+   */
+  private RuntimeJoinDetector createRuntimeJoinDetector() {
+    try {
+      return new RuntimeJoinDetector(runtimeJoinMarkerFile(getRaftStorageDir()), resolvePersistStorage(configuration));
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot resolve the runtime-join marker location, the runtime-join state of this peer will not survive a "
+              + "restart: %s", e.toString());
+      return new RuntimeJoinDetector();
+    }
+  }
+
+  /**
+   * Where the runtime-join marker of the peer whose Raft storage is {@code raftStorageDir} lives: a sibling file of
+   * that directory, never inside it, so the divergence reformat of {@link #restartRatis(boolean)} - which deletes
+   * the directory and rejoins the same membership - cannot delete the marker along with it (issue #8329). Ratis is
+   * handed the storage directory itself ({@code RaftServerConfigKeys.setStorageDir}), not its parent.
+   */
+  static File runtimeJoinMarkerFile(final File raftStorageDir) {
+    return new File(raftStorageDir.getAbsoluteFile().getParentFile(), raftStorageDir.getName() + ".joined-at-runtime");
   }
 
   /**
