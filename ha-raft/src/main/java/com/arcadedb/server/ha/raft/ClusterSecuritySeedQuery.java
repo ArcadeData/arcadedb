@@ -115,6 +115,21 @@ public final class ClusterSecuritySeedQuery {
   }
 
   /**
+   * What the leader answered a seed request with.
+   *
+   * @param upToDate    {@code true} only when the leader compared the caller's fingerprints against its own live
+   *                    documents, found all three equal and submitted nothing (issue #8346). That is the one answer
+   *                    that proves the caller's documents are the cluster's at the moment of the comparison; a
+   *                    SEEDED document converges only once the caller applies the seed entry, and an answer that does
+   *                    not carry the field - an admission, a leader that predates it, the leader's own local seed -
+   *                    says nothing about a match
+   * @param failedSeeds the names of the documents that could not be seeded, empty when all of them committed or when
+   *                    nothing needed seeding
+   */
+  public record SeedAnswer(boolean upToDate, List<String> failedSeeds) {
+  }
+
+  /**
    * The deadline a seed request is given, derived from the seed's own retry budget so the two cannot drift
    * apart. See {@link #SEED_REPORT_MARGIN_MS}.
    */
@@ -148,7 +163,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String admittedPeer) throws IOException {
-    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false);
+    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false).failedSeeds();
   }
 
   /**
@@ -160,6 +175,16 @@ public final class ClusterSecuritySeedQuery {
    * leader answered that this node is already up to date
    */
   public static List<String> seedForCatchUp(final ArcadeDBServer server, final RaftHAPlugin plugin,
+      final String reason) throws IOException {
+    return seedForCatchUpAnswer(server, plugin, reason).failedSeeds();
+  }
+
+  /**
+   * {@link #seedForCatchUp} with the whole answer, so the caller can tell a leader that found this node already in
+   * step from one that seeded it (issue #8346). The fingerprints are read inside this call, so a caller that wants to
+   * say which applied index the compared documents reflect reads that index BEFORE calling.
+   */
+  public static SeedAnswer seedForCatchUpAnswer(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String reason) throws IOException {
     return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true);
   }
@@ -174,7 +199,7 @@ public final class ClusterSecuritySeedQuery {
         .put(ReplicatedSecurityFingerprintRepository.API_TOKENS, security.apiTokensFingerprint());
   }
 
-  private static List<String> seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
+  private static SeedAnswer seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
       final JSONObject fingerprints, final boolean catchUp) throws IOException {
     for (int attempt = 1; ; attempt++) {
       try {
@@ -223,7 +248,7 @@ public final class ClusterSecuritySeedQuery {
    *                read as an admission - and answered by a recently completed seed it did not cause, which is
    *                the reuse hole this distinction exists to keep shut (CodeRabbit on PR #7854)
    */
-  private static List<String> seedOnce(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
+  private static SeedAnswer seedOnce(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
       final JSONObject fingerprints, final boolean catchUp) throws IOException {
     final RaftHAServer raft = plugin.getRaftHAServer();
     if (raft == null)
@@ -233,8 +258,9 @@ public final class ClusterSecuritySeedQuery {
       // No dial: the seeder is in this JVM. See the class note - this is the invariant, not a shortcut.
       // An admission may be answered by the membership change's own seed; a catch-up is repairing this node and
       // must actually seed.
-      return raft.getStateMachine().seedSecurityNowAndReport(reason, reportTimeoutMs(server.getConfiguration()),
-          !catchUp);
+      // Never an up-to-date answer: this path always seeds, it compares nothing.
+      return new SeedAnswer(false, raft.getStateMachine().seedSecurityNowAndReport(reason,
+          reportTimeoutMs(server.getConfiguration()), !catchUp));
 
     final LeaderDial dial = LeaderDial.resolve(plugin, PLAIN_HTTP);
     if (dial == null)
@@ -262,7 +288,7 @@ public final class ClusterSecuritySeedQuery {
     PeerCredentials.attach(builder, raft.getClusterToken());
 
     try {
-      return parse(dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString()), dial.address());
+      return parseAnswer(dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString()), dial.address());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IOException("interrupted while requesting the cluster security seed from the leader", e);
@@ -281,6 +307,15 @@ public final class ClusterSecuritySeedQuery {
    */
   // @VisibleForTesting
   static List<String> parse(final HttpResponse<String> response, final String address) throws IOException {
+    return parseAnswer(response, address).failedSeeds();
+  }
+
+  /**
+   * {@link #parse} with the whole answer: whether the leader found the caller already in step, as well as what it
+   * could not commit (issue #8346). Only a 200 can carry {@code upToDate}; a partial failure is never a match.
+   */
+  // @VisibleForTesting
+  static SeedAnswer parseAnswer(final HttpResponse<String> response, final String address) throws IOException {
     final JSONObject json;
     try {
       json = new JSONObject(response.body());
@@ -294,10 +329,11 @@ public final class ClusterSecuritySeedQuery {
       throw new NotLeaderException("the node at " + address + " is no longer the Raft leader");
 
     if (response.statusCode() == 200) {
-      if (json.getBoolean("upToDate", false))
+      final boolean upToDate = json.getBoolean("upToDate", false);
+      if (upToDate)
         LogManager.instance().log(ClusterSecuritySeedQuery.class, Level.FINE,
             "The leader at %s reports this node already holds every cluster security document", address);
-      return List.of();
+      return new SeedAnswer(upToDate, List.of());
     }
 
     if (response.statusCode() == 503 && json.has("failedSeeds")) {
@@ -311,7 +347,7 @@ public final class ClusterSecuritySeedQuery {
       // would tell an admitting node that everything committed. Absent and empty are the same answer here -
       // "this response does not say what failed" - and both have to be raised.
       if (!names.isEmpty())
-        return names;
+        return new SeedAnswer(false, names);
     }
 
     throw new IOException("the leader at " + address + " answered the security seed with HTTP "
