@@ -32,6 +32,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -134,5 +135,37 @@ class ChaosSchemaTest {
     final long key = Ledger.key(0, 0);
     single(key);
     assertThatThrownBy(() -> single(key)).hasStackTraceContaining("DuplicatedKeyException");
+  }
+
+  @Test
+  void recordPagesVisitEveryRecordOnceInRidOrderAcrossBuckets() {
+    for (int i = 1; i <= 2; i++) {
+      database.command("sql", "CREATE BUCKET ChaosOp_extra" + i);
+      database.command("sql", "ALTER TYPE ChaosOp BUCKET +ChaosOp_extra" + i);
+    }
+    for (long key = 0; key < 50; key++)
+      single(key);
+    assertThat(database.getSchema().getType("ChaosOp").getBuckets(false)).hasSize(3);
+
+    final List<Long> rids = new ArrayList<>();
+    final List<Long> ids = new ArrayList<>();
+    String last = null;
+    while (true) {
+      int rows = 0;
+      try (final ResultSet resultSet = database.query("sql", ChaosSchema.recordPage(last, 7))) {
+        while (resultSet.hasNext()) {
+          final Result row = resultSet.next();
+          last = row.getProperty("rid").toString();
+          rids.add(RecordScan.parseRid(last));
+          ids.add(((Number) row.getProperty("id")).longValue());
+          ++rows;
+        }
+      }
+      if (rows < 7)
+        break;
+    }
+    assertThat(rids).hasSize(50).isSorted().doesNotHaveDuplicates();
+    assertThat(rids.stream().map(rid -> rid >>> 40).distinct()).hasSize(3);
+    assertThat(ids).containsExactlyInAnyOrderElementsOf(LongStream.range(0, 50).boxed().toList());
   }
 }

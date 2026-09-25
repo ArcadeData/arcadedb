@@ -47,6 +47,8 @@ class CheckpointTest {
     final Map<Integer, Integer>      lagPolls   = new HashMap<>();
     final Set<Integer>               unreadable = new HashSet<>();
     final Map<Integer, IOException>  scanErrors = new HashMap<>();
+    /** Records only the buckets hold, as {rid, id}: counted, but not reached by the index scan. */
+    final Map<Integer, List<long[]>> bucketOnly = new HashMap<>();
     Runnable                         beforeScan;
 
     @Override
@@ -59,7 +61,8 @@ class CheckpointTest {
         return new long[] { -1, -1 };
       }
       final List<long[]> nodeRows = rows.get(node);
-      return new long[] { nodeRows.size(), nodeRows.stream().mapToLong(row -> row[1]).sum() };
+      return new long[] { nodeRows.size() + bucketOnly.getOrDefault(node, List.of()).size(),
+          nodeRows.stream().mapToLong(row -> row[1]).sum() };
     }
 
     @Override
@@ -75,6 +78,17 @@ class CheckpointTest {
         throw scanErrors.get(node);
       for (final long[] row : rows.get(node))
         sink.add(row[0], (int) row[1]);
+    }
+
+    @Override
+    public void scanRecords(final int node, final RecordScan sink) throws IOException {
+      if (unreadable.contains(node))
+        throw new IOException("node " + node + " down");
+      long position = 0;
+      for (final long[] row : rows.get(node))
+        sink.add(RecordScan.rid(1, position++), row[0]);
+      for (final long[] record : bucketOnly.getOrDefault(node, List.of()))
+        sink.add(record[0], record[1]);
     }
   }
 
@@ -202,5 +216,24 @@ class CheckpointTest {
     final Checkpoint.Result result = checkpoint(reader, Duration.ofSeconds(5)).run();
     assertThat(result.violations()).isEmpty();
     assertThat(result.counts()).containsExactly(2, 0, 2, 0, 2, 0);
+  }
+
+  @Test
+  void convergenceFailureNamesARecordTheIndexDoesNotReach() throws InterruptedException {
+    final long a = acked();
+    final long b = acked();
+    final ScriptedNodeReader reader = new ScriptedNodeReader();
+    for (int node = 0; node < 3; node++)
+      reader.rows.put(node, List.of(new long[] { a, 0 }, new long[] { b, 0 }));
+    // node 1 has a second record with b's id: count(*) sees 3 rows, the index scan only 2, identical to the others
+    reader.bucketOnly.put(1, List.of(new long[] { RecordScan.rid(2, 7), b }));
+    final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
+    assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
+    final Violation convergence = violations.getFirst();
+    assertThat(convergence.message()).contains("[2, 0, 3, 0, 2, 0]").contains("the record scan found records");
+    assertThat(convergence.keys()).isEmpty();
+    assertThat(convergence.details()).containsExactly(
+        "node 1 records: 3 records, 2 distinct ids, 2 index entries",
+        "node 1 records: " + Ledger.format(b) + " is held by 2 records [#1:1, #2:7] (duplicate id)");
   }
 }

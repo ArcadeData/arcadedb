@@ -21,6 +21,7 @@ package com.arcadedb.containers.ha.chaos;
 
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.function.LongConsumer;
 
 /**
  * The {@code ChaosOp} rows one node holds, as per-writer bit sets indexed by sequence number. Rows that match no ledger
@@ -71,6 +72,28 @@ public final class NodeSnapshot {
 
   public boolean hasEdge(final int writer, final int seq) {
     return withEdge[writer].get(seq);
+  }
+
+  /** @return whether this snapshot holds the key, whether it is in the ledger or a phantom */
+  public boolean holds(final long key) {
+    final int writer = Ledger.writerOf(key);
+    final long seq = Ledger.seqOf(key);
+    if (key < 0 || writer >= present.length || seq >= ledger.size(writer)) {
+      for (final long phantom : phantoms.toArray())
+        if (phantom == key)
+          return true;
+      return false;
+    }
+    return present[writer].get((int) seq);
+  }
+
+  /** Every key this snapshot holds once: the ledger keys in key order, then the phantoms. */
+  public void forEachKey(final LongConsumer action) {
+    for (int w = 0; w < present.length; w++)
+      for (int s = present[w].nextSetBit(0); s >= 0; s = present[w].nextSetBit(s + 1))
+        action.accept(Ledger.key(w, s));
+    for (final long phantom : phantoms.toArray())
+      action.accept(phantom);
   }
 
   public long rows() {

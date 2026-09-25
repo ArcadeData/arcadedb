@@ -52,4 +52,12 @@ final class LedgerNodeReader implements NodeReader {
           sink.add(key, ledger.isPair(key) ? 1 : 0);
       }
   }
+
+  @Override
+  public void scanRecords(final int node, final RecordScan sink) {
+    final NodeSnapshot snapshot = new NodeSnapshot(ledger);
+    scan(node, snapshot);
+    final long[] position = { 0 };
+    snapshot.forEachKey(key -> sink.add(RecordScan.rid(1, position[0]++), key));
+  }
 }

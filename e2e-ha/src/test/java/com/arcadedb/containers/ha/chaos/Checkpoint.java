@@ -114,7 +114,7 @@ public final class Checkpoint {
 
       final List<Violation> violations = new ArrayList<>();
       final Violation divergence = differingKeys("DIVERGENCE", "nodes hold different keys despite equal counts",
-          new Scan(snapshots, List.of()));
+          new Scan(snapshots, List.of(), 0));
       if (divergence.keys().length > 0)
         violations.add(divergence);
       violations.addAll(checker.check(snapshots[0]));
@@ -126,16 +126,18 @@ public final class Checkpoint {
    * @return {@code [ops, edges]} per node, or null when a node could not be read ({@link #lastCounts} then holds what
    * was read, with zeros for the unreadable nodes, and {@link #lastReadError} the error)
    */
-  private record Scan(NodeSnapshot[] snapshots, List<String> notes) {
+  private record Scan(NodeSnapshot[] snapshots, List<String> notes, int recordAnomalies) {
   }
 
   /**
-   * Scans every node that answered the last count poll, so a convergence failure still reports which keys differ.
+   * Scans every node that answered the last count poll, so a convergence failure still reports which keys differ, and
+   * reads each node's records from its buckets to name those its own index does not account for ({@link RecordScan}).
    * Nodes that cannot be read are listed in the notes; a failing scan never hides the convergence failure itself.
    */
   private Scan scanReadableNodes() {
     final NodeSnapshot[] snapshots = new NodeSnapshot[nodes];
     final List<String> notes = new ArrayList<>();
+    int recordAnomalies = 0;
     for (int i = 0; i < nodes; i++) {
       if (!lastReadable[i]) {
         notes.add("node " + i + ": not scanned (" + lastReadErrors[i] + ")");
@@ -147,9 +149,21 @@ public final class Checkpoint {
         snapshots[i] = snapshot;
       } catch (final IOException e) {
         notes.add("node " + i + ": not scanned (" + e.getMessage() + ")");
+        continue;
+      }
+      // the scan above goes through the unique index on id, count(*) reads the buckets: a record only the buckets
+      // hold makes the counts disagree while every node's key scan matches
+      final RecordScan records = new RecordScan();
+      try {
+        reader.scanRecords(i, records);
+        final List<String> found = records.anomalies(i, snapshot, InvariantChecker.MAX_KEYS);
+        notes.addAll(found);
+        recordAnomalies += found.size();
+      } catch (final IOException e) {
+        notes.add("node " + i + ": records not scanned (" + e.getMessage() + ")");
       }
     }
-    return new Scan(snapshots, notes);
+    return new Scan(snapshots, notes, recordAnomalies);
   }
 
   /**
@@ -177,8 +191,10 @@ public final class Checkpoint {
     int i = 0;
     for (final long key : keys)
       keyArray[i++] = key;
-    final String summary = keys.isEmpty() ? "" : " (" + keys.size() + (keys.size() == InvariantChecker.MAX_KEYS ? "+" : "")
+    String summary = keys.isEmpty() ? "" : " (" + keys.size() + (keys.size() == InvariantChecker.MAX_KEYS ? "+" : "")
         + " differing keys listed in ledger-diff.txt)";
+    if (scan.recordAnomalies() > 0)
+      summary += " (the record scan found records the index does not account for, listed in ledger-diff.txt)";
     return new Violation(ResultKind.SAFETY, invariant, message + summary, keyArray, details);
   }
 

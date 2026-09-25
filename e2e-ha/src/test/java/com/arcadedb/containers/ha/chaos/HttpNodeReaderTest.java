@@ -92,4 +92,26 @@ class HttpNodeReaderTest {
         .isNotInstanceOf(HttpNodeReader.ServerErrorException.class).hasMessageContaining("HTTP 401");
     HttpNodeReader.checkStatus(2, 200, "");
   }
+
+  @Test
+  void recordPagesFollowTheLastRidAndKeepRecordsWithoutAnId() throws Exception {
+    final List<String> requested = new ArrayList<>();
+    final RecordScan records = new RecordScan();
+    HttpNodeReader.scanRecordPages(afterRid -> {
+      requested.add(afterRid);
+      if (afterRid == null)
+        return new JSONArray().put(new JSONObject().put("rid", "#1:0").put("id", 5L)).put(new JSONObject().put("rid", "#3:9"));
+      return new JSONArray().put(new JSONObject().put("rid", "#4:2").put("id", 6L));
+    }, records, 2);
+    assertThat(requested).containsExactly(null, "#3:9");
+    assertThat(records.size()).isEqualTo(3);
+  }
+
+  @Test
+  void recordPageQueryReadsTheBucketsInRidOrder() {
+    assertThat(ChaosSchema.recordPage(null, 10)).isEqualTo("SELECT @rid AS rid, id FROM ChaosOp ORDER BY @rid LIMIT 10");
+    assertThat(ChaosSchema.recordPage("#12:345", 10)).isEqualTo(
+        "SELECT @rid AS rid, id FROM ChaosOp WHERE @rid > #12:345 ORDER BY @rid LIMIT 10");
+    assertThatThrownBy(() -> ChaosSchema.recordPage("#1:2 OR 1=1", 10)).isInstanceOf(IllegalArgumentException.class);
+  }
 }

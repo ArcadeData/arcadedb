@@ -55,6 +55,14 @@ public final class ChaosSchema {
   private ChaosSchema() {
   }
 
+  /** A page of records read from the buckets in RID order after {@code afterRid} (null for the first page). */
+  public static String recordPage(final String afterRid, final int size) {
+    if (afterRid != null && !afterRid.matches("#\\d+:\\d+"))
+      throw new IllegalArgumentException("Not a RID: " + afterRid);
+    return "SELECT @rid AS rid, id FROM ChaosOp" + (afterRid == null ? "" : " WHERE @rid > " + afterRid) + " ORDER BY @rid LIMIT "
+        + size;
+  }
+
   public static String page(final int size) {
     return "SELECT id, out('NEXT').size() AS e FROM ChaosOp WHERE id > :last ORDER BY id LIMIT " + size;
   }

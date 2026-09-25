@@ -50,6 +50,10 @@ public final class HttpNodeReader implements NodeReader {
     JSONArray fetch(long last) throws IOException;
   }
 
+  interface RecordPageFetcher {
+    JSONArray fetch(String afterRid) throws IOException;
+  }
+
   private final Endpoints endpoints;
   private final String    queryPath;
 
@@ -77,6 +81,26 @@ public final class HttpNodeReader implements NodeReader {
         final JSONObject row = rows.getJSONObject(i);
         last = row.getLong("id");
         sink.add(last, row.getInt("e", 0));
+      }
+      if (rows.length() < pageSize)
+        return;
+    }
+  }
+
+  @Override
+  public void scanRecords(final int node, final RecordScan sink) throws IOException {
+    scanRecordPages(afterRid -> query(node, ChaosSchema.recordPage(afterRid, ChaosSchema.PAGE_SIZE), new JSONObject()), sink,
+        ChaosSchema.PAGE_SIZE);
+  }
+
+  static void scanRecordPages(final RecordPageFetcher fetcher, final RecordScan sink, final int pageSize) throws IOException {
+    String last = null;
+    while (true) {
+      final JSONArray rows = fetcher.fetch(last);
+      for (int i = 0; i < rows.length(); i++) {
+        final JSONObject row = rows.getJSONObject(i);
+        last = row.getString("rid");
+        sink.add(RecordScan.parseRid(last), row.isNull("id") ? RecordScan.NO_ID : row.getLong("id"));
       }
       if (rows.length() < pageSize)
         return;
