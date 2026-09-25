@@ -256,8 +256,10 @@ public class DatabaseReconciler {
               + "next reconcile.", e.getMessage());
       // The full listing fingerprints every database on the leader and can time out where the marker-only read does
       // not; the install still needs the marker, so ask for it alone, and fail the install if even that fails.
+      // The #4799 refusal first: on an empty follower it fails the install whatever the marker read would answer.
+      failInstallWhenNoLocalDatabases();
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs = bootstrapState.databases();
@@ -410,20 +412,17 @@ public class DatabaseReconciler {
   }
 
   /**
-   * Failure-path fallback for the auto-acquire flow when the leader's database list could not be enumerated.
-   * Refreshes the databases already present locally (best effort, legacy behavior). If this node holds no
-   * databases at all, throws instead so the caller leaves the Ratis snapshot install incomplete and Ratis
-   * re-triggers it once the leader's list is reachable again - rather than ACKing the snapshot index on an
-   * empty follower that received no data (issue #4799).
+   * Failure-path guard for the auto-acquire flow when the leader's database list could not be enumerated. If this
+   * node holds no databases at all, throws so the caller leaves the Ratis snapshot install incomplete and Ratis
+   * re-triggers it once the leader's list is reachable again - rather than ACKing the snapshot index on an empty
+   * follower that received no data (issue #4799). Otherwise the caller keeps the legacy best-effort refresh.
    */
-  private void refreshExistingDatabasesOrFailWhenEmpty(final String leaderHttpAddr, final String leaderHttpsAddr,
-      final String clusterToken) throws IOException {
+  private void failInstallWhenNoLocalDatabases() throws IOException {
     if (mustFailInstallWhenLeaderListUnavailable(localUserDatabaseNames()))
       throw new IOException(
           "Cannot enumerate the leader's databases for auto-acquire and this node holds no databases locally; "
               + "failing the snapshot install so Ratis retries rather than ACKing the snapshot index with no data "
               + "installed (issue #4799)");
-    refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
   }
 
   /**

@@ -153,6 +153,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("#4799");
+    assertThat(reconciler.markerCalls).as("the refusal is certain, so no round trip is spent on the marker").isZero();
   }
 
   @Test
