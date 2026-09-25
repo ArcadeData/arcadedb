@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
@@ -127,6 +128,23 @@ class Issue8300DateTimeIdentityTest extends TestHelper {
           Map.of("p", param))) {
         assertThat(((Number) rs.next().getProperty("c")).longValue()).as(param.getClass().getSimpleName()).isEqualTo(1L);
       }
+  }
+
+  /**
+   * The comparison memoizes a coerced parameter by identity: a java.util.Date moved with setTime() between two
+   * evaluations must not be answered with the value it had before.
+   */
+  @Test
+  void mutatedDateIsNotAnsweredFromTheMemo() {
+    final ComparisonExpression equals = ComparisonExpression.valueComparator(ComparisonExpression.Operator.EQUALS);
+    final CypherDateTime stored = CypherDateTime.parse("2026-01-01T12:00:00+01:00");
+    final Date param = Date.from(ZonedDateTime.parse("2026-01-01T11:00:00Z").toInstant());
+
+    assertThat(equals.evaluateWithValues(param, stored)).isEqualTo(true);
+    param.setTime(param.getTime() + 60_000L);
+    assertThat(equals.evaluateWithValues(param, stored)).isEqualTo(false);
+    param.setTime(param.getTime() - 60_000L);
+    assertThat(equals.evaluateWithValues(stored, param)).isEqualTo(true);
   }
 
   private Object single(final String query) {

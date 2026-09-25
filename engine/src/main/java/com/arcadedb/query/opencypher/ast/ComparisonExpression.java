@@ -402,20 +402,29 @@ public class ComparisonExpression implements BooleanExpression {
     if (!(value instanceof Temporal || value instanceof Date))
       return value;
     final Object[] memo = temporalCoercionMemo;
-    if (memo != null && memo[0] == value)
+    if (memo != null && memo[0] == value && (long) memo[2] == dateMillis(value))
       return memo[1];
     final Object coerced = TemporalUtil.fromCoreJavaType(value);
-    temporalCoercionMemo = new Object[] { value, coerced };
+    temporalCoercionMemo = new Object[] { value, coerced, dateMillis(value) };
     return coerced;
   }
 
   private CypherDateTime adoptZone(final Object raw, final CypherDateTime coerced, final ZoneId zone) {
     final Object[] memo = zoneAdoptionMemo;
-    if (memo != null && memo[0] == raw && memo[1].equals(zone))
+    if (memo != null && memo[0] == raw && (long) memo[3] == dateMillis(raw) && memo[1].equals(zone))
       return (CypherDateTime) memo[2];
     final CypherDateTime adjusted = new CypherDateTime(coerced.getValue().withZoneSameInstant(zone));
-    zoneAdoptionMemo = new Object[] { raw, zone, adjusted };
+    zoneAdoptionMemo = new Object[] { raw, zone, adjusted, dateMillis(raw) };
     return adjusted;
+  }
+
+  /**
+   * The memos key an operand by identity, which is enough for the immutable java.time values but not for a
+   * java.util.Date: the same instance can be moved with setTime() between two evaluations and would be answered from
+   * the memo with the value it had before. Its millis are part of the key; any other operand keys as 0.
+   */
+  private static long dateMillis(final Object value) {
+    return value instanceof Date date ? date.getTime() : 0L;
   }
 
   private Boolean numericCompare(final long leftNum, final long rightNum) {
