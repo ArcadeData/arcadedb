@@ -122,7 +122,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   protected final  List<MutableDocument>                txCreatedRecords          = new ArrayList<>();
   private          RemoteTransactionExplicitLock        explicitLock;
   private          int                                  cachedHashCode            = 0;
-  private          ParsedPropertyTypes                  lastParsedPropertyTypes;
+  private volatile ParsedPropertyTypes                  lastParsedPropertyTypes;
   private volatile ReadConsistency                      readConsistency           = ReadConsistency.EVENTUAL;
   private final    AtomicLong                           lastCommitIndex           = new AtomicLong(-1L);
   // #8062: set - and only ever set, never cleared by a response - when the server answers a request made inside
@@ -1631,8 +1631,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * the last one parsed is kept and handed back while the rows keep matching it, instead of splitting and parsing the
    * string again for every row (issue #8332). A row of a different shape simply replaces it.
    * <p>
-   * The cache is one immutable holder in a plain field: its fields are final, so a thread reading it sees either a
-   * complete pair or the previous one, and the worst a race costs is one extra parse.
+   * The cache is one immutable holder swapped as a whole, so a thread reading it sees either a complete pair or the
+   * previous one, and the worst a race costs is one extra parse.
    */
   Map<String, ColumnTypeHint> propertyTypeHints(final String propTypesAsString) {
     if (propTypesAsString == null || propTypesAsString.isEmpty())
@@ -1732,6 +1732,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private record ParsedPropertyTypes(String source, Map<String, ColumnTypeHint> hints) {
   }
 
+  /**
+   * Builds the record a result row describes, or returns null when the row is not a record. {@link #json2Result} calls
+   * it only for a row that carries {@code @cat}: a row without it is a projection and is never offered here (#8332).
+   */
   protected Record json2Record(final JSONObject result) {
     // Answered on the parsed JSON first: a row without @cat is not a record, and converting it just to find out is
     // the cost issue #8332 measured.
