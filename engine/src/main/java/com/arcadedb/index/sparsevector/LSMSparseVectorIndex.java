@@ -518,6 +518,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final GroupedTopUpPlanner planner = new GroupedTopUpPlanner(limit, groupSize);
     addSource(planner, committed, groupKeyResolver, true);
     addSource(planner, pending, groupKeyResolver, false);
+    // Accumulated over every top-up, like the SQL layer's merges do, although with a single capped source the planner
+    // can name at most one. Disjoint from `committed`: a restricted search returns only groups the first pass left out.
     List<RidScore> committedRows = committed;
     for (final GroupedTopUpPlanner.TopUp topUp : planner.plan()) {
       final List<RidScore> topUpRows;
@@ -527,12 +529,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       } catch (final IOException e) {
         throw new IndexException("Sparse vector grouped top-K failed", e);
       }
-      // Disjoint from `committed`: a restricted search returns only groups the first pass left out.
-      committedRows = new ArrayList<>(committed.size() + topUpRows.size());
-      committedRows.addAll(committed);
+      if (committedRows == committed)
+        committedRows = new ArrayList<>(committed);
       committedRows.addAll(topUpRows);
-      committedRows.sort(BmwScorer.BY_SCORE_DESC);
     }
+    if (committedRows != committed)
+      committedRows.sort(BmwScorer.BY_SCORE_DESC);
 
     final List<RidScore> merged = mergeByScore(committedRows, pending, Integer.MAX_VALUE);
 
