@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #8323, the auto-commit retry: {@code DatabaseAbstractHandler.executeInTransaction} runs {@code execute()}
  * again after a conflict, and every forward to the leader that attempt takes is a retry of a forward the previous
- * attempt took. It must reuse the id that forward had, not draw the next ordinal - otherwise the retried write gets
+ * attempt took. It must reuse the ordinal that forward had, not draw the next one - otherwise the retried write gets
  * a fresh key on the leader and is never deduplicated against the first attempt.
  */
 class Issue8323AutoCommitRetryRequestIdTest {
@@ -64,9 +64,9 @@ class Issue8323AutoCommitRetryRequestIdTest {
   }
 
   @Test
-  void aRetriedAttemptForwardsUnderTheSameIdsAsTheFirst() {
+  void aRetriedAttemptForwardsUnderTheSameOrdinalsAsTheFirst() {
     ForwardedRequestIdContext.set("client-8323");
-    final List<List<String>> idsPerAttempt = new ArrayList<>();
+    final List<List<Integer>> ordinalsPerAttempt = new ArrayList<>();
     final AtomicInteger attempts = new AtomicInteger();
 
     final DatabaseAbstractHandler handler = new DatabaseAbstractHandler(null) {
@@ -74,8 +74,8 @@ class Issue8323AutoCommitRetryRequestIdTest {
       protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
           final Database database, final JSONObject payload) {
         // Two forwards per attempt, standing in for RaftReplicatedDatabase.forwardCommandToLeaderViaRaft.
-        idsPerAttempt.add(List.of(ForwardedRequestIdContext.nextForwardRequestId(),
-            ForwardedRequestIdContext.nextForwardRequestId()));
+        ordinalsPerAttempt.add(List.of(ForwardedRequestIdContext.nextForwardOrdinal(),
+            ForwardedRequestIdContext.nextForwardOrdinal()));
         if (attempts.incrementAndGet() == 1)
           throw new ConcurrentModificationException("Record #1:1 modified by another transaction");
         return new ExecutionResponse(200, "{}");
@@ -85,8 +85,6 @@ class Issue8323AutoCommitRetryRequestIdTest {
     handler.executeInTransaction(null, null, database, null, new AtomicReference<>(), 3);
 
     assertThat(attempts.get()).isEqualTo(2);
-    assertThat(idsPerAttempt).containsExactly(
-        List.of("client-8323", "client-8323#2"),
-        List.of("client-8323", "client-8323#2"));
+    assertThat(ordinalsPerAttempt).containsExactly(List.of(1, 2), List.of(1, 2));
   }
 }

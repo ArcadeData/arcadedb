@@ -69,6 +69,7 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
@@ -123,6 +124,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
   // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
+  // Tags the forward-ordinal section of an idempotency key (issue #8323).
+  private static final byte[]     FORWARD_ORDINAL_KEY_TAG = "forward-ordinal".getBytes(StandardCharsets.US_ASCII);
   // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
   // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
   // fail in practice; if it ever did the digest would be unusable, so we fail fast.
@@ -476,6 +479,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // Splitting the two is what lets the second shape carry the one-hop marker as well (issue #7516);
       // before it, the token could only travel together with a substituted identity, so the branch that had
       // to relay the caller's own credentials carried no marker and could cycle.
+      // The ordinal of a follower's SQL write forward after the first within one client request (issue #8323), folded
+      // into the idempotency key below. Honored only under a valid cluster token: a client choosing it could make its
+      // request share a key with another request's forward.
+      int trustedForwardOrdinal = 0;
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
@@ -497,6 +504,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
           LeaderForwardContext.markAlreadyForwarded(
               exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER));
+        trustedForwardOrdinal = ForwardedRequestIdContext.parseForwardOrdinal(
+            exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
@@ -683,7 +692,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // but the identity of a request must never depend on a value chosen for meter cardinality.
         idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),
             exchange.getRelativePath(), rawDatabaseParameter(exchange), payloadAsString,
-            idempotencyBodyBytes(exchange));
+            idempotencyBodyBytes(exchange), trustedForwardOrdinal);
         final String currentPrincipal = user != null ? user.getName() : null;
 
         final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(idempotencyKey);
@@ -1387,6 +1396,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /** The same, for a route whose body is bytes. Package-private for direct unit testing. */
   static String buildIdempotencyKey(final String requestId, final String method, final String path,
       final String database, final String body, final byte[] binaryBody) {
+    return buildIdempotencyKey(requestId, method, path, database, body, binaryBody, 0);
+  }
+
+  /**
+   * The same, for a follower's SQL write forward after the first within one client request (issue #8323): a positive
+   * {@code forwardOrdinal}, taken only from a request carrying a valid cluster token, is digested after both bodies, so
+   * the forward's key differs from the first forward's and from every key a client can produce - a client cannot add
+   * bytes after the byte-body separator of a route whose body is text, and no client-supplied {@code X-Request-Id}
+   * reaches this field. {@code 0} digests nothing, leaving every other key exactly as it was. Package-private for
+   * direct unit testing.
+   */
+  static String buildIdempotencyKey(final String requestId, final String method, final String path,
+      final String database, final String body, final byte[] binaryBody, final int forwardOrdinal) {
     final MessageDigest md = SHA_256_DIGEST.get();
     md.reset();
     final Charset cs = DatabaseFactory.getDefaultCharset();
@@ -1402,6 +1424,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     md.update((byte) 0);
     if (binaryBody != null)
       md.update(binaryBody);
+    if (forwardOrdinal > 0) {
+      md.update((byte) 0);
+      md.update(FORWARD_ORDINAL_KEY_TAG);
+      md.update((byte) (forwardOrdinal >>> 24));
+      md.update((byte) (forwardOrdinal >>> 16));
+      md.update((byte) (forwardOrdinal >>> 8));
+      md.update((byte) forwardOrdinal);
+    }
     final byte[] digest = md.digest();
     final StringBuilder sb = new StringBuilder(digest.length * 2);
     for (final byte b : digest) {

@@ -67,12 +67,14 @@ class Issue8323SqlForwardRequestIdTest {
       forward(db, "INSERT INTO V SET id = 1");
 
       assertThat(leader.requestIds()).containsExactly("client-8323");
+      assertThat(leader.ordinals()).as("the first forward sends no ordinal").containsExactly((String) null);
     }
   }
 
   /**
    * Two forwards of the same statement under one request: sent under the bare id, the leader would answer the second
-   * from the first one's cache entry, and the second write would silently never run.
+   * from the first one's cache entry, and the second write would silently never run. The id stays the client's, and
+   * the ordinal travels in its own header - never folded into the id, where a client could send the same value.
    */
   @Test
   void twoForwardsInOneRequestNeverShareALeaderCacheKey() throws Exception {
@@ -83,7 +85,26 @@ class Issue8323SqlForwardRequestIdTest {
       forward(db, "INSERT INTO V SET id = 1");
       forward(db, "INSERT INTO V SET id = 1");
 
-      assertThat(leader.requestIds()).containsExactly("client-8323", "client-8323#2");
+      assertThat(leader.requestIds()).containsExactly("client-8323", "client-8323");
+      assertThat(leader.ordinals()).containsExactly((String) null, "2");
+    }
+  }
+
+  /**
+   * Without a cluster token the leader does not honor the ordinal, so a second forward sent with the bare id would
+   * share the first one's key there: it relays no id at all instead.
+   */
+  @Test
+  void withoutAClusterTokenALaterForwardRelaysNoId() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader()) {
+      final RaftReplicatedDatabase db = database(leader, false, null);
+      ForwardedRequestIdContext.set("client-8323");
+
+      forward(db, "INSERT INTO V SET id = 1");
+      forward(db, "INSERT INTO V SET id = 1");
+
+      assertThat(leader.requestIds()).containsExactly("client-8323", null);
+      assertThat(leader.ordinals()).containsExactly((String) null, (String) null);
     }
   }
 
@@ -134,30 +155,35 @@ class Issue8323SqlForwardRequestIdTest {
   }
 
   private static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader) {
+    return database(leader, localIsLeader, "test-token");
+  }
+
+  private static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
+      final String clusterToken) {
     final ContextConfiguration cfg = config();
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getConfiguration()).thenReturn(cfg);
     when(server.getHA()).thenReturn(null); // plain HTTP forward, no HTTPS dial to resolve
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
-    when(raft.getClusterToken()).thenReturn("test-token");
+    when(raft.getClusterToken()).thenReturn(clusterToken);
     when(raft.isLeader()).thenReturn(localIsLeader);
     // A node that became the leader resolves the leader's address to its own.
     when(raft.isOwnHttpAddress(leader.address())).thenReturn(localIsLeader);
     return new RaftReplicatedDatabase(server, mock(LocalDatabase.class), raft);
   }
 
-  /** A leader that answers every command with one empty-result success and records its X-Request-Id. */
+  /** A leader that answers every command with one empty-result success and records its request id and ordinal. */
   private static final class RecordingLeader implements AutoCloseable {
     private final HttpServer   server;
     private final List<String> requestIds = new CopyOnWriteArrayList<>();
+    private final List<String> ordinals   = new CopyOnWriteArrayList<>();
 
     RecordingLeader() throws IOException {
       server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16);
       server.createContext("/", exchange -> {
-        // CopyOnWriteArrayList refuses null, so a missing header is recorded as a sentinel and mapped back.
-        final String id = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
-        requestIds.add(id != null ? id : "");
+        requestIds.add(exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID));
+        ordinals.add(exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
         final byte[] bytes = new JSONObject().put("result", new JSONArray()).toString().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);
@@ -169,7 +195,11 @@ class Issue8323SqlForwardRequestIdTest {
     }
 
     List<String> requestIds() {
-      return requestIds.stream().map(id -> id.isEmpty() ? null : id).toList();
+      return requestIds;
+    }
+
+    List<String> ordinals() {
+      return ordinals;
     }
 
     String address() {

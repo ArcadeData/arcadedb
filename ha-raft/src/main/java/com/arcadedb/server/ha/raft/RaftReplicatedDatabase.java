@@ -3787,20 +3787,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // lands on another node, or here again once the reservation is gone, ran the write on the leader a second time.
     // Published by AbstractServerHttpHandler only for a request it treats as idempotent, so a session-scoped or
     // streamed request, a request with no id, and an embedded caller relay nothing. A second forward taken by the
-    // same request carries the id with its ordinal (see ForwardedRequestIdContext), so two forwards of one statement
-    // never share a cache key on the leader. The id is read from a thread-local, so it reaches this forward only when
-    // the command runs on the HTTP worker thread that published it; a caller that ran it on another thread would
-    // relay nothing, which is the pre-#8323 behaviour and never a wrong replay.
+    // same request carries its ordinal beside the id (see ForwardedRequestIdContext), so two forwards of one statement
+    // never share a cache key on the leader. The ordinal is honored there only under the cluster token, so without a
+    // token a forward after the first relays no id at all: sent bare, it would share the first forward's key. The id
+    // is read from a thread-local, so it reaches this forward only when the command runs on the HTTP worker thread
+    // that published it; a caller that ran it on another thread would relay nothing, which is the pre-#8323
+    // behaviour and never a wrong replay.
     //
     // Not when the POST goes to this node itself - it became the leader while waiting above, the only way past the
     // self-address refusal: this node's cache is then the leader's cache and the request being served already holds
     // its reservation, and a forward whose body happens to match the client's would find that reservation pending and
     // wait out the in-flight timeout for nothing. Decided on the destination captured above, not on a fresh
     // isLeader() read, so a leadership change in between cannot make the two disagree.
-    final String forwardRequestId = ForwardedRequestIdContext.nextForwardRequestId();
-    if (forwardRequestId != null && !postsToItself) {
+    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
+    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
+    if (forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted)) {
       try {
-        builder.header(IdempotencyCache.HEADER_REQUEST_ID, forwardRequestId);
+        builder.header(IdempotencyCache.HEADER_REQUEST_ID, ForwardedRequestIdContext.requestId());
+        if (forwardOrdinal > 1)
+          builder.header(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER, Integer.toString(forwardOrdinal));
       } catch (final IllegalArgumentException e) {
         // A value the JDK client refuses to put on the wire: the write still runs, only without the leader-side
         // replay protection, exactly as it did before the relay existed.

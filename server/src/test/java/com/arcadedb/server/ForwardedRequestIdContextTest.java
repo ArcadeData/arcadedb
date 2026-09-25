@@ -39,23 +39,25 @@ class ForwardedRequestIdContextTest {
 
   @Test
   void aRequestThatPublishedNoIdRelaysNone() {
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isNull();
+    assertThat(ForwardedRequestIdContext.requestId()).isNull();
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isZero();
   }
 
   @Test
   void aBlankIdIsNotRelayed() {
     ForwardedRequestIdContext.set("   ");
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isNull();
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isZero();
 
     ForwardedRequestIdContext.set(null);
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isNull();
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isZero();
+    assertThat(ForwardedRequestIdContext.requestId()).isNull();
   }
 
   @Test
-  void theFirstForwardCarriesTheClientsIdUnchanged() {
+  void theClientsIdIsRelayedUnchanged() {
     ForwardedRequestIdContext.set("req-8323");
 
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323");
+    assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8323");
   }
 
   /**
@@ -63,24 +65,37 @@ class ForwardedRequestIdContextTest {
    * second would be answered from the first one's cache entry instead of running.
    */
   @Test
-  void everyLaterForwardInTheSameRequestGetsItsOwnOrdinal() {
+  void everyForwardInTheSameRequestGetsItsOwnOrdinal() {
     ForwardedRequestIdContext.set("req-8323");
 
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323");
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323#2");
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323#3");
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isEqualTo(1);
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isEqualTo(2);
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isEqualTo(3);
+    assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8323");
   }
 
-  /** A retry of the same request, served on the same pooled thread, maps its forwards back to the same ids. */
+  /** A retry of the same request, served on the same pooled thread, maps its forwards back to the same ordinals. */
   @Test
   void publishingAgainRestartsTheOrdinals() {
     ForwardedRequestIdContext.set("req-8323");
-    ForwardedRequestIdContext.nextForwardRequestId();
-    ForwardedRequestIdContext.nextForwardRequestId();
+    ForwardedRequestIdContext.nextForwardOrdinal();
+    ForwardedRequestIdContext.nextForwardOrdinal();
 
     ForwardedRequestIdContext.set("req-8323");
 
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323");
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isEqualTo(1);
+  }
+
+  @Test
+  void restartingTheOrdinalsKeepsTheId() {
+    ForwardedRequestIdContext.set("req-8323");
+    ForwardedRequestIdContext.nextForwardOrdinal();
+    ForwardedRequestIdContext.nextForwardOrdinal();
+
+    ForwardedRequestIdContext.restartOrdinals();
+
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isEqualTo(1);
+    assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8323");
   }
 
   /** The finally block in the request loop: the next request served by this pooled thread starts clean. */
@@ -89,7 +104,8 @@ class ForwardedRequestIdContextTest {
     ForwardedRequestIdContext.set("req-8323");
     ForwardedRequestIdContext.clear();
 
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isNull();
+    assertThat(ForwardedRequestIdContext.requestId()).isNull();
+    assertThat(ForwardedRequestIdContext.nextForwardOrdinal()).isZero();
   }
 
   @Test
@@ -97,11 +113,25 @@ class ForwardedRequestIdContextTest {
     ForwardedRequestIdContext.set("req-8323");
 
     final AtomicReference<String> seenElsewhere = new AtomicReference<>("unset");
-    final Thread other = new Thread(() -> seenElsewhere.set(ForwardedRequestIdContext.nextForwardRequestId()));
+    final Thread other = new Thread(() -> seenElsewhere.set(ForwardedRequestIdContext.requestId()));
     other.start();
     other.join();
 
     assertThat(seenElsewhere.get()).isNull();
-    assertThat(ForwardedRequestIdContext.nextForwardRequestId()).isEqualTo("req-8323");
+    assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8323");
+  }
+
+  /** Only an ordinal a forward could have sent is honored; the first forward sends none. */
+  @Test
+  void onlyAnOrdinalAForwardCouldHaveSentIsParsed() {
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("2")).isEqualTo(2);
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("17")).isEqualTo(17);
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal(null)).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("")).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("1")).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("0")).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("-2")).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("2a")).isZero();
+    assertThat(ForwardedRequestIdContext.parseForwardOrdinal("9999999999")).isZero();
   }
 }

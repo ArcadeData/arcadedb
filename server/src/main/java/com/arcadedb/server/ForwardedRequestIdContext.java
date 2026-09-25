@@ -28,16 +28,24 @@ package com.arcadedb.server;
  * write inside its own idempotency cache: a retry after a lost answer, landing on any node, is replayed there instead
  * of executed a second time.
  * <p>
- * One request can forward more than one statement. Every forward after the first gets the id with its ordinal
- * appended ({@code id#2}, {@code id#3}, ...). The leader's cache key already includes the forwarded body, so two
- * different statements never collide; the ordinal is for two forwards of the SAME statement in one request, which
- * under the bare id would share one key and the second would be answered with the first one's cached result instead
- * of running. A retry of the whole request that forwards the same statements in the same order - what a
- * deterministic execution does - maps each one back to the key it had the first time.
+ * One request can forward more than one statement. Every forward carries the client's id unchanged, and every forward
+ * after the first also carries its ordinal in {@link #FORWARD_ORDINAL_HEADER}. The leader's cache key already includes
+ * the forwarded body, so two different statements never collide; the ordinal is for two forwards of the SAME
+ * statement in one request, which under the bare id would share one key and the second would be answered with the
+ * first one's cached result instead of running. A retry of the whole request that forwards the same statements in the
+ * same order - what a deterministic execution does - maps each one back to the key it had the first time.
+ * <p>
+ * The ordinal travels in its own header, never folded into the id, and the leader folds it into the key only when the
+ * request carries a valid cluster token: a client can send any {@code X-Request-Id} it likes, so an ordinal encoded in
+ * the id itself ({@code order#2}) would be a value a client could also send, and its request would then share a key
+ * with another request's second forward of the same statement.
  */
 public final class ForwardedRequestIdContext {
-  /** Separates the client's id from the ordinal of a forward after the first within one request. */
-  public static final char ORDINAL_SEPARATOR = '#';
+  /**
+   * Request header carrying the ordinal of a forward after the first within one request (2, 3, ...). Sent only beside
+   * the cluster token, and honored only under it.
+   */
+  public static final String FORWARD_ORDINAL_HEADER = "X-ArcadeDB-Forward-Ordinal";
 
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
@@ -60,22 +68,41 @@ public final class ForwardedRequestIdContext {
     state.forwards = 0;
   }
 
+  /** The client's {@code X-Request-Id} published for the request being served on this thread, or null. */
+  public static String requestId() {
+    return STATE.get().requestId;
+  }
+
   /**
-   * The {@code X-Request-Id} the next forward to the leader must carry, or null when the request being served on this
-   * thread published none. Each call counts one forward.
+   * Counts one forward to the leader and returns its 1-based ordinal within the request being served on this thread,
+   * or 0 - counting nothing - when that request published no id.
    */
-  public static String nextForwardRequestId() {
+  public static int nextForwardOrdinal() {
     final State state = STATE.get();
-    if (state.requestId == null)
-      return null;
-    final int ordinal = ++state.forwards;
-    return ordinal == 1 ? state.requestId : state.requestId + ORDINAL_SEPARATOR + ordinal;
+    return state.requestId == null ? 0 : ++state.forwards;
+  }
+
+  /**
+   * The ordinal a {@link #FORWARD_ORDINAL_HEADER} value names, or 0 when it names none a forward could have sent: absent,
+   * not a number, or below 2 (the first forward sends no header).
+   */
+  public static int parseForwardOrdinal(final String headerValue) {
+    if (headerValue == null || headerValue.isEmpty() || headerValue.length() > 9)
+      return 0;
+    int ordinal = 0;
+    for (int i = 0; i < headerValue.length(); i++) {
+      final char c = headerValue.charAt(i);
+      if (c < '0' || c > '9')
+        return 0;
+      ordinal = ordinal * 10 + (c - '0');
+    }
+    return ordinal >= 2 ? ordinal : 0;
   }
 
   /**
    * Starts counting forwards from the first again, keeping the published id. Called at the top of every attempt of
    * an auto-commit retry: a forward the retried attempt takes repeats one the previous attempt took, so it must carry
-   * the id that forward had rather than the next ordinal, or the leader would see a fresh key and run it again.
+   * the ordinal that forward had rather than the next one, or the leader would see a fresh key and run it again.
    */
   public static void restartOrdinals() {
     STATE.get().forwards = 0;
