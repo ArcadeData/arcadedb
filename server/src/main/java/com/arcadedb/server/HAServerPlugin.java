@@ -239,6 +239,26 @@ public interface HAServerPlugin extends ServerPlugin {
     return null;
   }
 
+  /**
+   * Whether this node was added to the cluster's membership by a change it applied while running - an
+   * {@code addPeer}, a {@code connect cluster} or a {@code KubernetesAutoJoin} self-join - rather than being a
+   * member from the first configuration it observed (issue #7819).
+   * <p>
+   * It is what arms the security-convergence readiness gate of issue #7532. That gate's other input, "this node
+   * has never installed a replicated security document", is equally true of a freshly admitted peer whose seed
+   * has not landed and of every node of a cluster that has simply never replicated one; only the first of them
+   * joined at runtime, so only the first is held. Once {@code true} it stays {@code true} for the life of the
+   * process: what releases the gate is convergence or its bounded window, not a later membership change.
+   * <p>
+   * {@code false} when this HA implementation cannot tell - HA disabled, a non-Raft implementation, or a Raft
+   * server that is not running - which leaves the gate disarmed, i.e. readiness as it was before issue #7532.
+   *
+   * @return {@code true} when this node joined the cluster at runtime
+   */
+  default boolean hasJoinedClusterAtRuntime() {
+    return false;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();
