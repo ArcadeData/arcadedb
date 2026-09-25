@@ -1170,6 +1170,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
       // /api/v1/query (the original Jepsen stale-read was a SELECT routed through command()).
       applyReadConsistencyForReadOnlyCommand(analyzed);
+      // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).
+      ForwardedRequestIdContext.markExecutedLocally();
       return proxied.command(language, query, configuration, args);
     }
 
@@ -1205,6 +1207,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return forwardCommandToLeaderViaRaft(language, query, args, null, configuration);
       // Read-only command executed locally on this follower: honor the read-consistency header.
       applyReadConsistencyForReadOnlyCommand(analyzed);
+      // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).
+      ForwardedRequestIdContext.markExecutedLocally();
       return proxied.command(language, query, configuration, args);
     }
 
@@ -3806,6 +3810,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         builder.header(IdempotencyCache.HEADER_REQUEST_ID, ForwardedRequestIdContext.requestId());
         if (forwardOrdinal > 1)
           builder.header(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER, Integer.toString(forwardOrdinal));
+        // The key the client's own request has on this node, when this forward is that whole request (issue #8347): the
+        // body above is rebuilt from the statement, so the leader keys this forward differently from the retry the
+        // client may send it directly, with its own body. The leader claims this key too, and that retry then finds
+        // the forward's entry. Under the cluster token only, the one form in which the leader honors it.
+        final String clientKey = ForwardedRequestIdContext.clientKeyForCommandForward(forwardOrdinal);
+        if (clientKey != null && ordinalTrusted)
+          builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, clientKey);
       } catch (final IllegalArgumentException e) {
         // A value the JDK client refuses to put on the wire: the write still runs, only without the leader-side
         // replay protection, exactly as it did before the relay existed.
