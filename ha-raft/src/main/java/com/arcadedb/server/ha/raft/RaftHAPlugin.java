@@ -631,6 +631,17 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return s != null && s.hasJoinedClusterAtRuntime();
   }
 
+  /**
+   * All three documents when the Raft server is not readable: the gate asks this only after
+   * {@link #hasJoinedClusterAtRuntime()} said yes, and a Raft server that went away between the two reads is no
+   * evidence that anything converged (issue #8317). The gate's own bounded window still applies.
+   */
+  @Override
+  public List<String> securityDocumentsNotInstalledSinceRuntimeJoin() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.securityDocumentsNotInstalledSinceRuntimeJoin() : RuntimeJoinDetector.allSecurityDocumentNames();
+  }
+
   @Override
   public String getCriticalHaltReason() {
     final RaftHAServer s = raftHAServer;

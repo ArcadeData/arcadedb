@@ -277,6 +277,25 @@ public interface HAServerPlugin extends ServerPlugin {
     return false;
   }
 
+  /**
+   * The cluster-replicated security documents this node has not installed from a replicated entry committed after
+   * the configuration change that (last) added it, in the order users, groups, API tokens (issue #8317).
+   * <p>
+   * It is the half of the security-convergence gate that a recorded replicated fingerprint cannot answer. A
+   * fingerprint says the cluster installed the document here at SOME point; a node removed from the cluster and
+   * re-added with its config volume retained holds one for every document, from its previous membership, while it
+   * may still enforce a user dropped, a group narrowed or a token revoked since. Only an install that follows the
+   * change re-adding it - the admission seed, or a later security change - is the cluster's current document.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code true}. Empty when this HA implementation
+   * has no such concept, which leaves the gate on the fingerprints alone, i.e. as it was before issue #8317.
+   *
+   * @return the document names, empty when all three have been installed since the join
+   */
+  default List<String> securityDocumentsNotInstalledSinceRuntimeJoin() {
+    return List.of();
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();
