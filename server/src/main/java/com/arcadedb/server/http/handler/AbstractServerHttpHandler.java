@@ -123,8 +123,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // blocking so a slow request cannot pile up retries: when the winner is still running at the end of it, the
   // retry is answered 409 + Retry-After instead of executing the request a second time (issue #8324).
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
-  // Seconds a retry refused because its twin is still executing is told to wait before asking again.
-  private static final String     IN_FLIGHT_RETRY_AFTER_SECONDS = "5";
+  // Seconds a retry refused because its twin is still executing is told to wait before asking again: derived
+  // from the wait above, so retuning one cannot leave the header advertising a different back-off.
+  private static final String     IN_FLIGHT_RETRY_AFTER_SECONDS = String.valueOf(Math.max(1L, IN_FLIGHT_WAIT_MS / 1_000L));
   // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
   // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
   // fail in practice; if it ever did the digest would be unusable, so we fail fast.
