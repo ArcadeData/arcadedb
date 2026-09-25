@@ -66,16 +66,24 @@ class Issue8355UntypedLeader503ReconstructionTest {
 
   @Test
   void aBackOffTheLeaderDidNotStateOrStatedAsADateFallsBackToTheDefault() {
-    for (final String header : new String[] { null, "", "Wed, 21 Oct 2026 07:28:00 GMT", "-1" }) {
+    for (final String header : new String[] { null, "", "Wed, 21 Oct 2026 07:28:00 GMT" }) {
       final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY,
           header);
 
       assertThat(rebuilt).as("Retry-After=%s", header).isInstanceOf(RetryLaterException.class);
       assertThat(((RetryLaterException) rebuilt).getRetryAfterSeconds()).as("Retry-After=%s", header)
-          .isGreaterThanOrEqualTo(1L);
+          .isEqualTo(RaftReplicatedDatabase.DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS);
     }
     assertThat(((RetryLaterException) RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY,
         "12")).getRetryAfterSeconds()).isEqualTo(12L);
+  }
+
+  /** A back-off stated as a number below one second is a number, so it is clamped to one second, not defaulted. */
+  @Test
+  void aBackOffBelowOneSecondIsClampedToOneSecond() {
+    for (final String header : new String[] { "-1", "0" })
+      assertThat(((RetryLaterException) RaftReplicatedDatabase.reconstructLeaderException(503, SNAPSHOT_INSTALL_BODY,
+          header)).getRetryAfterSeconds()).as("Retry-After=%s", header).isEqualTo(1L);
   }
 
   /** An untyped 503 with no body at all: the same contract {@code RemoteHttpComponent} applies to one. */
