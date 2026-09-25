@@ -75,6 +75,7 @@ public final class PhysicalOrderRidFetcher {
   private       boolean                chunkSourceExhausted;
   private       long                   matched;
   private       Outcome                outcome;
+  private       WorkGuard              guard;
 
   /**
    * @param sources       opens a new pass over the index search: called once, and a second time only for a range too
@@ -115,6 +116,7 @@ public final class PhysicalOrderRidFetcher {
    * @param guard checked periodically, since the pass can be long
    */
   public Outcome start(final WorkGuard guard) {
+    this.guard = guard;
     final Source source = sources.get();
     boolean overflow = false;
     try {
@@ -192,7 +194,9 @@ public final class PhysicalOrderRidFetcher {
 
   private void fillNextChunk() {
     buffer.clear();
+    int read = 0;
     while (held() < maxBufferedRids) {
+      guard.checkPeriodically(++read);
       final Object entry = chunkSource.next();
       if (entry == null) {
         chunkSourceExhausted = true;

@@ -202,6 +202,22 @@ class Issue8335GAVOneHopAggregationTest extends TestHelper {
   }
 
   @Test
+  void aVertexTheViewDoesNotMapCountsItsSelfLoopOnceOnAnUndirectedHop() {
+    // A stale view kept in use: a vertex created after its build is expanded on its record, where an undirected walk
+    // meets a self-loop in both adjacency lists
+    createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age) UPDATE MODE OFF");
+    GraphAnalyticalViewRegistry.get(database, "gav8335").setUseWhenStale(true);
+    database.transaction(() -> {
+      final Vertex loop = database.newVertex("Person").set("id", 10_000).set("city", "city_0").save();
+      loop.modify().newEdge("KNOWS", loop);
+    });
+
+    final String query = "MATCH (a:Person)-[:KNOWS]-(b:Person) WHERE a.id = 10000 RETURN count(*) AS n";
+    assertThat(plan(query)).contains("provider=gav8335");
+    assertThat(answerCount(query)).isEqualTo(1L);
+  }
+
+  @Test
   void aNonAggregatingReturnIsLeftToTheOperators() {
     createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age)");
     assertThat(plan("MATCH (p:Person)-[:KNOWS]->(f:Person) RETURN p.city AS c, f.age AS a")).doesNotContain("GAV ONE-HOP SCAN");
