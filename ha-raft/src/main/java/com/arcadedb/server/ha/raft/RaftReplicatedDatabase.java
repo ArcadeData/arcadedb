@@ -3661,7 +3661,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Asked only when the write is about to travel on that plain-HTTP address: isOwnHttpAddress answers for this
     // node's HTTP listener and cannot speak for an HTTPS endpoint, which getLeaderHttpsAddress() withholds when
     // it is this node's own.
-    if (!raft.isLeader() && leaderHttpsAddress == null && raft.isOwnHttpAddress(leaderHttpAddress)) {
+    //
+    // Captured once: the same answer also decides, further down, whether the request id is relayed (issue #8323), so
+    // the two decisions are about the one destination the write is actually posted to.
+    final boolean postsToItself = leaderHttpsAddress == null && raft.isOwnHttpAddress(leaderHttpAddress);
+    if (!raft.isLeader() && postsToItself) {
       if (selfForwardWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "The HTTP address resolved for the leader (%s) is this node's own, so a write forwarded to it would come "
@@ -3788,11 +3792,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // the command runs on the HTTP worker thread that published it; a caller that ran it on another thread would
     // relay nothing, which is the pre-#8323 behaviour and never a wrong replay.
     //
-    // Not when this node became the leader while waiting above and the POST goes to itself: this node's cache is then
-    // the leader's cache and the request being served already holds its reservation, and a forward whose body happens
-    // to match the client's would find that reservation pending and wait out the in-flight timeout for nothing.
+    // Not when the POST goes to this node itself - it became the leader while waiting above, the only way past the
+    // self-address refusal: this node's cache is then the leader's cache and the request being served already holds
+    // its reservation, and a forward whose body happens to match the client's would find that reservation pending and
+    // wait out the in-flight timeout for nothing. Decided on the destination captured above, not on a fresh
+    // isLeader() read, so a leadership change in between cannot make the two disagree.
     final String forwardRequestId = ForwardedRequestIdContext.nextForwardRequestId();
-    if (forwardRequestId != null && !raft.isLeader()) {
+    if (forwardRequestId != null && !postsToItself) {
       try {
         builder.header(IdempotencyCache.HEADER_REQUEST_ID, forwardRequestId);
       } catch (final IllegalArgumentException e) {

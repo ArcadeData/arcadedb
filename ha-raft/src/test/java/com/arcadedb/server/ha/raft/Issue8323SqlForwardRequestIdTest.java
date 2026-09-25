@@ -142,6 +142,8 @@ class Issue8323SqlForwardRequestIdTest {
     when(raft.getLeaderHttpAddress()).thenReturn(leader.address());
     when(raft.getClusterToken()).thenReturn("test-token");
     when(raft.isLeader()).thenReturn(localIsLeader);
+    // A node that became the leader resolves the leader's address to its own.
+    when(raft.isOwnHttpAddress(leader.address())).thenReturn(localIsLeader);
     return new RaftReplicatedDatabase(server, mock(LocalDatabase.class), raft);
   }
 
