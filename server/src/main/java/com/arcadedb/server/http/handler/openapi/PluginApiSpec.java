@@ -589,6 +589,17 @@ public class PluginApiSpec implements OpenApiContributor {
             + "although it has applied everything it could locally commit. It does not count toward quorum while "
             + "this is true, even though 'localReplicationLag' reads 0. See the 'follower-stuck-at-stale-term' "
             + "alert for the operator-facing explanation"));
+    // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
+    // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.
+    schema.addProperty("leaderCommitIndex", SpecBuilders.integer(
+        "The commit index this follower's leader last reported, learned by the health monitor over a "
+            + "follower-to-leader call every arcadedb.ha.healthCheckInterval. -1 on the leader and on a follower "
+            + "that has not learned one yet"));
+    schema.addProperty("localStalledBehindLeader", SpecBuilders.bool(
+        "True when this follower is more than arcadedb.ha.replicationLagWarning entries behind 'leaderCommitIndex' "
+            + "and has applied nothing and received no log entry for the grace the leader uses to report a replica "
+            + "STALLED. It does not count toward quorum while this is true, even though 'localReplicationLag' can "
+            + "read 0. See the 'follower-stalled-behind-leader' alert for the operator-facing explanation"));
     schema.addProperty("peers", SpecBuilders.arrayOf(peer, "Known peers"));
     schema.addProperty("databases", SpecBuilders.arrayOf(database, "Replicated databases"));
     schema.addProperty("databasePresence", SpecBuilders.mapOf(
@@ -619,7 +630,8 @@ public class PluginApiSpec implements OpenApiContributor {
     // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
-        "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm", "peers",
+        "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
+        "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
     return schema;
   }

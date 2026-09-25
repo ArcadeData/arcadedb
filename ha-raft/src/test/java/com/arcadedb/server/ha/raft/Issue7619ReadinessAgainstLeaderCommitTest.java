@@ -173,13 +173,17 @@ class Issue7619ReadinessAgainstLeaderCommitTest {
   }
 
   @Test
-  void theLeaderIsNotAskedWhenReadinessDoesNotConsultHa() throws Exception {
+  void theLeaderIsAskedEvenWhenReadinessDoesNotConsultHa() throws Exception {
+    // Issue #8342: the follower's own stall signal in GET /api/v1/cluster reads the answer on every node, so the
+    // probe no longer depends on arcadedb.server.readinessRequiresHA. Readiness itself still ignores it with the
+    // flag off, because ServerControlPlane consults isReadyForTraffic() only when the flag is on.
     final Fixture f = new Fixture(false, 100L, 100L);
     f.leaderCommit = 5000L;
 
     f.raft.refreshLeaderCommitIndex();
 
-    assertThat(f.probes.get()).as("no call to the leader when nothing reads the answer").isZero();
+    assertThat(f.probes.get()).isEqualTo(1);
+    assertThat(f.raft.getLeaderReportedCommitIndex()).isEqualTo(5000L);
   }
 
   @Test

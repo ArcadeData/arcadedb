@@ -170,6 +170,16 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final boolean stuckAtStaleTerm = raftHAServer.isFollowerStuckAtStaleTermConfirmed();
     response.put("localStuckAtStaleTerm", stuckAtStaleTerm);
 
+    // This follower stalled behind its leader at the current term (issue #8342): its log stopped receiving entries
+    // with no term change, so localReplicationLag above can read 0 and localStuckAtStaleTerm false, and only the
+    // leader's answer used to carry the stall. Measured against the commit index the leader reports over the
+    // health monitor's follower-to-leader probe, with the leader's own STALLED rule. -1 on the leader (whose own
+    // localCommitIndex is the figure) and on a follower that has not learned one yet. Masked on the leader too, for
+    // the up to one health tick between an election and the tick that drops the stall this node had as a follower.
+    final FollowerStallTracker.Stall stalledBehindLeader = isLeader ? null : raftHAServer.getFollowerStallBehindLeader();
+    response.put("leaderCommitIndex", isLeader ? -1L : raftHAServer.getLeaderReportedCommitIndex());
+    response.put("localStalledBehindLeader", stalledBehindLeader != null);
+
     // Per-follower replication health (leader only): replication lag, classified status, heartbeat
     // latency, and how long the follower has been lagging - so Studio and operators can pinpoint a
     // constantly-slow node instead of grepping logs (issue #4812). Keyed by peer id for the loop below.
@@ -352,7 +362,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm));
+            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader));
 
     return new ExecutionResponse(200, response.toString());
   }

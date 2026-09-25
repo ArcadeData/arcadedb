@@ -176,12 +176,25 @@ public class ClusterAlerts {
    * Scan overload taking this node's terminal conditions explicitly (issue #7872) plus, since issue #8289,
    * whether this node is itself stuck at a stale term after a snapshot install: see
    * {@link RaftHAServer#isFollowerStuckAtStaleTermConfirmed()} for what debounces it before it reaches here.
-   * This is the production entry point; {@link GetClusterHandler} calls it directly.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
+        nodeStatus, stuckAtStaleTerm, null);
+  }
+
+  /**
+   * Scan overload that also takes this follower's own stall behind its leader (issue #8342), or {@code null} when
+   * it is not stalled: see {@link RaftHAServer#trackFollowerStall()}. This is the production entry point;
+   * {@link GetClusterHandler} calls it directly, with the same sample it renders into the status document.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId,
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
+      final FollowerStallTracker.Stall stalledBehindLeader) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -204,6 +217,7 @@ public class ClusterAlerts {
     // /api/v1/ready is 503 - it is the one condition on this endpoint that degrades the cluster's fault
     // tolerance while every other signal here, readiness included, still looks healthy (issue #8289).
     addStuckAtStaleTermAlert(stuckAtStaleTerm, alerts);
+    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
@@ -241,6 +255,44 @@ public class ClusterAlerts {
             + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
             + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
         .put("details", new JSONObject().put("stuckAtStaleTerm", true)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the stalled-behind-leader alert iff this node is
+   * a follower more than the lag threshold behind the commit index its leader reported, with no progress for the
+   * grace the leader uses to call the same replica {@code STALLED} (issue #8342).
+   * <p>
+   * {@code critical}, like the leader's {@code lagging-followers} alert for a {@code STALLED} replica, which is the
+   * same condition seen from the other side: this node does not count toward the quorum while it lasts. Before this
+   * alert only the leader's answer carried it, and this node's own answer read healthy with a
+   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds.
+   * <p>
+   * Suppressed while {@code stuckAtStaleTerm} holds: a node stuck at a stale term is stalled too, and that alert
+   * already names the cause and the recovery. Two critical alerts for one condition would read as two incidents.
+   */
+  static void addStalledBehindLeaderAlert(final FollowerStallTracker.Stall stall, final boolean stuckAtStaleTerm,
+      final JSONArray alerts) {
+    if (stall == null || stuckAtStaleTerm)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "follower-stalled-behind-leader")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node is stalled behind the leader and not counting toward quorum")
+        .put("message", "This node is " + stall.lag() + " entries behind the commit index its leader reported ("
+            + stall.leaderCommitIndex() + ") and has applied nothing and received no new log entry for "
+            + stall.stalledForMs() / 1000 + "s. Its own commit index only covers the entries it holds, so this "
+            + "document's localReplicationLag can read 0 and every other field here can look healthy. While this "
+            + "lasts the node does not count toward the Raft quorum, and if the cluster loses one more node, writes "
+            + "stop. The leader reports the same replica as STALLED in its own lagging-followers alert.")
+        .put("recommendation", "If arcadedb.ha.stalledReplicaResyncDurationMs is enabled (the default), the leader "
+            + "forces a resync of this node once the stall has lasted that long. If this alert persists after that, "
+            + "check the leader's log for the resync outcome, then restart this node by hand.")
+        .put("details", new JSONObject()
+            .put("leaderCommitIndex", stall.leaderCommitIndex())
+            .put("appliedIndex", stall.appliedIndex())
+            .put("lag", stall.lag())
+            .put("stalledForMs", stall.stalledForMs())));
   }
 
   /**
