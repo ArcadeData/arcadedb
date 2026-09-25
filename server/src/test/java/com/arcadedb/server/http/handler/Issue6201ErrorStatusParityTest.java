@@ -45,6 +45,7 @@ import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
+import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -143,7 +144,12 @@ class Issue6201ErrorStatusParityTest {
       // to a forwarded SQL write - on the leader. It reached this chain inside the auto-commit wrapper as a plain
       // TransactionException and left as a 500, so the wrapped shapes are the ones that matter most.
       new MappedFailure("RequestStillInFlightException", 409,
-          () -> new RequestStillInFlightException("Retry it later with the same X-Request-Id", 5)));
+          () -> new RequestStillInFlightException("Retry it later with the same X-Request-Id", 5)),
+      // Issue #8355: a node the follower forwarded a SQL write to refused it before running it, with a back-off (a
+      // snapshot install). Rebuilt by the follower, it reached this chain as a plain TransactionException and left as
+      // a 500 with no back-off, so the wrapped shapes are again the ones that matter.
+      new MappedFailure("RetryLaterException", 503,
+          () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)));
 
   /**
    * The property itself: bare, wrapped in {@code TransactionException} (what the auto-commit wrapper produced),
@@ -438,11 +444,35 @@ class Issue6201ErrorStatusParityTest {
     }
   }
 
-  /** Every other failure is sent without a Retry-After: the header is the in-flight refusal's alone. */
+  /**
+   * Issue #8355: a refusal-before-execution with a back-off, rebuilt by a follower from the answer of the node it
+   * forwarded a SQL write to, is answered 503 with that {@code Retry-After}, and its body names the exception and
+   * carries the back-off in {@code exceptionArgs} so one more hop can rebuild it. Raised inside the auto-commit
+   * wrapper, as the forward raises it, it used to be a 500 with neither.
+   */
+  @Test
+  void aRetryLaterIsServiceUnavailableWithARetryAfterWrappedOrNot() {
+    for (final RuntimeException shape : List.<RuntimeException>of(
+        new RetryLaterException("Server is installing a snapshot, please retry", 8),
+        new TransactionException("Error on executing command",
+            new RetryLaterException("Server is installing a snapshot, please retry", 8)),
+        new CommandExecutionException("Error on executing command",
+            new RetryLaterException("Server is installing a snapshot, please retry", 8)))) {
+      final HandledResponse response = handle(shape);
+
+      assertThat(response.statusCode).as("body=%s", response.body).isEqualTo(503);
+      assertThat(response.responseHeaders.getFirst("Retry-After")).isEqualTo("8");
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.getString("exception")).isEqualTo(RetryLaterException.class.getName());
+      assertThat(json.getString("exceptionArgs")).isEqualTo("8");
+    }
+  }
+
+  /** Every other failure is sent without a Retry-After: the header belongs to the refusals that state a back-off. */
   @Test
   void noOtherFailureIsSentWithARetryAfter() {
     for (final MappedFailure failure : MAPPED_FAILURES)
-      if (!failure.name().equals("RequestStillInFlightException"))
+      if (!failure.name().equals("RequestStillInFlightException") && !failure.name().equals("RetryLaterException"))
         assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
             .as("%s must not carry a Retry-After", failure.name())
             .isNull();

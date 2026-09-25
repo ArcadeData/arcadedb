@@ -46,6 +46,7 @@ import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
+import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -406,12 +407,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    // Return 503 during snapshot installation to prevent cryptic errors
+    // Return 503 during snapshot installation to prevent cryptic errors. The body names RetryLaterException and carries
+    // the back-off in exceptionArgs: that is the proof a follower that forwarded a SQL write here needs to tell this
+    // refusal - nothing ran - from an anonymous 503 something between the two nodes may have sent after the write ran,
+    // and to answer its own client 503 + Retry-After only for this one (issue #8355). The detail repeats the reason so
+    // a client that reads a typed body's detail (RemoteHttpComponent) keeps it.
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
+      final String retryAfter = String.valueOf(RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS);
       exchange.setStatusCode(503);
-      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, "5");
-      exchange.getResponseSender().send(
-          error2json("Server is installing a snapshot, please retry", "", null, null, null));
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, retryAfter);
+      exchange.getResponseSender().send(new JSONObject()
+          .put("error", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("detail", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("exception", RetryLaterException.class.getName())
+          .put("exceptionArgs", retryAfter).toString());
       return;
     }
 
@@ -1020,6 +1029,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
     }
 
+    // 503 + Retry-After, before the NeedRetryException arm below, which it extends: a node refused the request before
+    // running it and said how long to wait - rebuilt by a follower from the answer to a SQL write it forwarded, such as
+    // a leader's snapshot-install 503, which used to reach this chain as a plain TransactionException and leave as a
+    // 500 with no back-off (issue #8355). The retry-after goes in exceptionArgs too, so the next hop can rebuild the
+    // exception from the body alone.
+    final RetryLaterException retryLater = firstOf(e, cause, RetryLaterException.class);
+    if (retryLater != null) {
+      final String retryAfter = String.valueOf(retryLater.getRetryAfterSeconds());
+      return new ErrorClassification(503, "Cannot execute command", retryLater, retryAfter, ErrorLogKind.RETRYABLE,
+          retryAfter);
+    }
+
     // 503: the conflict is transient and the same request can succeed as issued. Reached from inside the
     // auto-commit wrapper as well since #6201, which is where the engine raises most of them.
     final NeedRetryException retryable = firstOf(e, cause, NeedRetryException.class);
@@ -1198,7 +1219,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected record ErrorClassification(int status, String message, Throwable reported, String exceptionArgs,
                                        ErrorLogKind logKind, String retryAfter) {
-    /** A classification that sends no {@code Retry-After}, which is every arm but the in-flight refusal. */
+    /** A classification that sends no {@code Retry-After}: every arm but the in-flight and retry-later refusals. */
     protected ErrorClassification(final int status, final String message, final Throwable reported,
         final String exceptionArgs, final ErrorLogKind logKind) {
       this(status, message, reported, exceptionArgs, logKind, null);
