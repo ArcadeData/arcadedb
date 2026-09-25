@@ -167,6 +167,42 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
   }
 
   /**
+   * The same guarantee for a document and an edge: their content now comes from the scan, not from a lazy load at
+   * modify() time, so modify() has to notice the page moved on and reload, as it does for a vertex.
+   */
+  @Test
+  void modifyOfDocumentAndEdgeAfterAConcurrentCommitStillSeesIt() throws Exception {
+    final RID docRid = saved(() -> database.newDocument("Doc8312").set("id", 1).save());
+    final RID[] edgeRid = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("V8312").set("id", 10).save();
+      final MutableVertex b = database.newVertex("V8312").set("id", 11).save();
+      edgeRid[0] = a.newEdge("E8312", b).getIdentity();
+    });
+
+    for (final RID rid : new RID[] { docRid, edgeRid[0] }) {
+      final String type = rid.equals(docRid) ? "Doc8312" : "E8312";
+      database.begin();
+      final Document scanned = database.iterateType(type, false).next().asDocument();
+      assertThat(scanned.getIdentity()).isEqualTo(rid);
+
+      final Thread other = new Thread(
+          () -> database.transaction(() -> rid.asDocument().modify().set("other", "yes").save()));
+      other.start();
+      other.join();
+
+      final MutableDocument modified = scanned.modify();
+      assertThat(modified.getString("other")).as("%s sees the concurrent commit", type).isEqualTo("yes");
+      modified.set("mine", "yes").save();
+      database.commit();
+
+      final Document reloaded = rid.asDocument();
+      assertThat(reloaded.getString("other")).as(type).isEqualTo("yes");
+      assertThat(reloaded.getString("mine")).as(type).isEqualTo("yes");
+    }
+  }
+
+  /**
    * A record modified earlier in the same transaction is answered from the transaction, not from the page.
    */
   @Test

@@ -137,6 +137,70 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * Gets this record ready to be turned into a mutable one.
+   * <p>
+   * If the transaction already holds the record, that is returned and must be used. A record of a kind that pins its
+   * page on modify ({@link #pinsPageOnModify()}, a vertex) inside a transaction whose page image does not hold that page
+   * yet has it pinned, and its content refreshed if the page moved on ({@link #pinPageAndReloadIfStale()}). Any other
+   * record keeps the content it was read with, as it always did, unless a scan read that content straight from the page
+   * and the page moved on since ({@link #reloadIfPageMoved()}): before issue #8312 a scan handed out lazy records that
+   * were only loaded here, so a commit landing between the scan and the modify() was always seen, and still must be.
+   *
+   * @param kind the record kind, for the error message
+   *
+   * @return the record the transaction already holds, or {@code null}
+   */
+  protected Record prepareForModify(final String kind) {
+    if (rid == null)
+      return null;
+
+    final TransactionContext transaction = database.getTransaction();
+    final Record recordInCache = transaction.getRecordFromCache(rid);
+    if (recordInCache instanceof MutableDocument)
+      return recordInCache;
+
+    try {
+      if (recordInCache != null) {
+        // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
+        if (!transaction.hasPageForRecord(rid.getPageId(database)))
+          pinPageAndReloadIfStale();
+      } else if (pinsPageOnModify() && transaction.isActive() && !transaction.hasPageForRecord(rid.getPageId(database)))
+        // With no transaction open there is no page image to pin the record to: the write that follows opens its own
+        // implicit transaction (auto-transaction mode) and verifies there that the record is still the one read (#6950),
+        // so modifying outside a transaction is legitimate for a vertex, as it already was for a document (issue #7096).
+        pinPageAndReloadIfStale();
+      else
+        reloadIfPageMoved();
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Error on reloading " + kind + " " + rid, e);
+    }
+    return null;
+  }
+
+  /**
+   * Whether {@link #modify()} pins the record's page in the transaction. A vertex does (its edge lists make the page the
+   * unit a concurrent change is detected on); a document and an edge keep detecting it on save, against the image they
+   * read.
+   */
+  protected boolean pinsPageOnModify() {
+    return false;
+  }
+
+  /**
+   * Reloads the content if a scan read it straight from the page (issue #8312) and that page has changed since. Content
+   * of unknown origin is left as it is: that is what the caller read, and what a later save is checked against.
+   */
+  protected void reloadIfPageMoved() throws IOException {
+    final long readFromVersion = contentPageVersion;
+    if (readFromVersion < 0)
+      return;
+    final BasePage page = database.getTransaction()
+        .getPage(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize());
+    if (page.getVersion() != readFromVersion)
+      reload();
+  }
+
+  /**
    * Pins the record's page in the current transaction, so the commit checks it for concurrent changes, and reloads the
    * content unless it was read from that very page version: then the reload would read back the same bytes and only
    * notify the read listeners a second time for a record the caller read once (issue #8312). A page changed since the
@@ -155,21 +219,8 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public MutableDocument modify() {
-    final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != null) {
-      if (recordInCache instanceof MutableDocument document)
-        return document;
-      else if (!database.getTransaction().hasPageForRecord(rid.getPageId(database))) {
-        // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
-        // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
-        try {
-          // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          pinPageAndReloadIfStale();
-        } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on reloading document " + rid, e);
-        }
-      }
-    }
+    if (prepareForModify("document") instanceof MutableDocument fromCache)
+      return fromCache;
 
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
