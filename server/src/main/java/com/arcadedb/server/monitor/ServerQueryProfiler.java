@@ -23,19 +23,18 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.DateUtils;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
@@ -50,9 +49,6 @@ public class ServerQueryProfiler {
   private static final int     MAX_ENTRIES             = 10_000;
   private static final int     MAX_PROFILER_FILES      = 50;
   private static final Pattern WHITESPACE              = Pattern.compile("\\s+");
-  // cleanOldFiles() deletes by name order, so the name must sort chronologically whatever the default locale's
-  // calendar and digits are (issue #8301)
-  private static final DateTimeFormatter RUN_FILE_TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
 
   private final ArcadeDBServer server;
 
@@ -523,7 +519,7 @@ public class ServerQueryProfiler {
         if (!dir.mkdirs())
           return;
 
-      final String timestamp = LocalDateTime.now().format(RUN_FILE_TIMESTAMP);
+      final String timestamp = LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP_SECONDS);
       final File file = new File(dir, "profiler-run-" + timestamp + ".json");
       Files.writeString(file.toPath(), results.toString(2));
 

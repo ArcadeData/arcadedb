@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.BufferedReader;
@@ -37,7 +38,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.logging.Level;
 
 public class FileServerEventLog implements ServerEventLog {
@@ -48,9 +48,6 @@ public class FileServerEventLog implements ServerEventLog {
   // Calendar WHEN reportEvent() IS CALLED CONCURRENTLY FROM MANY THREADS (HTTP HANDLERS, MONITOR, HA, ...).
   private final static DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
       .withZone(ZoneId.systemDefault());
-  // start() rotates the files by name order, so the name must sort chronologically whatever the default locale's
-  // calendar and digits are (issue #8301)
-  private final static DateTimeFormatter FILE_NAME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT);
   private final        ArcadeDBServer    server;
   private              File              newFileName;
   private              List<String>      existentFiles;
@@ -107,7 +104,7 @@ public class FileServerEventLog implements ServerEventLog {
     ++maxCounter;
 
     newFileName = new File(logDirectory,
-        FILE_PREFIX + LocalDateTime.now().format(FILE_NAME_FORMAT) + "." + maxCounter + FILE_EXT);
+        FILE_PREFIX + LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP_SECONDS) + "." + maxCounter + FILE_EXT);
     try {
       if (!newFileName.createNewFile())
         throw new ServerException("Error on creating new server event log file " + newFileName);

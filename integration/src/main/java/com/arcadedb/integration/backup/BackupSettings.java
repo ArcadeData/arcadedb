@@ -18,12 +18,12 @@
  */
 package com.arcadedb.integration.backup;
 
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -40,14 +40,6 @@ public class BackupSettings {
    * fails if they drift.
    */
   public static final int MAX_COMPRESSION_THREADS = 256;
-
-  /**
-   * Same pattern, chronology and digits as {@code BackupCoordinator}'s archive names. Pinned to {@link Locale#ROOT}:
-   * a {@code SimpleDateFormat} built without a locale took the default one's calendar and digits, so a JVM running
-   * under th-TH named the archive with the Buddhist year and one under ar-EG with Arabic-Indic digits, names the
-   * server's retention either misdated or could not read at all (issue #8301).
-   */
-  private static final DateTimeFormatter DEFAULT_FILE_TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS", Locale.ROOT);
 
   public       String              format              = "full";
   public       String              databaseURL;
@@ -109,11 +101,11 @@ public class BackupSettings {
     }
 
     if (file == null)
-      // ASSIGN DEFAULT FILENAME. THE SERVER REPEATS THIS CONVENTION IN BackupCoordinator - IT CANNOT DEPEND ON THIS
-      // MODULE - AND ITS RETENTION READS BACK BOTH, SO CHANGE ONE AND CHANGE THE OTHER;
-      // theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention FAILS THE MOMENT THEY DRIFT
+      // ASSIGN DEFAULT FILENAME. THE SERVER REPEATS THIS "<db>-backup-<timestamp>.zip" CONVENTION IN BackupCoordinator -
+      // IT CANNOT DEPEND ON THIS MODULE - AND ITS RETENTION READS BACK BOTH. THE TIMESTAMP IS THE SHARED
+      // DateUtils.FILE_NAME_TIMESTAMP; theDefaultNameOfACliOrSqlBackupFollowsTheSameConvention FAILS IF THE REST DRIFTS
       if ("full".equals(format)) {
-        file = "%s-backup-%s.zip".formatted(databaseName, LocalDateTime.now().format(DEFAULT_FILE_TIMESTAMP));
+        file = "%s-backup-%s.zip".formatted(databaseName, LocalDateTime.now().format(DateUtils.FILE_NAME_TIMESTAMP));
       }
   }
 
