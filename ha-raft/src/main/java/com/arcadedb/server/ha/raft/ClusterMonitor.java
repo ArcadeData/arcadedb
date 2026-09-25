@@ -36,7 +36,9 @@ import java.util.logging.Level;
  *   <li><b>STALLED</b> - replica's matchIndex did not advance at all while the leader's commit index
  *       grew. This is the dangerous pre-churn state: the leader is replicating but the replica is not
  *       persisting, so heartbeats / append-entries are getting starved by the actual replication
- *       traffic. Logged at {@code SEVERE} the first time we detect it (throttled per replica).</li>
+ *       traffic. Logged at {@code SEVERE} the first time we detect it (throttled per replica). A replica
+ *       over the lag threshold whose matchIndex has not moved for {@link #ZERO_PROGRESS_STALL_GRACE_MS} is
+ *       STALLED too, whether or not the leader advanced (issue #8341): see that constant.</li>
  *   <li><b>FALLING_BEHIND</b> - lag grew since last tick. Logged at {@code WARNING} (throttled).</li>
  *   <li><b>CATCHING_UP</b> - lag shrank but is still over the threshold. Logged at {@code INFO}
  *       (throttled) so the operator sees recovery progress.</li>
@@ -62,6 +64,20 @@ public class ClusterMonitor {
   static final long NEVER_APPENDED_STALL_GRACE_MS = 30_000L;
 
   /**
+   * How long (ms) a replica over the lag threshold may go without its {@code matchIndex} moving at all before it
+   * is reported {@link ReplicaStatus#STALLED} even on ticks where the leader's commit index did not advance
+   * (issue #8341). Two production lag ticks (5 s each).
+   * <p>
+   * The per-tick STALLED rule needs {@code leaderDelta > 0}. That misses the most dangerous case: when the stuck
+   * replica is the vote the leader is missing, the leader cannot commit, its commit index stays flat, and the
+   * replica read {@link ReplicaStatus#CATCHING_UP} ("advancing at 0 entries/tick") for as long as the outage
+   * lasted, which the {@code lagging-followers} alert ignores. A replica that is behind and not moving is not
+   * catching up, whatever the leader does. The grace keeps the first tick of a fresh baseline (a new leader, whose
+   * probe has not landed yet) from being judged on a single sample.
+   */
+  static final long ZERO_PROGRESS_STALL_GRACE_MS = 10_000L;
+
+  /**
    * Maximum number of replication-channel resets attempted for a single continuous unreachable streak
    * (issue #4696). One reset fires per {@code peerChannelResetDurationMs} the follower stays unreachable,
    * so a first attempt that does not stick (e.g. the rebuilt channel still resolves stale DNS inside the
@@ -83,7 +99,10 @@ public class ClusterMonitor {
     CATCHING_UP,
     /** Lag is over the threshold and growing tick-over-tick. */
     FALLING_BEHIND,
-    /** Replica's matchIndex did not advance at all while the leader's commit index grew. */
+    /**
+     * Replica's matchIndex did not advance at all while the leader's commit index grew, or has not advanced for
+     * {@link #ZERO_PROGRESS_STALL_GRACE_MS} while the replica is over the lag threshold (issue #8341).
+     */
     STALLED
   }
 
@@ -223,6 +242,16 @@ public class ClusterMonitor {
     // Reuse the existing peer-unreachable threshold (0 = disabled, preserving the lag-only behaviour).
     final boolean unreachableStale = peerUnreachableThresholdMs > 0 && lastRpcElapsedMs >= peerUnreachableThresholdMs;
 
+    // Issue #8341: how long the replica has been over the threshold without its matchIndex moving at all. Tracked
+    // on every tick, independently of whether the leader advanced and of the leader-driven recovery streak (which
+    // exists only when recovery is enabled), so the classification below does not depend on either.
+    if (lag <= lagWarningThreshold || replicaDelta > 0)
+      state.zeroProgressSinceMs = -1;
+    else if (state.zeroProgressSinceMs == -1)
+      state.zeroProgressSinceMs = now;
+    final boolean zeroProgressStalled =
+        state.zeroProgressSinceMs != -1 && now - state.zeroProgressSinceMs >= ZERO_PROGRESS_STALL_GRACE_MS;
+
     // Compute current status based on this tick.
     final ReplicaStatus status;
     if (neverAppendedStalled)
@@ -232,7 +261,7 @@ public class ClusterMonitor {
       status = ReplicaStatus.STALLED;
     else if (lag <= lagWarningThreshold)
       status = ReplicaStatus.HEALTHY;
-    else if (replicaDelta <= 0 && leaderDelta > 0)
+    else if (replicaDelta <= 0 && (leaderDelta > 0 || zeroProgressStalled))
       status = ReplicaStatus.STALLED;
     else if (lag > previousLag)
       status = ReplicaStatus.FALLING_BEHIND;
@@ -289,6 +318,16 @@ public class ClusterMonitor {
               %d, for %dms: its replication path is dead. The leader will force a resync to re-engage it; if it \
               persists, transfer leadership to that follower's healthy peer to rebuild the appender.""",
               replicaId, matchIndex, leaderIdx, now - state.neverAppendedSinceMs);
+        else if (leaderDelta <= 0)
+          // Issue #8341: the leader did not advance either. Most likely because it cannot: the stuck replica is
+          // the vote the commit is waiting for. Say so, rather than calling it a catch-up at 0 entries/tick.
+          LogManager.instance().log(this, Level.SEVERE,
+              """
+              Replica '%s' STALLED: matchIndex stuck at %d for %dms (lag=%d) and the leader did not advance either. \
+              While it stays stuck it does not count toward the quorum: if the leader is waiting on its vote, writes \
+              are blocked, and one more lost node stops them. The leader-driven resync \
+              (arcadedb.ha.stalledReplicaResyncDurationMs) recovers it; POST /api/v1/cluster/resync/{database} forces it now.""",
+              replicaId, matchIndex, now - state.zeroProgressSinceMs, lag);
         else
           LogManager.instance().log(this, Level.SEVERE,
               """
@@ -605,6 +644,9 @@ public class ClusterMonitor {
     // (matchIndex < 0 while the leader already holds committed entries); -1 = it has appended at least
     // once or the leader has no committed entries yet (issue #5295).
     long          neverAppendedSinceMs  = -1;
+    // Wall-clock time (ms) when the replica was first seen over the lag threshold with a matchIndex that has not
+    // moved since; -1 = within the threshold or advancing (issue #8341). Lag-monitor thread only.
+    long          zeroProgressSinceMs   = -1;
     // Reachability-narrative state, mutated only from the single lag-monitor thread.
     long          unreachableSinceMs      = -1;
     long          lastUnreachableWarnAtMs = 0;
