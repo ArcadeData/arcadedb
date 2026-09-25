@@ -46,6 +46,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BeginStatement;
+import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.CreateVertexStatement;
 import com.arcadedb.query.sql.parser.DeleteStatement;
@@ -62,6 +64,7 @@ import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.RollbackStatement;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.UpdateStatement;
@@ -87,6 +90,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -170,6 +174,16 @@ public class PostgresNetworkExecutor extends Thread {
   // to be listed here: see PostgresCatalog, which answers those questions by shape for every client (#6412).
 
   private volatile boolean shutdown = false;
+  /**
+   * Set once a FATAL ErrorResponse has been written: PostgreSQL closes the connection after one and sends nothing
+   * else, a ReadyForQuery included, so {@link #writeReadyForQueryMessage()} stops answering (issue #8264).
+   */
+  private          boolean fatalErrorSent = false;
+  /**
+   * Test-only hook (issue #8264): when set, run by {@link #rollbackActiveTransaction()} right before it rolls back, so
+   * a test can make the rollback that follows a failed statement throw.
+   */
+  static volatile Runnable TEST_ROLLBACK_HOOK = null;
 
   /**
    * The listener's permit for a connection that has not authenticated yet, handed back the moment it does -
@@ -360,7 +374,7 @@ public class PostgresNetworkExecutor extends Thread {
             // nothing reads again. A 'Q' also aborts the transaction it ran in outside an explicit block (issue #8214),
             // exactly as queryCommand()'s own failure arms do.
             if (currentMessageType == 'Q')
-              abortSimpleQueryTransaction();
+              abortOrCloseConnection(this::abortSimpleQueryTransaction);
             else
               setExtendedProtocolError();
 
@@ -399,8 +413,10 @@ public class PostgresNetworkExecutor extends Thread {
       // autocommit forms (issue #7775) - which is what a JDBC executeBatch() or a psycopg3 pipeline sends.
       // Committing it persisted the statements that ran before the failure.
       skipUntilSync = false;
-      if (database.isTransactionActive())
-        database.rollback();
+      // The failure that got here was answered by the message that raised it: a rollback that cannot complete now
+      // has no earlier ErrorResponse left to protect, and closes the connection (issue #8264)
+      if (!abortOrCloseConnection(this::rollbackActiveTransaction))
+        return;
       if (!explicitTransactionStarted)
         // The SETs of the discarded implicit block go with it (issue #8242); an explicit block's wait for its ROLLBACK
         sessionSettings.rollback();
@@ -409,9 +425,22 @@ public class PostgresNetworkExecutor extends Thread {
       // refused with 25P02 - until the client sends COMMIT/ROLLBACK/END, exactly as real PostgreSQL requires and
       // exactly as queryCommand()'s own aborted branch already behaves on the simple query protocol.
     } else if (!explicitTransactionStarted) {
-      if (database.isTransactionActive())
-        database.commit();
-      sessionSettings.commit();
+      try {
+        if (database.isTransactionActive())
+          database.commit();
+        sessionSettings.commit();
+      } catch (final Exception e) {
+        // The commit of an implicit block is where ArcadeDB checks unique keys, so a duplicate an autocommit INSERT
+        // or a JDBC executeBatch() sent fails HERE. It escaped to the main loop, which answered nothing - no
+        // ErrorResponse, no ReadyForQuery - and the client waited for the Sync's answer until it timed out. Reported
+        // first, then the block is discarded, as PostgreSQL does for a commit that fails at Sync (issue #8264).
+        writeError(ERROR_SEVERITY.ERROR, "Error on committing transaction: " + e.getMessage(), sqlStateFor(e));
+        if (!abortOrCloseConnection(() -> {
+          rollbackActiveTransaction();
+          sessionSettings.rollback();
+        }))
+          return;
+      }
     }
     if (!explicitTransactionStarted)
       // The implicit block this Sync terminates is over, committed or discarded, and its portals end with it
@@ -694,8 +723,7 @@ public class PostgresNetworkExecutor extends Thread {
           // it is a ROLLBACK, tagged ROLLBACK. The tag is written here rather than rewritten into portal.query so
           // the prepared statement the portal came from keeps answering COMMIT once the session is healthy again.
           portal = abortedPortal;
-          if (database.isTransactionActive())
-            database.rollback();
+          rollbackActiveTransaction();
           sessionSettings.rollback();
           endTransactionBlockState();
           // Consumed, as applyTransactionControl() consumes it: re-Executing this portal must not end the next block.
@@ -964,11 +992,10 @@ public class PostgresNetworkExecutor extends Thread {
       if (errorInTransaction) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
         final String abortedUpperCaseText = queryText.toUpperCase(Locale.ENGLISH);
-        if (isTransactionEndStatement(abortedUpperCaseText)) {
+        if (isTransactionEndStatement(abortedUpperCaseText) || endsTransactionBlock(parsedTransactionControl(queryText))) {
           // Real Postgres treats a COMMIT of an aborted transaction the same as a ROLLBACK (with a
           // warning): there is nothing left to commit, so both end keywords just discard the transaction.
-          if (database.isTransactionActive())
-            database.rollback();
+          rollbackActiveTransaction();
           sessionSettings.rollback();
           endTransactionBlockState();
           // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
@@ -1018,8 +1045,7 @@ public class PostgresNetworkExecutor extends Thread {
       // will be persisted by the next COMMIT. Refusing it - and aborting the transaction the same way any other
       // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
       if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
-        abortSimpleQueryTransaction();
-        writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        failSimpleQuery(ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       }
 
@@ -1038,6 +1064,9 @@ public class PostgresNetworkExecutor extends Thread {
       // transaction"). A SET used to answer a one-row "Setting ignored" table here (issue #8306), unlike the same SET
       // on the extended protocol, and untrue since the setting is recorded (issue #8217).
       boolean answersNoRows = false;
+      // The text the command tag is derived from: the statement itself, but the canonical keyword for a
+      // transaction-control statement recognized through the grammar, whose text getTag() cannot read (issue #8273)
+      String commandTag = query.query;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
       if (isSettingCommand(upperCaseText)) {
@@ -1059,34 +1088,15 @@ public class PostgresNetworkExecutor extends Thread {
         final String varName = parameterName(query.query.substring(5));
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
       } else if (isBeginStatement(upperCaseText)) {
-        explicitTransactionStarted = true;
-        // Guarded, exactly like applyTransactionControl()'s BEGIN on the extended protocol: a BEGIN that finds a
-        // transaction already open - a second BEGIN, or an implicit block an earlier extended-protocol statement
-        // left running - joins it instead of stacking a nested one under it. PostgreSQL answers such a BEGIN with
-        // a warning and keeps the block it already has.
-        if (!database.isTransactionActive())
-          database.begin();
+        applyTransactionControl(PostgresPortal.TransactionControl.BEGIN, null);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
-        // Whatever transaction the connection holds, not only one an explicit BEGIN opened (issue #8028): a
-        // 'Q' message can arrive while the implicit block of an extended-protocol pipeline is still open - the
-        // block is opened at Execute and only ended by a Sync - and asking explicitTransactionStarted left that
-        // block for the Sync to decide while the client had already been told COMMIT. Same rule as
-        // applyTransactionControl()'s arms on the extended protocol.
-        if (database.isTransactionActive())
-          database.commit();
-        sessionSettings.commit();
-        endTransactionBlockState();
+        applyTransactionControl(PostgresPortal.TransactionControl.COMMIT, null);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
-        // See the COMMIT arm above (issue #8028): an implicit block is a transaction the client can end too,
-        // and leaving it open made Sync COMMIT the writes the client had just been told were rolled back.
-        if (database.isTransactionActive())
-          database.rollback();
-        sessionSettings.rollback();
-        endTransactionBlockState();
+        applyTransactionControl(PostgresPortal.TransactionControl.ROLLBACK, null);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
@@ -1097,7 +1107,17 @@ public class PostgresNetworkExecutor extends Thread {
           resultSet = new IteratorResultSet(catalogAnswer.rows().iterator());
         } else {
           parsedStatement = "sql".equalsIgnoreCase(query.language) ? parseStatement(query.query) : null;
-          resultSet = database.command(query.language, query.query, server.getConfiguration());
+          final PostgresPortal.TransactionControl transactionControl = transactionControlOf(parsedStatement);
+          if (transactionControl != null) {
+            // A spelling the exact matchers above miss but the grammar accepts - a comment, a doubled ';',
+            // BEGIN ISOLATION, COMMIT RETRY (issue #8273). Executed by the engine it began/committed/rolled back
+            // behind the protocol's back, so the block state and the ReadyForQuery status byte never moved.
+            applyTransactionControl(transactionControl, isolationOf(parsedStatement));
+            commandTag = transactionControl.name();
+            answersNoRows = true;
+            resultSet = new IteratorResultSet(Collections.emptyIterator());
+          } else
+            resultSet = database.command(query.language, query.query, server.getConfiguration());
         }
       }
       final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet);
@@ -1122,20 +1142,18 @@ public class PostgresNetworkExecutor extends Thread {
       // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
       // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
       // with an empty command tag instead of e.g. "BEGIN".
-      writeCommandComplete(query.query, cachedResultSet.size());
+      writeCommandComplete(commandTag, cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
       // A COPY this server declines is not a syntax error, and the message says what to do instead.
-      abortSimpleQueryTransaction();
-      writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
+      failSimpleQuery(e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // See the note on the same arm in executeCommand about the "Syntax error" wording.
-      abortSimpleQueryTransaction();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
+      failSimpleQuery("Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()),
+          sqlStateFor(e));
     } catch (final Exception e) {
-      abortSimpleQueryTransaction();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
+      failSimpleQuery("Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
@@ -1163,6 +1181,8 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeReadyForQueryMessage() {
+    if (fatalErrorSent)
+      return;
     // PostgreSQL reports the reported parameters a statement changed right before the ReadyForQuery that ends it
     // (issue #8241): a SET, a RESET, or the ROLLBACK/COMMIT that undid a SET or ended a SET LOCAL. Every one of them at
     // startup. A single int comparison when nothing changed.
@@ -2927,9 +2947,8 @@ public class PostgresNetworkExecutor extends Thread {
         // client that sends "ROLLBACK;" must not fall through to the silent return below (issue #6548 review
         // follow-up).
         final String abortedUpperCaseText = portal.query.toUpperCase(Locale.ENGLISH);
-        if (isTransactionEndStatement(abortedUpperCaseText)) {
-          if (database.isTransactionActive())
-            database.rollback();
+        if (isTransactionEndStatement(abortedUpperCaseText) || endsTransactionBlock(parsedTransactionControl(portal))) {
+          rollbackActiveTransaction();
           sessionSettings.rollback();
           // Clears skipUntilSync as well, so the Bind/Execute the client pipelines behind this Parse (that is
           // how it sends the recovering statement, and there is no Sync in between - see the #6548 tests) are
@@ -3103,6 +3122,17 @@ public class PostgresNetworkExecutor extends Thread {
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
               portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
+              final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
+              if (transactionControl != null) {
+                // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
+                // applied exactly like the three above, never executed by the engine behind the block state. The
+                // query becomes the canonical keyword, which is what getTag() reads the command tag from.
+                portal.transactionControl = transactionControl;
+                portal.isolationLevel = isolationOf(portal.sqlStatement);
+                portal.sqlStatement = null;
+                portal.ignoreExecution = true;
+                portal.query = transactionControl.name();
+              }
             }
             break;
 
@@ -3862,9 +3892,54 @@ public class PostgresNetworkExecutor extends Thread {
   private void abortSimpleQueryTransaction() {
     setErrorInTx();
     if (!explicitTransactionStarted) {
-      if (database.isTransactionActive())
-        database.rollback();
+      rollbackActiveTransaction();
       sessionSettings.rollback();
+    }
+  }
+
+  /**
+   * Answers a failed simple query: the ErrorResponse for the failure FIRST, and only then the abort of the transaction
+   * it ran in, the order of PostgreSQL's {@code PostgresMain} ({@code EmitErrorReport()} before
+   * {@code AbortCurrentTransaction()}). Aborting first meant a rollback that threw skipped the ErrorResponse, and the
+   * client saw its query end with a bare ReadyForQuery while the cause went to the server log only (issue #8264).
+   */
+  private void failSimpleQuery(final String message, final String sqlState) {
+    writeError(ERROR_SEVERITY.ERROR, message, sqlState);
+    abortOrCloseConnection(this::abortSimpleQueryTransaction);
+  }
+
+  /**
+   * Runs the abort that follows an error, and closes the connection when that abort itself fails: a transaction that
+   * could not be rolled back is in an unknown state, and running the client's next statement inside it could commit
+   * the writes it was just told had failed. The client receives a FATAL ErrorResponse and nothing after it, the way
+   * PostgreSQL ends a backend whose abort failed (issue #8264). The connection's own close then retries the rollback.
+   *
+   * @return false when the abort failed and the connection is closing
+   */
+  private boolean abortOrCloseConnection(final Runnable abort) {
+    try {
+      abort.run();
+      return true;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "PSQL: cannot roll back the transaction after an error, closing the connection", e);
+      writeError(ERROR_SEVERITY.FATAL, "Cannot roll back the transaction after an error, closing the connection: " + e.getMessage(),
+          "XX000");
+      fatalErrorSent = true;
+      shutdown = true;
+      return false;
+    }
+  }
+
+  /**
+   * Rolls back the transaction the connection holds, if any. Every rollback of this class but the connection's final
+   * one goes through here.
+   */
+  private void rollbackActiveTransaction() {
+    if (database.isTransactionActive()) {
+      final Runnable testHook = TEST_ROLLBACK_HOOK;
+      if (testHook != null)
+        testHook.run();
+      database.rollback();
     }
   }
 
@@ -3983,27 +4058,126 @@ public class PostgresNetworkExecutor extends Thread {
     if (portal.transactionControl == null)
       return false;
 
-    switch (portal.transactionControl) {
+    applyTransactionControl(portal.transactionControl, portal.isolationLevel);
+    portal.transactionControl = null;
+    return true;
+  }
+
+  /**
+   * Moves the block state and the engine transaction for a transaction-control statement, the one implementation both
+   * protocols share. It acts on whatever transaction the connection holds, not only one an explicit BEGIN opened
+   * (issue #8028): a 'Q' or a portal can arrive while the implicit block of an extended-protocol pipeline is still
+   * open, and leaving that block for the Sync to decide contradicted the tag the client had just been sent. A BEGIN
+   * that finds a transaction already open - a second BEGIN, or such an implicit block - joins it instead of stacking a
+   * nested one under it, which is what PostgreSQL does too (with a warning), and so ignores the isolation level asked
+   * for.
+   *
+   * @param isolationLevel the level a {@code BEGIN ISOLATION <level>} asked for (issue #8273), or null for the default
+   */
+  private void applyTransactionControl(final PostgresPortal.TransactionControl transactionControl,
+      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
+    switch (transactionControl) {
     case BEGIN -> {
       explicitTransactionStarted = true;
-      if (!database.isTransactionActive())
-        database.begin();
+      if (!database.isTransactionActive()) {
+        if (isolationLevel != null)
+          database.begin(isolationLevel);
+        else
+          database.begin();
+      }
     }
     case COMMIT -> {
-      if (database.isTransactionActive())
-        database.commit();
-      sessionSettings.commit();
+      try {
+        if (database.isTransactionActive())
+          database.commit();
+        sessionSettings.commit();
+      } catch (final RuntimeException e) {
+        // A COMMIT that fails still ends the block, as in PostgreSQL, where it leaves the session idle rather than
+        // aborted: the transaction is discarded and the error is reported by the caller. Left in place, the block
+        // turned aborted and refused every statement until the client sent a ROLLBACK for a transaction it had
+        // already been told was over (issue #8264).
+        try {
+          rollbackActiveTransaction();
+        } catch (final RuntimeException rollbackException) {
+          e.addSuppressed(rollbackException);
+        }
+        sessionSettings.rollback();
+        endTransactionBlockState();
+        throw e;
+      }
       endTransactionBlockState();
     }
     case ROLLBACK -> {
-      if (database.isTransactionActive())
-        database.rollback();
+      rollbackActiveTransaction();
       sessionSettings.rollback();
       endTransactionBlockState();
     }
     }
-    portal.transactionControl = null;
-    return true;
+  }
+
+  /**
+   * The transaction-control statement the SQL grammar parsed, or null (issue #8273). The exact-text matchers
+   * ({@link #isBeginStatement} and its two siblings) recognize the PostgreSQL spellings the grammar rejects -
+   * {@code BEGIN TRANSACTION}, {@code END}, {@code ... WORK} - while this recognizes every spelling the grammar
+   * ACCEPTS, which the matchers cannot enumerate: a leading or trailing comment (sqlcommenter, OpenTelemetry and
+   * pooler routing hints append one to every statement), a doubled {@code ;}, {@code BEGIN ISOLATION <level>},
+   * {@code COMMIT RETRY <n>}. Together they leave no transaction-control text for the engine to execute behind the
+   * protocol's block state.
+   * <p>
+   * {@code COMMIT RETRY}'s retry and ELSE clause apply to a SQL script only, where there is a block to run again; a
+   * standalone COMMIT has nothing to retry, and {@code CommitStatement} ignores them outside a script too.
+   */
+  private static PostgresPortal.TransactionControl transactionControlOf(final Statement statement) {
+    if (statement instanceof BeginStatement)
+      return PostgresPortal.TransactionControl.BEGIN;
+    if (statement instanceof CommitStatement)
+      return PostgresPortal.TransactionControl.COMMIT;
+    if (statement instanceof RollbackStatement)
+      return PostgresPortal.TransactionControl.ROLLBACK;
+    return null;
+  }
+
+  /**
+   * The isolation level of a {@code BEGIN ISOLATION <level>}, or null for every other statement. Resolved when the
+   * statement is recognized, so an unknown level is refused there and never half-applies a BEGIN.
+   */
+  private static Database.TRANSACTION_ISOLATION_LEVEL isolationOf(final Statement statement) {
+    if (statement instanceof BeginStatement begin && begin.isolation != null) {
+      final String level = begin.isolation.getStringValue();
+      try {
+        return Database.TRANSACTION_ISOLATION_LEVEL.valueOf(level.toUpperCase(Locale.ENGLISH));
+      } catch (final IllegalArgumentException e) {
+        throw new CommandExecutionException(
+            "Unknown transaction isolation level '" + level + "', supported: " + Arrays.toString(Database.TRANSACTION_ISOLATION_LEVEL.values()));
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The transaction-control statement a simple query's text parses as, for the aborted-block branch, which answers
+   * before the ordinary dispatch parses anything: a {@code COMMIT; -- done} there must end the block like a bare
+   * COMMIT does, or the connection is wedged, every way out refused with 25P02 (issue #8273). Only reached for text
+   * the exact matchers did not recognize, so the parse costs nothing on the ordinary path.
+   */
+  private PostgresPortal.TransactionControl parsedTransactionControl(final String queryText) {
+    final Query query = getLanguageAndQuery(queryText);
+    return "sql".equalsIgnoreCase(query.language) ? transactionControlOf(parseStatement(query.query)) : null;
+  }
+
+  /**
+   * The extended-protocol counterpart of {@link #parsedTransactionControl(String)}, for a Parse that arrives while the
+   * block is aborted.
+   */
+  private PostgresPortal.TransactionControl parsedTransactionControl(final PostgresPortal portal) {
+    return "sql".equalsIgnoreCase(portal.language) ? transactionControlOf(parseStatement(portal.query)) : null;
+  }
+
+  /**
+   * True for COMMIT and ROLLBACK, the two transaction-control statements that end a block.
+   */
+  private static boolean endsTransactionBlock(final PostgresPortal.TransactionControl transactionControl) {
+    return transactionControl == PostgresPortal.TransactionControl.COMMIT || transactionControl == PostgresPortal.TransactionControl.ROLLBACK;
   }
 
   /**
@@ -4012,8 +4186,7 @@ public class PostgresNetworkExecutor extends Thread {
    * one: PostgreSQL refuses it with {@code 25P02} like any other statement there.
    */
   private static boolean endsTransactionBlock(final PostgresPortal portal) {
-    return portal != null && (portal.transactionControl == PostgresPortal.TransactionControl.COMMIT
-        || portal.transactionControl == PostgresPortal.TransactionControl.ROLLBACK);
+    return portal != null && endsTransactionBlock(portal.transactionControl);
   }
 
   /**
