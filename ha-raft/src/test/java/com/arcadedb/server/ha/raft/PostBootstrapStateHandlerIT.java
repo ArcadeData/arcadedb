@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -93,6 +94,24 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
     } finally {
       conn.disconnect();
     }
+  }
+
+  /**
+   * Issue #8360: once the peer HAS a Raft snapshot marker, the RPC must report exactly that marker - the value the
+   * leader's Ratis {@code LogAppender.getPreviousLog()} falls back to - so a follower's install registers a term that
+   * matches the leader's next {@code AppendEntries.previous}. Forces a checkpoint first so the present branch runs.
+   */
+  @Test
+  void rpcReportsThePeersOwnSnapshotMarker() throws Exception {
+    final ArcadeStateMachine sm = getRaftPlugin(0).getRaftHAServer().getStateMachine();
+    assertThat(sm.takeSnapshot()).as("the fixture has applied entries, so a checkpoint must be taken").isGreaterThanOrEqualTo(0L);
+    final TermIndex marker = sm.getLatestSnapshotTermIndex();
+    assertThat(marker).isNotNull();
+
+    final JSONObject response = postBootstrapState(0);
+
+    assertThat(response.getLong("snapshotIndex")).isEqualTo(marker.getIndex());
+    assertThat(response.getLong("snapshotTerm")).isEqualTo(marker.getTerm());
   }
 
   /** Two peers should agree on the fingerprint of an identical, just-created database. */

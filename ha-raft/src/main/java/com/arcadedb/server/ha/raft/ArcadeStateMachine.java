@@ -2123,9 +2123,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code LogAppender.getPreviousLog()} falls back to the leader's own snapshot marker
    * ({@code getLatestSnapshot().getTermIndex()}) - the value {@link #getLatestSnapshotTermIndex()} serves. Matching
    * that marker is what matters, even if the marker itself carries an inflated term (#575/#593): the follower must
-   * agree with the leader, not with an abstract "true" term. {@code fallbackTerm} (the term of the NEXT log entry, {@code snapshotIndex + 1}) is only an
-   * approximation: it is wrong whenever a term/leadership change lands exactly on that boundary, which a rolling
-   * restart or a chaos-fault election makes routine rather than rare.
+   * agree with the leader, not with an abstract "true" term. {@code fallbackTerm} (the term of the NEXT log entry,
+   * {@code snapshotIndex + 1}) is only an approximation: it is wrong whenever a term/leadership change lands exactly
+   * on that boundary, which a rolling restart or a chaos-fault election makes routine rather than rare.
    * <p>
    * The mismatch matters because Ratis trusts whatever {@code TermIndex} this method's caller returns as gospel:
    * {@code ServerState.reloadStateMachine} stores it verbatim in {@code latestInstalledSnapshot}, and
