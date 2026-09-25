@@ -33,10 +33,12 @@ import com.arcadedb.schema.*;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
@@ -69,6 +71,30 @@ public class CSRBuilder {
   private final Set<String> propertyExcludeSet;  // non-null = include all EXCEPT these properties
   private final Set<String> edgePropertyFilterSet; // null = no edge properties (default)
   private final int propertySampleSize;
+  private ScanObserver scanObserver;
+
+  /**
+   * Told which out-edges the scan captured for a vertex whose edges a concurrent transaction is changing, so the
+   * changes that commit while the scan runs can be reconciled exactly with what it read (issue #8378).
+   */
+  interface ScanObserver {
+    /** Whether a transaction registered a change to {@code source}'s out-edges before this check. */
+    boolean isWatched(RID source);
+
+    /**
+     * The out-edges of {@code source} the scan put into the CSR, as parallel lists of edge and target RIDs. The
+     * lists are reused for the next vertex: an implementation keeps a copy.
+     */
+    void observed(RID source, List<RID> edges, List<RID> targets);
+  }
+
+  /**
+   * Reports each watched vertex's scanned out-edges to {@code observer}. The check follows the read: a vertex found
+   * unwatched was therefore read before any transaction registered a change to it, so before that change committed.
+   */
+  void setScanObserver(final ScanObserver observer) {
+    this.scanObserver = observer;
+  }
 
   public CSRBuilder(final Database database) {
     this(database, null, null, DEFAULT_PROPERTY_SAMPLE_SIZE);
@@ -196,6 +222,10 @@ public class CSRBuilder {
     int propertySampleCount = 0;
     boolean newTypesInLastSample = false;
 
+    final ScanObserver observer = scanObserver;
+    final List<RID> scannedEdges = observer != null ? new ArrayList<>() : null;
+    final List<RID> scannedTargets = observer != null ? new ArrayList<>() : null;
+
     final Iterator<Record> mainIter = createVertexIterator(vertexTypes);
     while (mainIter.hasNext()) {
       final Vertex vertex = (Vertex) mainIter.next();
@@ -203,6 +233,11 @@ public class CSRBuilder {
       final int globalId = mapping.getGlobalId(rid);
       if (globalId < 0)
         continue;
+
+      if (observer != null) {
+        scannedEdges.clear();
+        scannedTargets.clear();
+      }
 
       // For schemaless properties: detect types from sampled records, creating columns lazily
       if (extractProps && !schemaComplete && propertySampleCount < propertySampleSize) {
@@ -248,6 +283,10 @@ public class CSRBuilder {
           outDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[globalId]++;
           inDegrees.computeIfAbsent(edgeTypeName, k -> new int[nodeCount])[targetGlobalId]++;
           edgePairs.computeIfAbsent(edgeTypeName, k -> new IntPairList()).add(globalId, targetGlobalId);
+          if (observer != null) {
+            scannedEdges.add(entry.getFirst());
+            scannedTargets.add(entry.getSecond());
+          }
 
           // Extract edge properties inline — page is warm from linked list traversal
           if (insertionOrderEdgeProps != null) {
@@ -278,6 +317,10 @@ public class CSRBuilder {
           }
         }
       }
+
+      // Asked after the out-edges were read, never before: see setScanObserver()
+      if (observer != null && observer.isWatched(rid))
+        observer.observed(rid, scannedEdges, scannedTargets);
     }
 
     // Warn if schema sampling stopped while still discovering new property types

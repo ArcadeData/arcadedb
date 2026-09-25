@@ -116,6 +116,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  protected static final String   EVENT_STREAM_CONTENT_TYPE = "text/event-stream";
+  private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -1407,12 +1409,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     // Do not cache a response that established a client session (e.g. /begin): replaying it would
     // return the body without the arcadedb-session-id header, orphaning the real session. A null response
-    // means the handler wrote its own answer, which there is nothing to replay from.
+    // means the handler wrote its own answer, which there is nothing to replay from; a handler that streamed its
+    // answer and still has one to replay returns it marked as already sent (issue #8331).
     if (response == null || exchange.getResponseHeaders().contains(SESSION_ID_HEADER))
       httpServer.getIdempotencyCache().abort(key, reservation);
     else
       httpServer.getIdempotencyCache().complete(key, reservation, response.getCode(), response.getResponse(),
-          response.getBinary(), user != null ? user.getName() : null);
+          response.getBinary(), response.getEventStreamReplay(), user != null ? user.getName() : null);
+  }
+
+  /** Whether the client asked for the response as a Server-Sent Events stream. */
+  protected static boolean isEventStreamRequested(final HttpServerExchange exchange) {
+    final String accept = exchange.getRequestHeaders().getFirst(Headers.ACCEPT);
+    return accept != null && accept.contains(EVENT_STREAM_CONTENT_TYPE);
+  }
+
+  /** The response headers of a Server-Sent Events stream. */
+  protected static void setEventStreamHeaders(final HttpServerExchange exchange) {
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, EVENT_STREAM_CONTENT_TYPE);
+    exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
+    exchange.getResponseHeaders().put(X_ACCEL_BUFFERING_HEADER, "no");
   }
 
   private void sendStillInFlight(final HttpServerExchange exchange) {
@@ -1437,6 +1453,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (cached.principal != null && !cached.principal.equals(currentPrincipal))
       return false;
     exchange.setStatusCode(cached.statusCode);
+    // A request that asked for its progress as a stream, and was already executed: the stream is over, so the replay
+    // is a stream of its terminal event, in the encoding the retry asked for (issue #8331)
+    if (cached.eventStream != null && isEventStreamRequested(exchange)) {
+      setEventStreamHeaders(exchange);
+      exchange.getResponseSender().send(cached.eventStream);
+      return true;
+    }
     // Replay a binary body faithfully; falling back to the string body would send an empty response for a
     // cached binary export/backup and silently lose data.
     if (cached.binary != null)

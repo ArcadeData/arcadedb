@@ -85,9 +85,11 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
-      else if (record instanceof Edge edge)
+      else if (record instanceof Edge edge) {
+        view.watchEdgeSource(edge.getOut());
         delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
             extractMaterialisedEdgeProperties(edge)));
+      }
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -130,8 +132,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.deletedVertices.add(vertex.getIdentity());
-      else if (record instanceof Edge edge)
+      else if (record instanceof Edge edge) {
+        view.watchEdgeSource(edge.getOut());
         delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
+      }
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -139,7 +143,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   }
 
   private boolean isRelevant(final Record record) {
-    if (!view.isBuilt())
+    // A view whose first build is still scanning tracks changes too: the build reconciles them (issue #8378)
+    if (!view.isTrackingChanges())
       return false;
     if (record instanceof Vertex vertex)
       return view.coversVertexType(vertex.getTypeName());
@@ -168,7 +173,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           delta.clear();
           perThreadDeltas.remove(Thread.currentThread().threadId());
           if (!frozen.isEmpty())
-            view.applyDelta(frozen);
+            view.onCommittedDelta(frozen);
         });
       }
     } catch (final DatabaseIsClosedException e) {

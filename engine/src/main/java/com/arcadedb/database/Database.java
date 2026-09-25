@@ -331,6 +331,12 @@ public interface Database extends BasicDatabase {
    * Changes the settings about using the WAL (Write Ahead Log - Transaction Journal) for transactions. By default,
    * the WAL is enabled and preserve the database
    * in case of crash. Disabling the WAL is not recommended unless initial importing of the database or bulk loading.
+   * <p>
+   * The setting is database-wide: it applies to the transactions of every thread, like
+   * {@link #setReadYourWrites(boolean)}. A thread that needs a setting of its own, e.g. a bulk loader running beside
+   * other writers, sets it on its transaction instead ({@code getTransaction().setUseWAL()} on the embedded database),
+   * which wins over this one for that thread until changed. Until this is called, the {@code arcadedb.txWAL}
+   * configuration applies.
    *
    * @param useWAL true to use the WAL, otherwise false
    * @return Current Database instance to execute setter methods in chain.
@@ -339,6 +345,11 @@ public interface Database extends BasicDatabase {
 
   /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy.
+   * <p>
+   * The setting is database-wide: it applies to the transactions of every thread, like
+   * {@link #setReadYourWrites(boolean)}. A thread that needs a strategy of its own sets it on its transaction instead
+   * ({@code getTransaction().setWALFlush()} on the embedded database), which wins over this one for that thread until
+   * changed. Until this is called, the {@code arcadedb.txWalFlush} configuration applies.
    *
    * @param flush The new value contained in the enum: `NO` (no flush), `YES_NOMETADATA` (flush only data, no
    *              metadata), `YES_FULL` (full flush)
@@ -367,6 +378,10 @@ public interface Database extends BasicDatabase {
    * loss in case of crash, the actual data pages
    * write can be deferred because the updated information to save is contained also in the WAL and will be restored
    * in case of crash.
+   * <p>
+   * The setting is database-wide: it applies to the transactions of every thread. A thread that needs a setting of its
+   * own sets it on its transaction instead ({@code getTransaction().setAsyncFlush()} on the embedded database), which
+   * wins over this one for that thread until changed.
    *
    * @return Current Database instance to execute setter methods in chain.
    * @see #isAsyncFlush()
