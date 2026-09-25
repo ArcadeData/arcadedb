@@ -39,6 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
@@ -69,8 +70,16 @@ public class ChatStorage {
   // name (issue #8078) - never to decide whether a request is allowed, which is the security layer's
   // job and not this class's. Null in the single-argument constructor, which is what every existing
   // caller (and every test that does not care about this) gets: with no known-user set to consult,
-  // ambiguity is refused exactly as it was before #8078, which is the safe direction to be wrong in.
+  // ambiguity is refused as it was before #8078 - plus, on a case-folding filesystem, every name an
+  // unseen case-only twin could share (#8340) - which is the safe direction to be wrong in.
   private final Supplier<Set<String>> knownUsernames;
+
+  // Answers "do these two paths name ONE directory on this filesystem?" (issue #8340). The case-folded
+  // half of the ambiguity guard is a fact about the filesystem, not about sanitizeFilename(), so it is
+  // asked of the filesystem instead of assumed. Always resolvesToSameDirectory() outside tests; the
+  // seam exists because CI runs on a case-SENSITIVE filesystem, where a case-insensitive one's answer
+  // cannot otherwise be produced.
+  private final BiPredicate<File, File> sameDirectory;
 
   // Legacy directory NAMES whose refused migration has already been reported, so the operator gets
   // the message once per name instead of once per request. Names only, and never cleared: if an
@@ -88,11 +97,23 @@ public class ChatStorage {
    *                        directory name (see {@link #migrateLegacyDirectoryIfPresent}) can be resolved
    *                        against who could actually have written it rather than refused on the
    *                        theoretical preimage alone. May be {@code null}, which keeps the fully
-   *                        conservative behaviour of always refusing an ambiguous name.
+   *                        conservative behaviour of always refusing a name that could be ambiguous -
+   *                        including, on a case-insensitive filesystem, every name with a letter in it,
+   *                        since a case-folded twin cannot be ruled out without the accounts (#8340).
+   *                        A server with real accounts should supply them.
    */
   public ChatStorage(final String rootPath, final Supplier<Set<String>> knownUsernames) {
+    this(rootPath, knownUsernames, ChatStorage::resolvesToSameDirectory);
+  }
+
+  /**
+   * Test seam: {@code sameDirectory} stands in for {@link #resolvesToSameDirectory(File, File)}, so a test
+   * on a case-sensitive filesystem can reproduce the answers a case-insensitive one gives, and vice versa.
+   */
+  ChatStorage(final String rootPath, final Supplier<Set<String>> knownUsernames, final BiPredicate<File, File> sameDirectory) {
     this.rootPath = rootPath;
     this.knownUsernames = knownUsernames;
+    this.sameDirectory = sameDirectory;
     for (int i = 0; i < LOCK_STRIPES; i++)
       writeLocks[i] = new ReentrantLock();
   }
@@ -256,11 +277,14 @@ public class ChatStorage {
    * sanitized name, neither containing an underscore - still resolve to ONE directory under
    * {@code chats/}, which both of them wrote to before the upgrade (issue #8154). Asking only about
    * preimages of {@code sanitizeFilename} answers a question about the function when the question is
-   * about the filesystem.</li>
+   * about the filesystem - so it is asked of the filesystem (issue #8340): on ext4, XFS or a
+   * case-sensitive APFS volume {@code chats/Alice} and {@code chats/alice} are two directories, each
+   * with exactly one owner, and both migrate.</li>
    * </ul>
    * Most preimages are not accounts that exist, so {@link #knownUsernames} is filtered through
-   * {@link #sanitizeFilename(String)} to find how many REAL accounts produced this name, comparing
-   * case-insensitively so both shapes of sharing are caught: if exactly one does - necessarily
+   * {@link #sanitizeFilename(String)} to find how many REAL accounts produced this name - by exact
+   * equality, or by a case-insensitive match that the filesystem confirms resolves onto the same
+   * directory, so both shapes of sharing are caught: if exactly one does - necessarily
    * {@code username} itself, since {@code legacyName} was derived from it two lines above - the
    * migration is unambiguous in practice and proceeds. If another one does, awarding the directory to
    * whoever is looked up first would hand that user read and delete access to the other's chats,
@@ -269,9 +293,10 @@ public class ChatStorage {
    * <p>
    * When the accounts cannot be consulted at all ({@link #knownUsernames} is {@code null}, or the
    * supplier throws, returns {@code null}, or does not list {@code username}), neither answer can be
-   * given, and the pre-#8078 rule stands in: a name containing {@code '_'} is refused on the
-   * theoretical preimage alone, a name without one is claimed. That last case is the one path this
-   * class cannot make safe from the file tree alone - see {@link #migrationRefusedByAccountList}.
+   * given, so the name is refused on what COULD share it: a name containing {@code '_'} (the pre-#8078
+   * rule), and - on a filesystem that folds case - any name with a letter in it, because an unseen
+   * case-folded twin would share the directory (issue #8340). Only a name the filesystem proves nobody
+   * else can reach is claimed - see {@link #migrationRefusedByAccountList}.
    * <p>
    * The moment two REAL accounts are seen to collide on {@code legacyName}, that fact is recorded on
    * disk as an {@link #ambiguityMarkerFile(String) ambiguity marker} and checked before every later
@@ -306,7 +331,7 @@ public class ChatStorage {
     // legacy directory without either name containing an underscore, and the pre-#8154 gate skipped
     // the account-list check - and with it the ambiguity marker - for exactly those names.
     final File ambiguityMarker = ambiguityMarkerFile(legacyName);
-    if (ambiguityMarker.exists() || migrationRefusedByAccountList(legacyName, username, ambiguityMarker)) {
+    if (ambiguityMarker.exists() || migrationRefusedByAccountList(legacyName, legacyDir, username)) {
       // migrationRefusedByAccountList() may have just created the marker, so this is re-checked rather than
       // reusing the boolean above: only mention a file in the operator-facing message once it is actually there.
       if (ambiguityMarker.exists())
@@ -352,9 +377,10 @@ public class ChatStorage {
      */
     SOLE,
     /**
-     * A second registered account's sanitized name is {@code legacyName} too, ignoring case. Which
-     * of the two wrote which chat is not recoverable from the file tree, so the directory belongs to
-     * neither and is never migrated.
+     * A second registered account's sanitized name is {@code legacyName} too - exactly, or differing
+     * only in case on a filesystem that resolves both spellings onto one directory. Which of the two
+     * wrote which chat is not recoverable from the file tree, so the directory belongs to neither and
+     * is never migrated.
      */
     COLLISION,
     /**
@@ -377,29 +403,32 @@ public class ChatStorage {
    * {@link LegacyNameOwnership#COLLISION} on disk, so the fact survives the colliding account being
    * deleted later - see the class javadoc's second migration rule.
    * <p>
-   * A candidate account collides when its sanitized name matches {@code legacyName} CASE-INSENSITIVELY,
-   * not only exactly (code review on PR #8126). {@code ServerSecurity} keys accounts by exact name, so
-   * {@code John_Doe} and {@code john_doe} - or {@code Alice} and {@code alice} - can both be registered,
-   * and {@code sanitizeFilename} does not fold case; but {@code legacyDir.exists()} at the one call site
-   * does, on the case-insensitive filesystems this class already treats specially
-   * ({@link #HASHED_DIR_NAME}'s own case-insensitive match, {@link #isSpelledExactlyOnDisk}). Comparing
-   * case-sensitively here would miss that the two accounts' sanitized names name the very same on-disk
-   * directory and let one of them claim it as if only it had ever written there.
+   * A candidate account collides in one of two ways, which are deliberately decided differently
+   * (issue #8340):
+   * <ul>
+   * <li><b>Exactly</b> - its sanitized name IS {@code legacyName} ({@code user@corp.com} and
+   * {@code user.corp.com}). There is only one directory name, so there is only one directory on any
+   * filesystem, and the collision is refused without asking the filesystem anything.</li>
+   * <li><b>By case only</b> - its sanitized name equals {@code legacyName} ignoring case
+   * ({@code Alice} and {@code alice}, {@code John_Doe} and {@code john_doe}). {@code ServerSecurity}
+   * keys accounts by exact name, so both can be registered, and {@code sanitizeFilename} does not fold
+   * case. Whether the two spellings are one directory is up to the filesystem: on NTFS and the default
+   * macOS APFS/HFS+ configuration they are, and both accounts wrote into it before the upgrade; on
+   * ext4, XFS or a case-sensitive APFS volume they are two directories with one owner each. So this is
+   * a collision only when {@link #sameDirectory} confirms the other spelling resolves onto
+   * {@code legacyDir}. Assuming it everywhere, as #8126 to #8154 did, refused every such pair an
+   * unambiguous migration on a case-sensitive volume (issue #8340).</li>
+   * </ul>
    * <p>
    * {@code equalsIgnoreCase} rather than a {@code toLowerCase()} without a {@code Locale}, and the
    * usual objection to it - that it only approximates a filesystem's Unicode case-folding, so a
    * dotless i or a sharp s could fold differently - cannot arise here (review on PR #8186): BOTH
    * operands are outputs of {@link #sanitizeFilename(String)}, which rewrites every character outside
    * {@code [a-zA-Z0-9_-]} to {@code '_'}. The comparison therefore only ever runs on ASCII, where
-   * {@code equalsIgnoreCase}'s folding is exact and locale-independent.
-   * <p>
-   * That comparison is deliberately filesystem-blind, as it has been since #8126: on a case-SENSITIVE
-   * filesystem {@code chats/Alice} and {@code chats/alice} really are two directories and the refusal
-   * costs each account an automatic migration it could have had. Refusing leaves both directories
-   * intact on disk for an operator to move by hand; the other way round leaks one account's chats to
-   * the other, so the conservative answer is the one worth being wrong with.
+   * {@code equalsIgnoreCase}'s folding is exact and locale-independent. It only nominates candidates;
+   * the filesystem has the last word.
    */
-  private LegacyNameOwnership legacyNameOwnership(final String legacyName, final String username) {
+  private LegacyNameOwnership legacyNameOwnership(final String legacyName, final File legacyDir, final String username) {
     if (knownUsernames == null)
       return LegacyNameOwnership.UNKNOWN;
 
@@ -412,9 +441,15 @@ public class ChatStorage {
     if (accounts == null || !accounts.contains(username))
       return LegacyNameOwnership.UNKNOWN;
 
-    for (final String account : accounts)
-      if (!account.equals(username) && legacyName.equalsIgnoreCase(sanitizeFilename(account)))
+    for (final String account : accounts) {
+      if (account.equals(username))
+        continue;
+      final String otherLegacyName = sanitizeFilename(account);
+      if (otherLegacyName.equals(legacyName))
         return LegacyNameOwnership.COLLISION;
+      if (otherLegacyName.equalsIgnoreCase(legacyName) && sameDirectory.test(legacyDir, siblingDirectory(legacyDir, otherLegacyName)))
+        return LegacyNameOwnership.COLLISION;
+    }
 
     return LegacyNameOwnership.SOLE;
   }
@@ -434,24 +469,29 @@ public class ChatStorage {
    * fallback it always was rather than as a gate in front of the real check: with no account list to
    * consult there is nothing better to go on, so a name with {@code '_'} is refused on the
    * theoretical preimage alone (the pre-#8078 behaviour every single-argument-constructor caller
-   * gets) and a name without one is claimed. A case-folded twin cannot be detected in that state at
-   * all - it is a fact about the account registry, not about the file tree - so the residual exposure
-   * is a caller that supplies no accounts on a case-insensitive filesystem. {@code HttpServer}, the
-   * only thing that constructs a {@code ChatStorage} outside tests, supplies them.
+   * gets). A case-folded twin cannot be SEEN in that state - which accounts exist is a fact about the
+   * registry, not the file tree - but whether one COULD share the directory is a fact about the
+   * filesystem, and that can be asked (issue #8340): if some other case spelling of {@code legacyName}
+   * resolves onto {@code legacyDir}, an account with that spelling would have written into it too, so
+   * the name is refused. On a case-sensitive filesystem, or for a name with no letter to fold, no other
+   * spelling reaches the directory and the underscore-free name is still claimed. Before #8340 this
+   * state claimed every underscore-free name, on every filesystem, which is what a single-argument
+   * caller on NTFS or default macOS APFS/HFS+ was exposed to.
    */
-  private boolean migrationRefusedByAccountList(final String legacyName, final String username, final File ambiguityMarker) {
+  private boolean migrationRefusedByAccountList(final String legacyName, final File legacyDir, final String username) {
     // Exhaustive over the enum with no default branch, deliberately (review on PR #8186): SOLE is the
     // fail-OPEN answer here, so a fourth LegacyNameOwnership value must not be able to inherit it by
     // falling through. Without a default this stops compiling instead, which is the loudest a future
     // change to this security control can be told to come back and decide.
-    return switch (legacyNameOwnership(legacyName, username)) {
+    return switch (legacyNameOwnership(legacyName, legacyDir, username)) {
       case COLLISION -> {
         // Recorded here rather than inside the classifier, so the one side effect on this path sits at
-        // the point that acts on the answer instead of hiding behind a query.
-        markPermanentlyAmbiguous(ambiguityMarker, legacyName);
+        // the point that acts on the answer instead of hiding behind a query. Named after the entry as it
+        // is really spelled on disk, not after legacyName - see ambiguityMarkerFile().
+        markPermanentlyAmbiguous(ambiguityMarkerFile(spellingOnDisk(legacyDir, legacyName)), legacyName);
         yield true;
       }
-      case UNKNOWN -> legacyName.indexOf('_') >= 0;
+      case UNKNOWN -> legacyName.indexOf('_') >= 0 || anotherCaseSpellingResolvesOnto(legacyDir, legacyName);
       case SOLE -> false;
     };
   }
@@ -468,14 +508,23 @@ public class ChatStorage {
    * {@link #markPermanentlyAmbiguous} writes an empty file whose only meaning is that it exists, so a
    * double write says nothing a single one did not already say.
    * <p>
-   * The name keeps {@code legacyName}'s original case on purpose, and is NOT folded to a canonical
-   * spelling (review on PR #8186). The marker lives in the same directory as the legacy directory it
-   * describes, so the filesystem folds the two names by exactly the same rule: where
-   * {@code chats/Alice} and {@code chats/alice} are one directory, {@code .Alice.ambiguous-migration}
-   * and {@code .alice.ambiguous-migration} are one file, and where they are two directories they are
-   * two files. Folding the marker name by hand would break the second case - one record would then
-   * cover two genuinely distinct directories, and an operator resolving one of them and deleting the
-   * marker would silently drop the other's refusal too.
+   * The name is NOT folded to a canonical spelling (review on PR #8186). The marker lives in the same
+   * directory as the legacy directory it describes, so the filesystem folds the two names by exactly
+   * the same rule: where {@code chats/Alice} and {@code chats/alice} are one directory,
+   * {@code .Alice.ambiguous-migration} and {@code .alice.ambiguous-migration} are one file, and where
+   * they are two directories they are two files. Folding the marker name by hand would break the
+   * second case - one record would then cover two genuinely distinct directories, and an operator
+   * resolving one of them and deleting the marker would silently drop the other's refusal too.
+   * <p>
+   * What a marker records (issue #8340): that the directory's CONTENTS are mixed - two accounts wrote
+   * into it - which is a fact about the data, not about the volume it sits on. A case-only collision is
+   * only ever recorded when the filesystem confirmed the two spellings are one directory, i.e. when
+   * both accounts really did write there; copying that tree onto a case-sensitive volume does not
+   * unmix it, so the refusal must travel with it. That is why the marker is written under the
+   * directory's own on-disk spelling ({@link #spellingOnDisk}) rather than the spelling of whichever
+   * account was looked up: on the case-insensitive volume the two are the same file anyway, and on a
+   * case-sensitive copy the marker still sits next to the directory it describes under the one name
+   * the only remaining lookup of that directory will ask for.
    */
   private File ambiguityMarkerFile(final String legacyName) {
     return Paths.get(rootPath, "chats", "." + legacyName + ".ambiguous-migration").toFile();
@@ -530,6 +579,82 @@ public class ChatStorage {
       if (entry.equals(legacyName))
         return true;
     return false;
+  }
+
+  /**
+   * The name {@code legacyDir}'s entry really carries in its parent's listing: {@code legacyName} itself
+   * when an entry is spelled exactly that way, otherwise the first entry equal to it ignoring case -
+   * the one a case-insensitive filesystem resolved {@code legacyName} onto - and {@code legacyName}
+   * when the listing cannot be read or has neither. Only consulted when an ambiguity marker is written,
+   * so its O(entries in {@code chats/}) cost is paid once per colliding directory.
+   */
+  static String spellingOnDisk(final File legacyDir, final String legacyName) {
+    final String[] entries = legacyDir.getParentFile().list();
+    if (entries == null)
+      return legacyName;
+    String caseFolded = null;
+    for (final String entry : entries) {
+      if (entry.equals(legacyName))
+        return legacyName;
+      if (caseFolded == null && entry.equalsIgnoreCase(legacyName))
+        caseFolded = entry;
+    }
+    return caseFolded != null ? caseFolded : legacyName;
+  }
+
+  /**
+   * Whether this filesystem resolves some OTHER case spelling of {@code legacyName} onto
+   * {@code legacyDir}, i.e. whether an account differing from {@code username} only in case would
+   * have written into the very same directory (issue #8340). One flipped spelling is enough to ask:
+   * a filesystem that folds case folds every spelling, and one that does not keeps each apart. A name
+   * with no letter has no other spelling, so no twin, whatever the filesystem.
+   */
+  private boolean anotherCaseSpellingResolvesOnto(final File legacyDir, final String legacyName) {
+    final String flipped = flipAsciiCase(legacyName);
+    return flipped != null && sameDirectory.test(legacyDir, siblingDirectory(legacyDir, flipped));
+  }
+
+  /**
+   * {@code name} with the case of every ASCII letter inverted, or {@code null} when it has none. Only
+   * ever called on {@link #sanitizeFilename(String)} output, which is ASCII.
+   */
+  static String flipAsciiCase(final String name) {
+    final char[] chars = name.toCharArray();
+    boolean changed = false;
+    for (int i = 0; i < chars.length; i++) {
+      final char c = chars[i];
+      if (c >= 'a' && c <= 'z') {
+        chars[i] = (char) (c - 'a' + 'A');
+        changed = true;
+      } else if (c >= 'A' && c <= 'Z') {
+        chars[i] = (char) (c - 'A' + 'a');
+        changed = true;
+      }
+    }
+    return changed ? new String(chars) : null;
+  }
+
+  private static File siblingDirectory(final File legacyDir, final String name) {
+    return new File(legacyDir.getParentFile(), name);
+  }
+
+  /**
+   * The production answer to "do {@code dir} and {@code other} name ONE directory on this
+   * filesystem": {@code other} exists and {@link Files#isSameFile} says so. {@code isSameFile} compares
+   * file keys, so it is true on a case-insensitive volume where the two are spellings of one entry,
+   * and false on a case-sensitive one where {@code other} is a different inode. When the filesystem
+   * cannot answer, the answer is "yes": every caller treats "same directory" as grounds to REFUSE a
+   * migration, which leaves the directory intact on disk, and that is the direction worth being wrong
+   * in.
+   */
+  static boolean resolvesToSameDirectory(final File dir, final File other) {
+    if (!other.exists())
+      return false;
+    try {
+      return Files.isSameFile(dir.toPath(), other.toPath());
+    } catch (final IOException | SecurityException e) {
+      return true;
+    }
   }
 
   /**
