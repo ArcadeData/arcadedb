@@ -28,6 +28,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
@@ -305,6 +306,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final DatabaseInternal database, final JSONObject payload, final AtomicReference<ExecutionResponse> response,
       final int retries) {
     database.transaction(() -> {
+      // Each attempt forwards to the leader under the same request ids as the first, so a retried write is
+      // deduplicated there against the attempt that may already have applied it (issue #8323).
+      ForwardedRequestIdContext.restartOrdinals();
       try {
         response.set(execute(exchange, user, database, payload));
       } catch (final RuntimeException e) {
