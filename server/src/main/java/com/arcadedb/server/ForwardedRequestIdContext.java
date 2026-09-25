@@ -39,6 +39,17 @@ package com.arcadedb.server;
  * request carries a valid cluster token: a client can send any {@code X-Request-Id} it likes, so an ordinal encoded in
  * the id itself ({@code order#2}) would be a value a client could also send, and its request would then share a key
  * with another request's second forward of the same statement.
+ * <p>
+ * The leader's key is built from the body IT receives, and a forward's body is not the client's: the engine-level
+ * forward rebuilds it from the statement alone, and {@code LeaderCommandForwarder} re-serializes the parsed payload. So
+ * a retry the client sends STRAIGHT to the leader - its own body, byte for byte - did not match the key its forwarded
+ * first attempt was cached under, and executed a second time (issue #8347). The node that served the client publishes
+ * here, beside the id, the key it computed for the client's own request, and a forward that IS the client's whole
+ * request relays it in {@link #CLIENT_KEY_HEADER}, beside the cluster token and honored only under it. The leader then
+ * claims that key too, so the client's key is settled on the leader by whichever of the two arrives first. A forward
+ * that is only a part of the request - a write issued by a command this node executed locally, or any forward after
+ * the first - relays no key: the client's key there names the whole request, and settling it with the answer to one
+ * statement inside it would replay that answer to a direct retry of the whole.
  */
 public final class ForwardedRequestIdContext {
   /**
@@ -47,11 +58,24 @@ public final class ForwardedRequestIdContext {
    */
   public static final String FORWARD_ORDINAL_HEADER = "X-ArcadeDB-Forward-Ordinal";
 
+  /**
+   * Request header carrying the idempotency key the forwarding node computed for the client's own request (issue
+   * #8347): a SHA-256 digest in lower-case hex. Sent only beside the cluster token, and honored only under it.
+   */
+  public static final String CLIENT_KEY_HEADER = "X-ArcadeDB-Client-Request-Key";
+
+  // Length of the lower-case hex SHA-256 digest an idempotency key is.
+  private static final int CLIENT_KEY_LENGTH = 64;
+
   private static final ThreadLocal<State> STATE = ThreadLocal.withInitial(State::new);
 
   private static final class State {
-    private String requestId;
-    private int    forwards;
+    private String  requestId;
+    private int     forwards;
+    private String  clientKey;
+    // Whether an engine-level command forward can be the client's whole request: true only for a route whose body
+    // is one command, and cleared as soon as this node executes a command locally (a forward then is a part of it).
+    private boolean commandForwardIsWholeRequest;
   }
 
   private ForwardedRequestIdContext() {
@@ -63,9 +87,69 @@ public final class ForwardedRequestIdContext {
    * @param requestId the raw {@code X-Request-Id}; null or blank publishes nothing
    */
   public static void set(final String requestId) {
+    set(requestId, null, false);
+  }
+
+  /**
+   * Publishes the client's request id and the idempotency key this node computed for the request (issue #8347).
+   *
+   * @param requestId                    the raw {@code X-Request-Id}; null or blank publishes nothing, key included
+   * @param clientKey                    the idempotency key of the client's request on this node, or null
+   * @param commandForwardIsWholeRequest true when the route's body is exactly one command, so an engine-level forward
+   *                                     of that command is the whole request and may relay the key
+   */
+  public static void set(final String requestId, final String clientKey, final boolean commandForwardIsWholeRequest) {
     final State state = STATE.get();
     state.requestId = requestId != null && !requestId.isBlank() ? requestId : null;
     state.forwards = 0;
+    state.clientKey = state.requestId != null && isClientKey(clientKey) ? clientKey : null;
+    state.commandForwardIsWholeRequest = state.clientKey != null && commandForwardIsWholeRequest;
+  }
+
+  /**
+   * The idempotency key of the client's request, for a forward that relays the whole request as it is (the HTTP-level
+   * {@code LeaderCommandForwarder}), or null when none was published.
+   */
+  public static String clientKey() {
+    return STATE.get().clientKey;
+  }
+
+  /**
+   * The idempotency key of the client's request, for the engine-level command forward with the given ordinal: only the
+   * first forward, only on a route whose body is one command, and only while this node has executed no command of the
+   * request locally. Null otherwise.
+   */
+  public static String clientKeyForCommandForward(final int forwardOrdinal) {
+    final State state = STATE.get();
+    return forwardOrdinal == 1 && state.commandForwardIsWholeRequest ? state.clientKey : null;
+  }
+
+  /**
+   * Records that this node executes a command of the request being served locally, so any command it forwards from
+   * now on is a part of the request rather than the whole of it and relays no client key. Kept across
+   * {@link #restartOrdinals()}: the retried attempt executes the same command locally again.
+   */
+  public static void markExecutedLocally() {
+    STATE.get().commandForwardIsWholeRequest = false;
+  }
+
+  /**
+   * The client key a {@link #CLIENT_KEY_HEADER} value names, or null when it is not one a peer could have sent: a
+   * lower-case hex SHA-256 digest.
+   */
+  public static String parseClientKey(final String headerValue) {
+    return isClientKey(headerValue) ? headerValue : null;
+  }
+
+  private static boolean isClientKey(final String value) {
+    if (value == null || value.length() != CLIENT_KEY_LENGTH)
+      return false;
+    for (int i = 0; i < CLIENT_KEY_LENGTH; i++) {
+      final char c = value.charAt(i);
+      if ((c < '0' || c > '9') && (c < 'a' || c > 'f'))
+        return false;
+    }
+    return true;
   }
 
   /** The client's {@code X-Request-Id} published for the request being served on this thread, or null. */
@@ -108,10 +192,12 @@ public final class ForwardedRequestIdContext {
     STATE.get().forwards = 0;
   }
 
-  /** Clears the id. Must run in a finally block: HTTP worker threads are pooled and reused. */
+  /** Clears the id and the key. Must run in a finally block: HTTP worker threads are pooled and reused. */
   public static void clear() {
     final State state = STATE.get();
     state.requestId = null;
     state.forwards = 0;
+    state.clientKey = null;
+    state.commandForwardIsWholeRequest = false;
   }
 }
