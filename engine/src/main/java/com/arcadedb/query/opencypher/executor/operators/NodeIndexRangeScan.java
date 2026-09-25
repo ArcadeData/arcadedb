@@ -19,15 +19,18 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
-import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -39,6 +42,7 @@ import com.arcadedb.schema.VertexType;
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -63,6 +67,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   private final String indexName;
   /** Every property of the chosen index, in key order: a composite index is not registered under a single one. */
   private final List<String> indexProperties;
+  private boolean adaptive;
+  /**
+   * How the calling thread's last execution was served, for the PROFILE that follows it on the same thread. Per thread
+   * because the operator belongs to a cached plan that concurrent executions share; null before it decided. Not cleared
+   * on close(): the PROFILE text is rendered after the execution closes. What stays behind is one Boolean per worker
+   * thread per cached plan, weakly keyed on this operator, so it goes with the plan.
+   */
+  private final ThreadLocal<Boolean> servedByScan = new ThreadLocal<>();
 
   /**
    * Create a range scan operator from range predicates.
@@ -95,6 +107,20 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     this.indexProperties = indexProperties == null || indexProperties.isEmpty() ? List.of(propertyName) : indexProperties;
   }
 
+  /**
+   * Lets the scan read the matching index entries first and then either load the records in physical order or give
+   * way to a scan of the label, see {@link PhysicalOrderRidFetcher} (issue #8333). The plan enables it only where the
+   * order the rows arrive in cannot show in the output, which is also where no LIMIT can stop the range early: the
+   * decision reads the whole range before the first row, while a plain range scan streams the first rows at once.
+   */
+  public void setAdaptive(final boolean adaptive) {
+    this.adaptive = adaptive;
+  }
+
+  public boolean isAdaptive() {
+    return adaptive;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -105,11 +131,16 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      private boolean opened = false;
+      private RangeIndex rangeIndex;
       // Resolved bounds (after parameter resolution)
       private Object resolvedLowerBound = null;
       private boolean resolvedLowerInclusive = false;
       private Object resolvedUpperBound = null;
       private boolean resolvedUpperInclusive = false;
+      // Adaptive mode: records served in physical order, or every vertex of the label
+      private PhysicalOrderRidFetcher fetcher;
+      private Iterator<Record> labelScan;
 
       @Override
       public boolean hasNext() {
@@ -137,122 +168,188 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
-        // Initialize cursor on first call
-        if (cursor == null) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
-          // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
-          if (!(type instanceof VertexType)) {
+        if (!opened) {
+          opened = true;
+          if (!resolveIndexAndBounds()) {
             finished = true;
             return;
           }
-
-          // Resolve the index by its whole key: a composite index is not registered under the single
-          // anchor property, and looking it up by that property alone yielded no index and, silently,
-          // no rows at all (issue #5444). Its leading column still bounds a contiguous key range, so a
-          // one-element bound is a valid prefix bound.
-          TypeIndex typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
-          if (typeIndex == null && indexProperties.size() > 1)
-            typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
-          if (typeIndex == null)
-            // The planner picked an index the schema no longer offers. An empty result set here would
-            // silently drop rows the query must return, so fail instead.
-            throw new CommandExecutionException(
-                "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
-
-          if (!(typeIndex instanceof RangeIndex)) {
-            finished = true;
+          if (adaptive && chooseAdaptively()) {
+            fetchAdaptively(n);
             return;
           }
-
-          final RangeIndex rangeIndex = (RangeIndex) typeIndex;
-
-          // Resolve bounds from predicates (may involve parameter resolution)
-          for (final RangePredicate predicate : predicates) {
-            // Resolve the value (may be a parameter)
-            Object value = predicate.getValue();
-            if (predicate.isParameter() && context != null && context.getInputParameters() != null) {
-              // Resolve parameter at execution time
-              final String paramName = (String) value;
-              value = context.getInputParameters().get(paramName);
-            }
-
-            if (predicate.isLowerBound()) {
-              resolvedLowerBound = value;
-              resolvedLowerInclusive = predicate.isInclusive();
-            } else if (predicate.isUpperBound()) {
-              resolvedUpperBound = value;
-              resolvedUpperInclusive = predicate.isInclusive();
-            }
-          }
-
-          // A bound whose type does not match the index key type cannot be pushed into the index: the
-          // engine would try to coerce/compare it against the (differently typed) stored keys and throw a
-          // NumberFormatException or ClassCastException (e.g. `WHERE n.val < "zzz"` on a numeric index -
-          // issue #5225). In Cypher a comparison across type categories evaluates to null, so no row
-          // qualifies through ordering. Fall back to a plain ascending scan and let the enclosing
-          // FilterOperator apply the precise, null-aware predicate on the real record values.
-          final Type indexKeyType = keyTypeOf(typeIndex);
-          if (!boundMatchesIndexKey(indexKeyType, resolvedLowerBound) || !boundMatchesIndexKey(indexKeyType, resolvedUpperBound)) {
-            resolvedLowerBound = null;
-            resolvedUpperBound = null;
-            cursor = rangeIndex.iterator(true);
-          } else if (resolvedLowerBound != null && resolvedUpperBound != null) {
-            // Both bounds specified: use range()
-            final Object[] beginKeys = new Object[]{resolvedLowerBound};
-            final Object[] endKeys = new Object[]{resolvedUpperBound};
-            cursor = rangeIndex.range(true, beginKeys, resolvedLowerInclusive, endKeys, resolvedUpperInclusive);
-          } else if (resolvedLowerBound != null) {
-            // Only lower bound: use iterator(fromKeys)
-            final Object[] fromKeys = new Object[]{resolvedLowerBound};
-            cursor = rangeIndex.iterator(true, fromKeys, resolvedLowerInclusive);
-          } else if (resolvedUpperBound != null) {
-            // Only upper bound: iterate from beginning and stop at upper bound
-            // Note: This is less efficient - we iterate all and filter
-            cursor = rangeIndex.iterator(true);
-          } else {
-            // No bounds: full scan (shouldn't happen in normal usage)
-            cursor = rangeIndex.iterator(true);
-          }
+          cursor = openCursor();
+        } else if (fetcher != null || labelScan != null) {
+          fetchAdaptively(n);
+          return;
         }
 
-        // Fetch up to n matching vertices
+        // Fetch up to n matching vertices, in key order
         while (buffer.size() < n && cursor.hasNext()) {
           guard.check();
           final Identifiable identifiable = cursor.next();
-
-          // Load the actual record from the identifiable (may be RID)
-          final Vertex vertex = identifiable.asVertex();
-
-          // If we only have upper bound, we need to manually check and stop
-          if (resolvedUpperBound != null && resolvedLowerBound == null) {
-            final Object propertyValue = vertex.get(propertyName);
-            if (propertyValue != null) {
-              // Normalize numeric types to avoid ClassCastException
-              final int comparison = compareValues(propertyValue, resolvedUpperBound);
-
-              if (resolvedUpperInclusive) {
-                if (comparison > 0) {
-                  finished = true;
-                  break;
-                }
-              } else {
-                if (comparison >= 0) {
-                  finished = true;
-                  break;
-                }
-              }
-            }
-          }
-
-          // Create result with vertex bound to variable
-          final ResultInternal result = new ResultInternal();
-          result.setProperty(variable, vertex);
-          buffer.add(result);
+          addVertex(identifiable.asVertex());
         }
 
         if (!cursor.hasNext()) {
           finished = true;
         }
+      }
+
+      /**
+       * Reads the matching entries alone and decides how to serve them.
+       *
+       * @return false when the decision cannot be taken (the label's buckets keep no record count), leaving the plain
+       * range scan to run
+       */
+      private boolean chooseAdaptively() {
+        // Read per execution, not at planning: the plan is cached, and buckets can be added to the type in between
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
+        final List<Integer> bucketIds = new ArrayList<>();
+        for (final Bucket bucket : type.getBuckets(true))
+          bucketIds.add(bucket.getFileId());
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds);
+        if (scanThreshold < 0)
+          return false;
+
+        fetcher = new PhysicalOrderRidFetcher(() -> {
+          final IndexCursor pass = openCursor();
+          return new PhysicalOrderRidFetcher.Source() {
+            @Override
+            public Object next() {
+              return pass.hasNext() ? pass.next().getIdentity() : null;
+            }
+
+            @Override
+            public void close() {
+              pass.close();
+            }
+          };
+        }, scanThreshold);
+
+        if (fetcher.start(guard) == PhysicalOrderRidFetcher.Outcome.SCAN) {
+          fetcher.close();
+          fetcher = null;
+          // Every vertex of the label: the pattern's WHERE is evaluated downstream on each of them, exactly as it is
+          // on what the index returns, so the rows that survive are the same
+          labelScan = context.getDatabase().iterateType(label, true);
+          servedByScan.set(true);
+        } else
+          servedByScan.set(false);
+        return true;
+      }
+
+      private void fetchAdaptively(final int n) {
+        if (labelScan != null) {
+          while (buffer.size() < n && labelScan.hasNext()) {
+            guard.check();
+            addVertex(labelScan.next().asVertex());
+          }
+          if (!labelScan.hasNext())
+            finished = true;
+          return;
+        }
+
+        while (buffer.size() < n) {
+          final Object entry = fetcher.next();
+          if (entry == null) {
+            finished = true;
+            fetcher.close();
+            fetcher = null;
+            return;
+          }
+          guard.check();
+          try {
+            addVertex(entry instanceof RID rid ?
+                context.getDatabase().lookupByRID(rid, true).asVertex() :
+                ((Identifiable) entry).asVertex());
+          } catch (final RecordNotFoundException e) {
+            // Deleted since the index answered: nothing to match
+          }
+        }
+      }
+
+      private void addVertex(final Vertex vertex) {
+        final ResultInternal result = new ResultInternal();
+        result.setProperty(variable, vertex);
+        buffer.add(result);
+      }
+
+      /**
+       * Resolves the index and the bounds, with the parameters bound.
+       *
+       * @return false when no node can match (the label is not a vertex type, the index is not a range index)
+       */
+      private boolean resolveIndexAndBounds() {
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
+        // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
+        if (!(type instanceof VertexType))
+          return false;
+
+        // Resolve the index by its whole key: a composite index is not registered under the single
+        // anchor property, and looking it up by that property alone yielded no index and, silently,
+        // no rows at all (issue #5444). Its leading column still bounds a contiguous key range, so a
+        // one-element bound is a valid prefix bound.
+        TypeIndex typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
+        if (typeIndex == null && indexProperties.size() > 1)
+          typeIndex = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
+        if (typeIndex == null)
+          // The planner picked an index the schema no longer offers. An empty result set here would
+          // silently drop rows the query must return, so fail instead.
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
+
+        if (!(typeIndex instanceof RangeIndex))
+          return false;
+
+        rangeIndex = (RangeIndex) typeIndex;
+
+        // Resolve bounds from predicates (may involve parameter resolution)
+        for (final RangePredicate predicate : predicates) {
+          // Resolve the value (may be a parameter)
+          Object value = predicate.getValue();
+          if (predicate.isParameter() && context != null && context.getInputParameters() != null) {
+            // Resolve parameter at execution time
+            final String paramName = (String) value;
+            value = context.getInputParameters().get(paramName);
+          }
+
+          if (predicate.isLowerBound()) {
+            resolvedLowerBound = value;
+            resolvedLowerInclusive = predicate.isInclusive();
+          } else if (predicate.isUpperBound()) {
+            resolvedUpperBound = value;
+            resolvedUpperInclusive = predicate.isInclusive();
+          }
+        }
+
+        // A bound whose type does not match the index key type cannot be pushed into the index: the
+        // engine would try to coerce/compare it against the (differently typed) stored keys and throw a
+        // NumberFormatException or ClassCastException (e.g. `WHERE n.val < "zzz"` on a numeric index -
+        // issue #5225). In Cypher a comparison across type categories evaluates to null, so no row
+        // qualifies through ordering. Fall back to a plain ascending scan and let the enclosing
+        // FilterOperator apply the precise, null-aware predicate on the real record values.
+        final Type indexKeyType = keyTypeOf(typeIndex);
+        if (!boundMatchesIndexKey(indexKeyType, resolvedLowerBound) || !boundMatchesIndexKey(indexKeyType, resolvedUpperBound)) {
+          resolvedLowerBound = null;
+          resolvedUpperBound = null;
+        }
+        return true;
+      }
+
+      /**
+       * Opens a pass over the range. Every bound is pushed into the cursor, an upper one alone included: the range
+       * starts at the first key and stops at the bound by itself, rather than loading every vertex from the first key
+       * on to compare it with the bound.
+       */
+      private IndexCursor openCursor() {
+        if (resolvedLowerBound == null && resolvedUpperBound == null)
+          return rangeIndex.iterator(true);
+        if (resolvedUpperBound == null)
+          return rangeIndex.iterator(true, new Object[] { resolvedLowerBound }, resolvedLowerInclusive);
+        return rangeIndex.range(true,
+            resolvedLowerBound != null ? new Object[] { resolvedLowerBound } : null, resolvedLowerInclusive,
+            resolvedUpperBound != null ? new Object[] { resolvedUpperBound } : null, resolvedUpperInclusive);
       }
 
       @Override
@@ -262,6 +359,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         if (cursor != null) {
           cursor.close();
           cursor = null;
+        }
+        if (fetcher != null) {
+          fetcher.close();
+          fetcher = null;
         }
       }
     };
@@ -300,7 +401,13 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
-    sb.append("]\n");
+    sb.append("]");
+    if (adaptive) {
+      final Boolean scan = servedByScan.get();
+      sb.append(scan == null ? " [physical order, or label scan on a large range]" :
+          scan ? " [served by label scan: large range]" : " [served in physical order]");
+    }
+    sb.append("\n");
 
     return sb.toString();
   }
@@ -323,55 +430,6 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   public String getIndexName() {
     return indexName;
-  }
-
-  /**
-   * Compares two values, handling numeric and temporal type coercion.
-   * Converts both values to comparable forms to avoid ClassCastException.
-   * <p>
-   * This is only a coarse "when to stop the ascending index scan" probe: the precise WHERE predicate is
-   * re-evaluated by the enclosing FilterOperator (the #4906-fixed {@code ComparisonExpression} path), so
-   * an inexact answer here never affects the result set, only how early the scan can stop.
-   */
-  @SuppressWarnings("unchecked")
-  private static int compareValues(final Object value1, final Object value2) {
-    // Handle numeric comparisons with type coercion
-    if (value1 instanceof Number && value2 instanceof Number) {
-      final Number n1 = (Number) value1;
-      final Number n2 = (Number) value2;
-
-      // Compare as doubles to handle mixed types (Integer, Long, Float, Double)
-      return Double.compare(n1.doubleValue(), n2.doubleValue());
-    }
-
-    // Temporal comparison. The stored value is a native java.time value while the resolved bound may be
-    // another native temporal (e.g. a datetime sent over Bolt). Coerce both into Cypher temporal values
-    // and compare through CypherTemporalValue, reusing the normalization added in #4906, instead of a raw
-    // Comparable.compareTo() that throws ClassCastException across java.time types (issue #5008).
-    if (value1 instanceof Temporal || value1 instanceof Date || value2 instanceof Temporal || value2 instanceof Date) {
-      final Object t1 = TemporalUtil.fromCoreJavaType(value1);
-      final Object t2 = TemporalUtil.fromCoreJavaType(value2);
-      if (t1 instanceof CypherTemporalValue && t2 instanceof CypherTemporalValue) {
-        try {
-          return ((CypherTemporalValue) t1).compareTo((CypherTemporalValue) t2);
-        } catch (final IllegalArgumentException e) {
-          // Different temporal granularities are not orderable: keep scanning and let FilterOperator decide.
-          return -1;
-        }
-      }
-    }
-
-    // For non-numeric types, use standard comparison, but only when both operands are the same
-    // Comparable type. Comparing across incompatible types (e.g. a numeric index entry against a String
-    // bound, as in `WHERE n.val < "zzz"` on a mixed-type property - issue #5225) would throw a
-    // ClassCastException. Since this is only a coarse "when to stop the ascending scan" probe, returning a
-    // negative value keeps the scan going (never terminates early) and defers the precise, null-aware
-    // decision to the FilterOperator. Over-scanning is always safe; stopping early could drop matches.
-    if (value1 instanceof Comparable && value1.getClass().isInstance(value2)) {
-      return ((Comparable<Object>) value1).compareTo(value2);
-    }
-
-    return -1;
   }
 
   /**

@@ -123,13 +123,19 @@ class PluginApiSpecTest {
     // 'criticalHalt', 'raftLogFailure' and 'crashLoopEscalated' joined them with issue #7872: they are the
     // readiness - and, for the last one, liveness - inputs the #7136 invariant promised were visible in this
     // document and were not, so a node with a dead state machine read green here while '/api/v1/ready' was
-    // pinned at 503.
+    // pinned at 503. 'localStuckAtStaleTerm' joined with issue #8289: the one node-level condition that leaves
+    // readiness and 'localReplicationLag' reading healthy while the node does not count toward quorum.
+    // 'leaderCommitIndex' and 'localStalledBehindLeader' joined with issue #8342: the same blind spot at the
+    // current term, where only the leader's commit index shows that this follower stopped receiving entries.
+    // 'bootstrapInstalls' joined with issue #8044: the #7519 bootstrap install window pins '/api/v1/ready' at 503
+    // and points the reader here, and nothing here reflected it.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
-        "localAppliedIndex", "localCommitIndex", "localReplicationLag",
+        "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
+        "leaderCommitIndex", "localStalledBehindLeader",
         "peers", "databases", "databasePresence", "alerts", "localResync",
-        "criticalHalt", "raftLogFailure", "crashLoopEscalated");
+        "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls");
 
     // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
     // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it

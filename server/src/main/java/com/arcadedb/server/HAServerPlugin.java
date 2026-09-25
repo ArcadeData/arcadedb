@@ -83,6 +83,23 @@ public interface HAServerPlugin extends ServerPlugin {
 
   String getLeaderName();
 
+  /**
+   * The Raft peer id of the current leader, or null when no leader is known or the plugin has no such notion.
+   * Unlike {@link #getLeaderName()} - a display name every node builds for itself, which can embed a per-node
+   * derived HTTP address - a peer id is the same string on every member, so it is what one node can send another
+   * to say which node it meant (issue #7603).
+   */
+  default String getLeaderPeerId() {
+    return null;
+  }
+
+  /**
+   * This node's own Raft peer id, in the same form {@link #getLeaderPeerId()} reports it, or null when unknown.
+   */
+  default String getLocalPeerId() {
+    return null;
+  }
+
   ELECTION_STATUS getElectionStatus();
 
   /**
@@ -112,16 +129,34 @@ public interface HAServerPlugin extends ServerPlugin {
    * than {@link #getReadinessSignal(long)} answering {@code NOT_READY}: a node can be transiently not-ready
    * (still joining, catching up) without this ever being {@code true}.
    * <p>
-   * Consulted by {@code ServerControlPlane.isLive()} to fail the Kubernetes liveness probe once this is
-   * {@code true}: escalation used to leave the node in a permanent {@code NOT_READY} with liveness still
-   * green, which removed the pod from the Service but never triggered the pod restart that is the documented
-   * way out, leaving an operator to notice the SEVERE alert and act by hand. Failing liveness here makes that
-   * restart automatic.
+   * Stays {@code true} after a process restart when the escalation was recorded by a previous lifetime and the HA
+   * layer still does not come up (issue #7736). The liveness probe therefore does not consult this, but the
+   * narrower {@link #isCrashLoopRestartPending()}.
    * <p>
    * Returns {@code false} when this HA implementation has no such escalation concept - HA disabled, or a
    * non-Raft implementation.
    */
   default boolean isCrashLoopEscalated() {
+    return false;
+  }
+
+  /**
+   * Reports whether a process restart is still worth asking for after a crash-loop escalation: the escalation
+   * happened in this process lifetime, and it was durably recorded so the restarted process does not walk the
+   * automatic restart and Raft-storage reformat ladder again (issue #7736).
+   * <p>
+   * Consulted by {@code ServerControlPlane.isLive()}. Issue #7622 made liveness fail on escalation so that the
+   * one restart the SEVERE alert calls for happens without an operator. Consulting {@link #isCrashLoopEscalated()}
+   * for that turned the terminal state into a perpetual {@code CrashLoopBackOff}: every restart reset the
+   * in-memory escalation, reformatted the Raft storage and pulled a full snapshot from the leader, only to escalate
+   * and fail liveness again, for a cause - a poisoned log or snapshot served by the leader - that no restart of
+   * this node can cure. This answers {@code true} at most once per recorded escalation, and never for one
+   * inherited from a previous lifetime, which parks the node - out of the Service, alive, inspectable - for the
+   * operator.
+   * <p>
+   * Returns {@code false} when this HA implementation has no such escalation concept.
+   */
+  default boolean isCrashLoopRestartPending() {
     return false;
   }
 
@@ -139,7 +174,7 @@ public interface HAServerPlugin extends ServerPlugin {
    * node that is merely BEHIND - still joining, still replaying - and a deployment can reasonably choose to serve
    * from one. This is not that: the Raft implementation sets this only from Ratis's own {@code notifyLogFailed},
    * after which every later append is rejected until the log writer is restarted, so there is no deployment for
-   * which "in the Service" is the right answer. Same reasoning as {@link #isCrashLoopEscalated()}, which
+   * which "in the Service" is the right answer. Same reasoning as {@link #isCrashLoopRestartPending()}, which
    * {@code isLive()} consults unconditionally for the same kind of terminal condition.
    * <p>
    * The condition is recoverable: {@code HealthMonitor} restarts the log writer in place (issue #7037) and this
@@ -173,6 +208,9 @@ public interface HAServerPlugin extends ServerPlugin {
    * keeps it rather than lose data (issue #6124), and from then on its file ids are assigned by a history no
    * other peer shares. That is durable, survives restarts, and until an operator or an automatic remedy replaces
    * the copy, every read this node serves for that database is data the cluster never adopted.
+   * <p>
+   * A database this node does not hold at all is neither, and does not take it out of the Service (issue #8045):
+   * nothing is being served in the cluster's stead, and the node keeps serving every database it does hold.
    * <p>
    * Consulted by {@code ServerControlPlane.notReadyReason()} and deliberately NOT behind
    * {@code arcadedb.server.readinessRequiresHA}, for the same reason as {@link #getRaftLogFailure()}: that switch
@@ -220,6 +258,45 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default String getCriticalHaltReason() {
     return null;
+  }
+
+  /**
+   * Whether this node was added to the cluster's membership by a change it applied while running - an
+   * {@code addPeer}, a {@code connect cluster} or a {@code KubernetesAutoJoin} self-join - rather than being a
+   * member from the first configuration it observed (issue #7819).
+   * <p>
+   * It is what arms the security-convergence readiness gate of issue #7532. That gate's other input, "this node
+   * has never installed a replicated security document", is equally true of a freshly admitted peer whose seed
+   * has not landed and of every node of a cluster that has simply never replicated one; only the first of them
+   * joined at runtime, so only the first is held. Once {@code true} it stays {@code true} for the life of the
+   * process: what releases the gate is convergence or its bounded window, not a later membership change.
+   * <p>
+   * {@code false} when this HA implementation cannot tell - HA disabled, a non-Raft implementation, or a Raft
+   * server that is not running - which leaves the gate disarmed, i.e. readiness as it was before issue #7532.
+   *
+   * @return {@code true} when this node joined the cluster at runtime
+   */
+  default boolean hasJoinedClusterAtRuntime() {
+    return false;
+  }
+
+  /**
+   * The cluster-replicated security documents this node has not installed from a replicated entry committed after
+   * the configuration change that (last) added it, in the order users, groups, API tokens (issue #8317).
+   * <p>
+   * It is the half of the security-convergence gate that a recorded replicated fingerprint cannot answer. A
+   * fingerprint says the cluster installed the document here at SOME point; a node removed from the cluster and
+   * re-added with its config volume retained holds one for every document, from its previous membership, while it
+   * may still enforce a user dropped, a group narrowed or a token revoked since. Only an install that follows the
+   * change re-adding it - the admission seed, or a later security change - is the cluster's current document.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code true}. Empty when this HA implementation
+   * has no such concept, which leaves the gate on the fingerprints alone, i.e. as it was before issue #8317.
+   *
+   * @return the document names, empty when all three have been installed since the join
+   */
+  default List<String> securityDocumentsNotInstalledSinceRuntimeJoin() {
+    return List.of();
   }
 
   String getClusterName();

@@ -322,22 +322,24 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Create or update group");
-    postOp.setDescription("Creates or updates a security group (root only)");
+    postOp.setDescription("Creates or updates a security group (root only). On an HA cluster a follower forwards "
+        + "the request to the leader, which replicates the group document to every node as a Raft entry.");
     postOp.setOperationId("createOrUpdateGroup");
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody(
         "Group configuration with database, name, and access permissions", "SaveGroupRequest", true));
-    postOp.setResponses(createAdminResponses("Group created or updated", "200", "SecurityAdminResult"));
+    postOp.setResponses(forwardedToLeaderResponses("Group created or updated", "200", "SecurityAdminResult"));
     pathItem.setPost(postOp);
 
     final Operation deleteOp = new Operation();
     deleteOp.setSummary("Delete group");
-    deleteOp.setDescription("Deletes a security group (root only)");
+    deleteOp.setDescription("Deletes a security group (root only). On an HA cluster a follower forwards the "
+        + "request to the leader.");
     deleteOp.setOperationId("deleteGroup");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("database", "Database name", true));
     deleteOp.addParametersItem(SpecBuilders.queryParam("name", "Group name to delete", true));
-    deleteOp.setResponses(createAdminResponses("Group deleted", "200", "SecurityAdminResult"));
+    deleteOp.setResponses(forwardedToLeaderResponses("Group deleted", "200", "SecurityAdminResult"));
     pathItem.setDelete(deleteOp);
 
     return pathItem;
@@ -356,29 +358,33 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Create API token");
-    postOp.setDescription("Creates a new API token (root only). The plaintext token is returned only once in the response.");
+    postOp.setDescription("Creates a new API token (root only). The plaintext token is returned only once in the "
+        + "response. On an HA cluster a follower checks the transport of the client connection, then forwards the "
+        + "request to the leader.");
     postOp.setOperationId("createApiToken");
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody(
         "Token creation with name, database, expiresAt, and permissions", "CreateApiTokenRequest", true));
-    final ApiResponses postResponses = createAdminResponses("API token created", "201", "CreateApiTokenResponse");
+    final ApiResponses postResponses = forwardedToLeaderResponses("API token created", "201", "CreateApiTokenResponse");
     // Only the mint declares it: the list and the delete return no token material, so neither applies the
     // transport check that produces this status (issues #7372, #7804).
     postResponses.addApiResponse("412", SpecBuilders.errorResponse(
         "Precondition failed - the transport is not confidential. The token is returned in plaintext exactly "
             + "once, so it is not written back over a cleartext connection to a non-loopback client when "
             + "arcadedb.server.apiTokenRequireSecureTransport is enabled. Reconnect over HTTPS, or have a reverse "
-            + "proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the server"));
+            + "proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the server. On an HA "
+            + "cluster the leader applies the same check to the hop a follower forwarded the mint over"));
     postOp.setResponses(postResponses);
     pathItem.setPost(postOp);
 
     final Operation deleteOp = new Operation();
     deleteOp.setSummary("Delete API token");
-    deleteOp.setDescription("Deletes an API token by its hash (root only). Plaintext tokens are rejected.");
+    deleteOp.setDescription("Deletes an API token by its hash (root only). Plaintext tokens are rejected, on the "
+        + "node that received them. On an HA cluster a follower forwards the request to the leader.");
     deleteOp.setOperationId("deleteApiToken");
     deleteOp.addTagsItem("Security");
     deleteOp.addParametersItem(SpecBuilders.queryParam("token", "Token hash (SHA-256 hex)", true));
-    deleteOp.setResponses(createAdminResponses("API token deleted", "200", "SecurityAdminResult"));
+    deleteOp.setResponses(forwardedToLeaderResponses("API token deleted", "200", "SecurityAdminResult"));
     pathItem.setDelete(deleteOp);
 
     return pathItem;

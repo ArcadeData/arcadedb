@@ -163,6 +163,34 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
   }
 
   /**
+   * This node's own stuck-at-stale-term signal (issue #8289), written unconditionally next to the three Raft
+   * position figures above - and, unlike them, {@code localReplicationLag} reads 0 while this is true, which is
+   * exactly why it needed its own member rather than being inferred from the others.
+   */
+  @Test
+  void theStuckAtStaleTermSignalIsDeclaredAndRequired() {
+    final Schema<?> status = clusterStatus();
+
+    assertThat(status.getProperties()).containsKey("localStuckAtStaleTerm");
+    assertThat(status.getRequired()).contains("localStuckAtStaleTerm");
+  }
+
+  /**
+   * This follower's own stall behind its leader at the current term (issue #8342), and the leader commit index it
+   * is measured against. Both written unconditionally, and both needed for the reason the stale-term signal was:
+   * {@code localReplicationLag} can read 0 while this node is stalled.
+   */
+  @Test
+  void theStalledBehindLeaderSignalIsDeclaredAndRequired() {
+    final Schema<?> status = clusterStatus();
+
+    for (final String member : new String[] { "leaderCommitIndex", "localStalledBehindLeader" }) {
+      assertThat(status.getProperties()).as(member).containsKey(member);
+      assertThat(status.getRequired()).as(member + " is written on every answer").contains(member);
+    }
+  }
+
+  /**
    * And the conditional member stays conditional: {@code databasePresence} is written only by a leader answering
    * {@code ?presence=true}, so requiring it would make the contract lie in the other direction.
    */

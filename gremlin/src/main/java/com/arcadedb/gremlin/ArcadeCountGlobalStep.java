@@ -62,22 +62,34 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
 
       try {
         if (typeName != null) {
+          // COUNTS EXACTLY WHAT ArcadeFilterByTypeStep WOULD YIELD FOR THE SAME hasLabel(), SO ADDING OR REMOVING THE
+          // count() NEVER CHANGES WHAT THE LABEL MATCHES: THE TYPE POLYMORPHICALLY, OR THE ONE BUCKET OF A 'bucket:'
+          // LABEL (#8250)
+          final String bucketName = typeName.startsWith(ArcadeFilterByTypeStep.BUCKET_PREFIX) ?
+              typeName.substring(ArcadeFilterByTypeStep.BUCKET_PREFIX.length()) :
+              null;
+          final DocumentType type = bucketName != null ?
+              graph.database.getSchema().getTypeByBucketName(bucketName) :
+              graph.database.getSchema().existsType(typeName) ? graph.database.getSchema().getType(typeName) : null;
+
           // ONLY COUNT THE TYPE IF IT MATCHES THE ELEMENT KIND OF THE TRAVERSAL (g.V() -> vertices, g.E() -> edges).
           // hasLabel() FILTERS INSIDE THE CURRENT KIND, SO A VERTEX TRAVERSAL MUST NOT COUNT AN EDGE TYPE AND VICE VERSA (ISSUE #5223).
-          if (graph.database.getSchema().existsType(typeName)) {
-            final DocumentType type = graph.database.getSchema().getType(typeName);
+          if (type != null) {
             final boolean matchesKind = Vertex.class.isAssignableFrom(this.elementClass) ?
                 type instanceof VertexType :
                 type instanceof EdgeType;
             if (matchesKind)
-              total += graph.database.countType(typeName, false);
+              total += bucketName != null ? graph.database.countBucket(bucketName) : graph.database.countType(typeName, true);
           }
         } else if (Vertex.class.isAssignableFrom(this.elementClass)) {
+          // NON-POLYMORPHIC HERE, AND ONLY HERE: EVERY TYPE IS SUMMED, SO A POLYMORPHIC COUNT WOULD COUNT A SUB-TYPE'S
+          // RECORDS ONCE MORE PER ANCESTOR
           for (DocumentType type : graph.database.getSchema().getTypes()) {
             if (type instanceof VertexType)
               total += graph.database.countType(type.getName(), false);
           }
         } else {
+          // NON-POLYMORPHIC FOR THE SAME REASON AS THE VERTEX ARM ABOVE
           for (DocumentType type : graph.database.getSchema().getTypes()) {
             if (type instanceof EdgeType)
               total += graph.database.countType(type.getName(), false);

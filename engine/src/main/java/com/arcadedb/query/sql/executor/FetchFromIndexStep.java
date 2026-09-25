@@ -156,6 +156,27 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     };
   }
 
+  /**
+   * The record of the next matching entry, without the result row {@link #syncPull} builds for it: what
+   * {@link GetValueFromIndexEntryStep} reads when it goes through a whole range before loading anything, and where a
+   * row per entry would cost more than the entry itself (issue #8333). Null once the search is exhausted. Not to be
+   * mixed with {@link #syncPull} on the same execution.
+   */
+  Identifiable nextIdentifiable(final CommandContext context) {
+    if (!inited) {
+      // What syncPull() does before its first batch: the previous steps set the variables the condition may read
+      pullPrevious(context, DEFAULT_FETCH_RECORDS_PER_PULL);
+      init(context.getDatabase());
+    }
+    if (nextEntry == null)
+      fetchNextEntry();
+    if (nextEntry == null)
+      return null;
+    final Identifiable value = nextEntry.getSecond();
+    nextEntry = null;
+    return value;
+  }
+
   private void fetchNextEntry() {
     nextEntry = null;
     // Defensive loop guard: each iteration either returns, drops one element from
@@ -212,7 +233,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    * compaction defers dropping it, and an unclosed cursor would keep the retired file alive until the next database
    * restart.
    */
-  private void releaseCursors() {
+  void releaseCursors() {
     if (cursor != null) {
       cursor.close();
       cursor = null;

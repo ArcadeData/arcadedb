@@ -33,6 +33,7 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
@@ -42,8 +43,10 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
+import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -68,6 +71,7 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
@@ -113,15 +117,29 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BEARER = "Bearer";
   // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
   private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  protected static final String   EVENT_STREAM_CONTENT_TYPE = "text/event-stream";
+  private static final HttpString X_ACCEL_BUFFERING_HEADER  = HttpString.tryFromString("X-Accel-Buffering");
   // Response header set by session-establishing routes (e.g. /begin). Its presence means the response
   // is session-scoped and must not be replayed from the idempotency cache (the session id would be lost).
   private static final HttpString SESSION_ID_HEADER = HttpString.tryFromString(HttpSessionManager.ARCADEDB_SESSION_ID);
   // The read-your-writes bookmark echo, cached for the same reason and because it is now looked up as well as
   // written: the response-commit listener of issue #7351 has to ask whether the eager emission already set it.
   private static final HttpString COMMIT_INDEX_HEADER = HttpString.tryFromString("X-ArcadeDB-Commit-Index");
-  // Bounded wait for a concurrent identical retry to observe the in-flight winner's result before it
-  // gives up and executes on its own. Caps worker-thread blocking so a slow request cannot pile up retries.
+  // Bounded wait for a concurrent identical retry to observe the in-flight winner's result. Caps worker-thread
+  // blocking so a slow request cannot pile up retries: when the winner is still running at the end of it, the
+  // retry is answered 409 + Retry-After instead of executing the request a second time (issue #8324).
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
+  // Seconds a retry refused because its twin is still executing is told to wait before asking again: derived
+  // from the wait above, so retuning one cannot leave the header advertising a different back-off.
+  private static final long       IN_FLIGHT_RETRY_AFTER_SECONDS = Math.max(1L, IN_FLIGHT_WAIT_MS / 1_000L);
+  // The label of that refusal, the same whether this node refused the retry or relays the leader's refusal of it.
+  private static final String     IN_FLIGHT_ERROR_LABEL         =
+      "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
+  private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
+  // Tags the forward-ordinal section of an idempotency key (issue #8323).
+  private static final byte[]     FORWARD_ORDINAL_KEY_TAG = "forward-ordinal".getBytes(StandardCharsets.US_ASCII);
+  // Ends that section: non-zero, so its input can never equal an untagged key's, which always ends in a zero byte.
+  private static final byte       FORWARD_ORDINAL_KEY_END = (byte) 0x01;
   // Per-thread SHA-256 for the idempotency key: reused (reset) each call so the request hot path avoids the
   // JCA provider lookup of MessageDigest.getInstance() per request. SHA-256 is JCA-mandated, so init cannot
   // fail in practice; if it ever did the digest would be unusable, so we fail fast.
@@ -389,12 +407,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    // Return 503 during snapshot installation to prevent cryptic errors
+    // Return 503 during snapshot installation to prevent cryptic errors. The body names RetryLaterException and carries
+    // the back-off in exceptionArgs: that is the proof a follower that forwarded a SQL write here needs to tell this
+    // refusal - nothing ran - from an anonymous 503 something between the two nodes may have sent after the write ran,
+    // and to answer its own client 503 + Retry-After only for this one (issue #8355). The detail repeats the reason so
+    // a client that reads a typed body's detail (RemoteHttpComponent) keeps it.
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
+      final String retryAfter = String.valueOf(RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS);
       exchange.setStatusCode(503);
-      exchange.getResponseHeaders().put(HttpString.tryFromString("Retry-After"), "5");
-      exchange.getResponseSender().send(
-          error2json("Server is installing a snapshot, please retry", "", null, null, null));
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, retryAfter);
+      exchange.getResponseSender().send(new JSONObject()
+          .put("error", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("detail", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("exception", RetryLaterException.class.getName())
+          .put("exceptionArgs", retryAfter).toString());
       return;
     }
 
@@ -433,6 +459,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // is released instead of blocking until the marker's TTL expires.
     String                       idempotencyKey         = null;
     IdempotencyCache.Reservation idempotencyReservation = null;
+    // The same bookkeeping for the key a forwarding peer computed for the client's own request (issue #8347), claimed
+    // beside this request's own key and settled with it.
+    String                       clientKey              = null;
+    IdempotencyCache.Reservation clientKeyReservation   = null;
 
     try {
       observationScope = observation.openScope();
@@ -475,6 +505,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // Splitting the two is what lets the second shape carry the one-hop marker as well (issue #7516);
       // before it, the token could only travel together with a substituted identity, so the branch that had
       // to relay the caller's own credentials carried no marker and could cycle.
+      // The ordinal of a follower's SQL write forward after the first within one client request (issue #8323), folded
+      // into the idempotency key below. Honored only under a valid cluster token: a client choosing it could make its
+      // request share a key with another request's forward.
+      int trustedForwardOrdinal = 0;
+      // The key the forwarding peer computed for the client's own request (issue #8347), claimed here as well so a retry
+      // the client sends straight to this node - with its own body, not the forward's - finds it. Same gate as the
+      // ordinal: from a client it would let a request settle a key that names another request.
+      String trustedClientKey = null;
       final HeaderValues clusterTokenHeader = exchange.getRequestHeaders().get("X-ArcadeDB-Cluster-Token");
       if (clusterTokenHeader != null && !clusterTokenHeader.isEmpty()) {
         if (!isValidClusterToken(clusterTokenHeader.getFirst())) {
@@ -490,8 +528,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // reach. Read only after the cluster token has been validated: the marker is a statement one node
         // makes to another, and honoring it from an ordinary client request would let any caller turn its own
         // transparent forward into a refusal by copying the header through.
+        // With it, under the same gate, the peer id of the node the peer meant to reach: what tells a leadership
+        // change in flight (retryable) from an address that names the wrong node (a configuration fault) when
+        // this node has to refuse the hop (issue #7603).
         if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
-          LeaderForwardContext.markAlreadyForwarded();
+          LeaderForwardContext.markAlreadyForwarded(
+              exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER));
+        trustedForwardOrdinal = ForwardedRequestIdContext.parseForwardOrdinal(
+            exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
+        trustedClientKey = ForwardedRequestIdContext.parseClientKey(
+            exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.CLIENT_KEY_HEADER));
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {
@@ -671,22 +717,41 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // but the identity of a request must never depend on a value chosen for meter cardinality.
         idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),
             exchange.getRelativePath(), rawDatabaseParameter(exchange), payloadAsString,
-            idempotencyBodyBytes(exchange));
+            idempotencyBodyBytes(exchange), trustedForwardOrdinal);
+
+        // The same id, for a SQL write this request forwards to the leader from deep in the engine, where this
+        // exchange is out of reach (issue #8323): the leader then runs that write inside its own cache, which is
+        // what makes a retry that lands on another node a replay rather than a second execution. Published for
+        // exactly the requests this node itself treats as idempotent, before the reservation, so a request that
+        // falls through to executing uncached below still relays it. Cleared in the finally block.
+        //
+        // With it the key just computed, which a forward that is the client's whole request relays to the leader so a
+        // retry sent straight there - with the client's body, not the forward's - maps to the same entry (issue #8347).
+        ForwardedRequestIdContext.set(rawRequestId, idempotencyKey, commandForwardIsWholeRequest());
+
         final String currentPrincipal = user != null ? user.getName() : null;
 
-        final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(idempotencyKey);
-        if (reservation.isHit()) {
-          if (replayCachedResponse(exchange, reservation.entry(), currentPrincipal))
-            return;
-          // Principal mismatch: fall through and execute as this caller, without owning the reservation.
-        } else if (reservation.isInFlight()) {
-          // A concurrent identical retry is already executing. Wait briefly for its result rather than
-          // running the write a second time; if it does not settle in time, fall through and execute uncached.
-          if (reservation.entry().await(IN_FLIGHT_WAIT_MS)
-              && replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(idempotencyKey), currentPrincipal))
-            return;
-        } else if (reservation.isReserved())
+        final IdempotencyCache.Reservation reservation = claimIdempotencyKey(exchange, idempotencyKey, currentPrincipal);
+        if (reservation == null)
+          return;
+        if (reservation.isReserved())
           idempotencyReservation = reservation;
+
+        // A peer forwarded this request and named the key the client's own request has on the peer (issue #8347). The
+        // client may send its retry straight here, where it computes that key from its own body: claim it too, so the
+        // first of the two to arrive executes and the other is replayed (or waits for it), whichever node it went to.
+        // Claimed second, so this request's own key keeps deciding first exactly as before; a replay answered from the
+        // client's key leaves the reservation on the own key to the finally block, which releases it.
+        if (trustedClientKey != null && !trustedClientKey.equals(idempotencyKey)) {
+          final IdempotencyCache.Reservation clientReservation = claimIdempotencyKey(exchange, trustedClientKey,
+              currentPrincipal);
+          if (clientReservation == null)
+            return;
+          if (clientReservation.isReserved()) {
+            clientKey = trustedClientKey;
+            clientKeyReservation = clientReservation;
+          }
+        }
       }
 
       final ExecutionResponse response;
@@ -699,22 +764,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       else
         response = execute(exchange, user, payload);
 
-      if (response != null) {
+      if (response != null)
         response.send(exchange);
-        if (idempotencyReservation != null) {
-          // Do not cache a response that established a client session (e.g. /begin): replaying it would
-          // return the body without the arcadedb-session-id header, orphaning the real session.
-          if (exchange.getResponseHeaders().contains(SESSION_ID_HEADER))
-            httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
-          else
-            httpServer.getIdempotencyCache().complete(idempotencyKey, idempotencyReservation, response.getCode(),
-                response.getResponse(), response.getBinary(), user != null ? user.getName() : null);
-          idempotencyReservation = null;
-        }
-      } else if (idempotencyReservation != null) {
-        httpServer.getIdempotencyCache().abort(idempotencyKey, idempotencyReservation);
-        idempotencyReservation = null;
-      }
+      settleReservation(exchange, idempotencyKey, idempotencyReservation, response, user);
+      idempotencyReservation = null;
+      settleReservation(exchange, clientKey, clientKeyReservation, response, user);
+      clientKeyReservation = null;
 
     } catch (final Throwable e) {
       sendMappedErrorResponse(exchange, e);
@@ -746,6 +801,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           LogManager.instance().log(this, Level.WARNING, "Error aborting idempotency reservation", t);
         }
       }
+      if (clientKeyReservation != null) {
+        try {
+          httpServer.getIdempotencyCache().abort(clientKey, clientKeyReservation);
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error aborting idempotency reservation", t);
+        }
+      }
 
       // Finalize the optional tracing span. Each step is isolated so a failure in the optional
       // tracing layer can never skip the core cleanup or the RED timer below; closing the scope is
@@ -769,6 +831,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ProtocolContext.clear();
       LeaderForwardContext.clear();
+      ForwardedRequestIdContext.clear();
       LogManager.instance().setContext(null);
       // Invariant: the correlation context stays populated until here, AFTER observation.stop() above
       // has fired the tracing/observation handlers. LogCorrelationIT relies on reading the requestId
@@ -897,6 +960,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(404, "Remote transaction session not found or expired", sessionGone, null, ErrorLogKind.SESSION);
     }
 
+    // 409 Conflict + Retry-After: an identical request (same X-Request-Id, method, path, database and body) is still
+    // executing, so this one was refused without running (issue #8324). Raised here by the idempotency gate itself,
+    // and rebuilt by a follower from the leader's answer to a SQL write it forwarded (issue #8343) - which used to
+    // reach this chain as a plain TransactionException and leave as a 500 with no back-off. The retry-after goes in
+    // exceptionArgs too, so the next hop can rebuild the exception from the body alone.
+    final RequestStillInFlightException stillInFlight = firstOf(e, cause, RequestStillInFlightException.class);
+    if (stillInFlight != null) {
+      final String retryAfter = String.valueOf(stillInFlight.getRetryAfterSeconds());
+      return new ErrorClassification(409, IN_FLIGHT_ERROR_LABEL, stillInFlight, retryAfter, ErrorLogKind.RETRYABLE,
+          retryAfter);
+    }
+
     // Before the TransactionException arm below, which it extends. 409 Conflict, NOT 5xx (#5064/#5075): the
     // transaction IS durably committed cluster-wide - only the local apply failed. A 5xx would invite HTTP
     // clients and load balancers to RETRY, applying the changes a second time (duplicate inserts) - the exact
@@ -952,6 +1027,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
               dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
+    }
+
+    // 503 + Retry-After, before the NeedRetryException arm below, which it extends: a node refused the request before
+    // running it and said how long to wait - rebuilt by a follower from the answer to a SQL write it forwarded, such as
+    // a leader's snapshot-install 503, which used to reach this chain as a plain TransactionException and leave as a
+    // 500 with no back-off (issue #8355). The retry-after goes in exceptionArgs too, so the next hop can rebuild the
+    // exception from the body alone.
+    final RetryLaterException retryLater = firstOf(e, cause, RetryLaterException.class);
+    if (retryLater != null) {
+      final String retryAfter = String.valueOf(retryLater.getRetryAfterSeconds());
+      return new ErrorClassification(503, "Cannot execute command", retryLater, retryAfter, ErrorLogKind.RETRYABLE,
+          retryAfter);
     }
 
     // 503: the conflict is transient and the same request can succeed as issued. Reached from inside the
@@ -1118,6 +1205,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private void sendMappedErrorResponse(final HttpServerExchange exchange, final Throwable e) {
     final ErrorClassification classification = classifyError(e);
     logClassifiedError(classification);
+    if (classification.retryAfter() != null && !exchange.isResponseStarted())
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, classification.retryAfter());
     sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
         classification.exceptionArgs());
   }
@@ -1126,10 +1215,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * What {@link #classifyError} decided for a failure: the HTTP status, the client-facing label (the body's
    * {@code error} field), the throwable reported on the wire contract's {@code exception} field (not always the
    * one raised: a {@code TransactionException} is reported as its cause), the structured {@code exceptionArgs},
-   * and how the failure is logged.
+   * how the failure is logged, and the {@code Retry-After} header to send with it, or null for none.
    */
   protected record ErrorClassification(int status, String message, Throwable reported, String exceptionArgs,
-                                       ErrorLogKind logKind) {
+                                       ErrorLogKind logKind, String retryAfter) {
+    /** A classification that sends no {@code Retry-After}: every arm but the in-flight and retry-later refusals. */
+    protected ErrorClassification(final int status, final String message, final Throwable reported,
+        final String exceptionArgs, final ErrorLogKind logKind) {
+      this(status, message, reported, exceptionArgs, logKind, null);
+    }
   }
 
   /**
@@ -1288,6 +1382,86 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Answers a request whose identical twin (same {@code X-Request-Id}, method, path, database and body) is still
+   * executing on this server: {@code 409 Conflict} with {@code Retry-After}. Nothing was executed for this request,
+   * so the client may retry it as it is, with the same id, and gets the first execution's answer once it settles.
+   */
+  /**
+   * Claims {@code key} in the idempotency cache for the request being served. Returns null when the request has been
+   * answered here - replayed from the cache, or refused because an identical request is still executing - and the
+   * reservation otherwise, which the caller owns only when {@link IdempotencyCache.Reservation#isReserved()}: a
+   * reservation that is not owned means the request executes without caching its answer (the cached answer belongs to
+   * another principal, or the identical request settled without a replayable one).
+   */
+  private IdempotencyCache.Reservation claimIdempotencyKey(final HttpServerExchange exchange, final String key,
+      final String currentPrincipal) {
+    final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(key);
+    if (reservation.isHit()) {
+      if (replayCachedResponse(exchange, reservation.entry(), currentPrincipal))
+        return null;
+      // Principal mismatch: fall through and execute as this caller, without owning the reservation.
+    } else if (reservation.isInFlight()) {
+      // A concurrent identical retry is already executing. Wait briefly for its result rather than running
+      // the write a second time.
+      if (!reservation.entry().await(IN_FLIGHT_WAIT_MS)) {
+        // Still running (or this thread was interrupted while waiting). Executing now would run the same
+        // write twice, side by side - for a long 'restore database' behind a follower's 504, the case a
+        // retry is most likely in, that is a second restore over the first (issue #8324). Say so instead:
+        // once the first execution settles, the same retry is replayed from the cache (or, if it failed,
+        // executes afresh).
+        sendStillInFlight(exchange);
+        return null;
+      }
+      if (replayCachedResponse(exchange, httpServer.getIdempotencyCache().get(key), currentPrincipal))
+        return null;
+      // Settled without a replayable answer (it failed, or its response was not cacheable), or cached for a
+      // different principal: execute as this caller, without owning the reservation.
+    }
+    return reservation;
+  }
+
+  /**
+   * Settles a reservation this request owns with its response: cached when it is replayable, released otherwise. A
+   * no-op for a null reservation.
+   */
+  private void settleReservation(final HttpServerExchange exchange, final String key,
+      final IdempotencyCache.Reservation reservation, final ExecutionResponse response, final ServerSecurityUser user) {
+    if (reservation == null)
+      return;
+    // Do not cache a response that established a client session (e.g. /begin): replaying it would
+    // return the body without the arcadedb-session-id header, orphaning the real session. A null response
+    // means the handler wrote its own answer, which there is nothing to replay from; a handler that streamed its
+    // answer and still has one to replay returns it marked as already sent (issue #8331).
+    if (response == null || exchange.getResponseHeaders().contains(SESSION_ID_HEADER))
+      httpServer.getIdempotencyCache().abort(key, reservation);
+    else
+      httpServer.getIdempotencyCache().complete(key, reservation, response.getCode(), response.getResponse(),
+          response.getBinary(), response.getEventStreamReplay(), user != null ? user.getName() : null);
+  }
+
+  /** Whether the client asked for the response as a Server-Sent Events stream. */
+  protected static boolean isEventStreamRequested(final HttpServerExchange exchange) {
+    final String accept = exchange.getRequestHeaders().getFirst(Headers.ACCEPT);
+    return accept != null && accept.contains(EVENT_STREAM_CONTENT_TYPE);
+  }
+
+  /** The response headers of a Server-Sent Events stream. */
+  protected static void setEventStreamHeaders(final HttpServerExchange exchange) {
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, EVENT_STREAM_CONTENT_TYPE);
+    exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
+    exchange.getResponseHeaders().put(X_ACCEL_BUFFERING_HEADER, "no");
+  }
+
+  private void sendStillInFlight(final HttpServerExchange exchange) {
+    // Through the shared classification rather than written by hand, so the body names the exception and carries
+    // the back-off in exceptionArgs: that is what lets a follower that forwarded this request rebuild the refusal
+    // and answer its own client 409 + Retry-After too (issue #8343).
+    sendMappedErrorResponse(exchange, new RequestStillInFlightException(
+        "The request was not executed again. Retry it later with the same " + IdempotencyCache.HEADER_REQUEST_ID
+            + " to receive the result of the execution in progress", IN_FLIGHT_RETRY_AFTER_SECONDS));
+  }
+
+  /**
    * Replays a cached idempotent response onto {@code exchange}, honoring the stored principal so a
    * different user cannot replay another caller's response merely by guessing the request id. Returns
    * false (nothing written) when there is no usable entry or the principal does not match, so the caller
@@ -1300,6 +1474,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (cached.principal != null && !cached.principal.equals(currentPrincipal))
       return false;
     exchange.setStatusCode(cached.statusCode);
+    // A request that asked for its progress as a stream, and was already executed: the stream is over, so the replay
+    // is a stream of its terminal event, in the encoding the retry asked for (issue #8331)
+    if (cached.eventStream != null && isEventStreamRequested(exchange)) {
+      setEventStreamHeaders(exchange);
+      exchange.getResponseSender().send(cached.eventStream);
+      return true;
+    }
     // Replay a binary body faithfully; falling back to the string body would send an empty response for a
     // cached binary export/backup and silently lose data.
     if (cached.binary != null)
@@ -1324,6 +1505,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected byte[] idempotencyBodyBytes(final HttpServerExchange exchange) {
     return null;
+  }
+
+  /**
+   * Whether this route's body is exactly one command, so a follower that forwards that command to the leader from the
+   * engine forwards the client's whole request, and may relay the key of that request with it (issue #8347). False by
+   * default: on any other route the key names more than the one statement a forward carries, and settling it on the
+   * leader with that statement's answer would replay the wrong response to a retry sent straight there.
+   */
+  protected boolean commandForwardIsWholeRequest() {
+    return false;
   }
 
   /**
@@ -1374,6 +1565,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   /** The same, for a route whose body is bytes. Package-private for direct unit testing. */
   static String buildIdempotencyKey(final String requestId, final String method, final String path,
       final String database, final String body, final byte[] binaryBody) {
+    return buildIdempotencyKey(requestId, method, path, database, body, binaryBody, 0);
+  }
+
+  /**
+   * The same, for a follower's SQL write forward after the first within one client request (issue #8323): a positive
+   * {@code forwardOrdinal}, taken only from a request carrying a valid cluster token, is digested after both bodies as
+   * a tagged section ending in a non-zero sentinel byte. Every untagged key's input ends in the zero separator that
+   * follows the byte body, so the two forms can never be the same input, whatever the ordinal and whatever a client
+   * puts in a body (the bodies carry no length prefix, so a client could otherwise spell the tagged section inside its
+   * own body). {@code 0} digests nothing, leaving every other key exactly as it was. Package-private for direct unit
+   * testing.
+   */
+  static String buildIdempotencyKey(final String requestId, final String method, final String path,
+      final String database, final String body, final byte[] binaryBody, final int forwardOrdinal) {
     final MessageDigest md = SHA_256_DIGEST.get();
     md.reset();
     final Charset cs = DatabaseFactory.getDefaultCharset();
@@ -1389,6 +1594,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     md.update((byte) 0);
     if (binaryBody != null)
       md.update(binaryBody);
+    if (forwardOrdinal > 0) {
+      md.update((byte) 0);
+      md.update(FORWARD_ORDINAL_KEY_TAG);
+      md.update((byte) (forwardOrdinal >>> 24));
+      md.update((byte) (forwardOrdinal >>> 16));
+      md.update((byte) (forwardOrdinal >>> 8));
+      md.update((byte) forwardOrdinal);
+      md.update(FORWARD_ORDINAL_KEY_END);
+    }
     final byte[] digest = md.digest();
     final StringBuilder sb = new StringBuilder(digest.length * 2);
     for (final byte b : digest) {

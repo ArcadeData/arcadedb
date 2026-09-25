@@ -18,12 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -75,9 +75,7 @@ public class FetchFromSchemaBucketsStep extends AbstractFetchFromSchemaListStep 
   }
 
   private static SecurityDatabaseUser currentUser(final CommandContext context) {
-    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    return dbContext != null ? dbContext.getCurrentUser() : null;
+    return SecurityHelper.currentUser((DatabaseInternal) context.getDatabase());
   }
 
   @Override

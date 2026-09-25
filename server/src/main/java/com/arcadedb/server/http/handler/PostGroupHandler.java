@@ -24,11 +24,18 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
+
 /**
  * {@code POST /server/groups}: creates or replaces one group. The operation - normalizing the group
  * document and refreshing the permissions cached by every open database it applies to - lives in
  * {@link ServerControlPlane#saveGroup} so the gRPC {@code SaveGroup} RPC does both halves too
  * (issue #7309).
+ * <p>
+ * On an HA cluster the request is forwarded to the leader first, as {@code /server/users} is (issue #7380): every
+ * security mutation then runs on one node, so the {@code ServerSecurity} monitor serialises the cluster rather
+ * than one node, and the compare-and-set of issue #7509 is the backstop for a leadership change in flight rather
+ * than the only defence against two administrators on two nodes (issue #8109).
  */
 public class PostGroupHandler extends AbstractServerHttpHandler {
   private final ServerControlPlane controlPlane;
@@ -40,8 +47,16 @@ public class PostGroupHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) {
+      final JSONObject payload) throws IOException {
     checkRootUser(user);
+
+    // Before any validation, like the user routes: the leader decides whether the request is well formed, so the
+    // answer does not depend on which node the client reached (issue #8109).
+    final ExecutionResponse forwarded = httpServer.getLeaderCommandForwarder()
+        .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange),
+            payload != null ? payload.toString() : null);
+    if (forwarded != null)
+      return forwarded;
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());

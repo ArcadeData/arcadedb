@@ -36,6 +36,11 @@ import java.util.concurrent.TimeUnit;
  * Concurrent identical retries are de-duplicated: the first caller {@link #reserve(String) reserves}
  * the key (installing a PENDING marker) and executes; a concurrent caller observes the marker
  * ({@link Reservation#isInFlight()}) and can wait for the winner's result instead of executing again.
+ * A PENDING marker is settled only by its owner ({@link #complete} or {@link #abort}): it is exempt from the TTL
+ * and from the entry-count eviction, because either would let an identical retry reserve the key and execute the
+ * request a second time while the first execution is still running - and a request that outlives the TTL, such
+ * as a long {@code restore database}, is exactly the one a client retries (issue #8324). Pending markers carry no
+ * body, so they cost nothing against {@link #maxBytes}, and there is at most one per executing request.
  * <p>
  * Only successful responses (HTTP 2xx) are cached; errors are passed through so the client can retry
  * a fresh call if it chooses. Entries expire after {@link #ttlMs}. The cache is bounded both by the
@@ -50,6 +55,12 @@ public class IdempotencyCache {
     public final int    statusCode;
     public final String body;
     public final byte[] binary;
+    /**
+     * The answer to replay to a retry that asks for {@code text/event-stream}, as the complete SSE body, or null when
+     * the request has none. Set by a route that can report its progress as a stream (a restore or an import, issue
+     * #8331): a stream cannot be replayed, so its terminal event is.
+     */
+    public final String eventStream;
     public final String principal;
     public final long   timestampMs;
     // A PENDING placeholder installed by reserve() while the winning request executes. Not a real
@@ -59,15 +70,17 @@ public class IdempotencyCache {
     // stops blocking. Null for a completed entry.
     final CountDownLatch latch;
 
-    CachedEntry(final int statusCode, final String body, final byte[] binary, final String principal) {
-      this(statusCode, body, binary, principal, false, null);
+    CachedEntry(final int statusCode, final String body, final byte[] binary, final String eventStream,
+        final String principal) {
+      this(statusCode, body, binary, eventStream, principal, false, null);
     }
 
-    private CachedEntry(final int statusCode, final String body, final byte[] binary, final String principal,
-        final boolean pending, final CountDownLatch latch) {
+    private CachedEntry(final int statusCode, final String body, final byte[] binary, final String eventStream,
+        final String principal, final boolean pending, final CountDownLatch latch) {
       this.statusCode = statusCode;
       this.body = body;
       this.binary = binary;
+      this.eventStream = eventStream;
       this.principal = principal;
       this.timestampMs = System.currentTimeMillis();
       this.pending = pending;
@@ -75,7 +88,7 @@ public class IdempotencyCache {
     }
 
     static CachedEntry newPending() {
-      return new CachedEntry(0, null, null, null, true, new CountDownLatch(1));
+      return new CachedEntry(0, null, null, null, null, true, new CountDownLatch(1));
     }
 
     long sizeInBytes() {
@@ -84,6 +97,8 @@ public class IdempotencyCache {
         n += body.length();
       if (binary != null)
         n += binary.length;
+      if (eventStream != null)
+        n += eventStream.length();
       return n;
     }
 
@@ -210,6 +225,15 @@ public class IdempotencyCache {
    */
   public synchronized void complete(final String key, final Reservation reservation, final int statusCode, final String body,
       final byte[] binary, final String principal) {
+    complete(key, reservation, statusCode, body, binary, null, principal);
+  }
+
+  /**
+   * As {@link #complete(String, Reservation, int, String, byte[], String)}, with the answer to replay to a retry that
+   * asks for {@code text/event-stream} (see {@link CachedEntry#eventStream}).
+   */
+  public synchronized void complete(final String key, final Reservation reservation, final int statusCode, final String body,
+      final byte[] binary, final String eventStream, final String principal) {
     if (key == null || key.isEmpty() || reservation == null || reservation.owned == null)
       return;
     final CachedEntry current = cache.get(key);
@@ -220,7 +244,11 @@ public class IdempotencyCache {
       return;
 
     final boolean cacheable = statusCode >= 200 && statusCode < 300;
-    final CachedEntry completed = cacheable ? new CachedEntry(statusCode, body, binary, principal) : null;
+    CachedEntry completed = cacheable ? new CachedEntry(statusCode, body, binary, eventStream, principal) : null;
+    // The event-stream replay is an extra encoding of the same answer: when it is what pushes the entry past the cap,
+    // it is dropped and the answer kept, so a retry is still replayed (as the body) rather than executed again
+    if (completed != null && eventStream != null && completed.sizeInBytes() > maxBodyBytes)
+      completed = new CachedEntry(statusCode, body, binary, null, principal);
     if (completed != null && completed.sizeInBytes() <= maxBodyBytes)
       store(key, completed);
     else
@@ -253,7 +281,7 @@ public class IdempotencyCache {
       return;
     if (statusCode < 200 || statusCode >= 300)
       return;
-    final CachedEntry entry = new CachedEntry(statusCode, body, binary, principal);
+    final CachedEntry entry = new CachedEntry(statusCode, body, binary, null, principal);
     if (entry.sizeInBytes() > maxBodyBytes)
       return;
     store(key, entry);
@@ -272,10 +300,11 @@ public class IdempotencyCache {
       // the first non-expired entry means every later entry is newer too: stop scanning immediately.
       if (entry.timestampMs >= cutoff)
         break;
+      // Still executing: only its owner may settle it (see the class javadoc).
+      if (entry.pending)
+        continue;
       it.remove();
       currentBytes -= entry.sizeInBytes();
-      if (entry.latch != null)
-        entry.latch.countDown();
     }
   }
 
@@ -287,8 +316,9 @@ public class IdempotencyCache {
     return currentBytes;
   }
 
+  // A pending marker never expires: its owner is still executing and settles it itself (see the class javadoc).
   private boolean isExpired(final CachedEntry e) {
-    return System.currentTimeMillis() - e.timestampMs > ttlMs;
+    return !e.pending && System.currentTimeMillis() - e.timestampMs > ttlMs;
   }
 
   // Inserts (or replaces) an entry and enforces both bounds with O(1) FIFO eviction. Callers hold the
@@ -300,18 +330,20 @@ public class IdempotencyCache {
     evictToBounds();
   }
 
-  // Drops eldest entries (insertion order) until both bounds are satisfied. Each removal is O(1) via a
-  // single LinkedHashMap iterator, so a single insert never scans the whole map.
+  // Drops eldest completed entries (insertion order) until both bounds are satisfied. Each removal is O(1) via a
+  // single LinkedHashMap iterator, so a single insert never scans the whole map: the only entries it steps over
+  // are pending markers, which are never evicted (see the class javadoc) and number at most one per executing
+  // request. When nothing but pending markers is left, the entry count may exceed maxEntries by that many.
   private void evictToBounds() {
     if (cache.size() <= maxEntries && currentBytes <= maxBytes)
       return;
     final Iterator<Map.Entry<String, CachedEntry>> it = cache.entrySet().iterator();
     while (it.hasNext() && (cache.size() > maxEntries || currentBytes > maxBytes)) {
       final CachedEntry evicted = it.next().getValue();
+      if (evicted.pending)
+        continue;
       it.remove();
       currentBytes -= evicted.sizeInBytes();
-      if (evicted.latch != null)
-        evicted.latch.countDown();
     }
   }
 

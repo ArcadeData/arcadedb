@@ -61,6 +61,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -103,6 +104,8 @@ import java.util.logging.Level;
  * {@code GrpcMetricsInterceptor}.
  */
 public class ServerControlPlane {
+  /** The security documents in the order every source of the convergence signal names them (issue #8317). */
+  private static final List<String> SECURITY_DOCUMENT_ORDER = List.of("users", "groups", "API tokens");
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
   private final ArcadeDBServer server;
@@ -362,14 +365,18 @@ public class ServerControlPlane {
    * Liveness. Reaching a request handler at all proves the process is live, so this deliberately
    * does not consult server status: a node still warming up must not be killed.
    * <p>
-   * The one exception is a crash-loop that the HA layer has already escalated and given up on (issue #7622):
-   * {@link HAServerPlugin#isCrashLoopEscalated()} says the automatic remedies are exhausted and a pod/process
-   * restart is the only way out, so liveness fails too, turning that restart into something Kubernetes
-   * performs on its own rather than something an operator has to notice a SEVERE alert and do by hand.
+   * The one exception is a crash-loop that the HA layer has just escalated and given up on (issue #7622): the
+   * automatic remedies in this process are exhausted, so liveness fails and Kubernetes performs the one process
+   * restart the SEVERE alert calls for, rather than an operator having to notice it and do it by hand.
+   * <p>
+   * Only ONE restart (issue #7736): {@link HAServerPlugin#isCrashLoopRestartPending()} is {@code true} only for an
+   * escalation recorded in this lifetime. A restarted process that inherits the record and still crash-loops stays
+   * live - out of the Service through readiness, but alive and inspectable - because another restart cannot cure a
+   * cause served by the leader, and failing liveness on it again was a perpetual {@code CrashLoopBackOff}.
    */
   public boolean isLive() {
     final HAServerPlugin ha = server != null ? server.getHA() : null;
-    return ha == null || !ha.isCrashLoopEscalated();
+    return ha == null || !ha.isCrashLoopRestartPending();
   }
 
   /**
@@ -448,18 +455,34 @@ public class ServerControlPlane {
    * credentials, groups and API tokens in its own config directory. Issue #7521's bounded retry shortens the
    * failure case; it cannot close the window, because the window opens before the seed's first attempt.
    * <p>
-   * <b>Why it is bounded, and why the bound defaults to zero.</b> "This node has never installed a replicated
+   * <b>Why it is armed only on a runtime join (issue #7819).</b> "This node has never installed a replicated
    * copy" is the only form of the question a node can answer by itself, and it is also true of every node of a
-   * cluster that has simply never replicated a security document - nobody has run a {@code create user} since
-   * the cluster was built, or the node self-joined through {@code KubernetesAutoJoin}, which issues its own
-   * configuration change and no seed at all (issue #7531). Left unbounded, those nodes would report NOT_READY
-   * forever and a rolling restart would stall; defaulted non-zero, every such deployment would lose this window
-   * off the front of each start for a condition that is not a fault. So the wait is
-   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, it is {@code 0} unless an operator asks for it, and
-   * when it expires the node reports READY with a single SEVERE line naming the documents - the explicit,
-   * logged decision, rather than a silent deadlock or a silent pass.
+   * cluster that has simply never replicated a security document - nobody has run a {@code create user} since the
+   * cluster was built. Gating on it alone would hold every such deployment's readiness for the whole window at
+   * every start, for a condition that is not a fault, which is why issue #7532 had to ship it off by default. The
+   * event that tells the two apart is {@link HAServerPlugin#hasJoinedClusterAtRuntime()}: this node was added to
+   * the Raft configuration by a change it applied, having not been in it before. A statically configured member,
+   * restarted or not, never is; a peer admitted by {@code addPeer}, {@code connect cluster} or a
+   * {@code KubernetesAutoJoin} self-join always is. So the gate is armed only there, and the window can default
+   * on. Being armed also proves the cluster has another peer the documents can come from - it was added to a
+   * configuration that did not contain it - so no separate single-node test is needed, and none is made: the
+   * static peer count {@code getConfiguredServers()} reads is the node's own declared
+   * {@code arcadedb.ha.serverList}, not the live configuration, and a joiner's declared list is whatever its
+   * operator wrote rather than the cluster it was added to.
    * <p>
-   * Single-node clusters are never gated: there is no peer for the documents to have come from.
+   * <b>What counts as converged on a joiner (issue #8317).</b> Not a recorded replicated fingerprint alone: a node
+   * removed from the cluster and re-added with its config volume retained holds one for every document, from its
+   * previous membership, and would be released on the first probe while enforcing a user dropped, a group
+   * narrowed or a token revoked while it was out. So on an armed node a document also has to have been installed
+   * from an entry committed after the configuration change that (last) added it -
+   * {@link HAServerPlugin#securityDocumentsNotInstalledSinceRuntimeJoin()} - which is the admission seed or a
+   * later change to that document.
+   * <p>
+   * <b>Why it is bounded.</b> A joiner that is never seeded - the leader-side seed dropped, the retry budget
+   * exhausted - must not stall a rolling restart or a scale-up forever. So the wait is
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, and when it expires the node reports READY with a
+   * single SEVERE line naming the documents - the explicit, logged decision, rather than a silent deadlock or a
+   * silent pass. {@code 0} still disables the gate entirely.
    */
   private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
     final long window = server.getConfiguration()
@@ -468,11 +491,17 @@ public class ServerControlPlane {
       return null;
 
     final List<String> unconverged;
-    final int configuredServers;
+    final boolean joinedAtRuntime;
     try {
-      configuredServers = ha.getConfiguredServers();
+      joinedAtRuntime = ha.hasJoinedClusterAtRuntime();
       final ServerSecurity security = server.getSecurity();
-      unconverged = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+      final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+      // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
+      // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
+      // the document must also have been installed after the change that (last) added it.
+      unconverged = joinedAtRuntime ?
+          unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin()) :
+          neverInstalled;
     } catch (final Exception e) {
       // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
@@ -482,18 +511,20 @@ public class ServerControlPlane {
     }
 
     if (unconverged.isEmpty()) {
-      // Converged: forget the window, which is the only condition that may reset it. A single-node reading
-      // must NOT, and that is not a detail - getConfiguredServers() answers 1 whenever the Raft server is not
-      // readable this tick, so resetting on it would restart the bound on every such blip and a node whose HA
-      // layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
+      // Converged: forget the window, which is the only condition that may reset it. A disarmed reading must
+      // NOT, and that is not a detail - hasJoinedClusterAtRuntime() answers false whenever the Raft server is
+      // not readable this tick (RaftHAPlugin returns it literally while raftHAServer is null), so resetting on
+      // it would restart the bound on every such blip and a node whose HA layer is flapping would never reach
+      // the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;
       return null;
     }
 
-    // Nothing to converge WITH. Not gated, and the window is left exactly as it was: a node that reads 1 here
+    // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
+    // fault (issue #7819). Not gated, and the window is left exactly as it was: a node that reads false here
     // because its Raft state was unreadable keeps the deadline it already opened.
-    if (configuredServers <= 1)
+    if (!joinedAtRuntime)
       return null;
 
     final long now = System.currentTimeMillis();
@@ -515,6 +546,19 @@ public class ServerControlPlane {
               + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
     }
     return null;
+  }
+
+  /** The documents named by either list, in the order users, groups, API tokens both of them report. */
+  private static List<String> unionInDocumentOrder(final List<String> a, final List<String> b) {
+    if (b == null || b.isEmpty())
+      return a;
+    if (a.isEmpty())
+      return b;
+    final List<String> union = new ArrayList<>(3);
+    for (final String document : SECURITY_DOCUMENT_ORDER)
+      if (a.contains(document) || b.contains(document))
+        union.add(document);
+    return union;
   }
 
   /**
@@ -1128,6 +1172,13 @@ public class ServerControlPlane {
   }
 
   /**
+   * The refusal {@link #deleteApiToken} answers a plaintext token with. Shared with {@code DeleteApiTokenHandler},
+   * which gives it before forwarding to the leader so the token never travels to a second node (issue #8109).
+   */
+  public static final String PLAINTEXT_TOKEN_DELETE_REFUSAL =
+      "Use token hash (from list endpoint) instead of plaintext token for deletion";
+
+  /**
    * Revokes a token by its SHA-256 hash.
    *
    * @throws IllegalArgumentException when handed a plaintext token instead of a hash. Accepting one
@@ -1140,7 +1191,7 @@ public class ServerControlPlane {
       throw new IllegalArgumentException("Token hash parameter is required");
 
     if (ApiTokenConfiguration.isApiToken(tokenHash))
-      throw new IllegalArgumentException("Use token hash (from list endpoint) instead of plaintext token for deletion");
+      throw new IllegalArgumentException(PLAINTEXT_TOKEN_DELETE_REFUSAL);
 
     if (!server.getSecurity().deleteApiTokenClusterWide(tokenHash))
       throw new NotFoundException("Token not found");

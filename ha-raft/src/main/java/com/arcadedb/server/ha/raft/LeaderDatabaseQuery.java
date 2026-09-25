@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.IOException;
 import java.net.URI;
@@ -60,6 +61,16 @@ public final class LeaderDatabaseQuery {
   public record DatabaseInfo(String name, long lastTxId) {
   }
 
+  /**
+   * The peer's database list plus its own latest Raft snapshot {@link TermIndex} (issue #8360), i.e. the boundary
+   * {@link ArcadeStateMachine#takeSnapshot()} last checkpointed - the same value {@code LogAppender.getPreviousLog()}
+   * falls back to on the leader when it answers an {@code AppendEntries} whose {@code previousIndex} is no longer in
+   * its own retained Raft log. {@code snapshotTermIndex} is {@code null} when the peer has not taken a Raft snapshot
+   * yet (a young cluster before its first compaction).
+   */
+  public record BootstrapState(List<DatabaseInfo> databases, TermIndex snapshotTermIndex) {
+  }
+
   /** The chosen endpoint and scheme for a query; package-private so scheme selection is unit-testable. */
   record Endpoint(String url, boolean https) {
   }
@@ -84,7 +95,7 @@ public final class LeaderDatabaseQuery {
    * @throws IOException          on transport error or a non-200 response.
    * @throws InterruptedException if the calling thread is interrupted while waiting.
    */
-  public static List<DatabaseInfo> fetch(final String httpAddr, final String httpsAddr, final String clusterToken,
+  public static BootstrapState fetch(final String httpAddr, final String httpsAddr, final String clusterToken,
       final long timeoutMs, final ArcadeDBServer server) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
@@ -134,17 +145,28 @@ public final class LeaderDatabaseQuery {
     return null;
   }
 
-  private static List<DatabaseInfo> parse(final HttpResponse<String> resp, final String url) throws IOException {
+  private static BootstrapState parse(final HttpResponse<String> resp, final String url) throws IOException {
     if (resp.statusCode() != 200)
       throw new IOException("bootstrap-state query to " + url + " returned HTTP " + resp.statusCode());
+    return parseBody(resp.body());
+  }
 
-    final JSONObject json = new JSONObject(resp.body());
+  /** The JSON-decoding half of {@link #parse}, split out so the wire format is unit-testable without HTTP. */
+  static BootstrapState parseBody(final String body) {
+    final JSONObject json = new JSONObject(body);
     final JSONArray dbs = json.getJSONArray("databases");
     final List<DatabaseInfo> out = new ArrayList<>(dbs.length());
     for (int i = 0; i < dbs.length(); i++) {
       final JSONObject db = dbs.getJSONObject(i);
       out.add(new DatabaseInfo(db.getString("name"), db.getLong("lastTxId", -1L)));
     }
-    return out;
+
+    // snapshotIndex is absent/-1 when the peer has not taken a Raft snapshot yet (issue #8360).
+    final long snapshotIndex = json.getLong("snapshotIndex", -1L);
+    final TermIndex snapshotTermIndex = snapshotIndex >= 0
+        ? TermIndex.valueOf(json.getLong("snapshotTerm", 0L), snapshotIndex)
+        : null;
+
+    return new BootstrapState(out, snapshotTermIndex);
   }
 }

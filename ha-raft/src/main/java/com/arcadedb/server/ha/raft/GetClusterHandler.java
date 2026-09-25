@@ -163,6 +163,23 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("localReplicationLag",
         localAppliedIndex >= 0 && localCommitIndex >= 0 ? localCommitIndex - localAppliedIndex : -1L);
 
+    // This node stuck at a stale term after a snapshot install (issue #8289): it has applied everything it
+    // could locally commit, so localReplicationLag above reads 0 and this node looks caught up, yet it keeps
+    // rejecting the leader's current-term entries and does not count toward quorum. Debounced (see
+    // RaftHAServer.isFollowerStuckAtStaleTermConfirmed) so a normal leader change is not reported as one.
+    final boolean stuckAtStaleTerm = raftHAServer.isFollowerStuckAtStaleTermConfirmed();
+    response.put("localStuckAtStaleTerm", stuckAtStaleTerm);
+
+    // This follower stalled behind its leader at the current term (issue #8342): its log stopped receiving entries
+    // with no term change, so localReplicationLag above can read 0 and localStuckAtStaleTerm false, and only the
+    // leader's answer used to carry the stall. Measured against the commit index the leader reports over the
+    // health monitor's follower-to-leader probe, with the leader's own STALLED rule. -1 on the leader (whose own
+    // localCommitIndex is the figure) and on a follower that has not learned one yet. Masked on the leader too, for
+    // the up to one health tick between an election and the tick that drops the stall this node had as a follower.
+    final FollowerStallTracker.Stall stalledBehindLeader = isLeader ? null : raftHAServer.getFollowerStallBehindLeader();
+    response.put("leaderCommitIndex", isLeader ? -1L : raftHAServer.getLeaderReportedCommitIndex());
+    response.put("localStalledBehindLeader", stalledBehindLeader != null);
+
     // Per-follower replication health (leader only): replication lag, classified status, heartbeat
     // latency, and how long the follower has been lagging - so Studio and operators can pinpoint a
     // constantly-slow node instead of grepping logs (issue #4812). Keyed by peer id for the loop below.
@@ -336,18 +353,38 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // field can disagree, and the document would then carry a null criticalHalt next to a
     // halted-after-critical-error alert, or the reverse.
     final ClusterAlerts.NodeStatus nodeStatus = new ClusterAlerts.NodeStatus(stateMachine.getCriticalHalt(),
-        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user));
+        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user),
+        stateMachine.getBootstrapInstallsInFlight());
     response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
     response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
-    // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
-    // equally invisible here. Same reasoning, same scoping - none.
+    // The liveness counterpart (issue #7622): an escalation is what fails /api/v1/health (once, issue #7736), and
+    // it was equally invisible here. Same reasoning, same scoping - none.
     response.put("crashLoopEscalated", nodeStatus.crashLoopEscalated());
+    // The #7519 bootstrap install window (issue #8044), the one readiness input still missing after #7872: the
+    // install never touches localResync, so for a whole database download /api/v1/ready answered 503 and pointed
+    // here while everything here read healthy. From the same NodeStatus sample the alert scan below reads.
+    response.put("bootstrapInstalls", buildBootstrapInstalls(nodeStatus.bootstrapInstalls(), authorizedDatabases));
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, nodeStatus));
+            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm, stalledBehindLeader));
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Renders the bootstrap installs in flight for the status document (issue #8044).
+   * <p>
+   * Scoped like {@link #buildLocalResync}: {@code inProgress} and {@code count} are the node-level answer and reach
+   * every caller, the database names are reduced to {@code visibleDatabases}. Written on every answer, with
+   * {@code inProgress: false} rather than absent, so a client can tell "healthy" from "this build does not report
+   * it". Package-private so the shape can be pinned against the published contract without a live cluster.
+   */
+  static JSONObject buildBootstrapInstalls(final List<String> installs, final Set<String> visibleDatabases) {
+    return new JSONObject()
+        .put("inProgress", !installs.isEmpty())
+        .put("count", installs.size())
+        .put("databases", ClusterAlerts.namesArray(ClusterAlerts.visible(installs, visibleDatabases)));
   }
 
   /**
@@ -543,7 +580,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         }
         try {
           final List<LeaderDatabaseQuery.DatabaseInfo> infos =
-              LeaderDatabaseQuery.fetch(dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server);
+              LeaderDatabaseQuery.fetch(dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
+                  .databases();
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());
         } catch (final InterruptedException e) {

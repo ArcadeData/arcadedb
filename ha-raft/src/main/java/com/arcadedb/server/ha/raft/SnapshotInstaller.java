@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
@@ -225,6 +226,26 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Whether ANY install is in flight in this JVM (issue #8363). The cheap first half of
+   * {@link #isInstallInFlight(String)}: {@code RaftReplicatedDatabase} asks it on every client request, and the
+   * overwhelmingly common answer is no, so that answer must cost one map read and no path arithmetic.
+   */
+  static boolean hasInstallsInFlight() {
+    return !INSTALLS_IN_FLIGHT.isEmpty();
+  }
+
+  /**
+   * Whether an install is replacing the database directory at {@code databasePath} right now, from the moment
+   * {@link #install(String, String, Supplier, Supplier, String, ArcadeDBServer)} registers it - before the
+   * download, which is the long part and runs with the live copy still open - until the swap is done or has been
+   * rolled back (issue #8363). Keyed by resolved path, like the registry itself, so two logical servers in one JVM
+   * never answer for each other's copy of a same-named database.
+   */
+  static boolean isInstallInFlight(final String databasePath) {
+    return !INSTALLS_IN_FLIGHT.isEmpty() && INSTALLS_IN_FLIGHT.containsKey(resolvedInFlightKey(Path.of(databasePath)));
+  }
+
+  /**
    * Test-only: registers {@code dbDir} as having an install in flight, so a test can exercise the issue #7128
    * skip guard in {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} without driving a real download.
    * Always paired with {@link #clearInstallInFlightForTesting} once the test is done with it.
@@ -364,6 +385,15 @@ public final class SnapshotInstaller {
     // touched the coordinator or the filesystem at all.
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
     final String inFlightKey = dbPath.toString();
+
+    // The install is the engine's work, whatever thread drives it (issue #8363). The operator resync runs it on the
+    // HTTP worker that received POST /api/v1/cluster/resync, which is tagged as a client request, and registering
+    // this install below is exactly what makes RaftReplicatedDatabase refuse client requests on this database: left
+    // tagged, the install would be refused by the gate it opens the moment anything it drives - the reopen at the
+    // end of the swap included - went through the wrapper. Restored in the outer finally, so the caller's own
+    // request goes on being what it was once the install has returned.
+    final String callerProtocol = ProtocolContext.get();
+    ProtocolContext.set(ProtocolContext.INTERNAL);
     // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen). If
     // they ever do, log it loudly rather than silently double-closing: registering here makes the violation
     // diagnosable, and counted rather than a plain flag so the guard below survives however many overlap
@@ -396,6 +426,7 @@ public final class SnapshotInstaller {
       }
     } finally {
       releaseInstallInFlight(inFlightKey);
+      ProtocolContext.set(callerProtocol);
     }
   }
 
@@ -420,6 +451,12 @@ public final class SnapshotInstaller {
     // Reconcile that state first, through the same startup-recovery routine, and refuse to start if the
     // reconciliation cannot complete.
     reconcileRetainedBackup(databaseName, dbPath, snapshotBackup, pendingMarker, server);
+
+    // A marker that survives reconciliation over a directory that is not a loadable database is the torn state
+    // recovery refuses to bless (#7139): nothing to reconcile from, so a fresh snapshot is the only cure and the
+    // install proceeds. But if its download fails, the marker is the one thing stopping the torn directory from
+    // being opened and served, so that failure must leave it in place (review finding on PR #8318, issue #7670).
+    final boolean keepMarkerIfDownloadFails = Files.exists(pendingMarker) && !looksLikeADatabaseDirectory(dbPath);
 
     // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
     // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
@@ -454,7 +491,13 @@ public final class SnapshotInstaller {
       // Download failed: the live database has not been touched and is still open. Drop the staging
       // directory and rethrow so the caller (or Raft) can retry later without losing availability.
       deleteDirectoryIfExists(snapshotNew);
-      Files.deleteIfExists(pendingMarker);
+      if (keepMarkerIfDownloadFails)
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Snapshot download for '%s' failed over a database directory that holds no loadable database; keeping "
+                + "its '%s' marker so the directory stays unopenable until a snapshot install succeeds", null,
+            databaseName, SNAPSHOT_PENDING_FILE);
+      else
+        Files.deleteIfExists(pendingMarker);
       throw e;
     }
 
@@ -749,7 +792,8 @@ public final class SnapshotInstaller {
    *   <li>database registered (or deregistered-but-on-disk, which {@code existsDatabase} reports as
    *       present): returns its live {@code getDatabasePath()}. Note the side effect - {@code getDatabase}
    *       <i>opens and registers</i> a deregistered-but-on-disk database, so do not call this as a pure
-   *       read on a database meant to stay closed;</li>
+   *       read on a database meant to stay closed. A registered entry that is not open and cannot be reopened
+   *       because its {@code .snapshot-pending} marker is on disk falls through to the next case (issue #7670);</li>
    *   <li>database absent: derives the path from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}
    *       without opening anything (nothing to open).</li>
    * </ul>
@@ -769,8 +813,19 @@ public final class SnapshotInstaller {
   static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
-    if (server.existsDatabase(databaseName))
-      return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+    if (server.existsDatabase(databaseName)) {
+      try {
+        return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+      } catch (final DatabaseNotAvailableException e) {
+        // Registered but not open, with the .snapshot-pending marker on disk: getDatabase refuses to open it, and
+        // refusing here too failed every install driver before the install could reconcile that marker - the one
+        // thing that makes the database openable again (issue #7670). The configured path below is the directory
+        // getDatabase would have opened, so it is the same answer the lookup would have given.
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Database '%s' is registered but did not resolve while locating it for a snapshot install (%s); "
+                + "using its configured directory", null, databaseName, e.getMessage());
+      }
+    }
     return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
         + File.separator + databaseName;
   }
@@ -792,13 +847,18 @@ public final class SnapshotInstaller {
    * installs could both pass the {@code existsDatabase} check and the second {@code close} would see an
    * already-closed instance.
    * <p>
-   * The crash-recovery pass needs the same close with different error handling and needs to know whether anything
-   * was closed, so it goes through {@link #closeRegisteredDatabaseForRepair} instead; both end in
-   * {@link #closeAndDeregister}.
+   * Both callers - {@link #swapAndReopen} and {@link #reconcileRetainedBackup} - run with the
+   * {@code .snapshot-pending} marker on disk, which is the one state in which a registered entry that is
+   * <i>not open</i> cannot be resolved at all: {@link ArcadeDBServer#getDatabase} throws
+   * {@code DatabaseNotAvailableException} for it. So this resolves the instance through the same guarded lookup the
+   * crash-recovery pass uses, {@link #closeRegisteredDatabaseForRepair}, and ignores whether anything was closed:
+   * an entry that failed to resolve is already closed, so there is nothing left for this call to close, and the
+   * callers' own reopen - {@code swapAndReopen} always, {@code reconcileRetainedBackup} once the marker is gone -
+   * replaces the stale entry. Letting the lookup throw instead failed the whole install before it had moved a file,
+   * and left the follower unable to resync from the leader until a restart (issue #7670).
    */
   private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
-    if (server.existsDatabase(databaseName))
-      closeAndDeregister(server, (DatabaseInternal) server.getDatabase(databaseName), databaseName);
+    closeRegisteredDatabaseForRepair(server, databaseName);
   }
 
   /**
@@ -1222,7 +1282,8 @@ public final class SnapshotInstaller {
 
   /**
    * {@link #closeLocalDatabaseIfOpen} for the crash-recovery pass, which cannot let one database that will not
-   * <i>resolve</i> abort the scan of every other one (issue #7530).
+   * <i>resolve</i> abort the scan of every other one (issue #7530). The install paths reach it too, through
+   * {@code closeLocalDatabaseIfOpen}, because they run with the same marker on disk (issue #7670).
    * <p>
    * {@code closeLocalDatabaseIfOpen} resolves the instance through {@link ArcadeDBServer#getDatabase}, and that
    * throws {@code DatabaseNotAvailableException} for a database that is registered but <i>closed</i> while the
@@ -1262,10 +1323,10 @@ public final class SnapshotInstaller {
       db = (DatabaseInternal) server.getDatabase(databaseName);
     } catch (final DatabaseNotAvailableException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Database '%s' is registered but did not resolve before repairing its interrupted snapshot swap: %s. Only "
-              + "an entry that is not open can fail to resolve, so it holds no files in the directory being "
-              + "repaired; the repair proceeds under the registry lock and leaves the entry for the next open to "
-              + "pick up once the '%s' marker is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
+          "Database '%s' is registered but did not resolve before its directory is swapped or repaired: %s. Only "
+              + "an entry that is not open can fail to resolve, so it holds no files in that directory; the swap or "
+              + "repair proceeds under the registry lock and leaves the entry for the next open to pick up once the "
+              + "'%s' marker is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
       return false;
     }
 

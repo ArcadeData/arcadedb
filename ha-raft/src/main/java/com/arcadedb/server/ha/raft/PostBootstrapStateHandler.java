@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -31,8 +32,12 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -50,12 +55,23 @@ import java.util.logging.Level;
  *         "lastTxId": 123456
  *       },
  *       ...
- *     ]
+ *     ],
+ *     "snapshotTerm": 7,
+ *     "snapshotIndex": 39707283
  *   }
  * </pre>
  * The leader picks the peer with the highest {@code lastTxId} as the bootstrap source. Mismatched
  * followers reinstall from the leader-shipped full snapshot; subsequent transactions are
  * replicated entry-by-entry by Ratis AppendEntries.
+ * <p>
+ * {@code snapshotTerm}/{@code snapshotIndex} (issue #8360) are this peer's own latest Raft snapshot marker -
+ * {@link ArcadeStateMachine#getLatestSnapshotTermIndex()} - and are omitted (absent index -1) when this peer has
+ * not taken one yet. A leader-driven install ({@code ArcadeStateMachine#installSnapshotFromLeader}) reads them from
+ * the leader during the very same reconcile call this RPC already serves, so the follower registers the term the
+ * leader will actually send as {@code previous} in its next {@code AppendEntries} (Ratis's
+ * {@code LogAppender.getPreviousLog()} falls back to this same marker for an index no longer in the leader's log)
+ * instead of approximating it from the term of the NEXT log entry, which differs whenever a term change lands
+ * exactly at that boundary and otherwise wedges the follower permanently.
  * <p>
  * Authentication is inherited from {@link AbstractServerHttpHandler}: the standard
  * {@code X-ArcadeDB-Cluster-Token} + {@code X-ArcadeDB-Forwarded-User} pair used by every other
@@ -102,6 +118,15 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
     final ArcadeDBServer server = httpServer.getServer();
+
+    // Issue #8368: the probe of a running first-formation pass says so, and this is the only local signal a
+    // follower gets that a pass is under way before the committed baseline reaches it. Taken before the
+    // fingerprints below are computed: the pass is already running, and hashing a large database is not quick.
+    // Held for twice the leader's collection budget - the probe arrives inside that budget, and the leader commits
+    // or transfers right after it - so a leader that dies mid-pass costs a bounded hold, never a wedged node.
+    applyPassMarker(payload, raftHAServer.getStateMachine(),
+        2L * server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
+
     final JSONArray dbs = new JSONArray();
 
     for (final String dbName : server.getDatabaseNames()) {
@@ -145,6 +170,54 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     final JSONObject response = new JSONObject();
     response.put("databases", dbs);
     response.put("peerId", raftHAServer.getLocalPeerId().toString());
+
+    // Issue #8360: this peer's own latest Raft snapshot boundary, so a leader-driven install elsewhere in the
+    // cluster can register the snapshot it just received under the REAL term of the log entry it covers rather
+    // than approximating it from the term of the next log entry. Omitted (not zeroed) when this peer has not
+    // taken a Raft snapshot yet, so the caller can tell "no data" from "boundary is at term 0, index 0".
+    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    final TermIndex snapshotTermIndex = stateMachine != null ? stateMachine.getLatestSnapshotTermIndex() : null;
+    if (snapshotTermIndex != null) {
+      response.put("snapshotTerm", snapshotTermIndex.getTerm());
+      response.put("snapshotIndex", snapshotTermIndex.getIndex());
+    }
+
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Applies what a first-formation bootstrap pass says about itself in the probe's body (issue #8368) - see
+   * {@link BootstrapElection#announcePassBody} and {@link BootstrapElection#concludePassBody} for the two shapes.
+   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler, the #8360
+   * snapshot-marker read, the divergence re-check), and so does a leader that predates this change: none of them
+   * holds anything, which leaves a mixed-version cluster exactly as ungated as before rather than wedged.
+   * <p>
+   * Safe to reach from outside a pass only as far as root can already reach: the route is root-only, the announce
+   * is ignored by a node past first formation, and every hold it takes lapses on its own.
+   */
+  static void applyPassMarker(final JSONObject payload, final ArcadeStateMachine stateMachine, final long holdMs) {
+    if (payload == null || stateMachine == null)
+      return;
+    final String marker = payload.getString(BootstrapElection.PASS_MARKER, null);
+    if (marker == null)
+      return;
+    final String passId = payload.getString(BootstrapElection.PASS_ID, null);
+    if (BootstrapElection.PASS_ANNOUNCE.equals(marker))
+      stateMachine.announceBootstrapPass(passId, names(payload.getJSONArray(BootstrapElection.PASS_DATABASES, null)),
+          holdMs);
+    else if (BootstrapElection.PASS_CONCLUDE.equals(marker) && passId != null)
+      stateMachine.concludeBootstrapPass(passId, names(payload.getJSONArray(BootstrapElection.PASS_COMMITTED, null)));
+  }
+
+  private static List<String> names(final JSONArray array) {
+    if (array == null || array.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++) {
+      final Object name = array.get(i);
+      if (name instanceof String s)
+        names.add(s);
+    }
+    return names;
   }
 }

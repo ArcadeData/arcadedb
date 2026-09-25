@@ -21,7 +21,6 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -142,33 +141,29 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             } else
               kindMatches = false;
 
-            final List<IndexCursor> indexCursors = new ArrayList<>();
-
-            for (final HasContainer c : hasContainers) {
-              final String key = c.getKey();
-              if (kindMatches && !key.startsWith("~")) {
-                if (graph.database.getSchema().existsType(typeNameToMatch)) {
-                  final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
-                  if (index != null) {
-                    if (c.getBiPredicate().equals(Compare.eq))
-                      indexCursors.add(
-                          index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
-                    else if (c.getBiPredicate().equals(Compare.gt))
-                      indexCursors.add(index.iterator(true,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                    else if (c.getBiPredicate().equals(Compare.gte))
-                      indexCursors.add(index.iterator(true,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
-                    else if (c.getBiPredicate().equals(Compare.lt))
-                      indexCursors.add(index.iterator(false,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                    else if (c.getBiPredicate().equals(Compare.lte))
-                      indexCursors.add(index.iterator(false,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
-                  }
+            // PICK ONE INDEXED CONTAINER TO GENERATE THE CANDIDATES FROM, PREFERRING A UNIQUE EQUALITY, THEN ANY EQUALITY,
+            // THEN A RANGE. EVERY has() CONTAINER, THE CHOSEN ONE INCLUDED, STAYS IN THE HasStep AND IS RE-CHECKED ON EACH
+            // CANDIDATE, SO INTERSECTING A SECOND INDEX WOULD ONLY REPEAT THAT WORK WHILE MATERIALISING BOTH SCANS (#8299)
+            TypeIndex chosenIndex = null;
+            HasContainer chosen = null;
+            int chosenRank = Integer.MAX_VALUE;
+            if (kindMatches)
+              for (final HasContainer c : hasContainers) {
+                final String key = c.getKey();
+                if (key.startsWith("~") || c.getValue() == null || !ArcadeFilterByIndexStep.isSupported(c.getBiPredicate()))
+                  continue;
+                // WALKS UP THE HIERARCHY: A SUPER TYPE'S INDEX SPANS ITS SIBLING SUB-TYPES TOO, WHICH THE STEP FILTERS
+                // OUT BY BUCKET (#8249)
+                final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
+                if (index == null)
+                  continue;
+                final int rank = c.getBiPredicate() == Compare.eq ? (index.isUnique() ? 0 : 1) : 2;
+                if (rank < chosenRank) {
+                  chosenRank = rank;
+                  chosenIndex = index;
+                  chosen = c;
                 }
               }
-            }
 
             final Step replaceWith;
             // #8258: true only for the count rewrite, which is a REDUCING BARRIER - real TinkerPop's own
@@ -178,7 +173,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             // must NOT be copied onto ArcadeCountGlobalStep - only the count's OWN label (from countStep,
             // handled below) may survive, since that one names the traverser the count itself produces.
             boolean isCountRewrite = false;
-            if (indexCursors.isEmpty()) {
+            if (chosenIndex == null) {
               if (((HasStep<?>) step).getHasContainers().isEmpty() &&
                   i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
                 // #8258: keep a handle on the CountGlobalStep so its own label (if any) survives the rewrite below
@@ -194,7 +189,9 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
               replacedWithFilterByType = true;
             } else
               replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
-                  prevStepGraph.isStartStep(), indexCursors);
+                  prevStepGraph.isStartStep(), chosenIndex, chosen.getBiPredicate(),
+                  chosen.getValue().getClass().isArray() ? (Object[]) chosen.getValue() : new Object[] { chosen.getValue() },
+                  typeNameToMatch);
 
             if (replaceWith != null) {
               // #8258: a label on the GraphStep being replaced must survive on the new step, otherwise

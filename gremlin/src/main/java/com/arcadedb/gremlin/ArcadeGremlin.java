@@ -28,22 +28,25 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
-import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.utility.CollectionUtils;
 import org.apache.tinkerpop.gremlin.groovy.jsr223.GremlinGroovyScriptEngine;
 import org.apache.tinkerpop.gremlin.jsr223.GremlinLangScriptEngine;
+import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.DefaultGraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
+import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddEdgeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.AddVertexStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.MergeStepContract;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropertyStepContract;
+import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IoStep;
+import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
@@ -75,39 +78,8 @@ public class ArcadeGremlin extends ArcadeQuery {
 
       final Iterator<?> resultSet = executeStatement();
 
-      ExecutionPlan executionPlan = null;
-      if (profileExecution && canBeProfiledWithoutRunningItAgain(resultSet)) {
-        final String originalQuery = query;
-        query += ".profile()";
-        try {
-          final Iterator<?> profilerResultSet = executeStatement();
-          if (profilerResultSet.hasNext()) {
-            final Object result = profilerResultSet.next();
-            executionPlan = new ExecutionPlan() {
-              @Override
-              public List<ExecutionStep> getSteps() {
-                return null;
-              }
-
-              @Override
-              public String prettyPrint(int depth, int indent) {
-                return result.toString();
-              }
-
-              @Override
-              public Result toResult() {
-                return null;
-              }
-            };
-          }
-        } catch (Exception e) {
-          // NO EXECUTION PLAN
-        } finally {
-          query = originalQuery;
-        }
-      }
-
-      final ExecutionPlan activeExecutionPlan = executionPlan;
+      // Issue #7408: the plan is collected from the run the caller drains, never from a second one.
+      final GremlinExecutionPlan executionPlan = profileExecution ? GremlinExecutionPlan.attach(resultSet) : null;
 
       final IteratorResultSet result = new IteratorResultSet(new Iterator() {
         @Override
@@ -132,7 +104,9 @@ public class ArcadeGremlin extends ArcadeQuery {
       }) {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
-          return activeExecutionPlan != null ? Optional.of(activeExecutionPlan) : Optional.empty();
+          return executionPlan != null && executionPlan.isAvailable() ?
+              Optional.of(executionPlan) :
+              Optional.empty();
         }
       };
 
@@ -158,47 +132,6 @@ public class ArcadeGremlin extends ArcadeQuery {
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing command", e);
     }
-  }
-
-  /**
-   * Whether the {@code .profile()} pass may be run for this statement.
-   * <p>
-   * {@code $profileExecution} asks for the statement to be TIMED, not for it to be run differently - the rule
-   * #7330 established when it stopped rerouting recording-server OpenCypher onto an eager
-   * {@code CypherExecutionPlan.profile()}. Gremlin cannot honour that rule the same way: there is no per-step
-   * timer accumulating during the ordinary run, so {@code .profile()} genuinely is a SECOND execution of the
-   * statement. What can be honoured is the part that matters - the second run must not reach storage.
-   * <p>
-   * {@code ServerDatabase.command(language, query, parameters)} injects the flag for every statement in every
-   * language while the server profiler is recording, so this is not a Studio-only path: without this gate a
-   * {@code g.addV('Person')} issued against a recording server built the traversal twice and drained both,
-   * creating two vertices (issue #7394).
-   * <p>
-   * Two shapes are refused:
-   * <ul>
-   *   <li>a traversal carrying a {@link Mutating} step - the second run would apply the mutation again;</li>
-   *   <li>anything that is not an un-iterated traversal at all - {@code eval()} answers a plain value when the
-   *   statement ended in an eager terminal step such as {@code .next()}, which means the statement has already
-   *   run once and its steps can no longer be inspected. Whether that run mutated cannot be established here,
-   *   so the pass is skipped rather than guessed at. No plan is lost by that: appending {@code .profile()} to a
-   *   statement that already ended in a terminal step does not parse, so the attempt only ever landed in the
-   *   {@code // NO EXECUTION PLAN} catch below.</li>
-   * </ul>
-   * Read-only traversals are unaffected and keep their execution plan; the cost of profiling those is issue
-   * #7408.
-   */
-  private static boolean canBeProfiledWithoutRunningItAgain(final Iterator<?> resultSet) {
-    if (!(resultSet instanceof final GraphTraversal<?, ?> traversal))
-      return false;
-
-    // Strategies have not been applied yet, so this is the same raw step list parse() inspects - and the
-    // gremlin-lang placeholder step types (AddVertexStartStepPlaceholder and friends) implement Mutating just
-    // as the concrete steps do, which is what makes the check reliable on both engines (see #5838).
-    for (final Object step : traversal.asAdmin().getSteps())
-      if (step instanceof Mutating)
-        return false;
-
-    return true;
   }
 
   /**
@@ -285,10 +218,20 @@ public class ArcadeGremlin extends ArcadeQuery {
       // BINDINGS, SO USE THE NULL-TOLERANT JAVA ENGINE TO BUILD THE TRAVERSAL SHAPE WITHOUT REQUIRING THEM. #5187
       final DefaultGraphTraversal<?,?> resultSet = (DefaultGraphTraversal<?,?>) executeStatement(true);
 
+      // RECURSIVE: A WRITE NESTED IN A CHILD TRAVERSAL (coalesce(), union(), sideEffect(), choose(), local()...) IS STILL
+      // A WRITE, AND NO TraversalParent IS ITSELF Mutating. A FLAT SCAN OF THE ROOT STEPS CALLED THE CANONICAL UPSERT
+      // fold().coalesce(unfold(), addV(...)) READ-ONLY, AND THE HA FOLLOWER THEN RAN IT LOCALLY INSTEAD OF FORWARDING
+      // IT TO THE LEADER (#8296)
       boolean idempotent = true;
       final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-      for (final Object step : resultSet.getSteps()) {
-        if (step instanceof Mutating) {
+      for (final Step<?, ?> step : TraversalHelper.getStepsOfAssignableClassRecursively(resultSet, Mutating.class, IoStep.class)) {
+        if (step instanceof IoStep<?> ioStep) {
+          // io().read() LOADS A FILE INTO THE GRAPH WITHOUT BEING A Mutating STEP; io().write() ONLY READS THE GRAPH
+          if (ioStep.getMode() != ReadWriting.Mode.WRITING) {
+            idempotent = false;
+            ops.add(OperationType.CREATE);
+          }
+        } else {
           idempotent = false;
           // TinkerPop 3.8.1's gremlin-lang parser hands parse() GValue-based placeholder step types for
           // addV/addE/property (e.g. AddVertexStartStepPlaceholder) instead of the concrete step classes
@@ -298,7 +241,11 @@ public class ArcadeGremlin extends ArcadeQuery {
           // the concrete class. See #5838. DropStep has no placeholder variant in 3.8.1, so it stays a direct check.
           if (step instanceof AddVertexStepContract || step instanceof AddEdgeStepContract)
             ops.add(OperationType.CREATE);
-          else if (step instanceof DropStep)
+          else if (step instanceof MergeStepContract) {
+            // mergeV()/mergeE() CREATE OR UPDATE DEPENDING ON WHAT THEY FIND
+            ops.add(OperationType.CREATE);
+            ops.add(OperationType.UPDATE);
+          } else if (step instanceof DropStep)
             ops.add(OperationType.DELETE);
           else if (step instanceof AddPropertyStepContract)
             ops.add(OperationType.UPDATE);

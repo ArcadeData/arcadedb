@@ -212,8 +212,8 @@ public class ResultInternal implements Result {
       result = (T) defaultValue;
     else if (content != null && content.containsKey(name))
       result = (T) content.get(name);
-    else if (element != null && element.has(name))
-      result = (T) element.get(name);
+    else if (element != null)
+      result = (T) element.getIfPresent(name, defaultValue);
     else
       result = (T) defaultValue;
 
@@ -371,6 +371,37 @@ public class ResultInternal implements Result {
       return true;
 
     return content != null && content.containsKey(propName);
+  }
+
+  /**
+   * The {@link #hasProperty(String)}-then-{@link #getProperty(String)} answer in one lookup. The precedence is
+   * {@link #getProperty(String)}'s: a non-empty content answers, even for a name only the element has - which then reads
+   * {@code null}, as a column a {@code SELECT *, !name} projection excluded must - and the element answers otherwise.
+   */
+  // The reference comparison below is the POINT of it, not an oversight: absentValue is a caller-supplied sentinel,
+  // and a stored property can legitimately be equals() to it (e.g. absentValue == ""), so only identity tells
+  // "the element does not have it" apart from "the element has it and its value happens to equal the marker".
+  @SuppressWarnings("PMD.CompareObjectsWithEquals")
+  @Override
+  public Object getPropertyIfPresent(final String name, final Object absentValue) {
+    if (tombstones != null && tombstones.contains(name))
+      return absentValue;
+
+    Object result;
+    if (content != null && !content.isEmpty()) {
+      result = content.get(name);
+      if (result == null && !content.containsKey(name) && (element == null || !element.has(name)))
+        return absentValue;
+    } else if (element != null) {
+      result = element.getIfPresent(name, absentValue);
+      if (result == absentValue)
+        return absentValue;
+    } else
+      return absentValue;
+
+    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      result = identifiable.getIdentity();
+    return result;
   }
 
   @Override

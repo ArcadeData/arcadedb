@@ -138,7 +138,7 @@ public class ClusterAlerts {
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState) {
     return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
-        NodeStatus.of(stateMachine));
+        NodeStatus.of(stateMachine), false);
   }
 
   /**
@@ -157,9 +157,24 @@ public class ClusterAlerts {
    *                             Both are text this node did not compose and either can name a filesystem path or
    *                             another tenant's database, so a non-root HTTP caller is told the condition and
    *                             not the detail (review on PR #7953)
+   * @param bootstrapInstalls    the databases this node is installing from the leader's bootstrap snapshot right
+   *                             now, unscoped and sorted (issue #8044). Sampled here for the same reason as the
+   *                             halt: the {@code bootstrapInstalls} member and the {@code bootstrap-install-in-progress}
+   *                             alert are rendered from this one list, so they cannot disagree
    */
   public record NodeStatus(ArcadeStateMachine.CriticalHalt halt, ArcadeStateMachine.RaftLogFailure logFailure,
-      boolean crashLoopEscalated, boolean detailedDiagnostics) {
+      boolean crashLoopEscalated, boolean detailedDiagnostics, List<String> bootstrapInstalls) {
+
+    public NodeStatus {
+      if (bootstrapInstalls == null)
+        bootstrapInstalls = Collections.emptyList();
+    }
+
+    /** The shape before issue #8044, for callers that have no state machine to sample installs from. */
+    public NodeStatus(final ArcadeStateMachine.CriticalHalt halt, final ArcadeStateMachine.RaftLogFailure logFailure,
+        final boolean crashLoopEscalated, final boolean detailedDiagnostics) {
+      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, Collections.emptyList());
+    }
 
     /**
      * What the state machine alone can answer, for the callers that have no HA server and no HTTP user: the
@@ -168,18 +183,34 @@ public class ClusterAlerts {
     static NodeStatus of(final ArcadeStateMachine stateMachine) {
       if (stateMachine == null)
         return new NodeStatus(null, null, false, true);
-      return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true);
+      return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true,
+          stateMachine.getBootstrapInstallsInFlight());
     }
   }
 
   /**
-   * Scan overload taking this node's terminal conditions explicitly (issue #7872): see {@link NodeStatus} for why
-   * they arrive as one sample rather than being re-read here.
+   * Scan overload taking this node's terminal conditions explicitly (issue #7872) plus, since issue #8289,
+   * whether this node is itself stuck at a stale term after a snapshot install: see
+   * {@link RaftHAServer#isFollowerStuckAtStaleTermConfirmed()} for what debounces it before it reaches here.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
-      final LocalResyncState localResyncState, final NodeStatus nodeStatus) {
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
+        nodeStatus, stuckAtStaleTerm, null);
+  }
+
+  /**
+   * Scan overload that also takes this follower's own stall behind its leader (issue #8342), or {@code null} when
+   * it is not stalled: see {@link RaftHAServer#trackFollowerStall()}. This is the production entry point;
+   * {@link GetClusterHandler} calls it directly, with the same sample it renders into the status document.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId,
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus, final boolean stuckAtStaleTerm,
+      final FollowerStallTracker.Stall stalledBehindLeader) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
@@ -191,16 +222,96 @@ public class ClusterAlerts {
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
+      // The other half of the #7519 bootstrap window, which the readiness body pointed at this document for and
+      // this document did not carry (issue #8044).
+      addBootstrapInstallAlert(nodeStatus.bootstrapInstalls(), visibleDatabases, alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
       addLocalResyncAlert(localResyncState, visibleDatabases, alerts);
     }
+    // Node-scoped like the resync alert above, and deliberately NOT folded into it: a stuck-at-stale-term
+    // follower answers its own readiness gate Ready (its raw applied-index lag is 0, see
+    // RaftHAServer.isReadyForTraffic), so unlike local-resync-in-progress this alert does not imply
+    // /api/v1/ready is 503 - it is the one condition on this endpoint that degrades the cluster's fault
+    // tolerance while every other signal here, readiness included, still looks healthy (issue #8289).
+    addStuckAtStaleTermAlert(stuckAtStaleTerm, alerts);
+    addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
       addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
     return alerts;
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the stuck-at-stale-term alert iff this node
+   * currently matches the debounced signature (issue #8289).
+   * <p>
+   * {@code critical}: unlike a merely lagging or falling-behind follower, this node makes no progress at all
+   * while stuck and does not count toward quorum, so the cluster runs one more lost node away from a total
+   * write outage - silently, because every other field on this endpoint (raftState, the peer list, this node's
+   * own {@code localReplicationLag}) still reads healthy.
+   */
+  static void addStuckAtStaleTermAlert(final boolean stuckAtStaleTerm, final JSONArray alerts) {
+    if (!stuckAtStaleTerm)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "follower-stuck-at-stale-term")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node is stuck at a stale term and not counting toward quorum")
+        .put("message", "This node recognizes a leader at a newer term but keeps rejecting its current-term "
+            + "entries: it has applied everything it could locally commit, so this document's localReplicationLag "
+            + "reads 0 and every other field here still looks healthy, but this node makes no further progress and "
+            + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
+            + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
+            + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
+            + "post-install entries.")
+        .put("recommendation", "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this "
+            + "self-heals: once the condition has persisted for arcadedb.ha.staleFollowerRecoveryDurationMs "
+            + "(default 60s) the node reformats its local Raft storage and rejoins via a fresh snapshot install. "
+            + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
+            + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
+        .put("details", new JSONObject().put("stuckAtStaleTerm", true)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the stalled-behind-leader alert iff this node is
+   * a follower more than the lag threshold behind the commit index its leader reported, with no progress for the
+   * grace the leader uses to call the same replica {@code STALLED} (issue #8342).
+   * <p>
+   * {@code critical}, like the leader's {@code lagging-followers} alert for a {@code STALLED} replica, which is the
+   * same condition seen from the other side: this node does not count toward the quorum while it lasts. Before this
+   * alert only the leader's answer carried it, and this node's own answer read healthy with a
+   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds.
+   * <p>
+   * Suppressed while {@code stuckAtStaleTerm} holds: a node stuck at a stale term is stalled too, and that alert
+   * already names the cause and the recovery. Two critical alerts for one condition would read as two incidents.
+   */
+  static void addStalledBehindLeaderAlert(final FollowerStallTracker.Stall stall, final boolean stuckAtStaleTerm,
+      final JSONArray alerts) {
+    if (stall == null || stuckAtStaleTerm)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "follower-stalled-behind-leader")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node is stalled behind the leader and not counting toward quorum")
+        .put("message", "This node is " + stall.lag() + " entries behind the commit index its leader reported ("
+            + stall.leaderCommitIndex() + ") and has applied nothing and received no new log entry for "
+            + stall.stalledForMs() / 1000 + "s. Its own commit index only covers the entries it holds, so this "
+            + "document's localReplicationLag can read 0 and every other field here can look healthy. While this "
+            + "lasts the node does not count toward the Raft quorum, and if the cluster loses one more node, writes "
+            + "stop. The leader reports the same replica as STALLED in its own lagging-followers alert.")
+        .put("recommendation", "If arcadedb.ha.stalledReplicaResyncDurationMs is enabled (the default), the leader "
+            + "forces a resync of this node once the stall has lasted that long. If this alert persists after that, "
+            + "check the leader's log for the resync outcome, then restart this node by hand.")
+        .put("details", new JSONObject()
+            .put("leaderCommitIndex", stall.leaderCommitIndex())
+            .put("appliedIndex", stall.appliedIndex())
+            .put("lag", stall.lag())
+            .put("stalledForMs", stall.stalledForMs())));
   }
 
   /**
@@ -298,12 +409,15 @@ public class ClusterAlerts {
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node's HA layer has given up restarting itself")
         .put("message", "The health monitor restarted this node's Raft layer repeatedly without it staying up, and "
-            + "has stopped trying. Nothing automatic is left: the node does not rejoin the cluster on its own, and "
-            + "/api/v1/health answers unhealthy so a Kubernetes liveness probe restarts the pod.")
-        .put("recommendation", "Restart this node, and read its log from the first restart in the loop rather than "
-            + "the last - the escalation reports the loop, not the fault that started it. A node that escalates "
-            + "again after the restart has a persistent local cause (storage, ports, clock) rather than a transient "
-            + "one.")
+            + "has stopped trying. The escalation is recorded next to the Raft storage: /api/v1/health answers "
+            + "unhealthy once, so a Kubernetes liveness probe restarts the pod a single time, and a restarted process "
+            + "that inherits the record does not re-run the restarts or the Raft-storage reformat - it stays out of "
+            + "the Service but alive, for the operator.")
+        .put("recommendation", "Read this node's log from the first restart in the loop rather than the last - the "
+            + "escalation reports the loop, not the fault that started it. A node still escalated after a restart "
+            + "has a persistent cause: a term-inverted log or snapshot served by the leader needs a coordinated "
+            + "full-cluster Raft-storage reformat. Deleting the 'crash-loop-escalated' file in the Raft storage "
+            + "directory re-arms the automatic recovery for the next start.")
         .put("details", new JSONObject().put("escalated", true)));
   }
 
@@ -529,8 +643,9 @@ public class ClusterAlerts {
   /**
    * Pure alert builder (package-private for unit testing): appends a "lagging follower" alert when any
    * follower is {@code FALLING_BEHIND} or {@code STALLED} (issue #4812). A {@code STALLED} follower
-   * (matchIndex stuck while the leader advances) is {@code critical} because it will eventually force
-   * an election; a merely {@code FALLING_BEHIND} one is a {@code warning}. The alert names each slow
+   * (matchIndex stuck while the leader advances, or behind with no progress at all for
+   * {@link ClusterMonitor#ZERO_PROGRESS_STALL_GRACE_MS}, issue #8341) is {@code critical} because it does not
+   * count toward the quorum; a merely {@code FALLING_BEHIND} one is a {@code warning}. The alert names each slow
    * node with its lag and how long it has been lagging, so the operator can act on the right node.
    */
   static void addLaggingFollowerAlert(final List<FollowerSample> samples, final JSONArray alerts) {
@@ -563,8 +678,11 @@ public class ClusterAlerts {
             : "Follower(s) falling behind the leader")
         .put("message", nodes.length() + " follower(s) cannot keep up with the leader's write rate. "
             + (anyStalled
-                ? "At least one is STALLED (its matchIndex is stuck while the leader advances), which will eventually "
-                    + "trigger a leader election and stalls quorum acknowledgements, forcing replication backpressure."
+                ? "At least one is STALLED (its matchIndex is not moving, either while the leader advances or for long "
+                    + "enough that it is not catching up), so it does not count toward the quorum. If the remaining "
+                    + "replicas cannot form an advancing quorum, quorum acknowledgements stall and replication backpressure "
+                    + "follows; otherwise the cluster has lost its fault tolerance, and losing one more node can stop all "
+                    + "writes."
                 : "They are FALLING_BEHIND (lag is growing), which raises replication backpressure and risks election "
                     + "churn if it continues.")
             + " The slowest node is the bottleneck for the whole cluster.")
@@ -683,6 +801,49 @@ public class ClusterAlerts {
             + "peers - it has no copy to give. If this node is itself the leader, transfer leadership first "
             + "(POST /api/v1/cluster/leader): a node cannot install a database from itself.")
         .put("details", new JSONObject().put("databases", names).put("count", missingCount)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the bootstrap-install alert iff this node is
+   * installing at least one database from the leader's first-formation snapshot (issue #8044).
+   * <p>
+   * The #7519 readiness gate holds {@code /api/v1/ready} at 503 for the length of such an install and its body
+   * sends the reader here, but the install path never touches {@code localResync}, marks nothing unreconciled and
+   * trips none of the terminal conditions - so without this the document answered {@code alerts: []} and
+   * {@code localResync.inProgress: false} for a whole database download, which is the #7136 invariant broken
+   * again.
+   * <p>
+   * Node-scoped for the same reason as {@code addBootstrapMissingAlert} and {@code addLocalResyncAlert}: whether
+   * this node is out of the Service is not a per-tenant fact, so the alert fires on the raw count and only the
+   * NAMES are reduced. That also covers a database being reinstalled because it went missing, which the
+   * registry-derived filter could never contain.
+   * <p>
+   * {@code warning}, not {@code critical}: the install ends by itself one way or the other, and a failed download
+   * is retried without an operator. What stays behind if it does not recover is reported by the unreconciled
+   * alerts above, which are the critical ones.
+   */
+  static void addBootstrapInstallAlert(final List<String> installs, final Set<String> visibleDatabases,
+      final JSONArray alerts) {
+    if (installs == null || installs.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "bootstrap-install-in-progress")
+        .put("severity", SEVERITY_WARNING)
+        .put("title", "This node is installing database(s) from the leader's bootstrap snapshot")
+        .put("message", "The cluster's first-formation bootstrap is installing " + installs.size() + " database(s) "
+            + "on this node from the leader's snapshot. Where the install replaces a copy this node already holds, "
+            + "that copy is the one the committed baseline decided against, so /api/v1/ready answers 503 and a "
+            + "Kubernetes Service has taken the node out of rotation until the install ends; a database that was "
+            + "missing here is simply absent until it lands. This is not a resync, so localResync here does not "
+            + "report it.")
+        .put("recommendation", "Nothing to do while it runs: the node rejoins the Service by itself when the "
+            + "install completes, and a failed download is retried automatically once a leader is reachable. If "
+            + "this does not clear, check this node's log for the install error. A node that is itself the leader "
+            + "cannot install from itself and needs leadership transferred first (POST /api/v1/cluster/leader).")
+        .put("details", new JSONObject()
+            .put("databases", namesArray(visible(installs, visibleDatabases)))
+            .put("count", installs.size())));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */

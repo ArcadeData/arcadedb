@@ -18,11 +18,14 @@
  */
 package com.arcadedb.query.opencypher.procedures.db;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -70,8 +73,11 @@ public class DbPropertyKeys implements CypherProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Set<String> propertyKeys = new LinkedHashSet<>();
-    for (final DocumentType type : context.getDatabase().getSchema().getTypes())
-      if (!type.getName().contains("~"))
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    // Types the current user cannot read are hidden, as schema:types hides them in SQL
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (!type.getName().contains("~") && SecurityHelper.canAccessType(user, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
         propertyKeys.addAll(type.getPropertyNames());
 
     final List<Result> results = new ArrayList<>(propertyKeys.size());

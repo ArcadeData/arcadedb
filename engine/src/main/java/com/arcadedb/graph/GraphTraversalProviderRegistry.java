@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 
@@ -113,6 +114,11 @@ public class GraphTraversalProviderRegistry {
 
   /**
    * Finds the first ready provider that covers all the given edge types.
+   * <p>
+   * None is returned while the calling thread's transaction on {@code database} holds uncommitted changes: a
+   * provider serves the committed graph only, so a query reading through it would not see its own transaction's
+   * writes - a count push-down counted the committed edges and missed the one the transaction had just created
+   * (found with issue #8335). Every caller already falls back to the records when no provider is found.
    *
    * @param database  the database
    * @param edgeTypes the edge types needed (null or empty = all types)
@@ -122,6 +128,9 @@ public class GraphTraversalProviderRegistry {
     // Fast path: single volatile read avoids lock, unwrap, and WeakHashMap lookup
     // when no providers are registered (the common case for most databases)
     if (!hasAnyProviders)
+      return null;
+
+    if (hasUncommittedChanges(database))
       return null;
 
     final CopyOnWriteArrayList<GraphTraversalProvider> list;
@@ -216,6 +225,23 @@ public class GraphTraversalProviderRegistry {
       REGISTRY.remove(unwrap(database));
       hasAnyProviders = !REGISTRY.isEmpty();
     }
+  }
+
+  /**
+   * True while {@link #findProvider} withholds every provider from the calling thread: some provider is registered and
+   * the thread's transaction on {@code database} holds uncommitted changes. A caller that caches a plan built around a
+   * provider must neither reuse nor cache one in that state: a cached plan would keep reading the view past the
+   * transaction's writes, and a plan built now, without a view, would keep the acceleration from clean executions.
+   */
+  public static boolean isWithheld(final Database database) {
+    return hasAnyProviders && hasUncommittedChanges(database);
+  }
+
+  private static boolean hasUncommittedChanges(final Database database) {
+    if (!(database instanceof DatabaseInternal internal))
+      return false;
+    final TransactionContext transaction = internal.getTransactionIfExists();
+    return transaction != null && transaction.isActive() && transaction.hasChanges();
   }
 
   private static Database unwrap(final Database database) {

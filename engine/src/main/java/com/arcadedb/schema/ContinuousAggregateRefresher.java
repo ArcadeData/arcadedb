@@ -201,7 +201,9 @@ public class ContinuousAggregateRefresher {
       final String before = query.substring(0, whereIdx + 5); // "WHERE" is 5 chars
       final String predicate = query.substring(whereIdx + 5, whereEnd).strip();
       final String after = query.substring(whereEnd);
-      return before + " `" + tsColumn + "` >= " + watermark + " AND (" + predicate + ")"
+      // #8251: strip() drops the newline that ends a trailing line comment, which would then swallow the closing
+      // bracket and every clause pasted back after it. Such a predicate gets its bracket on a line of its own.
+      return before + " `" + tsColumn + "` >= " + watermark + " AND (" + predicate + (endsInsideLineComment(predicate) ? "\n)" : ")")
           + (after.isEmpty() ? "" : " " + after.stripLeading());
     } else {
       // No WHERE clause — insert before the first clause that can follow one, or at the end
@@ -211,7 +213,9 @@ public class ContinuousAggregateRefresher {
         final String after = query.substring(insertIdx);
         return before + "WHERE `" + tsColumn + "` >= " + watermark + " " + after;
       }
-      return query + " WHERE `" + tsColumn + "` >= " + watermark;
+      // #8251: a query ending in a line comment would comment the filter out, and the refresh would silently
+      // re-aggregate every bucket, older ones included, next to the rows it already holds
+      return query + (endsInsideLineComment(query) ? "\n" : " ") + "WHERE `" + tsColumn + "` >= " + watermark;
     }
   }
 
@@ -270,10 +274,8 @@ public class ContinuousAggregateRefresher {
         continue;
       }
       // Skip over line comments: -- ... \n
-      if (ch == '-' && idx + 1 < len && upperQuery.charAt(idx + 1) == '-') {
-        idx += 2;
-        while (idx < len && upperQuery.charAt(idx) != '\n')
-          idx++;
+      if (isLineCommentStart(upperQuery, idx)) {
+        idx = lineCommentEnd(upperQuery, idx);
         continue;
       }
       // Skip over quoted string literals AND backtick-quoted identifiers, so neither a paren nor a clause keyword
@@ -281,21 +283,7 @@ public class ContinuousAggregateRefresher {
       // as a quoted column name ended the WHERE clause in the middle of the predicate. A doubled quote is SQL's own
       // escape and does not close the literal.
       if (ch == '\'' || ch == '"' || ch == '`') {
-        final char quote = ch;
-        idx++;
-        while (idx < len) {
-          final char c2 = upperQuery.charAt(idx);
-          idx++;
-          if (c2 == '\\') {
-            idx++; // skip escaped character
-          } else if (c2 == quote) {
-            if (idx < len && upperQuery.charAt(idx) == quote) {
-              idx++; // doubled quote: an escaped quote, not the end of the literal
-              continue;
-            }
-            break;
-          }
-        }
+        idx = skipQuoted(upperQuery, idx);
         continue;
       }
       if (ch == '(') {
@@ -326,6 +314,70 @@ public class ContinuousAggregateRefresher {
       idx++;
     }
     return -1;
+  }
+
+  private static boolean isLineCommentStart(final String query, final int idx) {
+    return idx + 1 < query.length() && query.charAt(idx) == '-' && query.charAt(idx + 1) == '-';
+  }
+
+  /**
+   * Index of the newline that ends the line comment starting at {@code idx}, or the length of the query when the
+   * comment runs to its end.
+   */
+  private static int lineCommentEnd(final String query, final int idx) {
+    final int newLine = query.indexOf('\n', idx + 2);
+    return newLine < 0 ? query.length() : newLine;
+  }
+
+  /**
+   * Whether {@code text} ends inside a line comment, so that anything appended to it on the same line would be
+   * commented out (#8251). Quoted literals and block comments are skipped the way {@link #findTopLevelKeyword} skips
+   * them, so a {@code --} inside either does not count.
+   */
+  static boolean endsInsideLineComment(final String text) {
+    final int len = text.length();
+    int idx = 0;
+    while (idx < len) {
+      final char ch = text.charAt(idx);
+      if (ch == '/' && idx + 1 < len && text.charAt(idx + 1) == '*') {
+        final int close = text.indexOf("*/", idx + 2);
+        if (close < 0)
+          return false;
+        idx = close + 2;
+      } else if (isLineCommentStart(text, idx)) {
+        idx = lineCommentEnd(text, idx);
+        if (idx >= len)
+          return true;
+      } else if (ch == '\'' || ch == '"' || ch == '`') {
+        idx = skipQuoted(text, idx);
+      } else
+        idx++;
+    }
+    return false;
+  }
+
+  /**
+   * Index just past the quoted literal or backtick-quoted identifier opening at {@code idx}. A doubled quote is SQL's
+   * own escape and does not close the literal, and neither does a backslash-escaped one.
+   */
+  private static int skipQuoted(final String query, int idx) {
+    final int len = query.length();
+    final char quote = query.charAt(idx);
+    idx++;
+    while (idx < len) {
+      final char c2 = query.charAt(idx);
+      idx++;
+      if (c2 == '\\') {
+        idx++; // skip escaped character
+      } else if (c2 == quote) {
+        if (idx < len && query.charAt(idx) == quote) {
+          idx++; // doubled quote: an escaped quote, not the end of the literal
+          continue;
+        }
+        break;
+      }
+    }
+    return idx;
   }
 
   /**

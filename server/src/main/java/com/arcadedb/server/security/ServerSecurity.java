@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
@@ -470,10 +471,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * The {@link SecurityManager} entry point, and therefore what the openCypher {@code DROP USER} admin
    * command reaches through {@code database.getSecurity()}. Cluster-aware, so that door cannot reopen the
    * divergence #6808 closed on the REST one: a Cypher drop over Bolt or {@code /api/v1/command} used to
-   * mutate the user store on the serving node only.
+   * mutate the user store on the serving node only. Leader-only on an HA cluster: see
+   * {@link #requireLeaderForSecurityManagerMutation}.
    */
   @Override
   public boolean dropUser(final String userName) {
+    requireLeaderForSecurityManagerMutation("dropUser");
     return dropUserClusterWide(userName);
   }
 
@@ -707,10 +710,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   /**
    * The {@link SecurityManager} entry point reached by the openCypher {@code CREATE USER} admin command.
-   * Cluster-aware for the same reason {@link #dropUser} is (issue #6808).
+   * Cluster-aware for the same reason {@link #dropUser} is (issue #6808), and leader-only on an HA cluster: see
+   * {@link #requireLeaderForSecurityManagerMutation}.
    */
   @Override
   public void createUser(final String name, final String password) {
+    requireLeaderForSecurityManagerMutation("createUser");
     final String encodedPassword = encodePassword(password);
     final JSONObject config = new JSONObject();
     config.put("name", name);
@@ -722,10 +727,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   /**
    * The {@link SecurityManager} entry point reached by the openCypher {@code ALTER USER ... SET PASSWORD}
    * admin command. Routed through {@link #updateUserClusterWide} so the rotation reaches every peer (issue
-   * #6808) and so a single place decides that a changed hash revokes the principal's live sessions.
+   * #6808) and so a single place decides that a changed hash revokes the principal's live sessions. Leader-only on
+   * an HA cluster: see {@link #requireLeaderForSecurityManagerMutation}.
    */
   @Override
   public void setUserPassword(final String userName, final String password) {
+    // Before the lookup, so the answer does not depend on how far this node's copy of the user list lags.
+    requireLeaderForSecurityManagerMutation("setUserPassword");
     final ServerSecurityUser user = users.get(userName);
     if (user == null)
       throw new ServerSecurityException("User '" + userName + "' not found");
@@ -735,6 +743,34 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final JSONObject updated = user.toJSON().copy();
     updated.put("password", encodePassword(password));
     updateUserClusterWide(updated);
+  }
+
+  /**
+   * Refuses a {@link SecurityManager} user mutation on an HA node that is not the leader (issue #8370).
+   * <p>
+   * Every client route that mutates the user document reaches the leader since issue #8109: the REST routes and
+   * {@code POST /api/v1/server} forward, the gRPC admin RPCs refuse off-leader, and openCypher
+   * {@code CREATE/ALTER/DROP USER} reach these entry points only after {@code RaftReplicatedDatabase.command} has
+   * forwarded the non-idempotent statement. What remained was host code running with the engine's privileges: a
+   * JavaScript/Java trigger or a {@code LANGUAGE js} function gets the real {@code database} object, so it can call
+   * {@code database.getSecurity().createUser(...)}, and a function called from an idempotent {@code SELECT} runs on
+   * a follower without any forward. There the mutation was built from the follower's own, possibly lagging, view of
+   * the user list and decided off the leader. The compare-and-set of #7509 kept that safe but not cheap: the stale
+   * payload could be refused and retried, and deciding whether to attach the precondition could dial every peer
+   * synchronously ({@code RaftHAPlugin.preconditionEveryPeerCanRead}) while this node's security monitor was held.
+   * <p>
+   * The refusal names the leader, like the gRPC {@code requireLeader} gate. Only these three entry points are
+   * gated: the cluster-wide mutators ({@link #createUserClusterWide} and siblings) are what the forwarding routes
+   * call on the leader, and the node-local ones ({@link #createUser(JSONObject)}, {@link #dropUserLocally}) are
+   * deliberately per-node. A server with HA inactive is always allowed: there is no leader to be.
+   */
+  private void requireLeaderForSecurityManagerMutation(final String operation) {
+    final HAServerPlugin ha = server != null ? server.getHA() : null;
+    if (ha != null && !ha.isLeader())
+      throw new ServerIsNotTheLeaderException("Security user mutation '" + operation
+          + "' must run on the cluster leader and this server is not it: run it on the leader, or through a route that"
+          + " forwards to it (the /api/v1/server/users REST routes, or openCypher CREATE/ALTER/DROP USER)",
+          ha.getLeaderAddress());
   }
 
   /**
@@ -1685,9 +1721,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * lands at all, which is the residual failure both admission verbs now report.
    * <p>
    * <b>It also reports a cluster that has simply never replicated a security document</b>, because such a cluster
-   * has no node with a recorded fingerprint and there is no local way to tell the two apart. That is why the
-   * readiness gate consuming this is bounded by a window that is zero by default: see
-   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}.
+   * has no node with a recorded fingerprint and there is no way to tell the two apart from the documents alone.
+   * That is why the readiness gate consuming this is armed only on a node that joined the cluster at runtime
+   * ({@code HAServerPlugin.hasJoinedClusterAtRuntime()}, issue #7819), and bounded by
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}. On such a node the gate does not take an empty answer
+   * here as convergence either: a node re-added with its config volume retained has a fingerprint for every document
+   * from its previous membership, so the gate also requires an install after the change that re-added it (issue
+   * #8317, {@code HAServerPlugin.securityDocumentsNotInstalledSinceRuntimeJoin()}).
    * <p>
    * Free of this object's monitor and of any filesystem access - the repository answers from the map it read at
    * construction - so a readiness probe may call it on any thread as often as it likes.

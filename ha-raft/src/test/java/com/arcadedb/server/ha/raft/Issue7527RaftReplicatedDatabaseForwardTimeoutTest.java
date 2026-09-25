@@ -159,6 +159,9 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
       cfg.setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1_000L);
+      // The command budget is extended by the quorum and connect budgets (issue #7737); kept short so the
+      // deadline stays far below the fallback.
+      cfg.setValue(GlobalConfiguration.HA_QUORUM_TIMEOUT, 1_000L);
       cfg.setValue(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT, 600_000L); // would time this test out if used
 
       final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), raftPointingAt(leader.address()));

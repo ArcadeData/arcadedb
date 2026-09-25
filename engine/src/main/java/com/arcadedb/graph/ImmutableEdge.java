@@ -22,16 +22,12 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
-import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.IOException;
 import java.util.Map;
 
 /**
@@ -69,23 +65,8 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   public synchronized MutableEdge modify() {
-    final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != null) {
-      if (recordInCache instanceof MutableEdge edge)
-        return edge;
-      else if (!database.getTransaction().hasPageForRecord(rid.getPageId(database))) {
-        // THE RECORD IS NOT IN TX, SO IT MUST HAVE BEEN LOADED WITHOUT A TX OR PASSED FROM ANOTHER TX
-        // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
-        try {
-          // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction().getPageToModify(rid.getPageId(database),
-              ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
-          reload();
-        } catch (final IOException e) {
-          throw new DatabaseOperationException("Error on reloading edge " + rid, e);
-        }
-      }
-    }
+    if (prepareForModify("edge") instanceof MutableEdge fromCache)
+      return fromCache;
 
     checkForLazyLoading();
     final Binary content = buffer;
@@ -108,6 +89,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     else if (Property.OUT_PROPERTY.equals(propertyName))
       return out;
     return super.get(propertyName);
+  }
+
+  /**
+   * Under the same monitor as {@link #get(String)}. {@code @in}/{@code @out} are answered by {@code get()} but not reported
+   * by {@code has()}, so here they are absent, exactly as the {@code has()}-then-{@code get()} pair said.
+   */
+  @Override
+  public synchronized Object getIfPresent(final String propertyName, final Object absentValue) {
+    return super.getIfPresent(propertyName, absentValue);
   }
 
   @Override

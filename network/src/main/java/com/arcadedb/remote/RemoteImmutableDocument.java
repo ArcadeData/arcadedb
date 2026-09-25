@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -36,7 +35,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -57,7 +55,10 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     // the only place the order was lost, so the same record read remotely and embedded disagreed (issue #7140).
     this.map = new LinkedHashMap<>(attributes.size());
 
-    final Map<String, Type> propTypes = parsePropertyTypes((String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
+    // The same parser the projection rows use: the private one this class had put() into a null map, so every hint
+    // threw, was logged as SEVERE and was lost, and it could not read an element-type suffix such as "9(6)" (#8332).
+    final Map<String, RemoteDatabase.ColumnTypeHint> propTypes = RemoteDatabase.parsePropertyTypes(
+        (String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
 
     for (Map.Entry<String, Object> entry : attributes.entrySet()) {
       final String fieldName = entry.getKey();
@@ -65,7 +66,17 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         Object value = entry.getValue();
 
         final Property property = type.getPolymorphicPropertyIfExists(fieldName);
-        final Type propType = property != null ? property.getType() : propTypes.get(fieldName);
+        final Type propType;
+        final Type elementType;
+        if (property != null) {
+          propType = property.getType();
+          elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+        } else {
+          // Schemaless field: the @props hint is all there is, element type included (e.g. "dates:9(6)").
+          final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
+          propType = hint != null ? hint.type() : null;
+          elementType = hint != null ? hint.elementType() : null;
+        }
 
         Class javaImplementation = value != null ? value.getClass() : null;
         if (propType == Type.DATE)
@@ -83,8 +94,9 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         // ISSUE #4735: for LIST/MAP properties with a declared primitive ofType (e.g. `MAP OF LONG`), the JSON parser
         // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type. Convert the
         // nested entries to the declared ofType so the remote client matches what the schema promises.
-        if ((propType == Type.MAP || propType == Type.LIST) && property != null)
-          value = convertNestedOfType(value, property.getOfType());
+        // The same holds for a schemaless collection whose @props hint names its element type.
+        if (propType == Type.MAP || propType == Type.LIST)
+          value = convertNestedOfType(value, elementType);
 
         map.put(fieldName, value);
       }
@@ -138,6 +150,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   public synchronized Object get(final String propertyName) {
 
     return map.get(propertyName);
+  }
+
+  @Override
+  public synchronized Object getIfPresent(final String propertyName, final Object absentValue) {
+    final Object value = map.get(propertyName);
+    return value != null || map.containsKey(propertyName) ? value : absentValue;
   }
 
   @Override
@@ -198,12 +216,8 @@ public class RemoteImmutableDocument extends ImmutableDocument {
    * Converts the entries of a LIST/MAP value to the declared primitive {@code ofType}. If {@code ofType} is null or not a
    * primitive type (e.g. it references a document type), the value is returned unchanged.
    */
-  private Object convertNestedOfType(final Object value, final String ofTypeName) {
-    if (value == null || ofTypeName == null)
-      return value;
-
-    final Type ofType = Type.getTypeByName(ofTypeName);
-    if (ofType == null)
+  private Object convertNestedOfType(final Object value, final Type ofType) {
+    if (value == null || ofType == null)
       // NOT A PRIMITIVE TYPE (E.G. AN EMBEDDED DOCUMENT TYPE): NOTHING TO CONVERT
       return value;
 
@@ -226,24 +240,5 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     }
 
     return value;
-  }
-
-  private Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
-    Map<String, Type> propTypes = null;
-    if (propTypesAsString != null) {
-      for (String entry : propTypesAsString.split(",")) {
-        try {
-          final String[] entryPair = entry.split(":");
-          if (entryPair.length == 2) {
-            final Type propType = Type.getById((byte) Integer.parseInt(entryPair[1]));
-            propTypes.put(entryPair[0], propType);
-          } else
-            LogManager.instance().log(this, Level.SEVERE, "Error parsing property types " + entryPair);
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error parsing property types", e);
-        }
-      }
-    }
-    return propTypes != null ? propTypes : Collections.emptyMap();
   }
 }

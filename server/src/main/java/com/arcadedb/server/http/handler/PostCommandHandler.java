@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
@@ -128,6 +129,18 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   @Override
   protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
+  /**
+   * The body is one command, and a follower forwards that command to the leader as it is (issue #8347), so the
+   * forward is the client's whole request and relays its key: a retry sent straight to the leader is then replayed
+   * from the forward's entry instead of executing the write a second time. The forward posts the client's own body
+   * (issue #8359), so that entry is rendered with the client's 'serializer', 'limit' and 'typeHints', and the leader's
+   * answer is sent back to the client as it is - see {@link #execute}.
+   */
+  @Override
+  protected boolean commandForwardIsWholeRequest() {
     return true;
   }
 
@@ -261,7 +274,21 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final boolean detailedProfile = "detailed".equalsIgnoreCase(profileExecution);
 
       final long engineStart = System.nanoTime();
+      // The statement run as the whole request, and the body it came in: a follower that forwards exactly this statement
+      // posts that body to the leader, which answers it in the rendering this request asks for (issue #8359).
+      ForwardedRequestIdContext.declareWholeRequestCommand(language, command, exchange.getAttachment(RAW_PAYLOAD));
       ResultSet qResult = executeCommand(database, language, command, paramMap);
+
+      // The leader answered this request's own body: that answer, not what this node would render again from the rows
+      // it parsed back out of it, is the one the client asked for, and the one a retry sent straight to the leader is
+      // replayed from. Sent as it is.
+      final String leaderAnswer = ForwardedRequestIdContext.takeWholeRequestAnswer();
+      if (leaderAnswer != null) {
+        if (qResult != null)
+          qResult.close();
+        Metrics.counter("http.command").increment();
+        return new ExecutionResponse(200, leaderAnswer);
+      }
 
       try {
         final JSONObject response = new JSONObject();

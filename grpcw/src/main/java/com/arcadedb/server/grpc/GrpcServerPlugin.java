@@ -321,6 +321,11 @@ public class GrpcServerPlugin implements ServerPlugin {
     // standard and the xDS builder get it: dropping this line does not fail a call, it silently returns the
     // guard to the state issue #8134 reports - a BATCH-boundary block replayed after a conflict.
     serverBuilder.intercept(new GrpcSessionPartialCommitInterceptor());
+    // Tags every call as a gRPC client request (issue #8363). RaftReplicatedDatabase refuses client requests on a
+    // database whose directory is being replaced from the leader's snapshot and tells a client from the engine's own
+    // threads by this tag, so an untagged RPC is served from the copy the cluster is discarding. Registered
+    // unconditionally and on this shared path, so both the standard and the xDS builder get it.
+    serverBuilder.intercept(new GrpcProtocolContextInterceptor());
 
     // Add compression interceptor if force compression is enabled
     if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {

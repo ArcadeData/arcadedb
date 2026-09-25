@@ -383,6 +383,10 @@ public class GraphBatch implements AutoCloseable {
   private final boolean savedReadYourWrites;
   private final boolean savedUseWAL;
   private final WALFile.FlushType savedWALFlush;
+  // The thread's own settings as found, null when it followed the database's: what close() puts back, so the thread
+  // is not pinned to the values in effect now and keeps following a later database-wide change (issue #8352)
+  private final Boolean savedThreadUseWAL;
+  private final WALFile.FlushType savedThreadWALFlush;
   // Async executor WAL policy, relaxed/restored ONCE for the whole batch instead of once per flush
   // (issue #5665): applying the relaxed policy around every flush's parallel connect phase toggled the
   // shared, database-wide policy that many times, needlessly forcing a transaction boundary on every
@@ -470,9 +474,13 @@ public class GraphBatch implements AutoCloseable {
       // made permanent by the restore on close() (issue #8129).
       savedUseWAL = tx.isSessionUseWAL();
       savedWALFlush = tx.getWALFlush();
+      savedThreadUseWAL = tx.getThreadUseWAL();
+      savedThreadWALFlush = tx.getThreadWALFlush();
     } else {
       savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
       savedWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+      savedThreadUseWAL = null;
+      savedThreadWALFlush = null;
     }
 
     if (savedUseWAL != this.useWAL || savedWALFlush != this.walFlush)
@@ -1468,12 +1476,13 @@ public class GraphBatch implements AutoCloseable {
     // If the thread still has no TransactionContext (the batch never began a transaction), nothing leaked.
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null) {
-      tx.setUseWAL(savedUseWAL);
-      tx.setWALFlush(savedWALFlush);
+      tx.setThreadUseWAL(savedThreadUseWAL);
+      tx.setWALFlush(savedThreadWALFlush);
     }
 
-    LogManager.instance().log(this, Level.FINE, "GraphBatch: restored WAL settings useWAL=%s walFlush=%s", savedUseWAL,
-        savedWALFlush);
+    // null = the thread follows the database's setting again
+    LogManager.instance().log(this, Level.FINE, "GraphBatch: restored the thread's WAL settings useWAL=%s walFlush=%s",
+        savedThreadUseWAL, savedThreadWALFlush);
   }
 
   /**

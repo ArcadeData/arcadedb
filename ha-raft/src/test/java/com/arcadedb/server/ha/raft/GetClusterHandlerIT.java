@@ -169,6 +169,19 @@ class GetClusterHandlerIT extends BaseRaftHATest {
 
       // The invariant: nothing that would make readiness answer 503 is missing from this document.
       assertThat(response.getJSONArray("alerts").toString()).doesNotContain("local-resync-in-progress");
+
+      // Issue #8289: written by every node, and false on a healthy cluster - including across the election that
+      // formed it, which crosses the raw stuck-at-stale-term signature for an instant and must not report it.
+      assertThat(response.has("localStuckAtStaleTerm")).as("every node must carry the stuck signal").isTrue();
+      assertThat(response.getBoolean("localStuckAtStaleTerm")).as("a healthy node is not stuck").isFalse();
+      assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-stuck-at-stale-term");
+
+      // Issue #8342: written by every node, and false on a healthy cluster.
+      assertThat(response.has("leaderCommitIndex")).as("every node must carry the leader commit figure").isTrue();
+      assertThat(response.getLong("leaderCommitIndex")).isGreaterThanOrEqualTo(-1L);
+      assertThat(response.has("localStalledBehindLeader")).as("every node must carry the stall signal").isTrue();
+      assertThat(response.getBoolean("localStalledBehindLeader")).as("a healthy node is not stalled").isFalse();
+      assertThat(response.getJSONArray("alerts").toString()).doesNotContain("follower-stalled-behind-leader");
     }
   }
 

@@ -468,6 +468,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private          LSMVectorIndexCompacted compactedSubIndex;
   private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
+  // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
+  // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
+  // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
+  // instance monitor.
+  private volatile boolean                 superseded;
 
   // Page tracking for inserts (avoids getTotalPages() issue with transaction-local pages)
   // Protected by write lock, reset to -1 after transaction commits or graph rebuilds
@@ -4599,6 +4604,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (asyncRebuildInProgress)
       return; // Another rebuild is already running
 
+    if (superseded)
+      return; // Retired by a schema reload: its successor does this work (issue #8310)
+
     // Still cooling down from a rebuild that did not fit the heap (issue #6503). Checked HERE, before the thread
     // is spawned, rather than inside admitOnlineRebuild(): the point is to not pay for the attempt at all - no
     // daemon thread, no JVM-wide permit acquire and release, no O(allocated chunks) getActiveCount() - on a path
@@ -7058,8 +7066,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
         // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
         // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
-        final int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
-        final int expectedResults = Math.min(k, availableVectors);
+        //
+        // Issue #8057: the rows the calling transaction removed or rewrote are still in vectorIndex().size() - the
+        // tombstones are written only when commit() replays the queued REMOVEs - but the walk, the loop above and the
+        // scan below all exclude them, so counting them expected rows no search can return, and every search of the
+        // transaction paid a full scan that found nothing and logged a WARNING about a healthy graph. They are netted
+        // out only once a shortfall is seen, so a search that is not short never pays for resolving them.
+        int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
+        int expectedResults = Math.min(k, availableVectors);
+        if (results.size() < expectedResults && overlay != null) {
+          // Counting stops at the rows the answer is short of: past that the netted budget can no longer exceed it
+          final int live = vectorIndex().size();
+          availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
+          expectedResults = Math.min(k, availableVectors);
+        }
         if (results.size() < expectedResults) {
           // Issue #6502: see shortfallIsAllowListDriven's javadoc for why this is split.
           if (shortfallIsAllowListDriven(allowedRIDs, expectedResults))
@@ -8197,6 +8217,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@code overlay.pendingCount()}, or 0 when there is no overlay. */
   private static int pendingCount(final TransactionVectorOverlay overlay) {
     return overlay == null ? 0 : overlay.pendingCount();
+  }
+
+  /**
+   * How many live vectors of the committed index the calling transaction supersedes (issue #8057): the rows
+   * {@code vectorIndex().size()} still counts that no search inside the transaction may return. A superseded RID the
+   * committed index does not hold - a row inserted and removed by the same transaction - contributes nothing.
+   * <p>
+   * Stops once {@code cap} is reached: the only question the caller asks is whether the answer is still short once they
+   * are netted out, and that is settled as soon as the count reaches the gap. A transaction that superseded many rows
+   * therefore pays for at most the gap per short search, not for its whole write set.
+   */
+  private int countSupersededLive(final TransactionVectorOverlay overlay, final int cap) {
+    int count = 0;
+    for (final RID rid : overlay.supersededRIDs()) {
+      if (count >= cap)
+        break;
+      count += vectorIndex().getVectorIdsForRid(rid).length;
+    }
+    return count;
   }
 
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
@@ -9520,6 +9559,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public void close() {
     flush();
     releaseBackgroundResources();
+  }
+
+  /**
+   * Retires this instance after a schema reload has published its successor (issue #8310): cancels the inactivity
+   * rebuild timer and refuses to arm it again or to start an async rebuild. Left alone on purpose: a graph build
+   * already running, which a query that resolved this instance before the swap may be waiting on, and the graph
+   * build pool it runs on. {@link #releaseBackgroundResources()} would cancel both.
+   */
+  @Override
+  public synchronized void onSuperseded() {
+    superseded = true;
+    cancelInactivityRebuildTimer();
   }
 
   /**
@@ -11081,6 +11132,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (!isValid())
       return; // Index closed or dropped - no point scheduling
 
+    if (superseded)
+      return; // Retired by a schema reload: a write landing here after the swap must not arm it again (issue #8310)
+
     if (delayMs <= 0)
       return; // Disabled
 
@@ -11135,6 +11189,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (timeoutMs <= 0)
       return; // Disabled since this task was armed
 
+    if (superseded)
+      return; // Retired by a schema reload while this task was already running: cancel() cannot stop it (issue #8310)
+
     // The deadline is read here, not enforced by the scheduling: a write that landed after this task was armed
     // moved it, and the remaining wait is what is left of the window from that write (issue #7357).
     final long quietMs = (System.nanoTime() - lastMutationNanos) / 1_000_000L;
@@ -11179,7 +11236,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // retries at the next interval rather than staying stuck with pending mutations.
       if (REBUILD_SEMAPHORE.tryAcquire()) {
         try {
-          buildGraphFromScratch();
+          // Asked again right before the build, not only at the top: a retirement landing in between would
+          // otherwise still pay for one full build on the retired instance (issue #8310). What is left after this
+          // read is the same case as a build already running when the retirement arrives - bounded and finished.
+          if (!superseded)
+            buildGraphFromScratch();
         } finally {
           REBUILD_SEMAPHORE.release();
         }

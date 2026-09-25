@@ -89,8 +89,17 @@ public final class SecurityHelper {
    * see rather than fail the whole request.
    */
   public static boolean canAccessType(final DatabaseInternal database, final DocumentType type, final SecurityDatabaseUser.ACCESS access) {
+    return canAccessType(currentUser(database), type, access);
+  }
+
+  /**
+   * The user bound to {@code database}'s current context, or {@code null} when none is (embedded usage or an internal
+   * caller). Resolved once by a listing that then asks {@link #canAccessType(SecurityDatabaseUser, DocumentType,
+   * SecurityDatabaseUser.ACCESS)} for each type it walks.
+   */
+  public static SecurityDatabaseUser currentUser(final DatabaseInternal database) {
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    return canAccessType(dbContext == null ? null : dbContext.getCurrentUser(), type, access);
+    return dbContext == null ? null : dbContext.getCurrentUser();
   }
 
   /**

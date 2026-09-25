@@ -88,12 +88,19 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   static final long REUSE_WINDOW_MS = 5_000L;
 
+  static final String THREAD_NAME = "arcadedb-raft-security-seed";
+
   private final BooleanSupplier  isLeader;
   private final LongSupplier     retryBudgetMs;
   private final SecuritySeed     seed;
   private final Executor         executor;
   /** Non-null only when this instance built its own executor, and is then the same object as {@link #executor}. */
   private final ExecutorService  ownedExecutor;
+  /**
+   * The owned executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell
+   * by identity that it is running on it (issue #8364). One worker at a time, and one running a task is never replaced.
+   */
+  private volatile Thread        ownedWorker;
   /** Peers of the last configuration observed, {@code null} until the first one. Guarded by {@code this}. */
   private       Set<RaftPeerId>  knownPeers;
   /**
@@ -172,7 +179,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
-    final ThreadPoolExecutor owned = createSeedExecutor();
+    final ThreadPoolExecutor owned = createSeedExecutor(this);
     this.isLeader = isLeader;
     this.retryBudgetMs = retryBudgetMs;
     this.seed = seed;
@@ -193,14 +200,15 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     this.ownedExecutor = null;
   }
 
-  private static ThreadPoolExecutor createSeedExecutor() {
+  private static ThreadPoolExecutor createSeedExecutor(final MembershipSecuritySeeder owner) {
     // AbortPolicy, not a discarding handler (issue #7834). Coalescing now happens one level up, in schedule(),
     // where the folded-in caller gets the outstanding seed's FUTURE and therefore its outcome; a handler that
     // silently dropped the task here would leave that future uncompleted and every reporting caller waiting
     // out its timeout for a seed that was never going to run. What reaches this policy now is only a submit to
     // an executor that has been shut down, which schedule() reports as "the node is stopping".
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
-      final Thread thread = new Thread(r, "arcadedb-raft-security-seed");
+      final Thread thread = new Thread(r, THREAD_NAME);
+      owner.ownedWorker = thread;
       thread.setDaemon(true);
       return thread;
     }, new ThreadPoolExecutor.AbortPolicy());
@@ -493,6 +501,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   /**
    * Stops the owned worker, if this instance built one. {@code shutdownNow()} rather than {@code shutdown()}:
    * a seed in flight is parked waiting for a Raft commit that a node being torn down is not going to produce.
+   * Does NOT wait for it - see {@link #awaitTermination(long)}.
    */
   @Override
   public void close() {
@@ -511,6 +520,21 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     if (pending != null)
       pending.completeExceptionally(
           new IllegalStateException("this node is stopping; the security seed was abandoned"));
+  }
+
+  /**
+   * Waits, until {@code deadlineNanos}, for the seed {@link #close()} interrupted (issue #8364). A seed past its last
+   * interruption point goes on submitting security documents cluster-wide, so without this wait it can still do so
+   * after the state machine that owns it has returned from its own close. Returns at once for an executor this
+   * instance does not own, which it never shut down.
+   *
+   * @return false if the caller was interrupted while waiting, for the caller to restore the flag
+   */
+  boolean awaitTermination(final long deadlineNanos) {
+    if (ownedExecutor == null)
+      return true;
+    return ExecutorTermination.await(this, ownedExecutor, ownedWorker, THREAD_NAME, deadlineNanos,
+        "submit security documents cluster-wide");
   }
 
   /**
