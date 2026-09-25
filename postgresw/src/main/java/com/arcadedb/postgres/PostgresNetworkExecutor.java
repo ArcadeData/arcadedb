@@ -46,12 +46,16 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.CreateEdgeStatement;
+import com.arcadedb.query.sql.parser.CreateVertexStatement;
+import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InsertStatement;
 import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.MatchStatement;
@@ -60,6 +64,7 @@ import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -140,6 +145,7 @@ public class PostgresNetworkExecutor extends Thread {
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
+  private static final Pattern                                        TIME_ZONE_NAME     = Pattern.compile("(?i)^TIME\\s+ZONE$");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -525,6 +531,7 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           resolvePortalColumns(portal);
           answerWithColumns(portal);
+          portal.describedNoData = false;
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -547,6 +554,7 @@ public class PostgresNetworkExecutor extends Thread {
         // per row and a client that negotiated binary transfer off the promise cannot have it swapped
         // underneath (issue #6725).
         answerWithColumns(portal);
+        portal.describedNoData = false;
       } else
         // In practice SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK (issues #6930, #7905): they are the
         // portals that carry no statement, never produce a result, and never get columns - ROLLBACK TO used to
@@ -563,8 +571,16 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Now send RowDescription or NoData
       // For SELECT queries, we need to determine the columns from the type schema
-      if (portal.isExpectingResult && portal.columns == null && !portal.catalogQuery) {
-        portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
+      if (portal.isExpectingResult && portal.columns == null) {
+        if (!portal.catalogQuery)
+          portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
+        else {
+          // A catalog query whose filters are bound parameters is answered at Execute, but the columns are those of
+          // the emulated catalog relation whatever the filter values are, so they can be named now (issue #8379)
+          final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query);
+          if (catalogAnswer != null)
+            portal.columns = catalogAnswer.columns();
+        }
       }
 
       if (portal.columns != null && !portal.columns.isEmpty()) {
@@ -574,10 +590,12 @@ public class PostgresNetworkExecutor extends Thread {
         // non-null for some other reason (a catalog answer recomputed per-Bind, or bindCommand()'s fallback
         // onto an already-executed portal), which carries no such promise.
         portal.columnsDescribed = true;
+        portal.describedNoData = false;
       } else {
-        // We can't determine columns at DESCRIBE time (e.g., INSERT without schema info)
-        // Send NoData, but keep isExpectingResult = true so EXECUTE can handle it properly
-        // The actual query execution will determine if there are results
+        // No columns can be named before the statement runs: a write with no RETURN (which PostgreSQL answers with
+        // NoData too) or a statement whose shape only its execution reveals (a non-SQL language). NoData is a promise
+        // that no result set follows, and Execute keeps it (issue #8379): see answerDescribedNoData().
+        portal.describedNoData = true;
         writeNoData();
       }
     } else
@@ -765,6 +783,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
+        if (portal.describedNoData && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
+          answerDescribedNoData(portal);
+          return;
+        }
+
         // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
         // Execute, not only the one that just populated fullResultSet above: a follow-up Execute continuing a
         // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
@@ -851,6 +874,50 @@ public class PostgresNetworkExecutor extends Thread {
         recordPostgresProfile(profile, portal.language, portal.query);
       QueryProfile.popCurrent();
     }
+  }
+
+  /**
+   * Answers an Execute whose statement a {@code Describe('S')} announced with {@code NoData}, but which produced rows
+   * (issue #8379). A DataRow is only legal after a RowDescription, Execute never sends one (issue #8244), and a client
+   * that described the statement rather than the portal - asyncpg, npgsql, pgx - has no column list or type OIDs to
+   * decode them with, so the rows cannot be sent as they are:
+   * <ul>
+   *   <li>a write with no RETURN clause is what PostgreSQL itself answers with NoData, and its rows are only ArcadeDB
+   *       echoing the records it wrote: the exchange is PostgreSQL's own, CommandComplete tagged with the row count
+   *       and no DataRow;</li>
+   *   <li>anything else really returns a result set its Describe could not name: refused with an error rather than
+   *       answered with rows no RowDescription announced, which no client can decode. Describing the portal instead
+   *       ({@code Describe('P')}, what pgjdbc and libpq send) runs it first and names the columns it produced.</li>
+   * </ul>
+   */
+  private void answerDescribedNoData(final PostgresPortal portal) {
+    final int rows = portal.fullResultSet.size();
+    portal.resultCursor = rows;
+    portal.suspended = false;
+    if (isRowlessWrite(portal.sqlStatement))
+      writeCommandComplete(portal.query, rows);
+    else {
+      setExtendedProtocolError();
+      writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
+          + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
+          "0A000"); // feature_not_supported
+    }
+  }
+
+  /**
+   * True for a SQL write whose result PostgreSQL would not return as a result set: INSERT, UPDATE, DELETE and
+   * CREATE VERTEX/EDGE with no RETURN clause. ArcadeDB answers them with the records (or the count) they wrote, which
+   * a client that prepared them expects only as a CommandComplete tag.
+   */
+  static boolean isRowlessWrite(final Statement statement) {
+    return switch (statement) {
+      case InsertStatement insert -> insert.getReturnStatement() == null;
+      case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
+      case CreateEdgeStatement ignored -> true;
+      case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
+      case DeleteStatement delete -> !delete.isReturnBefore();
+      case null, default -> false;
+    };
   }
 
   private CommandContext createCommandContext() {
@@ -977,7 +1044,7 @@ public class PostgresNetworkExecutor extends Thread {
         final String level = dbIsolationLevel.name().replace('_', ' ');
         resultSet = new IteratorResultSet(createResultSet("LEVEL", level).iterator());
       } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        final String varName = parameterName(query.query.substring(5));
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
       } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
@@ -1492,6 +1559,11 @@ public class PostgresNetworkExecutor extends Thread {
         return null;
       }
     }
+
+    // A write with no RETURN has no result set, whatever type its FROM names: "DELETE FROM T" was announced with T's
+    // columns and then answered with a count row under them (issue #8379)
+    if (isRowlessWrite(parsed))
+      return null;
 
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
@@ -2951,7 +3023,7 @@ public class PostgresNetworkExecutor extends Thread {
         createResultSet(portal, "LEVEL", level);
 
       } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = portal.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        final String varName = parameterName(portal.query.substring(5));
         createResultSet(portal, varName, getShowConfigValue(varName));
 
       } else if (PostgresCopyStatement.isCopy(portal.query)) {
@@ -3073,7 +3145,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   static PostgresSessionSettings.Assignment parseSetCommand(final String query) {
     if (query.regionMatches(true, 0, "RESET ", 0, 6)) {
-      final String name = query.substring("RESET ".length()).trim().toLowerCase(Locale.ENGLISH);
+      final String name = parameterName(query.substring("RESET ".length()));
       if (name.isEmpty() || name.indexOf(' ') >= 0)
         return null;
       return "all".equals(name) ? PostgresSessionSettings.Assignment.RESET_ALL : new PostgresSessionSettings.Assignment(name, null, false);
@@ -3180,6 +3252,19 @@ public class PostgresNetworkExecutor extends Thread {
 
   private String buildServerVersionString() {
     return "PostgreSQL " + PG_SERVER_VERSION + " (ArcadeDB " + Constants.getRawVersion() + ")";
+  }
+
+  /**
+   * The parameter name a SHOW or RESET names, spelled the way {@link #parseSetCommand} spells it for SET, so one
+   * parameter has one name whichever statement names it. {@code TIME ZONE} is PostgreSQL's SQL-standard spelling of
+   * {@code timezone}: {@code SHOW TIME ZONE} answered an empty string while {@code SHOW timezone} answered the value, and
+   * {@code RESET TIME ZONE} was rejected as malformed (issue #8391).
+   */
+  static String parameterName(final String rawName) {
+    final String name = rawName.trim();
+    if (TIME_ZONE_NAME.matcher(name).matches())
+      return "timezone";
+    return name.toLowerCase(Locale.ENGLISH);
   }
 
   private String getShowConfigValue(final String varName) {
