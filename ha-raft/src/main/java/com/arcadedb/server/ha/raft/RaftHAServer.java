@@ -1490,6 +1490,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public void retryPendingBootstrapReplacements() {
+    if (raftServer == null || shutdownRequested)
+      return;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm != null)
+      sm.retryPendingBootstrapReplacements();
+  }
+
+  @Override
   public void reportResyncProgress() {
     final FollowerResyncProgressTracker tracker = resyncProgressTracker;
     if (tracker == null || raftServer == null || shutdownRequested || isLeader())

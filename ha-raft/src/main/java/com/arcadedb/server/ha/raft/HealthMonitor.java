@@ -151,6 +151,18 @@ public final class HealthMonitor {
     }
 
     /**
+     * Retries the replacement of every database whose copy the committed bootstrap baseline ordered replaced and
+     * whose replacement has failed so far (issue #8367). No-op when nothing is pending, between throttled attempts,
+     * and while no leader is reachable; on the leader it installs nothing and only reports why.
+     * <p>
+     * Its own hook for the same reason as {@link #verifyBootstrapDivergence()}: the node applies every entry it is
+     * sent, so no lag or divergence check sees it, and the one-shot retry that runs after the first failure is not
+     * re-armed by anything else.
+     */
+    default void retryPendingBootstrapReplacements() {
+    }
+
+    /**
      * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
      * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
      * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
@@ -405,6 +417,9 @@ public final class HealthMonitor {
     // left with its own copy applies every entry it is sent and reports perfect health (issue #6124).
     // Self-throttled by the target, and free when no database took that branch.
     target.verifyBootstrapDivergence();
+    // The replacement the bootstrap baseline ordered and that has failed so far (issue #8367): the node holds itself
+    // out of the Service until it lands, so something has to keep trying. Self-throttled, free when nothing is pending.
+    target.retryPendingBootstrapReplacements();
     // Before the early returns below, so a node that goes CLOSED or whose log writer fails drops a stall it was
     // reporting instead of keeping it until it recovers (issue #8342). It reads the leader commit index the
     // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.

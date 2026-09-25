@@ -32,13 +32,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -157,9 +155,9 @@ class Issue7519BootstrapWindowGateTest {
   }
 
   /**
-   * A failed install hands the readiness holder to the scheduled retry, and hands it to NOTHING ELSE. This is the
-   * likely path at a real first formation - the bootstrap entry is applied while leader election on this peer may
-   * still be settling, so the very first download often has no leader to pull from.
+   * A failed install keeps the readiness holder through the retry, and keeps it in NOTHING ELSE than the in-flight
+   * depth. This is the likely path at a real first formation - the bootstrap entry is applied while leader election
+   * on this peer may still be settling, so the very first download often has no leader to pull from.
    * <p>
    * The half that is easy to get wrong is the second one. An earlier revision of this fix held readiness across
    * the retry by setting the durable {@code bootstrapUnreconciled} mark, which is the issue #6124 set: it means
@@ -169,7 +167,7 @@ class Issue7519BootstrapWindowGateTest {
    * in-flight depth and the mark is left to the branch that actually means it.
    */
   @Test
-  void aFailedInstallHoldsReadinessThroughTheRetryWithoutRaisingTheCriticalDivergenceAlert() {
+  void aFailedInstallHoldsReadinessThroughTheRetryWithoutRaisingTheCriticalDivergenceAlert() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(stubbedServer(configuration()));
 
@@ -181,12 +179,16 @@ class Issue7519BootstrapWindowGateTest {
             + "raise its CRITICAL alert")
         .isEmpty();
 
-    // The retry runs on the lifecycleExecutor, so the release is asynchronous: await it rather than race it.
-    // What must not happen is that it never comes - a holder nothing releases wedges the node out of the Service.
-    await().atMost(Duration.ofSeconds(30))
-        .untilAsserted(() -> assertThat(sm.getBootstrapInstallsInFlight())
-            .as("the retry releases the holder it was handed, whatever it decided to do")
-            .isEmpty());
+    // The retry runs on the lifecycleExecutor: let it finish. Before issue #8367 it released the holder whatever it
+    // decided to do, so a retry that failed as well put the node back in the Service serving the rejected copy. The
+    // holder is now released where the copy is actually replaced - Issue8367BootstrapReplacementRearmTest drives
+    // those paths - and nothing in this unit test ever replaces it.
+    sm.awaitLifecycleTasksForTesting(30_000);
+    assertThat(sm.getBootstrapInstallsInFlight())
+        .as("a retry that could not replace the copy keeps the node out of the Service")
+        .containsExactly(DB_NAME);
+    assertThat(sm.getPendingBootstrapReplacements()).containsExactly(DB_NAME);
+    assertThat(sm.getBootstrapUnreconciledDatabases()).as("and still raises no CRITICAL").isEmpty();
   }
 
   /**
@@ -285,7 +287,7 @@ class Issue7519BootstrapWindowGateTest {
    * is still in flight and the node must still be reporting itself unfit to serve.
    */
   @Test
-  void anOverlappingInstallOfTheSameDatabaseDoesNotReleaseTheGateEarly() {
+  void anOverlappingInstallOfTheSameDatabaseDoesNotReleaseTheGateEarly() throws Exception {
     final ArcadeDBServer server = stubbedServer(configuration());
     final ArcadeStateMachine sm = new ArcadeStateMachine();
 
@@ -313,15 +315,21 @@ class Issue7519BootstrapWindowGateTest {
     assertThat(inFlightAfterTheInnerInstallReturned.get())
         .as("the inner install releasing its holder must not deregister the outer one, which is still running")
         .containsExactly(DB_NAME);
-    // Awaited, not asserted outright (review of PR #7964): BOTH installs schedule their retry on the real
-    // single-threaded lifecycleExecutor, and each holder is released inside retryBootstrapInstall's finally, which
-    // runs only once that queued task does. Asserting synchronously here races the executor and would flake on a
-    // loaded box - the same shape as the pre-existing flake in Issue7298BootstrapReplaySkipMissingDatabaseTest
-    // (#7969), which is worth not reproducing in a test written to prove this gate is sound.
-    await().atMost(Duration.ofSeconds(30))
-        .untilAsserted(() -> assertThat(sm.getBootstrapInstallsInFlight())
-            .as("and once both holders are gone the entry is removed rather than left behind at zero")
-            .isEmpty());
+    // After both retries have run (review of PR #7964: they are queued on the real single-threaded lifecycleExecutor,
+    // so this waits for it rather than racing it). Both installs failed, and since issue #8367 a failed replacement
+    // keeps ONE holder until the copy is actually replaced: the second failure of the same database must not stack a
+    // second holder that no replacement would ever release.
+    sm.awaitLifecycleTasksForTesting(30_000);
+    assertThat(sm.getPendingBootstrapReplacements()).containsExactly(DB_NAME);
+    assertThat(sm.getBootstrapInstallsInFlight()).containsExactly(DB_NAME);
+    // One settle - here the DROP of the database, the cheapest path that settles one in this harness - releases it
+    // entirely: with a stacked second holder the entry would outlive the database it names.
+    when(server.existsDatabase(DB_NAME)).thenReturn(false);
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
+    assertThat(sm.getPendingBootstrapReplacements()).isEmpty();
+    assertThat(sm.getBootstrapInstallsInFlight())
+        .as("and once the last holder is gone the entry is removed rather than left behind at zero")
+        .isEmpty();
   }
 
   /** No bootstrap has happened at all: nothing to report, and nothing allocated on the readiness-probe path. */
