@@ -29,7 +29,9 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
@@ -39,9 +41,11 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
+import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
@@ -65,8 +69,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Main Cost-Based Query Optimizer for ArcadeDB Native Cypher.
@@ -617,7 +624,64 @@ public class CypherOptimizer {
    */
   private PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     final IndexSelectionRule indexRule = (IndexSelectionRule) rules.get(0);
-    return indexRule.createAnchorOperator(anchor);
+    final PhysicalOperator operator = indexRule.createAnchorOperator(anchor);
+    // A range is picked whatever share of the label it holds: let it give way to a label scan, or load in physical
+    // order, where the order its rows come in cannot show in the output (issue #8333)
+    if (operator instanceof NodeIndexRangeScan rangeScan)
+      rangeScan.setAdaptive(rowOrderIsInvisible(statement));
+    return operator;
+  }
+
+  /**
+   * Whether the output cannot show the order the matched rows came in: an ORDER BY re-sorts them, or the RETURN
+   * aggregates them with aggregations that ignore the order (not collect()), and a grouped RETURN has no LIMIT or SKIP
+   * that an unsorted group order would decide. A statement that returns its rows as they come shows the index order,
+   * which callers rely on; one with a WITH is left alone, whatever its shape, since a WITH can hand the rows on in
+   * their order under a LIMIT. Shared by every rewrite that changes the order the MATCH produces its rows in.
+   * <p>
+   * Relies on the Cypher plan always sorting for an ORDER BY (an OrderByStep, never elided because the MATCH already
+   * produced its rows sorted): a future sort elision must not treat an adaptive scan as sorted.
+   */
+  public static boolean rowOrderIsInvisible(final CypherStatement statement) {
+    if (statement == null || statement.getReturnClause() == null)
+      return false;
+    final List<WithClause> withClauses = statement.getWithClauses();
+    if (withClauses != null && !withClauses.isEmpty())
+      return false;
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (!returnClause.hasAggregations())
+      return statement.getOrderByClause() != null;
+
+    // Groups come out in the order they are first met: without an ORDER BY, a LIMIT or SKIP picks different ones
+    if (returnClause.hasNonAggregations() && statement.getOrderByClause() == null
+        && (statement.getLimit() != null || statement.getSkip() != null))
+      return false;
+    // collect() keeps the rows' order in its value, which no ORDER BY re-sorts
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (item.getExpression().containsAggregation() && !onlyOrderInsensitiveAggregates(item.getExpression().getText()))
+        return false;
+    return true;
+  }
+
+  /** The aggregations whose value does not depend on the order their rows arrive in. */
+  private static final Set<String> ORDER_INSENSITIVE_AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "stdev",
+      "stdevp", "percentilecont", "percentiledisc");
+  private static final Pattern     FUNCTION_CALL                = Pattern.compile("([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(");
+
+  /**
+   * Whether every aggregation an expression calls ignores the row order. A function the validator does not know - a
+   * user or APOC function, which may aggregate - counts as order-sensitive, which only keeps the index order.
+   */
+  private static boolean onlyOrderInsensitiveAggregates(final String expressionText) {
+    final Matcher matcher = FUNCTION_CALL.matcher(expressionText);
+    while (matcher.find()) {
+      final String name = matcher.group(1).toLowerCase(Locale.ROOT);
+      if (ORDER_INSENSITIVE_AGGREGATES.contains(name))
+        continue;
+      if (FunctionValidator.getSignature(name) == null || FunctionValidator.isAggregationFunction(name))
+        return false;
+    }
+    return true;
   }
 
   /**

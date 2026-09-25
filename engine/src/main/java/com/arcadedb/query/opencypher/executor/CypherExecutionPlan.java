@@ -27,6 +27,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
@@ -93,8 +95,12 @@ import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
+import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
@@ -112,6 +118,7 @@ import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
+import com.arcadedb.query.opencypher.executor.steps.GAVOneHopScanStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
@@ -139,6 +146,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
+import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -194,6 +202,8 @@ public class CypherExecutionPlan {
   private final CypherStatement      statement;
   private final Map<String, Object>  parameters;
   private final ContextConfiguration configuration;
+  /** Name of the step that runs the optimizer's physical operators, first in the chain it builds. */
+  private static final String OPTIMIZED_MATCH_STEP_NAME = "OptimizedMatchStep";
   private final PhysicalPlan         physicalPlan;
   private final ExpressionEvaluator  expressionEvaluator;
 
@@ -982,9 +992,22 @@ public class CypherExecutionPlan {
    * The optimizer claims the MATCH pattern only: RETURN, ORDER BY, LIMIT and every write clause stay execution
    * steps appended to the operator chain. Printing the physical plan alone therefore answered
    * {@code EXPLAIN MATCH (n) WHERE ... DELETE n} with a scan and no mention of the delete (issue #6323). The first
-   * element of the chain is the operator wrapper the physical plan above already describes, so it is skipped.
+   * element of the chain is normally the operator wrapper the physical plan above already describes, so it is
+   * skipped. A rewrite that reads the MATCH without the operators ({@link CountEdgesReturnStep},
+   * {@link GAVOneHopScanStep}) leaves no wrapper in the chain, and then the whole chain is what runs (issue #8335).
    */
   private static void appendStepsAfterTheOptimizedMatch(final StringBuilder output, final List<ExecutionStep> chain) {
+    final boolean startsWithOperators = !chain.isEmpty() && OPTIMIZED_MATCH_STEP_NAME.equals(chain.getFirst().getName());
+    if (!startsWithOperators) {
+      if (chain.isEmpty())
+        return;
+      output.append("\nSteps Run Instead of the Physical Plan Above:\n");
+      for (final ExecutionStep step : chain) {
+        output.append(((AbstractExecutionStep) step).prettyPrint(0, 2));
+        output.append("\n");
+      }
+      return;
+    }
     if (chain.size() < 2)
       return;
 
@@ -1284,7 +1307,7 @@ public class CypherExecutionPlan {
 
       @Override
       public String getName() {
-        return "OptimizedMatchStep";
+        return OPTIMIZED_MATCH_STEP_NAME;
       }
 
       @Override
@@ -1439,6 +1462,11 @@ public class CypherExecutionPlan {
       if (countOpt != null) {
         currentStep = countOpt;
       } else if (statement.getReturnClause().hasAggregations()) {
+        // One row per edge of a one-hop pattern, read from a Graph Analytical View instead of the operators (#8335)
+        final AbstractExecutionStep gavScan = tryGAVOneHopScan(context);
+        if (gavScan != null)
+          currentStep = gavScan;
+
         // Check if there are also non-aggregated expressions (implicit GROUP BY)
         if (statement.getReturnClause().hasNonAggregations()) {
           // Use GROUP BY aggregation step (implicit grouping)
@@ -4670,6 +4698,167 @@ public class CypherExecutionPlan {
         groupOutputNames.toArray(new String[0]),
         countOutput);
     return true;
+  }
+
+  /**
+   * Replaces the rows of {@code MATCH (a:A)-[:T]->(b:B) [WHERE pred(a, b)]}, feeding an aggregating RETURN, with a
+   * {@link GAVOneHopScanStep} that reads both endpoints from a Graph Analytical View (issue #8335). The optimizer's plan
+   * for such a query scans {@code A} through its records and expands every source through the view; the view then
+   * serves the traversal but not the rows around it, which cost several times the traversal itself.
+   * <p>
+   * The replacement answers the same rows only under conditions checked here, and declines otherwise:
+   * <ul>
+   *   <li>the statement is one non-optional MATCH of a single fixed-length relationship feeding the RETURN, with no
+   *   relationship variable, no path variable and no inline property map or WHERE on any element of the pattern: the
+   *   pattern's WHERE clause is the only filter, and the step evaluates it whole;</li>
+   *   <li>the optimizer planned it as a full label scan expanded through the view, possibly filtered - never an index
+   *   seek, which a selective predicate on the source is better served by;</li>
+   *   <li>the view is ready, not stale, and covers every vertex type the two labels can match, so enumerating its nodes
+   *   finds every source the label scan would; with no label on the far end, it covers every vertex type (a
+   *   transaction holding changes the view cannot see gets no view at all from the registry).</li>
+   * </ul>
+   * The walk always starts from the outgoing end of the relationship, where every edge type keeps its adjacency.
+   *
+   * @return the step producing the pattern's rows, or null to keep the optimizer's plan
+   */
+  private AbstractExecutionStep tryGAVOneHopScan(final CommandContext context) {
+    if (physicalPlan == null || statement.getWhereClause() != null || statement.getClausesInOrder() == null)
+      return null;
+    // The sources come in the view's order rather than the label scan's: only where that order cannot show
+    if (!CypherOptimizer.rowOrderIsInvisible(statement))
+      return null;
+
+    MatchClause matchClause = null;
+    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+      if (entry.getType() == ClauseEntry.ClauseType.MATCH && matchClause == null)
+        matchClause = entry.getTypedClause();
+      else if (entry.getType() != ClauseEntry.ClauseType.RETURN)
+        return null;
+    }
+    if (matchClause == null || matchClause.isOptional() || !matchClause.hasPathPatterns()
+        || matchClause.getPathPatterns().size() != 1)
+      return null;
+
+    final PathPattern path = matchClause.getPathPatterns().getFirst();
+    if (path instanceof ShortestPathPattern || path.hasPathVariable() || path.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern relationship = path.getRelationship(0);
+    if (relationship instanceof QuantifiedPathPattern || relationship.isVariableLength()
+        || relationship.getVariable() != null || relationship.hasProperties()
+        || relationship.getPropertiesParameterName() != null || relationship.hasWhereExpression())
+      return null;
+
+    final NodePattern first = path.getFirstNode();
+    final NodePattern last = path.getLastNode();
+    if (!isPlainNodePattern(first) || !isPlainNodePattern(last))
+      return null;
+    if (first.getVariable() != null && first.getVariable().equals(last.getVariable()))
+      return null;
+
+    // Walk from the outgoing end
+    final boolean fromFirst = relationship.getDirection() != Direction.IN;
+    final NodePattern source = fromFirst ? first : last;
+    final NodePattern target = fromFirst ? last : first;
+    final Vertex.DIRECTION direction =
+        relationship.getDirection() == Direction.BOTH ? Vertex.DIRECTION.BOTH : Vertex.DIRECTION.OUT;
+
+    if (!source.hasLabels())
+      return null;
+
+    // The label the optimizer scans must be one of the pattern's two: the step enumerates the view by the pattern's
+    // labels, so a plan scanning anything else (a rule widening or rewriting the anchor label) is not the plan it
+    // replaces, and is kept
+    final String scannedLabel = scannedLabelExpandedThroughView(physicalPlan.getRootOperator());
+    if (scannedLabel == null || !(scannedLabel.equals(source.getFirstLabel())
+        || (target.hasLabels() && scannedLabel.equals(target.getFirstLabel()))))
+      return null;
+
+    final List<String> types = relationship.getTypes();
+    final String[] edgeTypes = types != null && !types.isEmpty() ? types.toArray(new String[0]) : null;
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+    if (provider == null || provider.isStale())
+      return null;
+
+    final int[] sourceBuckets = coveredVertexBuckets(provider, source.getFirstLabel());
+    if (sourceBuckets == null)
+      return null;
+    final int[] targetBuckets;
+    if (target.hasLabels()) {
+      targetBuckets = coveredVertexBuckets(provider, target.getFirstLabel());
+      if (targetBuckets == null)
+        return null;
+    } else {
+      if (!provider.coversVertexType(null))
+        return null;
+      targetBuckets = null;
+    }
+
+    final BooleanExpression where = matchClause.hasWhereClause() ? matchClause.getWhereClause().getConditionExpression() : null;
+    BooleanExpression sourceFilter = null;
+    BooleanExpression edgeFilter = where;
+    if (where != null && source.getVariable() != null) {
+      sourceFilter = WhereClause.extractForVariables(where, Set.of(source.getVariable()));
+      edgeFilter = WhereClause.residualForVariables(where, Set.of(source.getVariable()));
+    }
+
+    return new GAVOneHopScanStep(provider, source.getVariable(), source.getFirstLabel(), target.getVariable(),
+        target.hasLabels() ? target.getFirstLabel() : null, direction, edgeTypes, sourceFilter, edgeFilter, sourceBuckets,
+        targetBuckets, context);
+  }
+
+  /** A node with at most one static label and nothing else to match: no property map, no inline WHERE. */
+  private static boolean isPlainNodePattern(final NodePattern node) {
+    return !node.hasProperties() && node.getPropertiesParameterName() == null && !node.hasWhereExpression()
+        && !node.hasDynamicLabels() && !node.isLabelDisjunction() && (node.getLabels() == null || node.getLabels().size() <= 1);
+  }
+
+  /**
+   * The label scanned when the operator tree is a full label scan expanded once through a view, with filters anywhere
+   * in between - the plan {@link GAVOneHopScanStep} replaces - or null for anything else: an index seek, a second
+   * expansion, a join, a plan the optimizer preferred for a reason the step cannot reproduce.
+   */
+  private static String scannedLabelExpandedThroughView(final PhysicalOperator root) {
+    int expansions = 0;
+    for (PhysicalOperator current = root; current != null; current = current.getChild()) {
+      if (current instanceof GAVExpandAll)
+        ++expansions;
+      else if (current instanceof NodeByLabelScan scan)
+        return expansions == 1 && current.getChild() == null ? scan.getLabel() : null;
+      else if (!(current instanceof FilterOperator))
+        return null;
+    }
+    return null;
+  }
+
+  /**
+   * The buckets of the vertices carrying {@code label}, sub-types included, or null when the label is not a vertex
+   * type or the view leaves out some of those types: enumerating the view would then miss vertices the label matches.
+   */
+  private int[] coveredVertexBuckets(final GraphTraversalProvider provider, final String label) {
+    if (label == null || !database.getSchema().existsType(label))
+      return null;
+    final DocumentType type = database.getSchema().getType(label);
+    if (!(type instanceof VertexType))
+      return null;
+
+    final List<DocumentType> pending = new ArrayList<>();
+    pending.add(type);
+    final Set<String> visited = new HashSet<>();
+    while (!pending.isEmpty()) {
+      final DocumentType current = pending.removeLast();
+      if (!visited.add(current.getName()))
+        continue;
+      if (!provider.coversVertexType(current.getName()))
+        return null;
+      pending.addAll(current.getSubTypes());
+    }
+
+    final var buckets = type.getBuckets(true);
+    final int[] ids = new int[buckets.size()];
+    for (int i = 0; i < ids.length; i++)
+      ids[i] = buckets.get(i).getFileId();
+    return ids;
   }
 
   private AbstractExecutionStep tryOptimizeMatchCountReturn(

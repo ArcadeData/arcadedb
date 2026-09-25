@@ -243,4 +243,9 @@ public class CartesianProduct extends AbstractPhysicalOperator {
     sb.append(right.explain(depth + 1));
     return sb.toString();
   }
+
+  /** The right-hand side; the left one is {@link #getChild()}. */
+  public PhysicalOperator getRight() {
+    return right;
+  }
 }

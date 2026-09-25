@@ -29,6 +29,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -367,10 +368,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final CypherExecutionPlan plan;
     final DatabaseInternal execDb = executionDatabase(statement);
 
-    if (!explain && !profile) {
+    // A transaction holding uncommitted changes gets no Graph Analytical View: a cached plan may carry one it would
+    // read past those changes, and a plan built now carries none, so it must not reach the cache either
+    if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
       // Only use plan cache for normal execution (not explain/profile)
       final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
-      if (physicalPlan != null) {
+      // A cached plan that reads a view no longer usable (gone stale, dropped) is planned again, and the new plan
+      // replaces it in the cache
+      if (physicalPlan != null && !physicalPlan.readsAnUnavailableView()) {
         // Reuse cached physical plan (avoids expensive statistics collection and optimization)
         plan = new CypherExecutionPlan(
             execDb, statement, parameters, configuration, physicalPlan, EXPRESSION_EVALUATOR);
@@ -388,7 +393,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
           database.getCypherPlanCache().put(queryString, plan.getPhysicalPlan(), planningStart);
       }
     } else {
-      // explain/profile mode: always create new plan without caching
+      // explain/profile mode, or views withheld: always create new plan without caching
       final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
           EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);

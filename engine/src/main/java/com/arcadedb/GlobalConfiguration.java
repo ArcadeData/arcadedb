@@ -880,6 +880,18 @@ public enum GlobalConfiguration {
         return Math.max(1_000_000L, Math.min(Integer.MAX_VALUE, maxHeap / 160));
       }),
 
+  QUERY_INDEX_MAX_SELECTIVITY("arcadedb.queryIndexMaxSelectivity", SCOPE.DATABASE, """
+      Share of a type's records (0 to 1) above which an index search, in SQL or OpenCypher, is abandoned for a full \
+      scan of the type. \
+      Before loading any record, the index entries are read alone: when more of them match than this share of the \
+      records the type holds, the rows are served by a scan filtered by the same condition, otherwise the matching \
+      records are loaded in physical order rather than in index order. Fetching most of a type through an index costs \
+      one random page access per record, which grows much faster than a scan once the type outgrows the page cache. \
+      Applies only where the scan answers the same rows and the order the rows come in cannot show in the output: \
+      an aggregation, or an ORDER BY the index does not serve. A query returning the rows as they come keeps the \
+      index order. 0 disables it, so every index search is served in index order""",
+      Float.class, 0.25f),
+
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
       """
       Enable parallel scanning of multiple buckets during full table scans. \
