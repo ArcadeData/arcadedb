@@ -55,6 +55,22 @@ class BuildWatchReconciliationTest extends TestHelper {
   }
 
   @Test
+  void aSupersedingBuildTakesOverTheBufferedDeltas() {
+    // A blocking build() may scan inside the caller's REPEATABLE_READ transaction and miss a commit that preceded
+    // it: the delta the superseded build buffered is then the only way that commit reaches the new CSR
+    final BuildWatch superseded = new BuildWatch(1_000, false);
+    superseded.watchSource(a);
+    final TxDelta delta = added(newEdge());
+    assertThat(superseded.offer(delta)).isTrue();
+
+    final BuildWatch next = new BuildWatch(1_000, true);
+    superseded.handOverTo(next);
+
+    assertThat(next.isWatched(a)).isTrue();
+    assertThat(next.close()).containsExactly(delta);
+  }
+
+  @Test
   void aCapturedAdditionDeliveredAfterABudgetedDeletionIsNotAddedTwice() {
     // Commit callbacks can arrive out of commit order: the deletion of e0 (after the scan) is delivered before the
     // addition of e1 (before the scan)
