@@ -47,6 +47,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -123,6 +124,15 @@ class BootstrapElection {
 
   /** The route both the election fan-out and the divergence probe reach, on whichever scheme was chosen. */
   static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
+
+  // Issue #8368: what a pass says about itself in the body of the probes it sends, so a follower knows a pass is
+  // deciding on its databases before the committed baseline reaches it. Every other caller of the route sends {}.
+  static final String PASS_MARKER    = "bootstrapPass";
+  static final String PASS_ANNOUNCE  = "announce";
+  static final String PASS_CONCLUDE  = "conclude";
+  static final String PASS_ID        = "passId";
+  static final String PASS_DATABASES = "databases";
+  static final String PASS_COMMITTED = "committed";
 
   private final RaftHAServer            haServer;
   private final ArcadeDBServer          server;
@@ -210,15 +220,104 @@ class BootstrapElection {
     if (pending.isEmpty())
       return Outcome.SKIPPED_NOT_FIRST_FORMATION;
 
+    // Identifies this pass to the followers it holds (issue #8368), so the conclusion of a pass that lost leadership
+    // mid-flight cannot release what the next leader's pass holds.
+    final String passId = haServer.getLocalPeerId() + "/" + UUID.randomUUID();
+    final List<String> committed = new ArrayList<>();
+    Outcome outcome = Outcome.FAILED;
     try {
-      final Map<String, List<PeerState>> states = collectStates(pending);
-      return decideAndAct(states);
+      final Map<String, List<PeerState>> states = collectStates(pending, passId);
+      outcome = decideAndAct(states, passId, committed);
+      return outcome;
     } catch (final Throwable t) {
       LogManager.instance().log(this, Level.WARNING,
           "Bootstrap election failed (will retry on next leader change): %s", null, t.getMessage());
       // Allow a retry next term.
       attemptedThisTerm.removeAll(pending);
       return Outcome.FAILED;
+    } finally {
+      // A transfer hands the pass to the elected source, whose own pass announces and concludes it: concluding here
+      // would release the followers for the length of the transfer.
+      if (outcome != Outcome.TRANSFERRED)
+        concludePass(passId, committed);
+    }
+  }
+
+  /**
+   * The body of the probe a pass sends (issue #8368): it tells the follower a pass is deciding which copy of
+   * {@code dbNames} the cluster keeps, which is the only local signal it gets of that before the committed baseline
+   * reaches its apply thread. Read by {@code PostBootstrapStateHandler.applyPassMarker}.
+   */
+  static String announcePassBody(final String passId, final Collection<String> dbNames) {
+    return new JSONObject().put(PASS_MARKER, PASS_ANNOUNCE).put(PASS_ID, passId)
+        .put(PASS_DATABASES, new JSONArray(new ArrayList<>(dbNames))).toString();
+  }
+
+  /**
+   * The body of the conclusion a pass sends when it has finished (issue #8368): {@code committed} are the databases
+   * it committed a baseline for, whose hold the baseline itself releases once it is applied on the follower; every
+   * other database the pass holds there is released now.
+   */
+  static String concludePassBody(final String passId, final Collection<String> committed) {
+    return new JSONObject().put(PASS_MARKER, PASS_CONCLUDE).put(PASS_ID, passId)
+        .put(PASS_COMMITTED, new JSONArray(new ArrayList<>(committed))).toString();
+  }
+
+  /**
+   * Tells every peer this pass has finished (issue #8368), and releases this node's own holds with it. Best effort
+   * and bounded by one probe attempt: a peer that misses it keeps its hold only until its deadline, and a pass that
+   * finishes without committing a baseline for a database - every copy empty, or the source not holding it - would
+   * otherwise hold that database for the whole deadline on every follower.
+   */
+  private void concludePass(final String passId, final List<String> committed) {
+    final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+    if (stateMachine != null)
+      // Every pass, not just this one: a hold this node took as a follower of an earlier pass is settled by this one.
+      stateMachine.concludeBootstrapPass(null, committed);
+
+    try {
+      final boolean useSSL = server != null
+          && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+      final RaftPeerId localId = haServer.getLocalPeerId();
+      final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
+      final List<String> urls = new ArrayList<>();
+      for (final RaftPeer peer : haServer.getLivePeers()) {
+        if (peer.getId().equals(localId))
+          continue;
+        final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
+        if (url != null)
+          urls.add(url);
+      }
+      if (urls.isEmpty())
+        return;
+
+      final String body = concludePassBody(passId, committed);
+      HttpClient httpsClient = null;
+      if (urls.stream().anyMatch(url -> url.startsWith("https://")))
+        try {
+          httpsClient = newTrustingClient(server);
+        } catch (final IOException e) {
+          // Never downgraded to plain HTTP (issue #7563): those peers keep their hold until its deadline.
+          LogManager.instance().log(this, Level.INFO,
+              "Bootstrap: cannot build the HTTPS client to tell peers the pass concluded: %s", e.getMessage());
+        }
+      try (final HttpClient client = httpsClient) {
+        final List<CompletableFuture<HttpResponse<String>>> sends = new ArrayList<>(urls.size());
+        for (final String url : urls) {
+          final boolean https = url.startsWith("https://");
+          if (https && client == null)
+            continue;
+          final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
+          sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+        }
+        CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
+            .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.INFO,
+          "Bootstrap: could not tell every peer the pass concluded (their hold lapses on its own): %s", e.getMessage());
     }
   }
 
@@ -306,13 +405,14 @@ class BootstrapElection {
    * {@code bootstrapTimeoutMs} are simply absent from the result; the leader proceeds with what it
    * has and a SEVERE log explains who was missed.
    */
-  private Map<String, List<PeerState>> collectStates(final List<String> dbNames) {
+  private Map<String, List<PeerState>> collectStates(final List<String> dbNames, final String passId) {
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
     final RaftPeerId localId = haServer.getLocalPeerId();
     final Collection<RaftPeer> peers = haServer.getLivePeers();
     final Set<String> dbFilter = new HashSet<>(dbNames);
     final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
+    final String announceBody = announcePassBody(passId, dbNames);
 
     // Self state computed locally to avoid a self-loop HTTP call.
     final Map<String, PeerState> selfStates = computeLocalStates(localId, dbFilter);
@@ -370,7 +470,7 @@ class BootstrapElection {
     final Map<RaftPeerId, Map<String, PeerState>> remoteStates;
     try (final HttpClient probeClient = httpsClient) {
       remoteStates = collectRemoteStatesWithRetry(
-          peerAddresses, (pid, url, attemptMs) -> queryPeer(pid, url, dbFilter, attemptMs, probeClient),
+          peerAddresses, (pid, url, attemptMs) -> queryPeer(pid, url, dbFilter, attemptMs, probeClient, announceBody),
           timeoutMs, Math.min(timeoutMs, probeAttemptTimeoutMs), probeRetryBackoffMs,
           haServer::isLeader, assumedEmpty);
     }
@@ -513,11 +613,17 @@ class BootstrapElection {
    * on the same scheme (issue #7563).
    */
   static HttpRequest bootstrapStateRequestTo(final String url, final String clusterToken, final long timeoutMs) {
+    return bootstrapStateRequestTo(url, clusterToken, timeoutMs, "{}");
+  }
+
+  /** As {@link #bootstrapStateRequestTo(String, String, long)}, carrying {@code body} (issue #8368). */
+  static HttpRequest bootstrapStateRequestTo(final String url, final String clusterToken, final long timeoutMs,
+      final String body) {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString("{}"));
+        .POST(HttpRequest.BodyPublishers.ofString(body));
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", "root");
@@ -627,6 +733,12 @@ class BootstrapElection {
   // @VisibleForTesting
   CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
       final String url, final Set<String> dbFilter, final long attemptTimeoutMs, final HttpClient httpsClient) {
+    return queryPeer(peerId, url, dbFilter, attemptTimeoutMs, httpsClient, "{}");
+  }
+
+  /** As above, with the probe carrying {@code body} - the pass's announce, from {@link #collectStates}. */
+  CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId, final String url, final Set<String> dbFilter,
+      final long attemptTimeoutMs, final HttpClient httpsClient, final String body) {
     final boolean https = url.startsWith("https://");
     if (https && httpsClient == null)
       // FATAL, not RETRYABLE, and the difference is two minutes of every election. The client is built ONCE
@@ -639,7 +751,7 @@ class BootstrapElection {
       return CompletableFuture.completedFuture(
           ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));
 
-    final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), attemptTimeoutMs);
+    final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), attemptTimeoutMs, body);
 
     return (https ? httpsClient : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
@@ -708,7 +820,8 @@ class BootstrapElection {
    * without committing anything (when a remote peer is elected). See the class Javadoc for why a
    * single source is both correct and sufficient under ArcadeDB's one-leader-per-cluster model.
    */
-  private Outcome decideAndAct(final Map<String, List<PeerState>> states) {
+  private Outcome decideAndAct(final Map<String, List<PeerState>> states, final String passId,
+      final List<String> committedOut) {
     final RaftPeerId localId = haServer.getLocalPeerId();
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
@@ -726,6 +839,11 @@ class BootstrapElection {
       // protocol, elects itself, and commits every database from its local copies.
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: transferring leadership to elected source %s (freshest copy of the cluster)", source);
+      // This node is about to become a follower of a pass that may reject its copies (issue #8368). The elected
+      // source's pass announces to it too, but only after the transfer and its own collection: hold them from now.
+      final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+      if (stateMachine != null)
+        stateMachine.announceBootstrapPass(passId, states.keySet(), 2L * timeoutMs);
       try {
         haServer.transferLeadership(source.toString(), timeoutMs);
       } catch (final Exception e) {
@@ -770,6 +888,7 @@ class BootstrapElection {
       try {
         RaftHAServer.requireTransactionBroker(haServer)
             .replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
+        committedOut.add(dbName);
         anyCommitted = true;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
