@@ -127,4 +127,14 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected abstract void fetchNextEntryPoints(CommandContext context, int nRecords);
 
   protected abstract void fetchNextResults(CommandContext context, int nRecords);
+
+  // whileClause/postFilter/projections/maxDepth are immutable configuration, evaluated dynamically against whatever
+  // context a copy is bound to (same contract as FilterStep, ProjectionCalculationStep, ...); entryPoints/results/
+  // traversed and each subclass's own dedup state are runtime-only and always start empty in a fresh instance, so
+  // a template built from a row that was already pulled to exhaustion is still a safe copy source - see the
+  // concrete subclasses' #copy for what actually gets reused.
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
 }
