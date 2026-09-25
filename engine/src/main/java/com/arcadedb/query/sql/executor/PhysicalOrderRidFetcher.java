@@ -157,6 +157,8 @@ public final class PhysicalOrderRidFetcher {
    * came - or null when there is none left. Only after {@link #start(WorkGuard)} answered a physical order.
    */
   public Object next() {
+    // The entries that are not record addresses go first, in no particular order (removeLast() is only the cheap end
+    // of the list): the fetcher serves only statements whose output cannot show the order rows arrive in
     while (true) {
       if (passThrough != null && !passThrough.isEmpty())
         return passThrough.removeLast();
