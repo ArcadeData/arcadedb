@@ -51,7 +51,9 @@ class ClusterManagementAuthorizationIT extends BaseRaftHATest {
   void nonRootRejectedOnAllClusterManagementEndpoints() throws Exception {
     // A non-root user that is otherwise a database admin: this is the privilege-escalation scenario.
     // On the leader: the SecurityManager user mutators refuse off-leader on an HA cluster (issue #8370).
-    getServer(findLeaderIndex()).getSecurity().createUser(TENANT_USER, TENANT_PASSWORD);
+    final int leader = findLeaderIndex();
+    assertThat(leader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    getServer(leader).getSecurity().createUser(TENANT_USER, TENANT_PASSWORD);
     // Server 0 may be a follower whose apply lags the leader's return: without this wait a request could be rejected
     // for unknown credentials instead of reaching the root check, and the 403 below would pass for the wrong reason.
     await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
