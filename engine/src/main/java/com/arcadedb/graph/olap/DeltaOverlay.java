@@ -218,6 +218,25 @@ class DeltaOverlay {
   }
 
   /**
+   * A re-application reference that knows, edge by edge, whether the fresh scan read a buffered change - what a CSR
+   * build that watched its racing transactions can say (issue #8378). Answered per edge rather than through a pair's
+   * multiplicity: on a pair where the scan both captured an addition and missed a deletion, the two cancel in the
+   * multiplicity and the net answer spends the deletion's budget against a live edge.
+   */
+  interface ExactScanAnswer extends PreCompactionPairCount {
+    /** Whether the fresh scan already read this buffered addition. */
+    boolean capturedByScan(TxDelta.EdgeDelta addition);
+
+    /** Whether the edge of this buffered deletion was already missing when the fresh scan read its source. */
+    boolean absorbedByScan(TxDelta.EdgeDelta deletion);
+
+    @Override
+    default int occurrences(final String edgeType, final RID source, final RID target) {
+      throw new UnsupportedOperationException("An exact scan answer is asked per edge, not per pair");
+    }
+  }
+
+  /**
    * Creates a new overlay by merging this overlay with a transaction delta.
    * The previous overlay is not modified.
    * <p>
@@ -338,8 +357,11 @@ class DeltaOverlay {
         if (csr != null && csr.hasForwardEdge(srcId, tgtId)) {
           final long packed = packEdge(srcId, tgtId);
           final Map<Long, Integer> prevDel = newDeletedEdges.get(ed.edgeType);
-          final boolean masked = (prevDel != null && prevDel.containsKey(packed))
-              || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
+          // An exact answer names this very edge: a deletion budgeted on the pair belongs to another edge of it, and
+          // re-adding a captured one would duplicate it (issue #8378)
+          final boolean masked = !(preCount instanceof ExactScanAnswer)
+              && ((prevDel != null && prevDel.containsKey(packed))
+              || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed)));
           if (!masked && capturedByFreshScan(ed, srcId, tgtId, packed, csr, preCount, newAbsorbedAdditions)) {
             // Remembered for the update loop below: the fresh base CSR already carries this edge, scan and
             // all, so a property change to it in this same delta is already in the columns and dirties
@@ -447,7 +469,12 @@ class DeltaOverlay {
       // compaction. Exactly max(0, before - fresh) of this pair's buffered deletions were swallowed by the
       // scan; they are the prefix, and are recorded as absorbed instead of budgeted. The identity is still
       // remembered above, so a replay of the same deletion cannot fall through and spend a budget later.
-      if (baseCsrPerType != null && preCount != null && srcId < baseNodeCount && tgtId < baseNodeCount) {
+      if (baseCsrPerType != null && preCount instanceof ExactScanAnswer exact && srcId < baseNodeCount
+          && tgtId < baseNodeCount) {
+        // Already missing from the fresh run: no budget, and no contribution to the delta edge counter (#8378)
+        if (exact.absorbedByScan(ed))
+          continue;
+      } else if (baseCsrPerType != null && preCount != null && srcId < baseNodeCount && tgtId < baseNodeCount) {
         final CSRAdjacencyIndex csr = baseCsrPerType.get(ed.edgeType);
         if (csr != null) {
           final int absorbable = preCount.occurrences(ed.edgeType, ed.source, ed.target)
@@ -535,6 +562,8 @@ class DeltaOverlay {
       final Map<String, Map<Long, Integer>> absorbedAdditions) {
     if (preCount == null)
       return true;
+    if (preCount instanceof ExactScanAnswer exact)
+      return exact.capturedByScan(ed);
 
     final int capturable = csr.forwardEdgeCount(srcId, tgtId) - preCount.occurrences(ed.edgeType, ed.source, ed.target);
     if (capturable <= 0)

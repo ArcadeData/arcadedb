@@ -101,6 +101,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.RequestStillInFlightException;
+import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -359,7 +360,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(ValidationException.class.getName(), ValidationException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
-  /** The back-off an in-flight refusal from the leader is relayed with when its body does not carry one (issue #8343). */
+  /**
+   * The back-off a refusal from the leader is relayed with when the leader did not state one this node can read: an
+   * in-flight refusal whose body carries none (issue #8343), or an untyped 503 with no delta-seconds
+   * {@code Retry-After} (issue #8355). Five seconds is what the leader itself sends for both.
+   */
   static final long DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS = 5L;
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
@@ -1857,6 +1862,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *       database, which also covers the gap between a failed bootstrap download and the retry it scheduled, when
    *       no install is registered above.</li>
    * </ul>
+   * The start of the bootstrap window is refused too (issue #8368): {@link ArcadeStateMachine#isBootstrapPassPending}
+   * says a first-formation pass has announced it is deciding on this database and has not settled it here yet, so
+   * the copy on disk may be the one it is about to reject.
    * <p>
    * <b>Clients only.</b> The engine's own paths go through these same objects - the apply thread, the install
    * itself (which reopens the database at the end of its swap), the reconciler, the health monitor - and refusing
@@ -1880,14 +1888,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
     final ArcadeStateMachine stateMachine = raft.getStateMachine();
     final boolean anyInstall = SnapshotInstaller.hasInstallsInFlight();
-    if (!anyInstall && (stateMachine == null || !stateMachine.isBootstrapInstallInFlight(getName())))
+    // Each read once: the answers decide the refusal and then pick its message, and a hold that lapses in between must
+    // not turn a refusal decided here into a request served against the copy. Both are an empty-map check on a
+    // healthy node.
+    final boolean passPending = stateMachine != null && stateMachine.isBootstrapPassPending(getName());
+    final boolean bootstrapInstall = stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName());
+    if (!anyInstall && !passPending && !bootstrapInstall)
       return;
     if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
       return;
-    if ((anyInstall && SnapshotInstaller.isInstallInFlight(getDatabasePath()))
-        || (stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName())))
+    if ((anyInstall && SnapshotInstaller.isInstallInFlight(getDatabasePath())) || bootstrapInstall)
       throw new NeedRetryException("Database '" + getName() + "' is being replaced on this server from the leader's "
           + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
+          + "Retry shortly, or send the request to another server of the cluster");
+    // Issue #8368: the start of the same window, before the baseline reaches this node.
+    if (passPending)
+      throw new NeedRetryException("Database '" + getName() + "' cannot serve this request yet: the cluster's "
+          + "first-formation bootstrap is still deciding whether the copy on this server is the one the cluster keeps. "
           + "Retry shortly, or send the request to another server of the cluster");
   }
 
@@ -3784,22 +3801,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           raft.getLeaderName());
     }
 
-    final JSONObject body = new JSONObject();
-    body.put("language", language);
-    body.put("command", query);
-    if (mapArgs != null && !mapArgs.isEmpty())
-      body.put("params", new JSONObject(mapArgs));
-    else if (positionalArgs != null && positionalArgs.length > 0) {
-      // Use ordinal-map format {"0": v0, "1": v1, ...} so the leader's PostCommandHandler
-      // can safely parse params as a Map regardless of the toMap(true) numeric-array optimization.
-      // Sending a plain JSON array like [110] causes toMap(true) to return a primitive array
-      // (long[] for integer-only, float[] for fractional - see issues #3864 and #4148), which
-      // then cannot be cast to Map at the params-extraction site.
-      final JSONObject ordinalParams = new JSONObject();
-      for (int i = 0; i < positionalArgs.length; i++)
-        ordinalParams.put("" + i, positionalArgs[i]);
-      body.put("params", ordinalParams);
-    }
+    // Counted here, past every refusal above, so a forward that never leaves this node takes no ordinal.
+    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
+    final String clusterToken = raftHAServer.getClusterToken();
+    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
+    final boolean relaysRequestId = forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted);
+
+    // This forward is the client's whole request, and relays its key (issue #8347): it posts the client's own body, not
+    // one rebuilt from the statement (issue #8359). The key settles one answer on the leader, and it has to be the one
+    // the client's request asks for - its 'serializer', 'limit', 'typeHints', 'profileExecution' - both for a retry
+    // the client sends straight to the leader and for this forward when a direct attempt settled the key first. The
+    // answer comes back in that rendering and is handed to the handler as it is, below. Under the cluster token only,
+    // like the key.
+    final ForwardedRequestIdContext.WholeRequest wholeRequest = relaysRequestId && ordinalTrusted ?
+        ForwardedRequestIdContext.wholeRequestForward(forwardOrdinal, language, query) :
+        null;
+
+    final String requestBody = wholeRequest != null ? wholeRequest.clientBody() : rebuildForwardBody(language, query, mapArgs,
+        positionalArgs);
 
     // Built once and used for both the request and the failure messages below: a TLS handshake error reported
     // against the plain-HTTP address the request was never sent to is the message an operator would take to a
@@ -3850,10 +3869,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .uri(URI.create(leaderUrl))
         .timeout(Duration.ofMillis(deadlineMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
+        .POST(HttpRequest.BodyPublishers.ofString(requestBody));
 
-    final String clusterToken = raftHAServer.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank()) {
+    if (ordinalTrusted) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
       // One hop, and the receiving node knows it: if this address does not identify the leader, the node it
       // does reach refuses the command instead of resolving the same wrong address and forwarding it again
@@ -3903,20 +3921,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its reservation, and a forward whose body happens to match the client's would find that reservation pending and
     // wait out the in-flight timeout for nothing. Decided on the destination captured above, not on a fresh
     // isLeader() read, so a leadership change in between cannot make the two disagree.
-    final int forwardOrdinal = ForwardedRequestIdContext.nextForwardOrdinal();
-    final boolean ordinalTrusted = clusterToken != null && !clusterToken.isBlank();
-    if (forwardOrdinal > 0 && !postsToItself && (forwardOrdinal == 1 || ordinalTrusted)) {
+    if (relaysRequestId) {
       try {
         builder.header(IdempotencyCache.HEADER_REQUEST_ID, ForwardedRequestIdContext.requestId());
         if (forwardOrdinal > 1)
           builder.header(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER, Integer.toString(forwardOrdinal));
-        // The key the client's own request has on this node, when this forward is that whole request (issue #8347): the
-        // body above is rebuilt from the statement, so the leader keys this forward differently from the retry the
-        // client may send it directly, with its own body. The leader claims this key too, and that retry then finds
-        // the forward's entry. Under the cluster token only, the one form in which the leader honors it.
-        final String clientKey = ForwardedRequestIdContext.clientKeyForCommandForward(forwardOrdinal);
-        if (clientKey != null && ordinalTrusted)
-          builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, clientKey);
+        // The key the client's own request has on this node, when this forward is that whole request (issue #8347). The
+        // body is the client's own now (issue #8359), so the leader usually computes the same key for this forward; the
+        // key is relayed anyway, because it is this node's computation and the leader's may differ in what it hashes.
+        // The leader claims it too, and a retry sent to it directly then finds the forward's entry. Under the cluster
+        // token only, the one form in which the leader honors it.
+        if (wholeRequest != null)
+          builder.header(ForwardedRequestIdContext.CLIENT_KEY_HEADER, wholeRequest.clientKey());
       } catch (final IllegalArgumentException e) {
         // A value the JDK client refuses to put on the wire: the write still runs, only without the leader-side
         // replay protection, exactly as it did before the relay existed.
@@ -3927,9 +3943,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
-        throw reconstructLeaderException(response.statusCode(), response.body());
+        throw reconstructLeaderException(response.statusCode(), response.body(),
+            response.headers().firstValue("Retry-After").orElse(null));
 
-      return parseResultSetFromJson(response.body());
+      final ResultSet resultSet = parseResultSetFromJson(response.body());
+      // The answer to the client's own body, in the rendering it asked for (issue #8359): the handler sends it as it is.
+      // Parsed as well, for a caller that reads the result set, but only a 'record'-shaped body parses to its rows.
+      if (wholeRequest != null)
+        ForwardedRequestIdContext.publishWholeRequestAnswer(response.body());
+      return resultSet;
     } catch (final ArcadeDBException e) {
       throw e;
     } catch (final InterruptedException e) {
@@ -3977,6 +3999,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     }
+  }
+
+  /**
+   * The body of a forward that is not the client's whole request: rebuilt from the statement and its arguments. Built
+   * only when it is posted - a whole-request forward posts the client's own body instead (issue #8359).
+   */
+  private static String rebuildForwardBody(final String language, final String query, final Map<String, Object> mapArgs,
+      final Object[] positionalArgs) {
+    final JSONObject body = new JSONObject();
+    body.put("language", language);
+    body.put("command", query);
+    if (mapArgs != null && !mapArgs.isEmpty())
+      body.put("params", new JSONObject(mapArgs));
+    else if (positionalArgs != null && positionalArgs.length > 0) {
+      // Use ordinal-map format {"0": v0, "1": v1, ...} so the leader's PostCommandHandler
+      // can safely parse params as a Map regardless of the toMap(true) numeric-array optimization.
+      // Sending a plain JSON array like [110] causes toMap(true) to return a primitive array
+      // (long[] for integer-only, float[] for fractional - see issues #3864 and #4148), which
+      // then cannot be cast to Map at the params-extraction site.
+      final JSONObject ordinalParams = new JSONObject();
+      for (int i = 0; i < positionalArgs.length; i++)
+        ordinalParams.put("" + i, positionalArgs[i]);
+      body.put("params", ordinalParams);
+    }
+    return body.toString();
   }
 
   /**
@@ -4051,15 +4098,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * The back-off the leader put in the {@code exceptionArgs} of an in-flight refusal, in seconds. A value that is
-   * missing or not a number - an answer from a node that phrased it differently - falls back to
+   * The back-off the leader stated for a refusal, in seconds: the {@code exceptionArgs} of a typed refusal, or the
+   * {@code Retry-After} header of an untyped 503. A value that is missing or not a number - an answer from a node that
+   * phrased it differently, or a {@code Retry-After} given as an HTTP date - falls back to
    * {@link #DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS} rather than failing the reconstruction: the refusal itself is what
    * the client must not lose.
    */
-  static long parseRetryAfterSeconds(final String exceptionArgs) {
-    if (exceptionArgs != null)
+  static long parseRetryAfterSeconds(final String retryAfter) {
+    if (retryAfter != null)
       try {
-        return Math.max(1L, Long.parseLong(exceptionArgs.trim()));
+        return Math.max(1L, Long.parseLong(retryAfter.trim()));
       } catch (final NumberFormatException ignored) {
         // fall back below
       }
@@ -4074,19 +4122,47 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link TransactionException} message string. Other known types are reconstructed via
    * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
    * <p>
-   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
+   * The untyped {@code 503} of a leader that predates issue #8355 is the one exception to that fallback: see
+   * {@link #reconstructLeaderException(int, String, String)}.
+   * <p>
+   * If the body is non-JSON, or the exception class is missing or not recognised, a generic
    * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
    */
   static RuntimeException reconstructLeaderException(final int httpStatus, final String body) {
+    return reconstructLeaderException(httpStatus, body, null);
+  }
+
+  /**
+   * As {@link #reconstructLeaderException(int, String)}, with the {@code Retry-After} header the leader sent, or
+   * {@code null} when it sent none.
+   * <p>
+   * A node installing a snapshot refuses every request before any handler runs, so the forwarded command did not run.
+   * Since issue #8355 it says so with a typed body, rebuilt below as a {@link RetryLaterException}; a leader that
+   * predates that fix sends the same refusal untyped, and is recognized by the gate's exact
+   * {@link RetryLaterException#SNAPSHOT_INSTALL_REFUSAL} text, with the back-off from its {@code Retry-After} header.
+   * As a plain {@link TransactionException} the refusal left this node as a 500 "Error on transaction commit" with no
+   * back-off, for a write that is safe to retry. It is a {@link com.arcadedb.exception.NeedRetryException}, so a
+   * server-side retry loop on this node may forward the command again under a new forward ordinal (issue #8323); that
+   * is safe because the refusing node answered before its idempotency gate, so it neither ran the command nor reserved
+   * its id.
+   * <p>
+   * Any other untyped 503 keeps the generic fallback, deliberately narrower than the "every untyped 503 is a refusal"
+   * contract {@code RemoteHttpComponent.manageException} applies (PR #8402 review): this node retries on its own, and
+   * a 503 it cannot attribute to the leader's gate may have been produced by something between the two nodes after the
+   * command ran. Retried under a new ordinal, which the leader keys separately, it would run a second time.
+   */
+  static RuntimeException reconstructLeaderException(final int httpStatus, final String body, final String retryAfterHeader) {
     final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
     String detail = null;
+    String reason = null;
     String exceptionClass = null;
     String exceptionArgs = null;
 
     try {
       if (body != null && !body.isEmpty()) {
         final JSONObject json = new JSONObject(body);
-        detail = json.getString("detail", json.getString("error", null));
+        reason = json.getString("error", null);
+        detail = json.getString("detail", reason);
         exceptionClass = json.getString("exception", null);
         exceptionArgs = json.getString("exceptionArgs", null);
       }
@@ -4094,8 +4170,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return new TransactionException(message);
     }
 
-    if (exceptionClass == null)
+    if (exceptionClass == null) {
+      if (httpStatus == 503 && RetryLaterException.SNAPSHOT_INSTALL_REFUSAL.equals(reason))
+        return new RetryLaterException("The leader refused the forwarded command without executing it: " + reason,
+            parseRetryAfterSeconds(retryAfterHeader));
       return new TransactionException(message);
+    }
 
     // ServerIsNotTheLeaderException carries the leader address as its second constructor argument (the HTTP
     // layer sends it as exceptionArgs), so it too is rebuilt explicitly. Without this arm a leader-side "I am
@@ -4113,6 +4193,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // NeedRetryException, see RequestStillInFlightException.
     if (RequestStillInFlightException.class.getName().equals(exceptionClass))
       return new RequestStillInFlightException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
+
+    // A refusal-before-execution with a back-off: a node installing a snapshot, or another hop that already rebuilt one
+    // and answered it typed (issue #8355).
+    if (RetryLaterException.class.getName().equals(exceptionClass))
+      return new RetryLaterException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
     // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
     // reconstructed explicitly rather than from a plain message.

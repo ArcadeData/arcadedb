@@ -88,6 +88,31 @@ public class MathExpression extends SimpleNode {
     return defaultValue;
   }
 
+  /**
+   * The collection and map arms of {@code +} and {@code -} answer a new value and never touch their left operand: that
+   * operand is usually a record's own property, so editing it in place made a read-only {@code SELECT l - 1} rewrite
+   * the record's cached list, and made {@code UPDATE ... SET l = l + 1} skip the write because the "new" value was the
+   * very instance the record already held.
+   */
+  private static Collection<Object> copyOf(final Collection<?> source) {
+    // a sorted operand stays sorted by the same comparator
+    if (source instanceof SortedSet<?> sorted) {
+      final TreeSet<Object> copy = new TreeSet<>((Comparator<Object>) sorted.comparator());
+      copy.addAll(sorted);
+      return copy;
+    }
+    return source instanceof Set<?> ? new LinkedHashSet<>(source) : new ArrayList<>(source);
+  }
+
+  private static Map<Object, Object> copyOf(final Map<?, ?> source) {
+    if (source instanceof SortedMap<?, ?> sorted) {
+      final TreeMap<Object, Object> copy = new TreeMap<>((Comparator<Object>) sorted.comparator());
+      copy.putAll(sorted);
+      return copy;
+    }
+    return new LinkedHashMap<>(source);
+  }
+
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");
   }
@@ -320,13 +345,15 @@ public class MathExpression extends SimpleNode {
 
           final Number r = apply(leftAsLong, rightAsLong);
           return Duration.of(r.longValue(), highestPrecision);
-        } else if (left instanceof Collection coll) {
+        } else if (left instanceof Collection<?> leftColl) {
+          final Collection<Object> coll = copyOf(leftColl);
           if (right instanceof Collection<?> coll2)
             coll.addAll(coll2);
           else
             coll.add(right);
-          return left;
-        } else if (left instanceof Map mapLeft) {
+          return coll;
+        } else if (left instanceof Map<?, ?> leftMap) {
+          final Map<Object, Object> mapLeft = copyOf(leftMap);
 
           if (right instanceof Map mapRight) {
             mapLeft.putAll(mapRight);
@@ -339,14 +366,13 @@ public class MathExpression extends SimpleNode {
               final Object value = iter.next();
               mapLeft.put(key, value);
             }
-          } else if (right.getClass().isArray()) {
-            final Object[] arrayRight = (Object[]) right;
+          } else if (right instanceof Object[] arrayRight) {
             if (arrayRight.length % 2 != 0)
               throw new IllegalArgumentException("Cannot add items to the maps because the array contains odd entries");
             for (int i = 0; i < arrayRight.length; i += 2)
               mapLeft.put(arrayRight[i].toString(), arrayRight[i + 1]);
           }
-          return left;
+          return mapLeft;
         }
         return String.valueOf(left) + right;
       }
@@ -406,31 +432,31 @@ public class MathExpression extends SimpleNode {
             final Number r = apply(leftAsLong, rightAsLong);
             result = Duration.of(r.longValue(), highestPrecision);
           }
-        } else if (left instanceof Collection) {
-          final Collection<Object> coll = (Collection<Object>) left;
+        } else if (left instanceof Collection<?> leftColl) {
+          final Collection<Object> coll = copyOf(leftColl);
           coll.remove(right);
-          return left;
-        } else if (left instanceof Map) {
-          final Map<String, Object> mapLeft = (Map<String, Object>) left;
+          return coll;
+        } else if (left instanceof Map<?, ?> leftMap) {
+          final Map<Object, Object> mapLeft = copyOf(leftMap);
 
-          if (right instanceof Map) {
-            final Map<String, Object> mapRight = (Map<String, Object>) right;
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>) mapRight).entrySet()) {
-              if (entry.getValue().equals(mapLeft.get(entry.getKey())))
-                mapLeft.remove(entry.getKey());
+          // a null right operand (a null literal or a missing field) falls through every arm and answers the map
+          // unchanged, as `map + null`, `date - null`, `number - null` and `list - null` do (#8303)
+          if (right instanceof Map<?, ?> mapRight) {
+            for (final Map.Entry<?, ?> entry : mapRight.entrySet()) {
+              final Object key = entry.getKey();
+              if (mapLeft.containsKey(key) && Objects.equals(entry.getValue(), mapLeft.get(key)))
+                mapLeft.remove(key);
             }
-          } else if (right instanceof Collection) {
-            final Collection<Object> arrayRight = (Collection<Object>) right;
-            for (final Iterator<Object> iter = arrayRight.iterator(); iter.hasNext(); ) {
-              final String key = iter.next().toString();
-              mapLeft.remove(key);
-            }
-          } else if (right.getClass().isArray()) {
-            final Object[] arrayRight = (Object[]) right;
-            for (int i = 0; i < arrayRight.length; ++i)
-              mapLeft.remove(arrayRight[i].toString());
+          } else if (right instanceof Collection<?> keys) {
+            for (final Object key : keys)
+              if (key != null)
+                mapLeft.remove(key.toString());
+          } else if (right instanceof Object[] keys) {
+            for (final Object key : keys)
+              if (key != null)
+                mapLeft.remove(key.toString());
           }
-          return left;
+          return mapLeft;
         }
 
         return result;

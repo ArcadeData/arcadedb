@@ -167,7 +167,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (!improvesDepth(nextStep.getIdentity(), depth))
       return;
 
-    final TraverseResult res = new TraverseResult((Document) nextStep);
+    final TraverseResult res = new TraverseResult((Document) nextStep.getRecord());
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
@@ -255,6 +255,12 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       traversed.add(res.getElement().get().getIdentity());
     else if (res.getProperty(RID_PROPERTY) instanceof Identifiable)
       traversed.add(((Identifiable) res.getProperty(RID_PROPERTY)).getIdentity());
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new DepthFirstTraverseStep(this.projections, this.whileClause == null ? null : this.whileClause.copy(),
+        this.postFilter == null ? null : this.postFilter.copy(), this.maxDepth == null ? null : this.maxDepth.copy(), context);
   }
 
   @Override

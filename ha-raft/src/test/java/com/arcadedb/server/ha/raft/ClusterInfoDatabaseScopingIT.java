@@ -266,9 +266,13 @@ class ClusterInfoDatabaseScopingIT extends BaseRaftHATest {
   }
 
   private void dropTenantUser(final int serverIndex) {
-    final ServerSecurity security = getServer(serverIndex).getSecurity();
-    if (security.getUser(TENANT_USER) != null)
-      security.dropUser(TENANT_USER);
+    // createTenantUser() creates the user node-locally, so it is dropped node-locally too, on every node that holds
+    // it: the cluster-aware SecurityManager.dropUser() refuses on a follower (issue #8370).
+    for (int i = 0; i < getServerCount(); i++) {
+      final ArcadeDBServer server = getServer(i);
+      if (server != null && server.getSecurity().getUser(TENANT_USER) != null)
+        server.getSecurity().dropUserLocally(TENANT_USER);
+    }
   }
 
   /** The database names the {@code single-bucket-types} alert reports, or an empty list when it is absent. */

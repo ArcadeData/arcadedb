@@ -35,6 +35,16 @@ public class ExecutionResponse {
    * the leader's answer to a forwarded request, such as {@code Retry-After} (issue #8343).
    */
   private String[]     headers;
+  /**
+   * The answer to replay, from the idempotency cache, to a retry of this request that asks for
+   * {@code text/event-stream}; null when there is none (issue #8331).
+   */
+  private String       eventStreamReplay;
+  /**
+   * True when the handler has already written the response itself, as a stream, and this object only describes it
+   * for the idempotency cache: {@link #send} must not write it again (issue #8331).
+   */
+  private boolean      alreadySent;
 
   public ExecutionResponse(final int code, final String response) {
     this.code = code;
@@ -87,6 +97,31 @@ public class ExecutionResponse {
     return this;
   }
 
+  /**
+   * Sets the complete SSE body a retry asking for {@code text/event-stream} is replayed from the idempotency cache.
+   *
+   * @return this response, for chaining
+   */
+  public ExecutionResponse setEventStreamReplay(final String eventStreamReplay) {
+    this.eventStreamReplay = eventStreamReplay;
+    return this;
+  }
+
+  public String getEventStreamReplay() {
+    return eventStreamReplay;
+  }
+
+  /**
+   * Marks this response as already written by the handler, as a stream: it is then only what the idempotency cache
+   * records of the request, and {@link #send} writes nothing.
+   *
+   * @return this response, for chaining
+   */
+  public ExecutionResponse markAlreadySent() {
+    this.alreadySent = true;
+    return this;
+  }
+
   /** The value of a header set with {@link #setHeader}, matched case-insensitively, or null. */
   public String getHeader(final String name) {
     if (headers != null)
@@ -104,6 +139,8 @@ public class ExecutionResponse {
   }
 
   public void send(final HttpServerExchange exchange) {
+    if (alreadySent)
+      return;
     exchange.setStatusCode(code);
     applyHeaders(exchange.getResponseHeaders());
     if (binary != null) {

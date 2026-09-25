@@ -261,11 +261,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   static final String SNAPSHOT_INSTALL_THREAD_NAME = "arcadedb-raft-snapshot-install";
 
   /**
-   * How long {@link #close()} waits, in total, for the task its executors are still running (issue #8182). Bounded
-   * because a download blocked in a socket read is past every interruption point and would otherwise hold the stop
-   * for as long as the leader takes to answer; the task keeps running past the bound and is only logged.
+   * How long {@link #close()} waits, in total, for the tasks its executors and its helpers' executors are still running
+   * (issues #8182 and #8364). Bounded because a download blocked in a socket read is past every interruption point and
+   * would otherwise hold the stop for as long as the leader takes to answer; the task keeps running past the bound and
+   * is only logged.
    */
   static final long CLOSE_AWAIT_MS = 5_000L;
+
+  /** What a task left running past {@link #CLOSE_AWAIT_MS} on one of the state machine's own executors may do. */
+  private static final String DATABASE_DIRECTORY_WRITES = "write under the database directory";
 
   // The current worker of each executor below, recorded by its thread factory, so close() can tell by identity - not
   // by the thread name every state machine in the JVM shares - that it is running on one of them (issue #8182). Each
@@ -442,6 +446,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // yet. Throttles the HealthMonitor-driven retry to one attempt per snapshot watchdog window, like the other
   // snapshot backstops: each attempt is a full download of the database from the leader.
   private final AtomicLong lastBootstrapReplacementRetryMs = new AtomicLong();
+
+  /**
+   * Databases a first-formation bootstrap pass has told this node it is deciding on, and that the pass has not
+   * settled here yet (issue #8368).
+   * <p>
+   * {@link #bootstrapInstallsInFlight} opens only once the committed baseline reaches this node's apply thread, but
+   * the pass starts well before that: the leader probes every peer, elects a source, possibly moves leadership, and
+   * only then commits. For that whole stretch a copy the baseline is about to reject was served, and reported
+   * ready, with nothing local saying a pass was running. The pass's own probe is that local signal: the leader
+   * already reaches this node with it, so holding on it costs no extra round trip, and neither readiness nor the
+   * request path ever waits on a peer.
+   * <p>
+   * Released by whichever comes first: the baseline for the database applied here ({@link
+   * #applyBootstrapFingerprintEntry}, which hands over to the install holder when the copy is replaced), the
+   * leader's conclusion of the pass for a database it committed no baseline for ({@link #concludeBootstrapPass}),
+   * or the entry's deadline - a leader that dies mid-pass sends no conclusion, and a hold nothing releases would wedge
+   * the node out of the Service for good.
+   */
+  private final ConcurrentHashMap<String, PendingBootstrapPass> bootstrapPassesPending = new ConcurrentHashMap<>();
+
+  /** The pass holding a database ({@code passId}) and when the hold lapses on its own ({@link System#nanoTime()}). */
+  private record PendingBootstrapPass(String passId, long deadlineNanos) {
+  }
+
+  // Upper bound on a single hold, so a misconfigured bootstrap timeout cannot turn the deadline into "never" (and
+  // TimeUnit.toNanos saturating near Long.MAX_VALUE cannot overflow nanoTime() + hold into the past).
+  private static final long MAX_BOOTSTRAP_PASS_HOLD_MS = TimeUnit.HOURS.toMillis(1);
 
   // Wall-clock of the last bootstrap-divergence verification submitted by verifyBootstrapDivergence();
   // 0 = none yet. Throttles the HealthMonitor-driven check, which ticks far more often than a probe of
@@ -3716,6 +3747,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index,
       final boolean originatedLocally) {
+    try {
+      decideBootstrapFingerprintEntry(decoded, index, originatedLocally);
+    } finally {
+      // Issue #8368: the baseline has reached this node, so the pass has settled this database here, whatever the
+      // decision was. Released only now, after the decision: a copy being replaced is held by the install holder
+      // from inside the decision on, so the hold is handed over rather than dropped and retaken.
+      if (decoded.databaseName() != null)
+        bootstrapPassesPending.remove(decoded.databaseName());
+    }
+  }
+
+  private void decideBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index,
+      final boolean originatedLocally) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
     final long chosenLastTxId = decoded.bootstrapLastTxId();
@@ -4323,6 +4367,82 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * A first-formation bootstrap pass {@code passId} is deciding which copy of {@code dbNames} the cluster keeps
+   * (issue #8368): hold each of them until the pass settles it here, for at most {@code holdMs}.
+   * <p>
+   * Ignored on a node past first formation - the pass never runs there, so an announce can only be a stray - and for
+   * a database whose baseline this node already applied, which the pass has settled. The baseline is re-checked
+   * after the hold is taken because the apply thread can record it and release the hold between the first check and
+   * the put, which would otherwise leave a hold that only the deadline clears.
+   * <p>
+   * A repeated announce from the same pass replaces the hold and so restarts its deadline. That renewal is bounded by
+   * the leader, not here: {@code BootstrapElection.collectRemoteStatesWithRetry} re-probes only a peer that has not
+   * answered yet, and only inside its {@code arcadedb.ha.bootstrapTimeoutMs} budget, so the last renewal lands within
+   * that budget of the pass starting and the hold ends at most {@code holdMs} after it.
+   */
+  void announceBootstrapPass(final String passId, final Collection<String> dbNames, final long holdMs) {
+    if (passId == null || dbNames == null || dbNames.isEmpty() || !hasNeverAppliedApplicationEntry())
+      return;
+    ensureBootstrapBaselinesLoaded();
+    // A negative hold can only come from an overflowed configuration (2 x an absurd bootstrap timeout): fail towards
+    // holding, which costs availability, rather than towards not holding, which is the bug this hold exists for.
+    final long hold = holdMs < 0 ? MAX_BOOTSTRAP_PASS_HOLD_MS : Math.min(holdMs, MAX_BOOTSTRAP_PASS_HOLD_MS);
+    final PendingBootstrapPass pending = new PendingBootstrapPass(passId,
+        System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(hold));
+    for (final String dbName : dbNames) {
+      if (dbName == null || dbName.startsWith(".") || bootstrapBaselines.containsKey(dbName))
+        continue;
+      bootstrapPassesPending.put(dbName, pending);
+      // No lock spans the two maps, and none is needed: the apply thread records the baseline BEFORE it removes the
+      // hold, and each ConcurrentHashMap operation is a happens-before edge. So either the apply's remove comes after
+      // this put and clears it, or it came before - in which case the baseline it recorded earlier is visible here.
+      if (bootstrapBaselines.containsKey(dbName))
+        bootstrapPassesPending.remove(dbName, pending);
+    }
+  }
+
+  /**
+   * The pass {@code passId} has finished on the leader (issue #8368): release every database it holds here except
+   * those it committed a baseline for that this node has not applied yet - that entry is still on its way, and its
+   * apply is what releases the hold. A {@code null} {@code passId} concludes whichever pass holds a database, which
+   * is what the node running a pass does for its own holds.
+   * <p>
+   * A hold taken by a DIFFERENT pass is left alone: the conclusion of a pass that lost leadership mid-flight can
+   * land after the next leader's pass announced, and must not release what the newer one holds.
+   */
+  void concludeBootstrapPass(final String passId, final Collection<String> committed) {
+    if (bootstrapPassesPending.isEmpty())
+      return;
+    ensureBootstrapBaselinesLoaded();
+    final Set<String> committedNames = committed == null || committed.isEmpty() ? Set.of() : new HashSet<>(committed);
+    for (final Map.Entry<String, PendingBootstrapPass> entry : bootstrapPassesPending.entrySet()) {
+      final String dbName = entry.getKey();
+      final PendingBootstrapPass pending = entry.getValue();
+      if (passId != null && !passId.equals(pending.passId()))
+        continue;
+      if (!committedNames.contains(dbName) || bootstrapBaselines.containsKey(dbName))
+        bootstrapPassesPending.remove(dbName, pending);
+    }
+  }
+
+  /**
+   * Whether a first-formation bootstrap pass is still deciding on {@code dbName} here (issue #8368) - see
+   * {@link #bootstrapPassesPending}. Asked on every client request, so the common answer - no pass at all - costs
+   * one map read; a lapsed hold is dropped by the first reader that sees it.
+   */
+  public boolean isBootstrapPassPending(final String dbName) {
+    if (bootstrapPassesPending.isEmpty())
+      return false;
+    final PendingBootstrapPass pending = bootstrapPassesPending.get(dbName);
+    if (pending == null)
+      return false;
+    if (System.nanoTime() - pending.deadlineNanos() < 0)
+      return true;
+    bootstrapPassesPending.remove(dbName, pending);
+    return false;
+  }
+
+  /**
    * Why this node must not be in the load balancer's pool because of the cluster's first-formation bootstrap, or
    * {@code null} when it may be (issue #7519).
    * <p>
@@ -4341,7 +4461,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       {@code .raft/bootstrap-baselines} - and until an operator or an automatic remedy replaces the copy,
    *       everything this node serves for that database is data the cluster never adopted.</li>
    * </ul>
-   * <b>A database this node does not hold is neither</b> (issue #8045). The #7298 replay-skip marks a database it
+   * A third condition covers the start of the same window (issue #8368): <b>a pass is still deciding.</b> The pass
+   * reaches this node with its probe long before the baseline reaches its apply thread, and a copy it is about to
+   * reject is served in between. See {@link #bootstrapPassesPending} for what opens and closes it.
+   * <p>
+   * <b>A database this node does not hold is none of them</b> (issue #8045). The #7298 replay-skip marks a database it
    * found gone and could not pull back in the same unreconciled set, and reinstalls it through the same install
    * path - but nothing is being served in the cluster's stead, so there is nothing to take out of the Service for.
    * Counting it held a node with nine good databases out of the Service for good over the tenth, under a remedy
@@ -4369,12 +4493,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Not getBootstrapUnreconciled(): that allocates two lists and sorts a copy, and this runs on every readiness
     // probe. The empty checks come first so the overwhelmingly common answer stats no file.
     ensureBootstrapBaselinesLoaded();
-    if (bootstrapInstallsInFlight.isEmpty() && bootstrapUnreconciledDatabases.isEmpty())
+    if (bootstrapInstallsInFlight.isEmpty() && bootstrapUnreconciledDatabases.isEmpty() && bootstrapPassesPending.isEmpty())
       return null;
 
     final int replacing = countPresentLocally(bootstrapInstallsInFlight.keySet());
     final int kept = countPresentLocally(bootstrapUnreconciledDatabases);
-    if (replacing == 0 && kept == 0)
+    // Issue #8368: the start of the window, before the baseline reaches this node. A database already counted as
+    // being replaced is not counted again - the install holder has taken over from the pass for it.
+    int deciding = 0;
+    if (!bootstrapPassesPending.isEmpty())
+      for (final String dbName : bootstrapPassesPending.keySet())
+        if (!bootstrapInstallsInFlight.containsKey(dbName) && isBootstrapPassPending(dbName)
+            && isDatabasePresentLocally(dbName))
+          ++deciding;
+    if (replacing == 0 && kept == 0 && deciding == 0)
       return null;
 
     // BOTH are reported when both hold, rather than the first one found (review of PR #7964). They are different
@@ -4382,12 +4514,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // operator who reads only the install would go on believing the node comes back by itself when the install
     // finishes, which is the one case where it does not.
     final StringBuilder reason = new StringBuilder(256);
-    if (replacing > 0)
+    if (deciding > 0)
+      reason.append("The cluster's first-formation bootstrap is deciding which copy of ").append(deciding)
+          .append(" database(s) on this node the cluster keeps: until its baseline reaches this node, what is on "
+              + "disk may be the copy it decides against, so this node must not serve it.");
+    if (replacing > 0) {
+      if (deciding > 0)
+        reason.append(' ');
       reason.append("The cluster's first-formation bootstrap is replacing ").append(replacing)
           .append(" database(s) on this node from the leader's snapshot: what is on disk is the copy the cluster's "
               + "committed baseline decided against, so this node must not serve it.");
+    }
     if (kept > 0) {
-      if (replacing > 0)
+      if (replacing > 0 || deciding > 0)
         reason.append(' ');
       reason.append(kept)
           .append(" database(s) on this node hold a copy the cluster's committed bootstrap baseline did not adopt, "
@@ -4395,8 +4534,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "POST /api/v1/cluster/resync/<database> on this node discards the local copy and adopts the "
               + "leader's.");
     }
-    // Said once, whichever arms fired: the authenticated route is where the names are, and it is the answer to
-    // "which databases" for both conditions alike.
+    // Said once, whichever of the last two arms fired: the authenticated route is where the names are, and it is
+    // the answer to "which databases" for both conditions alike. The deciding arm is short-lived - it ends when the
+    // pass does - and GET /api/v1/cluster does not publish it, so the sentence is not appended for it alone.
+    if (replacing == 0 && kept == 0)
+      return reason.toString();
     return reason.append(" GET /api/v1/cluster names them.").toString();
   }
 
@@ -6391,63 +6533,45 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (appliedIndexFileLock) {
       closed = true;
     }
+    // Every executor is interrupted before any is waited for, so their tasks unwind in parallel within the one bound.
+    // The helpers are read once: a test may swap one while the state machine runs, and the instance interrupted here
+    // must be the one waited for below.
+    final MembershipSecuritySeeder seeder = membershipSecuritySeeder;
+    final DeferredDatabaseDeleter deleter = deferredDatabaseDeleter;
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
+    seeder.close();
+    securityCatchUp.close();
+    deleter.close();
     // shutdownNow() drops the queued tasks and interrupts the running one, and does NOT wait for it (issue #8182).
     // A snapshot install past its last interruption point went on creating <db>/.snapshot-new and the pending
     // marker after close() had returned, i.e. after the caller believed the database directory was quiet - JUnit's
     // @TempDir teardown in the unit tests, and a restartRatis() about to start a new state machine installing into
-    // the same directory in production. One deadline for both executors, so the bound is the whole wait.
+    // the same directory in production. The helpers' single workers are waited for too (issue #8364): the deleter
+    // goes on removing entries under the database directory, the seeder on submitting security documents
+    // cluster-wide and the catch-up on applying them locally. One deadline for all five, so the bound is the whole
+    // wait.
     //
     // shutdownNow() also interrupts the caller when the caller is one of those workers (a task closing its own state
-    // machine). That interrupt is taken off for the wait and put back afterwards: left on, it would short-circuit the
-    // wait for the OTHER executor too, whose task runs on a different thread and is exactly what this barrier is for
-    // (review of PR #8366). The wait for the caller's OWN executor is skipped instead - it cannot terminate while its
-    // worker is here waiting for it.
+    // machine). That interrupt is taken off for the waits and put back only after the LAST one: left on, or restored
+    // any earlier, it would short-circuit every wait still to come, whose tasks run on other threads and are exactly
+    // what this barrier is for (reviews of PR #8366 and issue #8364). The wait for the caller's OWN executor is
+    // skipped instead - it cannot terminate while its worker is here waiting for it.
     final boolean callerInterrupted = Thread.interrupted();
     final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_AWAIT_MS);
-    // Both waits run whatever the first one met: an interrupt landing during the first must not skip the second, or
-    // the install on the other executor is left writing exactly as before (review of PR #8366). The deadline still
-    // bounds the whole thing, and the interrupt is restored once both are done.
-    final boolean lifecycleWaitInterrupted = !awaitTermination(lifecycleExecutor, lifecycleWorker, LIFECYCLE_THREAD_NAME,
-        deadline);
-    final boolean installWaitInterrupted = !awaitTermination(snapshotInstallExecutor, snapshotInstallWorker,
-        SNAPSHOT_INSTALL_THREAD_NAME, deadline);
-    if (callerInterrupted || lifecycleWaitInterrupted || installWaitInterrupted)
+    // Every wait runs whatever the ones before it met: an interrupt landing during one must not skip the next, or the
+    // task on that executor is left running exactly as before (review of PR #8366). The deadline still bounds the
+    // whole thing, and the interrupt is restored once all of them are done.
+    boolean waitInterrupted = !ExecutorTermination.await(this, lifecycleExecutor, lifecycleWorker,
+        LIFECYCLE_THREAD_NAME, deadline, DATABASE_DIRECTORY_WRITES);
+    waitInterrupted |= !ExecutorTermination.await(this, snapshotInstallExecutor, snapshotInstallWorker,
+        SNAPSHOT_INSTALL_THREAD_NAME, deadline, DATABASE_DIRECTORY_WRITES);
+    waitInterrupted |= !seeder.awaitTermination(deadline);
+    waitInterrupted |= !securityCatchUp.awaitTermination(deadline);
+    waitInterrupted |= !deleter.awaitTermination(deadline);
+    if (callerInterrupted || waitInterrupted)
       Thread.currentThread().interrupt();
-    membershipSecuritySeeder.close();
-    securityCatchUp.close();
-    deferredDatabaseDeleter.close();
     super.close();
-  }
-
-  /**
-   * Waits, until {@code deadlineNanos}, for an executor {@link #close()} has already shut down. Skipped when the caller
-   * IS that executor's worker: a task closing its own state machine would otherwise wait out the whole bound for the
-   * one thread that cannot terminate while it waits - itself.
-   *
-   * @param worker     the executor's current worker as its thread factory recorded it, or null if it never made one
-   * @param threadName the executor's thread name, for the log line only
-   *
-   * @return false if the caller was interrupted while waiting, for {@link #close()} to restore the flag
-   */
-  private boolean awaitTermination(final ExecutorService executor, final Thread worker, final String threadName,
-      final long deadlineNanos) {
-    if (worker == Thread.currentThread())
-      return true;
-    // Logged as the budget THIS wait had: the two waits share one deadline, so the second can get far less than
-    // CLOSE_AWAIT_MS.
-    final long budgetNanos = Math.max(0L, deadlineNanos - System.nanoTime());
-    try {
-      if (!executor.awaitTermination(budgetNanos, TimeUnit.NANOSECONDS))
-        LogManager.instance().log(this, Level.WARNING,
-            "State machine closed while a task on '%s' was still running after a %d ms wait; it keeps running in the "
-                + "background and may still write under the database directory", null, threadName,
-            TimeUnit.NANOSECONDS.toMillis(budgetNanos));
-      return true;
-    } catch (final InterruptedException e) {
-      return false;
-    }
   }
 
   /**

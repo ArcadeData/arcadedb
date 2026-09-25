@@ -442,4 +442,27 @@ class TraverseStatementExecutionTest extends TestHelper {
       database.command("sql", traverseQuery, params);
     });
   }
+
+  /**
+   * A LINK property holds a bare RID, not a loaded record: the depth-first step cast it straight to Document and
+   * threw ClassCastException, while the breadth-first step loaded it first.
+   */
+  @Test
+  void traverseLinkFieldBothStrategies() {
+    database.getSchema().createDocumentType("TLinkNode");
+    database.transaction(() -> {
+      final RID root = database.newDocument("TLinkNode").set("name", "root").save().getIdentity();
+      final RID mid = database.newDocument("TLinkNode").set("name", "mid").set("parent", root).save().getIdentity();
+      database.newDocument("TLinkNode").set("name", "leaf").set("parent", mid).save();
+    });
+
+    for (final String strategy : new String[] { "DEPTH_FIRST", "BREADTH_FIRST" }) {
+      final List<String> names = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql",
+          "traverse parent from (select from TLinkNode where name = 'leaf') strategy " + strategy)) {
+        rs.forEachRemaining(r -> names.add(r.getProperty("name")));
+      }
+      assertThat(names).as(strategy).containsExactly("leaf", "mid", "root");
+    }
+  }
 }

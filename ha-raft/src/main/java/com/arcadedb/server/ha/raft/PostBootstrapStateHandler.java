@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -34,6 +35,9 @@ import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -114,6 +118,15 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
     final ArcadeDBServer server = httpServer.getServer();
+
+    // Issue #8368: the probe of a running first-formation pass says so, and this is the only local signal a
+    // follower gets that a pass is under way before the committed baseline reaches it. Taken before the
+    // fingerprints below are computed: the pass is already running, and hashing a large database is not quick.
+    // Held for twice the leader's collection budget - the probe arrives inside that budget, and the leader commits
+    // or transfers right after it - so a leader that dies mid-pass costs a bounded hold, never a wedged node.
+    applyPassMarker(payload, raftHAServer.getStateMachine(),
+        2L * server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
+
     final JSONArray dbs = new JSONArray();
 
     for (final String dbName : server.getDatabaseNames()) {
@@ -170,5 +183,41 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     }
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Applies what a first-formation bootstrap pass says about itself in the probe's body (issue #8368) - see
+   * {@link BootstrapElection#announcePassBody} and {@link BootstrapElection#concludePassBody} for the two shapes.
+   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler, the #8360
+   * snapshot-marker read, the divergence re-check), and so does a leader that predates this change: none of them
+   * holds anything, which leaves a mixed-version cluster exactly as ungated as before rather than wedged.
+   * <p>
+   * Safe to reach from outside a pass only as far as root can already reach: the route is root-only, the announce
+   * is ignored by a node past first formation, and every hold it takes lapses on its own.
+   */
+  static void applyPassMarker(final JSONObject payload, final ArcadeStateMachine stateMachine, final long holdMs) {
+    if (payload == null || stateMachine == null)
+      return;
+    final String marker = payload.getString(BootstrapElection.PASS_MARKER, null);
+    if (marker == null)
+      return;
+    final String passId = payload.getString(BootstrapElection.PASS_ID, null);
+    if (BootstrapElection.PASS_ANNOUNCE.equals(marker))
+      stateMachine.announceBootstrapPass(passId, names(payload.getJSONArray(BootstrapElection.PASS_DATABASES, null)),
+          holdMs);
+    else if (BootstrapElection.PASS_CONCLUDE.equals(marker) && passId != null)
+      stateMachine.concludeBootstrapPass(passId, names(payload.getJSONArray(BootstrapElection.PASS_COMMITTED, null)));
+  }
+
+  private static List<String> names(final JSONArray array) {
+    if (array == null || array.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(array.length());
+    for (int i = 0; i < array.length(); i++) {
+      final Object name = array.get(i);
+      if (name instanceof String s)
+        names.add(s);
+    }
+    return names;
   }
 }
