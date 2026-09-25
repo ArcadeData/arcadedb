@@ -31,6 +31,7 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.File;
 import java.util.logging.Level;
@@ -50,12 +51,23 @@ import java.util.logging.Level;
  *         "lastTxId": 123456
  *       },
  *       ...
- *     ]
+ *     ],
+ *     "snapshotTerm": 7,
+ *     "snapshotIndex": 39707283
  *   }
  * </pre>
  * The leader picks the peer with the highest {@code lastTxId} as the bootstrap source. Mismatched
  * followers reinstall from the leader-shipped full snapshot; subsequent transactions are
  * replicated entry-by-entry by Ratis AppendEntries.
+ * <p>
+ * {@code snapshotTerm}/{@code snapshotIndex} (issue #8360) are this peer's own latest Raft snapshot marker -
+ * {@link ArcadeStateMachine#getLatestSnapshotTermIndex()} - and are omitted (absent index -1) when this peer has
+ * not taken one yet. A leader-driven install ({@code ArcadeStateMachine#installSnapshotFromLeader}) reads them from
+ * the leader during the very same reconcile call this RPC already serves, so the follower registers the term the
+ * leader will actually send as {@code previous} in its next {@code AppendEntries} (Ratis's
+ * {@code LogAppender.getPreviousLog()} falls back to this same marker for an index no longer in the leader's log)
+ * instead of approximating it from the term of the NEXT log entry, which differs whenever a term change lands
+ * exactly at that boundary and otherwise wedges the follower permanently.
  * <p>
  * Authentication is inherited from {@link AbstractServerHttpHandler}: the standard
  * {@code X-ArcadeDB-Cluster-Token} + {@code X-ArcadeDB-Forwarded-User} pair used by every other
@@ -145,6 +157,18 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     final JSONObject response = new JSONObject();
     response.put("databases", dbs);
     response.put("peerId", raftHAServer.getLocalPeerId().toString());
+
+    // Issue #8360: this peer's own latest Raft snapshot boundary, so a leader-driven install elsewhere in the
+    // cluster can register the snapshot it just received under the REAL term of the log entry it covers rather
+    // than approximating it from the term of the next log entry. Omitted (not zeroed) when this peer has not
+    // taken a Raft snapshot yet, so the caller can tell "no data" from "boundary is at term 0, index 0".
+    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    final TermIndex snapshotTermIndex = stateMachine != null ? stateMachine.getLatestSnapshotTermIndex() : null;
+    if (snapshotTermIndex != null) {
+      response.put("snapshotTerm", snapshotTermIndex.getTerm());
+      response.put("snapshotIndex", snapshotTermIndex.getIndex());
+    }
+
     return new ExecutionResponse(200, response.toString());
   }
 }
