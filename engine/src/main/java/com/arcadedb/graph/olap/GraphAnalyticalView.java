@@ -110,7 +110,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private static final long MULTIPLICITY_UNKNOWN = -1L;
 
   /** Semaphore bounding concurrent CPU-intensive build operations. */
-  private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
+  // Package-private so a test can hold a build back between opening its watch and starting its scan
+  static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
   /** The answer for a node with no edges of the type and direction asked for. */
   private static final int[]            EMPTY_INT          = new int[0];
@@ -300,6 +301,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Accessed only under synchronized(this), so ArrayList is safe.
   private List<TxDelta>          pendingDeltas;
 
+  // The watch of the full build (build()/buildAsync()) in flight, opened before its scan starts together with the
+  // change listeners, so a commit landing during the scan is recorded rather than lost (issue #8378). Null when no
+  // such build is running. Written under synchronized(this), read without it by the commit callbacks.
+  private volatile BuildWatch    buildWatch;
+  // The watch whose scan produced the current base CSR, kept while that CSR is the base because a delta whose
+  // transaction committed during the scan can be delivered after the build published (issue #8378). Accessed
+  // only under synchronized(this).
+  private BuildWatch             baseWatch;
+
   // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
   // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
   // which would otherwise see a closed database or cleared transaction context and log a SEVERE error.
@@ -390,28 +400,141 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
       final boolean certificateMayBeUnsound = database.isTransactionActive()
           && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      // Opened before the scan, with the listeners armed: see publishBuild() (issue #8378). This method holds the
+      // monitor for the whole scan, so the commit callbacks only buffer into the watch (see onCommittedDelta()).
+      final BuildWatch watch = openBuildWatch(true);
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
       final long buildStart = System.currentTimeMillis();
       final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+      builder.setScanObserver(watch);
       final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       // Atomic swap — readers see all-or-nothing
-      this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
-      this.status = Status.READY;
+      publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
       this.notifyAll();
       invalidateGraphStatisticsCache();
-
-      if (deltaCollector == null)
-        registerChangeListeners();
     } catch (final Exception e) {
+      closeBuildWatch();
       this.buildError = e;
       this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
+      if (snapshot == null)
+        unregisterChangeListeners();
       this.notifyAll();
       throw e;
     } finally {
       latch.countDown();
     }
+  }
+
+  /**
+   * Arms the change listeners and opens the watch of a full build, BEFORE its scan starts. Every commit the scan
+   * races with is then either in what it reads or recorded by the watch; without it, one landing between the start
+   * of the scan and the listeners being armed at publication was in neither, and lost from the view for good
+   * (issue #8378). Must be called under this instance's monitor.
+   */
+  private BuildWatch openBuildWatch(final boolean scanHoldsMonitor) {
+    final BuildWatch watch = new BuildWatch(MAX_PENDING_DELTAS, scanHoldsMonitor);
+    final BuildWatch previous = buildWatch;
+    if (previous != null)
+      previous.handOverTo(watch); // superseded: its build will not publish
+    buildWatch = watch;
+    if (deltaCollector == null)
+      registerChangeListeners();
+    else
+      // Listeners armed before this watch existed: a transaction still open may have reported edge sources to no
+      // watch. Read after publishing the watch, the reverse of the order a transaction writes them in
+      deltaCollector.registerInFlightEdgeSources(watch);
+    return watch;
+  }
+
+  /** Closes the watch of a build that will not publish. Must be called under this instance's monitor. */
+  private void closeBuildWatch(final BuildWatch watch) {
+    watch.close();
+    if (buildWatch == watch)
+      buildWatch = null;
+  }
+
+  private void closeBuildWatch() {
+    final BuildWatch watch = buildWatch;
+    if (watch != null)
+      closeBuildWatch(watch);
+  }
+
+  /**
+   * Publishes the CSR a full build produced, reconciled with every commit its scan raced with (issue #8378). Must be
+   * called under this instance's monitor, which is what orders it against the commit callbacks.
+   * <ul>
+   *   <li>SYNCHRONOUS: the deltas buffered while the scan ran are re-applied on the new base, each edge change
+   *   deduplicated against what the scan actually read (see {@link BuildWatch}). The watch stays bound to the new
+   *   base, because a delta committed during the scan may still be delivered after this point.</li>
+   *   <li>OFF: a relevant commit during the scan publishes the view STALE, which is what the same commit does to a
+   *   built view.</li>
+   *   <li>ASYNCHRONOUS: nothing to do here - a relevant commit dispatches its own rebuild from its callback.</li>
+   * </ul>
+   * More buffered deltas than {@link #MAX_PENDING_DELTAS} publish the view STALE rather than reconcile it.
+   */
+  private void publishBuild(final CSRBuilder.CSRResult result, final long durationMs, final long asOfTransactionId,
+      final String[] builtVertexTypes, final String[] builtEdgeTypes, final BuildWatch watch) {
+    final List<TxDelta> buffered = watch.close();
+    if (buildWatch == watch)
+      buildWatch = null;
+
+    Snapshot fresh = snapshotFromResult(result, durationMs, asOfTransactionId, builtVertexTypes, builtEdgeTypes, propertyFilter,
+        edgePropertyFilter);
+    Status newStatus = Status.READY;
+    boolean edgePropertiesDirty = false;
+    baseWatch = null;
+
+    if (watch.hasOverflowed()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphAnalyticalView '%s': more than %d transactions committed while its CSR was being built; marking it STALE",
+          name, MAX_PENDING_DELTAS);
+      newStatus = Status.STALE;
+    } else if (updateMode == UpdateMode.SYNCHRONOUS) {
+      if (watch.hasWatchedSources()) {
+        watch.bindTo(result.getCsrPerType());
+        baseWatch = watch;
+      }
+      if (!buffered.isEmpty()) {
+        DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
+        for (final TxDelta d : buffered)
+          overlay = mergeAgainstBase(overlay, d, result.getMapping(), baseWatch);
+        edgePropertiesDirty = overlay.isEdgePropertiesDirty();
+        if (overlay.hasChanges())
+          fresh = fresh.withOverlay(overlay);
+      }
+    } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
+      newStatus = Status.STALE;
+    final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
+
+    this.snapshot = fresh;
+    this.status = newStatus;
+    if (deltaCollector == null)
+      registerChangeListeners();
+
+    // A buffered change to a base edge's properties has no overlay representation: rebuild the columns (#4513)
+    if (edgePropertiesDirty) {
+      final TxDelta forced = new TxDelta();
+      forced.forceEdgePropertyRebuild = true;
+      applyDelta(forced);
+    }
+    // An ASYNCHRONOUS view raced by a relevant commit rebuilds now, rather than from the commit callback mid-scan
+    if (rebuildNeeded)
+      onRelevantCommit();
+  }
+
+  /**
+   * Merges a delta into an overlay of the current base, deduplicating its edge changes against what the scan that
+   * produced the base read when {@code watch} describes that scan (issue #8378).
+   */
+  private static DeltaOverlay mergeAgainstBase(final DeltaOverlay overlay, final TxDelta delta, final NodeIdMapping mapping,
+      final BuildWatch watch) {
+    if (watch == null)
+      return overlay.merge(delta, mapping);
+    watch.account(delta);
+    return overlay.merge(delta, mapping, watch.getCsrPerType(), watch);
   }
 
   /**
@@ -434,6 +557,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
+    // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
+    final BuildWatch watch = openBuildWatch(false);
     // Track the queued task synchronously so a concurrent close()/drop() can wait for it
     // even before the virtual thread has had a chance to mount.
     inFlightTasks.incrementAndGet();
@@ -447,21 +572,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           try {
             final long buildStart = System.currentTimeMillis();
             final CSRBuilder builder = new CSRBuilder(database, propertyFilter, edgePropertyFilter, propertySampleSize);
+            builder.setScanObserver(watch);
             final CSRBuilder.CSRResult result = builder.build(vertexTypes, edgeTypes);
             final long durationMs = System.currentTimeMillis() - buildStart;
 
             boolean committed = false;
             synchronized (GraphAnalyticalView.this) {
               if (myGeneration == generation) {
-                this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
-                this.status = Status.READY;
+                publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
                 GraphAnalyticalView.this.notifyAll();
-                if (deltaCollector == null)
-                  registerChangeListeners();
                 committed = true;
-              } else
+              } else {
+                closeBuildWatch(watch);
                 LogManager.instance().log(this, Level.FINE,
                     "GraphAnalyticalView '%s': async build result discarded (superseded by a newer build/restore)", name);
+              }
             }
             if (committed)
               invalidateGraphStatisticsCache();
@@ -471,12 +596,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           }
         } catch (final Exception e) {
           synchronized (GraphAnalyticalView.this) {
+            closeBuildWatch(watch);
             if (myGeneration == generation) {
               this.buildError = e;
               if (snapshot != null) {
                 this.status = Status.STALE;
               } else {
                 this.status = Status.NOT_BUILT;
+                unregisterChangeListeners();
                 // Unregister failed GAV so the name can be reused for a fresh build
                 GraphTraversalProviderRegistry.unregister(database, this);
                 if (name != null)
@@ -502,8 +629,18 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       });
     } catch (final RejectedExecutionException e) {
+      closeBuildWatch(watch);
       this.buildError = e;
-      this.status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+      if (snapshot != null)
+        this.status = Status.STALE;
+      else {
+        // Same cleanup as a failed async build: the listeners armed before dispatch go, and the name is freed
+        this.status = Status.NOT_BUILT;
+        unregisterChangeListeners();
+        GraphTraversalProviderRegistry.unregister(database, this);
+        if (name != null)
+          GraphAnalyticalViewRegistry.unregister(database, name);
+      }
       this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
@@ -1332,6 +1469,26 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snapshot != null;
   }
 
+  /** Whether the change listeners are armed. Package-private for tests. */
+  synchronized boolean hasChangeListeners() {
+    return deltaCollector != null;
+  }
+
+  /** Whether committed changes to the covered types concern this view: it has a CSR, or a full build is scanning one. */
+  boolean isTrackingChanges() {
+    return snapshot != null || buildWatch != null || status == Status.BUILDING;
+  }
+
+  /**
+   * Registers, before its transaction commits, that an edge leaving {@code source} is being created or deleted, so
+   * a full build in flight can tell whether its scan read the change (issue #8378).
+   */
+  void watchEdgeSource(final RID source) {
+    final BuildWatch watch = buildWatch;
+    if (watch != null)
+      watch.watchSource(source);
+  }
+
   /**
    * Returns true when the current CSR was loaded from a persisted file (see #6583) rather than produced by a scan
    * of the graph on this open. Mainly useful for tests and operational visibility (e.g. confirming that a reopen
@@ -1406,7 +1563,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // where no listener is active and a committing tx's delta is lost.
     final DeltaCollector oldCollector = this.deltaCollector;
     this.updateMode = newMode;
-    if (snapshot != null)
+    if (snapshot != null || buildWatch != null)
       registerChangeListeners();
     if (oldCollector != null) {
       database.getEvents().unregisterListener((AfterRecordCreateListener) oldCollector);
@@ -2192,6 +2349,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     this.snapshot = restored;
+    baseWatch = null;
     this.status = Status.READY;
     this.notifyAll();
     latch.countDown();
@@ -2245,6 +2403,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
    * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
    */
+  /**
+   * Entry point of the ASYNCHRONOUS/OFF commit callback. While a full build is in flight the commit only marks the
+   * build's watch, for the build to publish STALE (OFF) or rebuild (ASYNCHRONOUS) - without taking this instance's
+   * monitor, which a synchronous {@link #build()} holds for its whole scan, so the committing thread is not stalled
+   * behind it, and without dispatching a second scan beside the one in flight (issue #8378).
+   */
+  void onRelevantCommitCallback() {
+    final BuildWatch watch = buildWatch;
+    if (watch != null && updateMode != UpdateMode.SYNCHRONOUS && watch.markRelevantCommit())
+      return;
+    onRelevantCommit();
+  }
+
   synchronized void onRelevantCommit() {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
       if (!compacting.compareAndSet(false, true)) {
@@ -2280,6 +2451,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                 if (updateMode == UpdateMode.ASYNCHRONOUS && myGeneration == generation) {
                   this.snapshot = snapshotFromResult(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter);
                   this.status = Status.READY;
+                  baseWatch = null;
                 } else
                   LogManager.instance().log(this, Level.INFO,
                       "GraphAnalyticalView '%s': async rebuild result discarded (update mode changed to %s during rebuild, or superseded by a newer build/restore)", name, updateMode);
@@ -2322,7 +2494,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
       }
     } else {
-      this.status = Status.STALE;
+      // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
+      final BuildWatch watch = buildWatch;
+      if (watch == null || !watch.markRelevantCommit())
+        this.status = Status.STALE;
     }
   }
 
@@ -2341,12 +2516,46 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * </ul>
    */
   synchronized void applyDelta(final TxDelta delta) {
-    // Guard against post-shutdown invocation from a lingering commit callback
+    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
+  }
+
+  /**
+   * Entry point of the SYNCHRONOUS commit callback. While a full build is in flight the delta is buffered for the
+   * build to re-apply on the CSR it publishes (issue #8378) - without taking this instance's monitor, which a
+   * synchronous {@link #build()} holds for its whole scan. The snapshot the build will replace, if there is one,
+   * keeps serving reads meanwhile, so it takes the delta too unless the build publishes first - except under a
+   * blocking {@link #build()}, whose monitor the merge would wait on for the whole scan: that snapshot then lags
+   * the commits until the rebuild publishes them, rather than stalling every committer behind the scan.
+   */
+  void onCommittedDelta(final TxDelta delta) {
+    final BuildWatch watch = buildWatch;
+    // The base being served when the delta was buffered: it takes the delta only if still served when merged
+    final Snapshot served = snapshot;
+    if (watch != null && watch.offer(delta)) {
+      if (served != null && !watch.scanHoldsMonitor())
+        applyDelta(delta, served.csrPerType);
+      return;
+    }
+    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
+  }
+
+  private synchronized void applyDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
+    // Buffered for a build, and the base served when it was buffered has been replaced since: by that build, which
+    // re-applied it on the CSR it published, or by one whose scan started after it committed. Merged only while the
+    // base it was buffered against is still served, even when another build superseded the one that buffered it
+    if (bufferedAgainst != null && (snapshot == null || snapshot.csrPerType != bufferedAgainst))
+      return;
+    // No CSR to apply it to: after shutdown, from a lingering commit callback. A delta that commits while the first
+    // build is in flight never reaches here, it is buffered in the build's watch (issue #8378)
     final Snapshot current = this.snapshot;
     if (current == null)
       return;
     final DeltaOverlay base = current.overlay != null ? current.overlay : new DeltaOverlay(current.nodeMapping.size());
-    final DeltaOverlay merged = base.merge(delta, current.nodeMapping);
+    // Deduplicated against the scan that produced the base while that scan may still be racing a late-delivered
+    // commit (issue #8378)
+    // Cleared by every path that replaces the base, so it always describes the scan of the one being served
+    final BuildWatch watch = baseWatch;
+    final DeltaOverlay merged = mergeAgainstBase(base, delta, current.nodeMapping, watch);
     this.snapshot = current.withOverlay(merged);
 
     // Buffer raw delta during compaction for re-application against the new mapping.
@@ -2459,6 +2668,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   }
 
                   this.snapshot = fresh;
+                  baseWatch = null;
                 }
               }
 

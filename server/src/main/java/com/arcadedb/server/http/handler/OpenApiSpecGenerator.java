@@ -19,6 +19,8 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.openapi.AiApiSpec;
@@ -42,6 +44,7 @@ import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
+import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
@@ -49,6 +52,9 @@ import io.swagger.v3.oas.models.servers.Server;
 import io.swagger.v3.oas.models.tags.Tag;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Generates the OpenAPI 3.0 specification for the ArcadeDB HTTP API. The document is assembled by
@@ -63,6 +69,16 @@ public class OpenApiSpecGenerator {
 
   // Referenced from components.headers by every response (see declareRequestIdHeaderOnEveryResponse).
   private static final String REQUEST_ID_HEADER_COMPONENT = "RequestIdHeader";
+  // Referenced by every POST operation that replays a retry (see declareRequestReplayOnPostOperations).
+  private static final String REQUEST_ID_PARAM_COMPONENT  = "RequestIdParam";
+  private static final String RETRY_AFTER_HEADER_COMPONENT = "RetryAfterHeader";
+  private static final String IN_FLIGHT_DESCRIPTION        = """
+      An identical request with the same '%s' is still executing. It was NOT executed again: retry it \
+      later with the same id, after 'Retry-After' seconds, to receive the result of the execution in \
+      progress. The body names RequestStillInFlightException.""".formatted(IdempotencyCache.HEADER_REQUEST_ID);
+  // POST routes whose body never reaches the replay key, so an X-Request-Id gives them no replay protection: the
+  // bulk-load route streams its body instead of buffering it (issue #7381). Its own description says so.
+  private static final Set<String>  NOT_REPLAYED_POST_PATHS     = Set.of("/api/v1/batch/{database}");
 
   // A contributor absent from this list never reaches the served document: its paths and schemas
   // are silently omitted, with no compile error and no other signal. Order affects nothing but the
@@ -121,9 +137,44 @@ public class OpenApiSpecGenerator {
     for (final OpenApiContributor contributor : CONTRIBUTORS)
       contributor.contribute(openAPI);
 
+    declareRequestReplayOnPostOperations(openAPI);
     declareRequestIdHeaderOnEveryResponse(openAPI);
 
     return openAPI;
+  }
+
+  /**
+   * Every POST route that {@code AbstractServerHttpHandler} runs through the idempotency cache takes an optional
+   * {@code X-Request-Id} that makes a retry safe to send verbatim, and can answer {@code 409} with
+   * {@code Retry-After} while an identical request is still executing (issue #8324). Neither was in the document, so
+   * a client generated from it knew of neither (issue #8344). Applied here, once, for the same reason as the response
+   * header: it is a property of the handler base class, not of any one contributor's route.
+   * <p>
+   * An operation that already declares a 409 for another reason keeps it, with the in-flight case added to its
+   * description.
+   */
+  private void declareRequestReplayOnPostOperations(final OpenAPI openAPI) {
+    final Parameter requestIdRef = new Parameter().$ref("#/components/parameters/" + REQUEST_ID_PARAM_COMPONENT);
+    final Header retryAfterRef = new Header().$ref("#/components/headers/" + RETRY_AFTER_HEADER_COMPONENT);
+    for (final Map.Entry<String, PathItem> entry : openAPI.getPaths().entrySet()) {
+      final Operation post = entry.getValue().getPost();
+      if (post == null || NOT_REPLAYED_POST_PATHS.contains(entry.getKey()))
+        continue;
+      post.addParametersItem(requestIdRef);
+      final ApiResponse existing = post.getResponses().get("409");
+      if (existing == null)
+        post.getResponses().addApiResponse("409",
+            SpecBuilders.errorResponse(IN_FLIGHT_DESCRIPTION).addHeaderObject("Retry-After", retryAfterRef));
+      // A 409 declared by $ref cannot take sibling keys in OpenAPI 3.0: it is left as is, loudly, since the operation
+      // then does not document the in-flight case. No contributor declares one
+      else if (existing.get$ref() != null)
+        LogManager.instance().log(this, Level.WARNING,
+            "OpenAPI: POST %s declares its 409 by $ref, so the in-flight retry answer is not documented on it", entry.getKey());
+      else {
+        existing.setDescription(existing.getDescription() + ". Also: " + IN_FLIGHT_DESCRIPTION);
+        existing.addHeaderObject("Retry-After", retryAfterRef);
+      }
+    }
   }
 
   /**
@@ -239,6 +290,23 @@ public class OpenApiSpecGenerator {
         Correlates this response with a server log line. Echoes the caller's own \
         '%s' request header when present; otherwise the server generates one. Set unconditionally \
         on every response.""".formatted(IdempotencyCache.HEADER_REQUEST_ID)));
+    components.addHeaders(RETRY_AFTER_HEADER_COMPONENT, SpecBuilders.stringHeader("""
+        Seconds to wait before retrying the request with the same '%s'.""".formatted(IdempotencyCache.HEADER_REQUEST_ID)));
+
+    components.addParameters(REQUEST_ID_PARAM_COMPONENT, SpecBuilders.headerParam(IdempotencyCache.HEADER_REQUEST_ID, """
+        Correlation id, echoed on the response and logged with the request. On this POST route it also makes a retry \
+        safe to send verbatim: a successful (2xx) response is kept for up to the milliseconds set by the '%s' server \
+        setting, keyed by this id together with the method, path, database and body and bound to the authenticated \
+        user, and an identical retry is answered from it instead of executing again. The cache is also bounded by \
+        entry count and total size, so under pressure a completed response can be evicted before its TTL, and a retry \
+        then executes again. A failed request is not kept, so its retry executes afresh. While the first request is \
+        still executing, an identical retry waits briefly for it and then answers 409 with Retry-After rather than \
+        executing a second time. Not replayed: a request inside a client-managed transaction (it carries 'arcadedb- \
+        session-id'), a request asking for an NDJSON stream, and a response larger than the bytes set by the '%s' \
+        server setting. A restore or import asked for as an SSE stream is replayed as a one-event stream carrying its \
+        'completed' event. Use a new id for every distinct request.""".formatted(
+        GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS.getKey(), GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BODY_BYTES.getKey()),
+        false));
 
     return components;
   }

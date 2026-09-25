@@ -66,6 +66,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   // Uses ConcurrentHashMap keyed by thread ID instead of ThreadLocal to allow complete
   // cleanup on close() — ThreadLocal entries leak in long-lived thread pools (e.g., HTTP server).
   private final ConcurrentHashMap<Long, TxDelta> perThreadDeltas;
+  // Only used in SYNCHRONOUS mode: the sources of the edges each thread's open transaction created or deleted. A full
+  // build that opens its watch while such a transaction is still open registers them (issue #8378): the transaction
+  // reported them before any watch existed, and its commit can still land before the new scan reads the source.
+  private final ConcurrentHashMap<Long, Set<RID>> inFlightEdgeSources;
 
   DeltaCollector(final GraphAnalyticalView view) {
     this.view = view;
@@ -73,6 +77,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     this.perThreadDeltas = view.getUpdateMode() == GraphAnalyticalView.UpdateMode.SYNCHRONOUS
         ? new ConcurrentHashMap<>()
         : null;
+    this.inFlightEdgeSources = perThreadDeltas != null ? new ConcurrentHashMap<>() : null;
   }
 
   @Override
@@ -85,9 +90,11 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.addedVertices.add(new TxDelta.VertexDelta(vertex.getIdentity(), extractProperties(vertex)));
-      else if (record instanceof Edge edge)
+      else if (record instanceof Edge edge) {
+        watchEdgeSource(edge.getOut());
         delta.addedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity(),
             extractMaterialisedEdgeProperties(edge)));
+      }
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -130,8 +137,10 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       final TxDelta delta = getOrCreateDelta();
       if (record instanceof Vertex vertex)
         delta.deletedVertices.add(vertex.getIdentity());
-      else if (record instanceof Edge edge)
+      else if (record instanceof Edge edge) {
+        watchEdgeSource(edge.getOut());
         delta.deletedEdges.add(new TxDelta.EdgeDelta(edge.getTypeName(), edge.getOut(), edge.getIn(), edge.getIdentity()));
+      }
       scheduleSyncCallback(delta);
     } else {
       scheduleAsyncCallback();
@@ -139,7 +148,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   }
 
   private boolean isRelevant(final Record record) {
-    if (!view.isBuilt())
+    // A view whose first build is still scanning tracks changes too: the build reconciles them (issue #8378)
+    if (!view.isTrackingChanges())
       return false;
     if (record instanceof Vertex vertex)
       return view.coversVertexType(vertex.getTypeName());
@@ -167,8 +177,9 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.forceEdgePropertyRebuild = delta.forceEdgePropertyRebuild;
           delta.clear();
           perThreadDeltas.remove(Thread.currentThread().threadId());
+          inFlightEdgeSources.remove(Thread.currentThread().threadId());
           if (!frozen.isEmpty())
-            view.applyDelta(frozen);
+            view.onCommittedDelta(frozen);
         });
       }
     } catch (final DatabaseIsClosedException e) {
@@ -182,7 +193,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
     try {
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
       if (dbInternal.isTransactionActive())
-        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommit);
+        dbInternal.getTransaction().addAfterCommitCallbackIfAbsent(callbackKey, view::onRelevantCommitCallback);
     } catch (final DatabaseIsClosedException e) {
       LogManager.instance().log(this, Level.FINE, "ASYNC delta collection skipped (database closing): %s", e.getMessage());
     } catch (final Exception e) {
@@ -198,13 +209,38 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
       // (because a previous transaction rolled back and reset() cleared the callback keys),
       // discard the stale delta to avoid leaking rolled-back changes into this transaction.
       final DatabaseInternal dbInternal = (DatabaseInternal) view.getDatabase();
-      if (dbInternal.isTransactionActive() && !dbInternal.getTransaction().hasCallbackKey(callbackKey))
+      if (dbInternal.isTransactionActive() && !dbInternal.getTransaction().hasCallbackKey(callbackKey)) {
         existing.clear();
+        inFlightEdgeSources.remove(tid);
+      }
       return existing;
     }
     final TxDelta fresh = new TxDelta();
     perThreadDeltas.put(tid, fresh);
     return fresh;
+  }
+
+  /**
+   * Records, before the transaction commits, that it creates or deletes an edge leaving {@code source}: in this
+   * thread's in-flight set first, then in the watch of a build in flight. Written in that order, and read in the
+   * opposite one by {@link #registerInFlightEdgeSources}, so a build opening its watch concurrently misses neither.
+   */
+  private void watchEdgeSource(final RID source) {
+    inFlightEdgeSources.computeIfAbsent(Thread.currentThread().threadId(), k -> ConcurrentHashMap.newKeySet()).add(source);
+    view.watchEdgeSource(source);
+  }
+
+  /**
+   * Registers with a build's newly opened watch the edge sources of every transaction still open, which reported them
+   * before the watch existed (issue #8378). A source left over from a rolled-back transaction is registered too, which
+   * costs an observation and changes no answer.
+   */
+  void registerInFlightEdgeSources(final BuildWatch watch) {
+    if (inFlightEdgeSources == null)
+      return;
+    for (final Set<RID> sources : inFlightEdgeSources.values())
+      for (final RID source : sources)
+        watch.watchSource(source);
   }
 
   /**
@@ -214,6 +250,8 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   void close() {
     if (perThreadDeltas != null)
       perThreadDeltas.clear();
+    if (inFlightEdgeSources != null)
+      inFlightEdgeSources.clear();
   }
 
   /**

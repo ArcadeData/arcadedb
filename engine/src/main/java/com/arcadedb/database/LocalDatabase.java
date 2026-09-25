@@ -228,6 +228,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected          boolean                                   autoTransaction           = false;
   protected volatile boolean                                   open                      = false;
   private            boolean                                   readYourWrites            = true;
+  // Database-wide durability settings (issue #8352): null until set, so every thread follows the configuration its
+  // transaction context was created with. A thread's own setting (Transaction.setUseWAL() and siblings) wins.
+  private volatile   Boolean                                   useWALSetting;
+  private volatile   WALFile.FlushType                         walFlushSetting;
+  private volatile   boolean                                   asyncFlush                = true;
   private final      Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final      StatementCache                            statementCache;
   private final      ExecutionPlanCache                        executionPlanCache;
@@ -1148,24 +1153,47 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public LocalDatabase setUseWAL(final boolean useWAL) {
-    getTransaction().setUseWAL(useWAL);
+    this.useWALSetting = useWAL;
     return this;
+  }
+
+  /**
+   * @return the database-wide WAL setting, or {@code null} when never set and the configuration applies
+   */
+  public Boolean getUseWALSetting() {
+    return useWALSetting;
   }
 
   @Override
   public LocalDatabase setWALFlush(final WALFile.FlushType flush) {
-    getTransaction().setWALFlush(flush);
+    this.walFlushSetting = flush;
     return this;
   }
 
+  /**
+   * @return the database-wide WAL flush strategy, or {@code null} when never set and the configuration applies
+   */
+  public WALFile.FlushType getWALFlushSetting() {
+    return walFlushSetting;
+  }
+
+  /**
+   * @return whether the calling thread's transactions flush their pages in the background: the thread's own setting
+   * when it has one, otherwise the database's
+   */
   @Override
   public boolean isAsyncFlush() {
     return getTransaction().isAsyncFlush();
   }
 
+  /** @return the database-wide asynchronous flush setting, ignoring any thread's own. */
+  public boolean isAsyncFlushSetting() {
+    return asyncFlush;
+  }
+
   @Override
   public LocalDatabase setAsyncFlush(final boolean value) {
-    getTransaction().setAsyncFlush(value);
+    this.asyncFlush = value;
     return this;
   }
 

@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -208,8 +209,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
             if (deferTargetLoad) {
               // Deferred mode: store lightweight reference, skip OLTP load
               if (targetLabel != null) {
-                final String typeName = context.getDatabase().getSchema().getTypeByBucketId(targetRID.getBucketId()).getName();
-                if (!targetLabel.equals(typeName))
+                // Polymorphic, as the full-load branch below: a label matches its sub-types too (#8377)
+                final DocumentType targetType = context.getDatabase().getSchema().getTypeByBucketId(targetRID.getBucketId());
+                if (targetType == null || !targetType.instanceOf(targetLabel))
                   continue;
               }
               addResultWithReference(new GAVVertex(targetRID, targetNodeId, provider, context.getDatabase()));
