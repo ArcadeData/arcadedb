@@ -43,6 +43,8 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
+  /** A {@code hasLabel()} value with this prefix names one bucket rather than a type. */
+  public static final String                BUCKET_PREFIX = "bucket:";
   protected final     String                typeName;
   protected           Parameters            parameters = new Parameters();
   protected final     Class<E>              returnClass;
@@ -64,8 +66,8 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     final ArcadeGraph graph = (ArcadeGraph) traversal.getGraph().get();
 
     final String bucketName;
-    if (typeName.startsWith("bucket:")) {
-      bucketName = typeName.substring("bucket:".length());
+    if (typeName.startsWith(BUCKET_PREFIX)) {
+      bucketName = typeName.substring(BUCKET_PREFIX.length());
       final DocumentType type = graph.getDatabase().getSchema().getTypeByBucketName(bucketName);
       if (type == null)
         this.typeName = null;

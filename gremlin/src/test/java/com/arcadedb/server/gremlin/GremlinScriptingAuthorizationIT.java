@@ -20,6 +20,7 @@ package com.arcadedb.server.gremlin;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.gremlin.ArcadeIoRegistrationStrategy;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -121,6 +122,19 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
   }
 
   @Test
+  void httpIoStepCannotBeUnlockedByRemovingItsStrategy() throws Exception {
+    // #8295: withoutStrategies() IS A SOURCE INSTRUCTION THE CALLER SENDS; NAMING THE STRATEGY THAT CHECKS THE
+    // PERMISSION MUST NOT TURN THE CHECK OFF
+    createUsers();
+    setGremlinEngine("java");
+
+    final String writeGraph = "g.withoutStrategies(ArcadeIoRegistrationStrategy).io('" + ioTarget.getAbsolutePath().replace('\\', '/')
+        + "').write()";
+    assertRefused(DBADMIN_USER, DBADMIN_PASSWORD, writeGraph);
+    assertThat(ioTarget).doesNotExist();
+  }
+
+  @Test
   void wireGroovyScriptIsRootOnly() throws Exception {
     createUsers();
 
@@ -210,6 +224,22 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
           .withRemote(DriverRemoteConnection.using(cluster, getDatabaseName()));
       assertThat(catchThrowable(() -> g.io(ioTarget.getAbsolutePath()).write().iterate()))
           .as("A non-root user must not write a host file through the io() step").hasStackTraceContaining(REFUSAL);
+      assertThat(ioTarget).doesNotExist();
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void wireIoStepCannotBeUnlockedByRemovingItsStrategy() {
+    createUsers();
+
+    final Cluster cluster = createCluster(DBADMIN_USER, DBADMIN_PASSWORD);
+    try {
+      final GraphTraversalSource g = AnonymousTraversalSource.traversal()
+          .withRemote(DriverRemoteConnection.using(cluster, getDatabaseName()));
+      assertThat(catchThrowable(() -> g.withoutStrategies(ArcadeIoRegistrationStrategy.class).io(ioTarget.getAbsolutePath()).write().iterate()))
+          .as("Removing the strategy must not lift the io() restriction").hasStackTraceContaining(REFUSAL);
       assertThat(ioTarget).doesNotExist();
     } finally {
       cluster.close();

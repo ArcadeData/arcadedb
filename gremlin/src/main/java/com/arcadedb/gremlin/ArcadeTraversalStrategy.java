@@ -21,7 +21,6 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -43,8 +42,6 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
-import org.apache.tinkerpop.gremlin.process.traversal.traverser.TraverserRequirement;
-import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -142,65 +139,48 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             } else
               kindMatches = false;
 
-            final List<IndexCursor> indexCursors = new ArrayList<>();
-
-            for (final HasContainer c : hasContainers) {
-              final String key = c.getKey();
-              if (kindMatches && !key.startsWith("~")) {
-                if (graph.database.getSchema().existsType(typeNameToMatch)) {
-                  final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
-                  if (index != null) {
-                    if (c.getBiPredicate().equals(Compare.eq))
-                      indexCursors.add(
-                          index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
-                    else if (c.getBiPredicate().equals(Compare.gt))
-                      indexCursors.add(index.iterator(true,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                    else if (c.getBiPredicate().equals(Compare.gte))
-                      indexCursors.add(index.iterator(true,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
-                    else if (c.getBiPredicate().equals(Compare.lt))
-                      indexCursors.add(index.iterator(false,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                    else if (c.getBiPredicate().equals(Compare.lte))
-                      indexCursors.add(index.iterator(false,
-                          c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
-                  }
+            // PICK ONE INDEXED CONTAINER TO GENERATE THE CANDIDATES FROM, PREFERRING A UNIQUE EQUALITY, THEN ANY EQUALITY,
+            // THEN A RANGE. EVERY has() CONTAINER, THE CHOSEN ONE INCLUDED, STAYS IN THE HasStep AND IS RE-CHECKED ON EACH
+            // CANDIDATE, SO INTERSECTING A SECOND INDEX WOULD ONLY REPEAT THAT WORK WHILE MATERIALISING BOTH SCANS (#8299)
+            TypeIndex chosenIndex = null;
+            HasContainer chosen = null;
+            int chosenRank = Integer.MAX_VALUE;
+            if (kindMatches)
+              for (final HasContainer c : hasContainers) {
+                final String key = c.getKey();
+                if (key.startsWith("~") || c.getValue() == null || !ArcadeFilterByIndexStep.isSupported(c.getBiPredicate()))
+                  continue;
+                // WALKS UP THE HIERARCHY: A SUPER TYPE'S INDEX SPANS ITS SIBLING SUB-TYPES TOO, WHICH THE STEP FILTERS
+                // OUT BY BUCKET (#8249)
+                final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
+                if (index == null)
+                  continue;
+                final int rank = c.getBiPredicate() == Compare.eq ? (index.isUnique() ? 0 : 1) : 2;
+                if (rank < chosenRank) {
+                  chosenRank = rank;
+                  chosenIndex = index;
+                  chosen = c;
                 }
               }
-            }
 
             final Step replaceWith;
-            // #8258: true only for the count rewrite, which is a REDUCING BARRIER - real TinkerPop's own
-            // CountGlobalStep does not carry a label from before it forward either (confirmed empirically:
-            // the unoptimized g.V().as('v').hasLabel(X).count().select('v') throws NoSuchElementException,
-            // it does not return the vertex). So a label on the GraphStep/HasStep this rewrite also removes
-            // must NOT be copied onto ArcadeCountGlobalStep - only the count's OWN label (from countStep,
-            // handled below) may survive, since that one names the traverser the count itself produces.
-            boolean isCountRewrite = false;
-            if (indexCursors.isEmpty()) {
+            if (chosenIndex == null) {
               if (((HasStep<?>) step).getHasContainers().isEmpty() &&
                   i + 1 < steps.size() && steps.get(i + 1) instanceof CountGlobalStep) {
-                // #8258: keep a handle on the CountGlobalStep so its own label (if any) survives the rewrite below
-                final Step countStep = steps.get(i + 1);
                 traversal.removeStep(i - 1);
                 traversal.removeStep(i - 1);
-                isCountRewrite = true;
                 replaceWith = new ArcadeCountGlobalStep(step.getTraversal(), prevStepGraph.getReturnClass(), typeNameToMatch);
-                TraversalHelper.copyLabels(countStep, replaceWith, false);
               } else
                 replaceWith = new ArcadeFilterByTypeStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
                     prevStepGraph.isStartStep(), typeNameToMatch);
               replacedWithFilterByType = true;
             } else
               replaceWith = new ArcadeFilterByIndexStep(prevStepGraph.getTraversal(), prevStepGraph.getReturnClass(),
-                  prevStepGraph.isStartStep(), indexCursors);
+                  prevStepGraph.isStartStep(), chosenIndex, chosen.getBiPredicate(),
+                  chosen.getValue().getClass().isArray() ? (Object[]) chosen.getValue() : new Object[] { chosen.getValue() },
+                  typeNameToMatch);
 
             if (replaceWith != null) {
-              // #8258: a label on the GraphStep being replaced must survive on the new step, otherwise
-              // select()/path()/where() naming it later finds nothing - except for the count rewrite, see above
-              if (!isCountRewrite)
-                TraversalHelper.copyLabels(prevStepGraph, replaceWith, false);
               //traversal.removeStep(i); // IF THE HAS-LABEL STEP IS REMOVED, FOR SOME REASON DOES NOT WORK
               traversal.removeStep(i - 1);
               traversal.addStep(i - 1, replaceWith);
@@ -243,7 +223,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         if (provider != null) {
           final ArcadeGAVVertexStep gavStep = new ArcadeGAVVertexStep(
               graph, vertexStep, provider, vertexStep.getDirection(), edgeLabels);
-          TraversalHelper.copyLabels(vertexStep, gavStep, false);
           traversal.removeStep(i);
           traversal.addStep(i, gavStep);
         }
@@ -266,26 +245,14 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
         }
 
         if (chain.size() >= 2) {
-          // #8258: the fused step emits only the traverser at the END of the chain, so it cannot honour a
-          // label attached to an intermediate hop (select()/path()/where() naming it would find nothing), nor
-          // can it feed a traversal that needs the whole path (an explicit path()/simplePath()/cyclicPath()).
-          // The last hop's label is safe: it names exactly the traverser the fused step produces.
-          boolean canFuse = !traversal.getTraverserRequirements().contains(TraverserRequirement.PATH);
-          for (int k = 0; canFuse && k < chain.size() - 1; k++)
-            if (!chain.get(k).getLabels().isEmpty())
-              canFuse = false;
-
-          if (canFuse) {
-            // Fuse the chain into a single step
-            final ArcadeGAVFusedStep fusedStep = new ArcadeGAVFusedStep(
-                traversal, graph, firstGavStep.getProvider(), chain);
-            TraversalHelper.copyLabels(chain.get(chain.size() - 1), fusedStep, false);
-            // Remove all steps in the chain (backwards to preserve indices)
-            for (int k = j - 1; k >= i; k--)
-              traversal.removeStep(k);
-            traversal.addStep(i, fusedStep);
-            // Don't increment i — check if next step is also fusible (it won't be, but safe)
-          }
+          // Fuse the chain into a single step
+          final ArcadeGAVFusedStep fusedStep = new ArcadeGAVFusedStep(
+              traversal, graph, firstGavStep.getProvider(), chain);
+          // Remove all steps in the chain (backwards to preserve indices)
+          for (int k = j - 1; k >= i; k--)
+            traversal.removeStep(k);
+          traversal.addStep(i, fusedStep);
+          // Don't increment i — check if next step is also fusible (it won't be, but safe)
         }
       }
       i++;
@@ -348,7 +315,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
       // Replace the where/filter step with our O(1) degree check
       final ArcadeEdgeCountFilterStep filterStep = new ArcadeEdgeCountFilterStep(
           traversal, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
-      TraversalHelper.copyLabels(step, filterStep, false);
       traversal.removeStep(i);
       traversal.addStep(i, filterStep);
     }
