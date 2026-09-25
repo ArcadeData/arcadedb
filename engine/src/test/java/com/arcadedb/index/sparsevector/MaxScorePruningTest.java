@@ -181,7 +181,7 @@ class MaxScorePruningTest extends TestHelper {
         }
 
         // One group of capacity K degenerates to plain top-K, so the same pruning must engage.
-        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, cursors, 1, K, rid -> "g", null);
+        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, singleTraversal(cursors), 1, K, rid -> "g", null);
 
         long fatDecoded = 0;
         for (int i = 0; i < FAT_DIMS; i++)
@@ -390,5 +390,19 @@ class MaxScorePruningTest extends TestHelper {
       b.finish();
     }
     return new PaginatedSegmentReader(c);
+  }
+
+  /**
+   * Hands the scorer the cursors this test opened and measures. A single group is complete by construction, so the
+   * grouped scorer never needs the second traversal of issue #8002; a second open would mean it did, and would read
+   * already-closed cursors, so it fails instead.
+   */
+  private static BmwScorer.CursorSource singleTraversal(final DimCursor[] cursors) {
+    final boolean[] opened = { false };
+    return () -> {
+      assertThat(opened[0]).as("a single-group search traversed twice").isFalse();
+      opened[0] = true;
+      return cursors;
+    };
   }
 }
