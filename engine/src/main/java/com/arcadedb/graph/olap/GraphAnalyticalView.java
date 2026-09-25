@@ -489,7 +489,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       newStatus = Status.STALE;
     } else if (updateMode == UpdateMode.SYNCHRONOUS) {
       if (watch.hasWatchedSources()) {
-        watch.bindTo(result.getMapping(), result.getCsrPerType());
+        watch.bindTo(result.getCsrPerType());
         baseWatch = watch;
       }
       if (!buffered.isEmpty()) {

@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -48,9 +49,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * A vertex the scan found unwatched was read before the registration, so before the change committed: none of
  * its buffered changes are in the CSR. A watched one carries the edge identities the scan saw, which says which of
  * its buffered additions were captured and which of its buffered deletions were already missing. The answer is
- * handed to {@link DeltaOverlay#merge} as the pair multiplicity before the buffered changes, the reference the
- * compaction path takes from its own pre-compaction snapshot (issues #7042, #7884) and a first build has nowhere
- * else to take from.
+ * handed to {@link DeltaOverlay#merge} edge by edge ({@link DeltaOverlay.ExactScanAnswer}), where the compaction path
+ * can only compare pair multiplicities against its pre-compaction snapshot (issues #7042, #7884).
  * <p>
  * The same answer applies to a delta whose commit callback arrives after the build published (its transaction
  * committed during the scan, but was delivered late), so the view keeps it for as long as the CSR it describes
@@ -64,7 +64,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompactionPairCount {
+final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactScanAnswer {
   private static final Map<RID, RID> NOTHING_SEEN = Collections.emptyMap();
 
   // Past this many buffered deltas the build is published STALE rather than reconciled: the same bound the
@@ -91,12 +91,11 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
   private volatile boolean                   relevantCommit;
 
   // Bound when the build publishes; read and written under the view's monitor only from then on
-  private NodeIdMapping                      mapping;
   private Map<String, CSRAdjacencyIndex>     csrPerType;
-  // (type, source, target) -> [buffered additions the scan captured, buffered deletions the scan had already missed]
-  private final Map<PairKey, int[]>          pairAdjustments = new HashMap<>();
   // Additions accounted so far, so a later deletion of the same edge is not taken for one the scan missed
   private final Set<RID>                     accountedAdditions = new HashSet<>();
+  // The answers for the delta being merged, by EdgeDelta instance: set by account(), read by the merge right after
+  private final Map<TxDelta.EdgeDelta, Boolean> answers = new IdentityHashMap<>();
 
   BuildWatch(final int maxBufferedDeltas) {
     this.maxBufferedDeltas = maxBufferedDeltas;
@@ -191,8 +190,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
   }
 
   /** Binds this watch to the CSR its build produced, from which point it answers {@link #occurrences}. */
-  void bindTo(final NodeIdMapping mapping, final Map<String, CSRAdjacencyIndex> csrPerType) {
-    this.mapping = mapping;
+  void bindTo(final Map<String, CSRAdjacencyIndex> csrPerType) {
     this.csrPerType = csrPerType;
   }
 
@@ -206,10 +204,11 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
   }
 
   /**
-   * Accounts one delta's edge changes against what the scan saw. Must be called for every delta, in order, right
-   * before it is merged against the CSR this watch is bound to.
+   * Answers, for each edge change of one delta, whether the scan read it. Must be called for every delta, in order,
+   * right before it is merged against the CSR this watch is bound to.
    */
   void account(final TxDelta delta) {
+    answers.clear();
     // Only the sources registered while the scan ran can differ from what it read: every other change committed after
     // it, so the bookkeeping, and its memory, stays bounded by the changes the scan actually raced with
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
@@ -217,7 +216,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
         continue;
       accountedAdditions.add(ed.rid);
       if (sawEdge(ed))
-        adjustment(ed)[0]++;
+        answers.put(ed, Boolean.TRUE);
     }
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
       if (!watchedSources.contains(ed.source))
@@ -228,7 +227,7 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
         continue;
       final Map<RID, RID> seen = observedSources.get(ed.source);
       if (seen != null && !Objects.equals(seen.get(ed.rid), ed.target))
-        adjustment(ed)[1]++;
+        answers.put(ed, Boolean.TRUE);
     }
     // Only now: the edge is gone, so a later edge the engine creates in its recycled RID is a different one
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
@@ -238,31 +237,18 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
     }
   }
 
-  /**
-   * The pair's multiplicity in the scanned CSR before any change the scan raced with: the fresh multiplicity, less
-   * the buffered additions it captured, plus the buffered deletions it had already missed.
-   */
   @Override
-  public int occurrences(final String edgeType, final RID source, final RID target) {
-    final CSRAdjacencyIndex csr = csrPerType.get(edgeType);
-    final int src = mapping.getGlobalId(source);
-    final int tgt = mapping.getGlobalId(target);
-    if (csr == null || src < 0 || tgt < 0)
-      return 0;
-    final int[] adjustment = pairAdjustments.get(new PairKey(edgeType, source, target));
-    final int fresh = csr.forwardEdgeCount(src, tgt);
-    return adjustment == null ? fresh : fresh - adjustment[0] + adjustment[1];
+  public boolean capturedByScan(final TxDelta.EdgeDelta addition) {
+    return answers.containsKey(addition);
+  }
+
+  @Override
+  public boolean absorbedByScan(final TxDelta.EdgeDelta deletion) {
+    return answers.containsKey(deletion);
   }
 
   private boolean sawEdge(final TxDelta.EdgeDelta ed) {
     final Map<RID, RID> seen = observedSources.get(ed.source);
     return seen != null && Objects.equals(seen.get(ed.rid), ed.target);
-  }
-
-  private int[] adjustment(final TxDelta.EdgeDelta ed) {
-    return pairAdjustments.computeIfAbsent(new PairKey(ed.edgeType, ed.source, ed.target), k -> new int[2]);
-  }
-
-  private record PairKey(String edgeType, RID source, RID target) {
   }
 }
