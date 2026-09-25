@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
@@ -37,6 +38,7 @@ import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for four openCypher temporal issues:
@@ -157,6 +159,14 @@ class Issue8387Issue8386Issue8385Issue8384TemporalTest extends TestHelper {
     final CypherDuration duration = CypherDuration.fromMap(Map.of("nanoseconds", 3_000_000_000L));
     assertThat(duration.getSeconds()).isEqualTo(3);
     assertThat(duration.getNanosAdjustment()).isZero();
+  }
+
+  /** An overflow is reported as the engine's ArithmeticErrorException, never as a raw ArithmeticException. */
+  @Test
+  void overflowingDurationRaisesArithmeticError() {
+    assertThatThrownBy(() -> new CypherDuration(0, 0, Long.MAX_VALUE, 2_000_000_000L)).isInstanceOf(ArithmeticErrorException.class);
+    assertThatThrownBy(() -> CypherDuration.fromMap(Map.of("days", 1, "nanoseconds", Long.MAX_VALUE, "milliseconds", Long.MAX_VALUE)))
+        .isInstanceOf(ArithmeticErrorException.class);
   }
 
   private String duration(final String map) {
