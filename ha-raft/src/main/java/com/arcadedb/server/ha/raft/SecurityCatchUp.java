@@ -119,8 +119,15 @@ final class SecurityCatchUp implements AutoCloseable {
    */
   private static final long START_JITTER_MS      = 3_000L;
 
+  static final String THREAD_NAME = "arcadedb-raft-security-catchup";
+
   private final AtomicBoolean      requestedSinceStart = new AtomicBoolean(false);
   private final ThreadPoolExecutor executor;
+  /**
+   * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
+   * identity that it is running on it (issue #8364). One worker at a time, and one running a task is never replaced.
+   */
+  private volatile Thread          worker;
 
   SecurityCatchUp() {
     // Same shape as MembershipSecuritySeeder's worker and for the same reasons: core 0 so an idle server carries
@@ -132,7 +139,8 @@ final class SecurityCatchUp implements AutoCloseable {
     // that gap: whichever task runs last leaves the latch telling the truth about whether anybody was asked
     // (issue #8087).
     this.executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
-      final Thread thread = new Thread(r, "arcadedb-raft-security-catchup");
+      final Thread thread = new Thread(r, THREAD_NAME);
+      worker = thread;
       thread.setDaemon(true);
       return thread;
     }, (r, exec) -> rearm());
@@ -387,8 +395,25 @@ final class SecurityCatchUp implements AutoCloseable {
     }
   }
 
+  /**
+   * Stops the worker: drops the queued request and interrupts the running one, and does NOT wait for it - see
+   * {@link #awaitTermination(long)}.
+   */
   @Override
   public void close() {
     executor.shutdownNow();
+  }
+
+  /**
+   * Waits, until {@code deadlineNanos}, for the catch-up {@link #close()} interrupted (issue #8364). An attempt past its
+   * last interruption point - the HTTP round trip to the leader - goes on applying the security documents it is
+   * answered with, so without this wait it can still change this node's security state after the state machine that
+   * owns it has returned from its own close.
+   *
+   * @return false if the caller was interrupted while waiting, for the caller to restore the flag
+   */
+  boolean awaitTermination(final long deadlineNanos) {
+    return ExecutorTermination.await(this, executor, worker, THREAD_NAME, deadlineNanos,
+        "apply security documents to this node");
   }
 }
