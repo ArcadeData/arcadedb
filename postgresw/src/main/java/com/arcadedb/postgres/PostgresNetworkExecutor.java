@@ -924,6 +924,7 @@ public class PostgresNetworkExecutor extends Thread {
     return switch (statement) {
       case InsertStatement insert -> insert.getReturnStatement() == null;
       case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
+      // CREATE EDGE has no RETURN clause in the grammar: if it ever gains one, check it here like CREATE VERTEX
       case CreateEdgeStatement ignored -> true;
       case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
       case DeleteStatement delete -> !delete.isReturnBefore();
