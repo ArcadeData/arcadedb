@@ -197,15 +197,6 @@ class Issue8332RemoteResultConversionTest {
    */
   @Test
   void recordHonorsItsPropertyTypeHints() {
-    final RemoteDatabase mockDatabase = mock(RemoteDatabase.class);
-    final RemoteSchema mockSchema = mock(RemoteSchema.class);
-    final RemoteDocumentType mockType = mock(RemoteDocumentType.class);
-    when(mockDatabase.getSchema()).thenReturn(mockSchema);
-    when(mockSchema.getType("TestDoc")).thenReturn(mockType);
-    when(mockType.getName()).thenReturn("TestDoc");
-    when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
-    when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
-
     final Map<String, Object> attributes = new HashMap<>();
     attributes.put(Property.TYPE_PROPERTY, "TestDoc");
     attributes.put(Property.CAT_PROPERTY, "d");
@@ -214,10 +205,46 @@ class Issue8332RemoteResultConversionTest {
     attributes.put("tags", List.of("a", "b"));
     attributes.put(Property.PROPERTY_TYPES_PROPERTY, "n:3,tags:9(7)");
 
-    final RemoteImmutableDocument doc = new RemoteImmutableDocument(mockDatabase, attributes);
+    final RemoteImmutableDocument doc = new RemoteImmutableDocument(schemalessDatabase(), attributes);
 
     assertThat(doc.get("n")).isInstanceOf(Long.class).isEqualTo(5L);
     assertThat(doc.get("tags")).isEqualTo(List.of("a", "b"));
     assertThat(doc.getPropertyNames()).containsExactlyInAnyOrder("n", "tags");
+  }
+
+  /**
+   * A schemaless collection field has only its hint to go by: the element type it names must reach every item, even
+   * though the list or map the JSON parser built is already assignable to the column type.
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void recordHonorsTheElementTypeOfASchemalessCollectionHint() {
+    final Map<String, Object> attributes = new HashMap<>();
+    attributes.put(Property.TYPE_PROPERTY, "TestDoc");
+    attributes.put(Property.CAT_PROPERTY, "d");
+    attributes.put(Property.RID_PROPERTY, "#1:0");
+    attributes.put("nums", List.of(1, 2));
+    attributes.put("byKey", Map.of("a", 3));
+    attributes.put("plain", List.of(4));
+    attributes.put(Property.PROPERTY_TYPES_PROPERTY, "nums:9(3),byKey:10(3),plain:9");
+
+    final RemoteImmutableDocument doc = new RemoteImmutableDocument(schemalessDatabase(), attributes);
+
+    assertThat((List<Object>) doc.get("nums")).containsExactly(1L, 2L);
+    assertThat((Map<Object, Object>) doc.get("byKey")).containsEntry("a", 3L);
+    // No element type in the hint: the items are left as parsed.
+    assertThat((List<Object>) doc.get("plain")).containsExactly(4);
+  }
+
+  private static RemoteDatabase schemalessDatabase() {
+    final RemoteDatabase mockDatabase = mock(RemoteDatabase.class);
+    final RemoteSchema mockSchema = mock(RemoteSchema.class);
+    final RemoteDocumentType mockType = mock(RemoteDocumentType.class);
+    when(mockDatabase.getSchema()).thenReturn(mockSchema);
+    when(mockSchema.getType("TestDoc")).thenReturn(mockType);
+    when(mockType.getName()).thenReturn("TestDoc");
+    when(mockType.getPolymorphicPropertyIfExists(ArgumentMatchers.anyString())).thenReturn(null);
+    when(mockDatabase.newRID(ArgumentMatchers.anyString())).thenAnswer(inv -> new RID(inv.getArgument(0)));
+    return mockDatabase;
   }
 }
