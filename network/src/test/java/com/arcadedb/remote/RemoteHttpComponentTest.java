@@ -600,6 +600,24 @@ class RemoteHttpComponentTest {
   }
 
   /**
+   * Issue #8355: the snapshot-install refusal now names its exception (a server-side type this client does not know)
+   * and carries its back-off in exceptionArgs. It must stay retryable and keep its reason.
+   */
+  @Test
+  void manageExceptionHttp503TypedSnapshotInstallIsRetryable() {
+    final JSONObject json = new JSONObject();
+    json.put("error", "Server is installing a snapshot, please retry");
+    json.put("detail", "Server is installing a snapshot, please retry");
+    json.put("exception", "com.arcadedb.server.http.RetryLaterException");
+    json.put("exceptionArgs", "5");
+
+    final Exception result = component.manageException(createMockResponse(503, json.toString()), "test");
+
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).contains("Server is installing a snapshot");
+  }
+
+  /**
    * An untyped 503 is retry-worthy by the server contract: non-retryable conflicts deliberately use 409.
    */
   @Test
