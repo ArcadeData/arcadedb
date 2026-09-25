@@ -174,6 +174,33 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
   }
 
   @Test
+  void anEdgeSubTypeKeepsTheClauseOnTheRecords() {
+    // A view builds a type's adjacency polymorphically: the parent's slice also holds the sub-type's edges, so one edge
+    // could be labelled under both names. Such a clause walks the edge records instead
+    database.command("sql", "CREATE EDGE TYPE KC EXTENDS K");
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 1").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 2").next().getVertex().get();
+      a.modify().newEdge("KC", b);
+      b.modify().newEdge("KC", a);
+      a.modify().newEdge("KC", a);
+    });
+    final String[] queries = {
+        "MATCH (a:P)-[:K]->(b:P)-[:KC]->(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:KC]-(b:P)-[:K]-(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:K]->(b:P)-[:K]->(c:P) RETURN count(*) AS n" };
+    final Map<String, List<String>> expected = new LinkedHashMap<>();
+    for (final String query : queries)
+      expected.put(query, answer(query));
+
+    createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id)");
+    for (final String query : queries) {
+      assertThat(plan(query)).as(query).doesNotContain("unique relationships");
+      assertThat(answer(query)).as(query + "\n" + plan(query)).isEqualTo(expected.get(query));
+    }
+  }
+
+  @Test
   void answersMatchWithChangesServedFromTheOverlay() {
     createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
 
