@@ -3944,17 +3944,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Parses the JSON error body returned by the leader and reconstructs the original exception so
-   * the Follower throws the same type the Leader would have thrown locally. For example, a
-   * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
-   * callers can catch it directly instead of having to inspect a generic
-   * {@link TransactionException} message string. Other known types are reconstructed via
-   * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
-   * <p>
-   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
-   * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
-   */
-  /**
    * The back-off the leader put in the {@code exceptionArgs} of an in-flight refusal, in seconds. A value that is
    * missing or not a number - an answer from a node that phrased it differently - falls back to
    * {@link #DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS} rather than failing the reconstruction: the refusal itself is what
@@ -3970,6 +3959,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     return DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS;
   }
 
+  /**
+   * Parses the JSON error body returned by the leader and reconstructs the original exception so
+   * the Follower throws the same type the Leader would have thrown locally. For example, a
+   * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
+   * callers can catch it directly instead of having to inspect a generic
+   * {@link TransactionException} message string. Other known types are reconstructed via
+   * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
+   * <p>
+   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
+   * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
+   */
   static RuntimeException reconstructLeaderException(final int httpStatus, final String body) {
     final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
     String detail = null;
