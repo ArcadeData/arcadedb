@@ -99,6 +99,7 @@ import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -356,6 +357,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(QueryNotIdempotentException.class.getName(), QueryNotIdempotentException::new),
       Map.entry(ValidationException.class.getName(), ValidationException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
+
+  /** The back-off an in-flight refusal from the leader is relayed with when its body does not carry one (issue #8343). */
+  static final long DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS = 5L;
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
   private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
@@ -3940,6 +3944,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * The back-off the leader put in the {@code exceptionArgs} of an in-flight refusal, in seconds. A value that is
+   * missing or not a number - an answer from a node that phrased it differently - falls back to
+   * {@link #DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS} rather than failing the reconstruction: the refusal itself is what
+   * the client must not lose.
+   */
+  static long parseRetryAfterSeconds(final String exceptionArgs) {
+    if (exceptionArgs != null)
+      try {
+        return Math.max(1L, Long.parseLong(exceptionArgs.trim()));
+      } catch (final NumberFormatException ignored) {
+        // fall back below
+      }
+    return DEFAULT_IN_FLIGHT_RETRY_AFTER_SECONDS;
+  }
+
+  /**
    * Parses the JSON error body returned by the leader and reconstructs the original exception so
    * the Follower throws the same type the Leader would have thrown locally. For example, a
    * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
@@ -3977,6 +3997,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // the retryability it inherits from NeedRetryException and the leader it names.
     if (ServerIsNotTheLeaderException.class.getName().equals(exceptionClass))
       return new ServerIsNotTheLeaderException(detail != null ? detail : message, exceptionArgs);
+
+    // The leader refused this forward because an identical request - same X-Request-Id, relayed since issue #8323 - is
+    // still executing there (issue #8324). Nothing ran for it. Rebuilt as the typed refusal, with the back-off the
+    // leader put in exceptionArgs, so this node answers its client 409 + Retry-After as the leader would have: as a
+    // plain TransactionException it left as a 500 "Error on transaction commit" with no back-off, telling the client
+    // the write failed when it only has to be retried later with the same id (issue #8343). Deliberately not a
+    // NeedRetryException, see RequestStillInFlightException.
+    if (RequestStillInFlightException.class.getName().equals(exceptionClass))
+      return new RequestStillInFlightException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
     // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
     // reconstructed explicitly rather than from a plain message.

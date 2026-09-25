@@ -43,6 +43,7 @@ import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
+import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -137,7 +138,12 @@ class Issue6201ErrorStatusParityTest {
       new MappedFailure("InvalidPropertyTypeException", 400,
           () -> new InvalidPropertyTypeException(
               "TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof.")),
-      new MappedFailure("CommandParsingException", 400, () -> new CommandParsingException("Unknown variable 'x'")));
+      new MappedFailure("CommandParsingException", 400, () -> new CommandParsingException("Unknown variable 'x'")),
+      // Issue #8343: an identical request is still executing, here or - rebuilt by a follower from the leader's answer
+      // to a forwarded SQL write - on the leader. It reached this chain inside the auto-commit wrapper as a plain
+      // TransactionException and left as a 500, so the wrapped shapes are the ones that matter most.
+      new MappedFailure("RequestStillInFlightException", 409,
+          () -> new RequestStillInFlightException("Retry it later with the same X-Request-Id", 5)));
 
   /**
    * The property itself: bare, wrapped in {@code TransactionException} (what the auto-commit wrapper produced),
@@ -407,7 +413,39 @@ class Issue6201ErrorStatusParityTest {
     }
   }
 
-  private record HandledResponse(int statusCode, String body) {
+  private record HandledResponse(int statusCode, String body, HeaderMap responseHeaders) {
+  }
+
+  /**
+   * Issue #8343: the in-flight refusal is answered 409 with a {@code Retry-After}, and its body names the exception and
+   * carries the back-off in {@code exceptionArgs} - what a follower that forwarded the request rebuilds it from. Raised
+   * inside the auto-commit wrapper, as a follower's forward to the leader raises it, it used to be a 500 with neither.
+   */
+  @Test
+  void aRequestStillInFlightIsAConflictWithARetryAfterWrappedOrNot() {
+    for (final RuntimeException shape : List.<RuntimeException>of(
+        new RequestStillInFlightException("Retry it later with the same X-Request-Id", 7),
+        new TransactionException("Error on executing command",
+            new RequestStillInFlightException("Retry it later with the same X-Request-Id", 7)))) {
+      final HandledResponse response = handle(shape);
+
+      assertThat(response.statusCode).as("body=%s", response.body).isEqualTo(409);
+      assertThat(response.responseHeaders.getFirst("Retry-After")).isEqualTo("7");
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.getString("error")).contains("still executing");
+      assertThat(json.getString("exception")).isEqualTo(RequestStillInFlightException.class.getName());
+      assertThat(json.getString("exceptionArgs")).isEqualTo("7");
+    }
+  }
+
+  /** Every other failure is sent without a Retry-After: the header is the in-flight refusal's alone. */
+  @Test
+  void noOtherFailureIsSentWithARetryAfter() {
+    for (final MappedFailure failure : MAPPED_FAILURES)
+      if (!failure.name().equals("RequestStillInFlightException"))
+        assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
+            .as("%s must not carry a Retry-After", failure.name())
+            .isNull();
   }
 
   private ThrowingHandler handler(final RuntimeException toThrow) {
@@ -435,7 +473,8 @@ class Issue6201ErrorStatusParityTest {
     });
     when(exchange.getStatusCode()).thenAnswer(invocation -> statusCode[0]);
     when(exchange.getRequestHeaders()).thenReturn(new HeaderMap());
-    when(exchange.getResponseHeaders()).thenReturn(new HeaderMap());
+    final HeaderMap responseHeaders = new HeaderMap();
+    when(exchange.getResponseHeaders()).thenReturn(responseHeaders);
     when(exchange.getRequestMethod()).thenReturn(Methods.POST);
     when(exchange.getRelativePath()).thenReturn("/command/graph");
     when(exchange.getResponseSender()).thenReturn(sender);
@@ -444,7 +483,7 @@ class Issue6201ErrorStatusParityTest {
 
     final ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
     verify(sender).send(body.capture());
-    return new HandledResponse(statusCode[0], body.getValue());
+    return new HandledResponse(statusCode[0], body.getValue(), responseHeaders);
   }
 
   /** Handler whose execute() throws, standing in for a command that fails while running. */

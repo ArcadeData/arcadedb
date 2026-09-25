@@ -43,6 +43,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
@@ -127,7 +128,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final long       IN_FLIGHT_WAIT_MS = 5_000L;
   // Seconds a retry refused because its twin is still executing is told to wait before asking again: derived
   // from the wait above, so retuning one cannot leave the header advertising a different back-off.
-  private static final String     IN_FLIGHT_RETRY_AFTER_SECONDS = String.valueOf(Math.max(1L, IN_FLIGHT_WAIT_MS / 1_000L));
+  private static final long       IN_FLIGHT_RETRY_AFTER_SECONDS = Math.max(1L, IN_FLIGHT_WAIT_MS / 1_000L);
+  // The label of that refusal, the same whether this node refused the retry or relays the leader's refusal of it.
+  private static final String     IN_FLIGHT_ERROR_LABEL         =
+      "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
+  private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
   // Tags the forward-ordinal section of an idempotency key (issue #8323).
   private static final byte[]     FORWARD_ORDINAL_KEY_TAG = "forward-ordinal".getBytes(StandardCharsets.US_ASCII);
   // Ends that section: non-zero, so its input can never equal an untagged key's, which always ends in a zero byte.
@@ -402,7 +407,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Return 503 during snapshot installation to prevent cryptic errors
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
       exchange.setStatusCode(503);
-      exchange.getResponseHeaders().put(HttpString.tryFromString("Retry-After"), "5");
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, "5");
       exchange.getResponseSender().send(
           error2json("Server is installing a snapshot, please retry", "", null, null, null));
       return;
@@ -935,6 +940,18 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(404, "Remote transaction session not found or expired", sessionGone, null, ErrorLogKind.SESSION);
     }
 
+    // 409 Conflict + Retry-After: an identical request (same X-Request-Id, method, path, database and body) is still
+    // executing, so this one was refused without running (issue #8324). Raised here by the idempotency gate itself,
+    // and rebuilt by a follower from the leader's answer to a SQL write it forwarded (issue #8343) - which used to
+    // reach this chain as a plain TransactionException and leave as a 500 with no back-off. The retry-after goes in
+    // exceptionArgs too, so the next hop can rebuild the exception from the body alone.
+    final RequestStillInFlightException stillInFlight = firstOf(e, cause, RequestStillInFlightException.class);
+    if (stillInFlight != null) {
+      final String retryAfter = String.valueOf(stillInFlight.getRetryAfterSeconds());
+      return new ErrorClassification(409, IN_FLIGHT_ERROR_LABEL, stillInFlight, retryAfter, ErrorLogKind.RETRYABLE,
+          retryAfter);
+    }
+
     // Before the TransactionException arm below, which it extends. 409 Conflict, NOT 5xx (#5064/#5075): the
     // transaction IS durably committed cluster-wide - only the local apply failed. A 5xx would invite HTTP
     // clients and load balancers to RETRY, applying the changes a second time (duplicate inserts) - the exact
@@ -1156,6 +1173,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private void sendMappedErrorResponse(final HttpServerExchange exchange, final Throwable e) {
     final ErrorClassification classification = classifyError(e);
     logClassifiedError(classification);
+    if (classification.retryAfter() != null && !exchange.isResponseStarted())
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, classification.retryAfter());
     sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
         classification.exceptionArgs());
   }
@@ -1164,10 +1183,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * What {@link #classifyError} decided for a failure: the HTTP status, the client-facing label (the body's
    * {@code error} field), the throwable reported on the wire contract's {@code exception} field (not always the
    * one raised: a {@code TransactionException} is reported as its cause), the structured {@code exceptionArgs},
-   * and how the failure is logged.
+   * how the failure is logged, and the {@code Retry-After} header to send with it, or null for none.
    */
   protected record ErrorClassification(int status, String message, Throwable reported, String exceptionArgs,
-                                       ErrorLogKind logKind) {
+                                       ErrorLogKind logKind, String retryAfter) {
+    /** A classification that sends no {@code Retry-After}, which is every arm but the in-flight refusal. */
+    protected ErrorClassification(final int status, final String message, final Throwable reported,
+        final String exceptionArgs, final ErrorLogKind logKind) {
+      this(status, message, reported, exceptionArgs, logKind, null);
+    }
   }
 
   /**
@@ -1331,12 +1355,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * so the client may retry it as it is, with the same id, and gets the first execution's answer once it settles.
    */
   private void sendStillInFlight(final HttpServerExchange exchange) {
-    exchange.setStatusCode(409);
-    exchange.getResponseHeaders().put(HttpString.tryFromString("Retry-After"), IN_FLIGHT_RETRY_AFTER_SECONDS);
-    exchange.getResponseSender().send(error2json("A request with the same " + IdempotencyCache.HEADER_REQUEST_ID
-            + " is still executing",
+    // Through the shared classification rather than written by hand, so the body names the exception and carries
+    // the back-off in exceptionArgs: that is what lets a follower that forwarded this request rebuild the refusal
+    // and answer its own client 409 + Retry-After too (issue #8343).
+    sendMappedErrorResponse(exchange, new RequestStillInFlightException(
         "The request was not executed again. Retry it later with the same " + IdempotencyCache.HEADER_REQUEST_ID
-            + " to receive the result of the execution in progress", null, null, null));
+            + " to receive the result of the execution in progress", IN_FLIGHT_RETRY_AFTER_SECONDS));
   }
 
   /**
