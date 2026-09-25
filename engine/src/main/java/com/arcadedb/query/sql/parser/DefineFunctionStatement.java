@@ -45,6 +45,8 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     // with schema (or lesser) access could DEFINE FUNCTION ... LANGUAGE js and then invoke it via SELECT,
     // bypassing the polyglot scripting gate that GHSA-48qw introduced (GHSA-vwjc-v7x7-cm6g). SQL/Cypher
     // user functions are declarative, not host code, so the UPDATE_SCHEMA check above is sufficient for them.
+    // This is the early check only: LocalSchema.defineFunction holds the same gate on the function's type
+    // (PolyglotFunctionDefinition), and that one is authoritative if a language is ever added here but not above.
     if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
