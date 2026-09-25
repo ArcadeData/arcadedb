@@ -3800,22 +3800,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         ForwardedRequestIdContext.wholeRequestForward(forwardOrdinal, language, query) :
         null;
 
-    final JSONObject body = new JSONObject();
-    body.put("language", language);
-    body.put("command", query);
-    if (mapArgs != null && !mapArgs.isEmpty())
-      body.put("params", new JSONObject(mapArgs));
-    else if (positionalArgs != null && positionalArgs.length > 0) {
-      // Use ordinal-map format {"0": v0, "1": v1, ...} so the leader's PostCommandHandler
-      // can safely parse params as a Map regardless of the toMap(true) numeric-array optimization.
-      // Sending a plain JSON array like [110] causes toMap(true) to return a primitive array
-      // (long[] for integer-only, float[] for fractional - see issues #3864 and #4148), which
-      // then cannot be cast to Map at the params-extraction site.
-      final JSONObject ordinalParams = new JSONObject();
-      for (int i = 0; i < positionalArgs.length; i++)
-        ordinalParams.put("" + i, positionalArgs[i]);
-      body.put("params", ordinalParams);
-    }
+    final String requestBody = wholeRequest != null ? wholeRequest.clientBody() : rebuildForwardBody(language, query, mapArgs,
+        positionalArgs);
 
     // Built once and used for both the request and the failure messages below: a TLS handshake error reported
     // against the plain-HTTP address the request was never sent to is the message an operator would take to a
@@ -3866,7 +3852,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         .uri(URI.create(leaderUrl))
         .timeout(Duration.ofMillis(deadlineMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(wholeRequest != null ? wholeRequest.clientBody() : body.toString()));
+        .POST(HttpRequest.BodyPublishers.ofString(requestBody));
 
     if (ordinalTrusted) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
@@ -3995,6 +3981,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     }
+  }
+
+  /**
+   * The body of a forward that is not the client's whole request: rebuilt from the statement and its arguments. Built
+   * only when it is posted - a whole-request forward posts the client's own body instead (issue #8359).
+   */
+  private static String rebuildForwardBody(final String language, final String query, final Map<String, Object> mapArgs,
+      final Object[] positionalArgs) {
+    final JSONObject body = new JSONObject();
+    body.put("language", language);
+    body.put("command", query);
+    if (mapArgs != null && !mapArgs.isEmpty())
+      body.put("params", new JSONObject(mapArgs));
+    else if (positionalArgs != null && positionalArgs.length > 0) {
+      // Use ordinal-map format {"0": v0, "1": v1, ...} so the leader's PostCommandHandler
+      // can safely parse params as a Map regardless of the toMap(true) numeric-array optimization.
+      // Sending a plain JSON array like [110] causes toMap(true) to return a primitive array
+      // (long[] for integer-only, float[] for fractional - see issues #3864 and #4148), which
+      // then cannot be cast to Map at the params-extraction site.
+      final JSONObject ordinalParams = new JSONObject();
+      for (int i = 0; i < positionalArgs.length; i++)
+        ordinalParams.put("" + i, positionalArgs[i]);
+      body.put("params", ordinalParams);
+    }
+    return body.toString();
   }
 
   /**
