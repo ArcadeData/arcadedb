@@ -170,7 +170,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int i = 0; i < chainLength; i++)
       if (hopTracked == null || !hopTracked[i])
         hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
-    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes() : null;
+    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db) : null;
 
     // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
     int[] sourceNodeIdsBuf = new int[1024];
@@ -519,23 +519,18 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
   }
 
-  /** The edge types the tracked hops walk, numbered: a hop's own types, or every type the view holds for an untyped hop. */
+  /** The edge types the tracked hops walk, numbered: see {@link GAVEdgeRef#trackedEdgeTypes}. */
   private record TrackedTypes(String[] names, int[][] hopTypeIds) {
   }
 
-  private TrackedTypes resolveTrackedTypes() {
+  private TrackedTypes resolveTrackedTypes(final Database database) {
     final Map<String, Integer> ids = new HashMap<>();
     final List<String> names = new ArrayList<>();
     final int[][] hopTypeIds = new int[hopDirections.length][];
     for (int i = 0; i < hopDirections.length; i++) {
       if (!hopTracked[i])
         continue;
-      String[] types = hopEdgeTypes[i];
-      if (types == null || types.length == 0) {
-        types = provider.getMaterializedEdgeTypes();
-        if (types == null)
-          types = new String[0];
-      }
+      final String[] types = GAVEdgeRef.trackedEdgeTypes(database, hopEdgeTypes[i]);
       hopTypeIds[i] = new int[types.length];
       for (int t = 0; t < types.length; t++) {
         final String type = types[t];
