@@ -125,10 +125,13 @@ class PluginApiSpecTest {
     // document and were not, so a node with a dead state machine read green here while '/api/v1/ready' was
     // pinned at 503. 'localStuckAtStaleTerm' joined with issue #8289: the one node-level condition that leaves
     // readiness and 'localReplicationLag' reading healthy while the node does not count toward quorum.
+    // 'leaderCommitIndex' and 'localStalledBehindLeader' joined with issue #8342: the same blind spot at the
+    // current term, where only the leader's commit index shows that this follower stopped receiving entries.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
+        "leaderCommitIndex", "localStalledBehindLeader",
         "peers", "databases", "databasePresence", "alerts", "localResync",
         "criticalHalt", "raftLogFailure", "crashLoopEscalated");
 
