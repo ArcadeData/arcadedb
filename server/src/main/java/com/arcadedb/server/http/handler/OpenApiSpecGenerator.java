@@ -163,6 +163,7 @@ public class OpenApiSpecGenerator {
       if (existing == null)
         post.getResponses().addApiResponse("409",
             SpecBuilders.errorResponse(IN_FLIGHT_DESCRIPTION).addHeaderObject("Retry-After", retryAfterRef));
+      // A 409 declared by $ref cannot take sibling keys in OpenAPI 3.0: it is left as is. No contributor declares one
       else if (existing.get$ref() == null) {
         existing.setDescription(existing.getDescription() + ". Also: " + IN_FLIGHT_DESCRIPTION);
         existing.addHeaderObject("Retry-After", retryAfterRef);

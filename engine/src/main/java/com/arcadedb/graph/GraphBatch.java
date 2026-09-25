@@ -1480,8 +1480,9 @@ public class GraphBatch implements AutoCloseable {
       tx.setWALFlush(savedThreadWALFlush);
     }
 
-    LogManager.instance().log(this, Level.FINE, "GraphBatch: restored WAL settings useWAL=%s walFlush=%s", savedUseWAL,
-        savedWALFlush);
+    // null = the thread follows the database's setting again
+    LogManager.instance().log(this, Level.FINE, "GraphBatch: restored the thread's WAL settings useWAL=%s walFlush=%s",
+        savedThreadUseWAL, savedThreadWALFlush);
   }
 
   /**

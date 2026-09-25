@@ -75,7 +75,9 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.PreCompa
   // committing threads, read by the scan.
   private final Set<RID>                     watchedSources = ConcurrentHashMap.newKeySet();
   // Per watched source the scan reached AFTER its registration: the out-edges it put into the CSR, edge RID ->
-  // target RID. A source registered after the scan passed it has no entry, which is itself the answer.
+  // target RID. A source registered after the scan passed it has no entry, which is itself the answer. The value maps
+  // are written by the scan thread, then read and trimmed by account() under the view's monitor, which the build's
+  // publication also takes: that hand-off is what orders the two, not the concurrency of the outer map.
   private final Map<RID, Map<RID, RID>>      observedSources = new ConcurrentHashMap<>();
 
   // Guarded by this
