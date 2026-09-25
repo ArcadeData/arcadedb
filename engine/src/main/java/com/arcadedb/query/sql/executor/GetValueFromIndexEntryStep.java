@@ -25,6 +25,10 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BetweenCondition;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.List;
@@ -79,6 +83,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   private PhysicalOrderRidFetcher     fetcher;
   private FetchFromTypeWithFilterStep scanStep;
   private long                        scanThreshold;
+  private long                        matchedEntries;
 
   /**
    * @param context         the execution context
@@ -277,7 +282,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     }
 
     final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), filterBucketIds);
-    if (scanThreshold < 0) {
+    if (scanThreshold < 0 || !keysAreScalars(context)) {
       strategy = Strategy.INDEX_ORDER;
       return;
     }
@@ -307,10 +312,35 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
       case PHYSICAL_ORDER -> strategy = Strategy.PHYSICAL_ORDER;
       case PHYSICAL_ORDER_CHUNKED -> strategy = Strategy.PHYSICAL_ORDER_CHUNKED;
       }
+      // Kept on the step: PROFILE is rendered after close() released the fetcher
+      matchedEntries = fetcher != null ? fetcher.getMatched() : 0;
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
     }
+  }
+
+  /**
+   * Whether every value the index key is compared with is a single value. The index search expands a collection -
+   * {@code tag = :p} with {@code :p = ['a', 'b']} seeks each element - where evaluating the same condition on a
+   * record compares the value with the collection as a whole, so a search over collections keeps the index.
+   */
+  private boolean keysAreScalars(final CommandContext context) {
+    final BooleanExpression keys = scanFallback.keyFilter().getBaseExpression();
+    if (!(keys instanceof AndBlock and))
+      return false;
+    for (final BooleanExpression block : and.getSubBlocks()) {
+      if (block instanceof BinaryCondition condition) {
+        if (MultiValue.isMultiValue(condition.getRight().execute((Result) null, context)))
+          return false;
+      } else if (block instanceof BetweenCondition between) {
+        if (MultiValue.isMultiValue(between.getSecond().execute((Result) null, context))
+            || MultiValue.isMultiValue(between.getThird().execute((Result) null, context)))
+          return false;
+      } else
+        return false;
+    }
+    return true;
   }
 
   /** One pass over the entries an index step returns, restricted to the target buckets. */
@@ -375,6 +405,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   public void reset() {
     prevResult = null;
     strategy = null;
+    matchedEntries = 0;
     releaseRuntimeSteps();
   }
 
@@ -416,7 +447,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         result.append("\n").append(spaces).append("  served by ");
         switch (strategy) {
         case INDEX_ORDER -> result.append("index order (the share could not be estimated)");
-        case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> result.append("physical order (").append(fetcher != null ? fetcher.getMatched() : 0)
+        case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> result.append("physical order (").append(matchedEntries)
             .append(" entries matched)");
         case SCAN -> result.append("full scan (more than ").append(scanThreshold).append(" entries matched)");
         }

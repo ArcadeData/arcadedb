@@ -106,6 +106,13 @@ class Issue8333CypherIndexRangeSelectivityTest extends TestHelper {
     }
   }
 
+  @Test
+  void orderSensitiveAggregationsKeepTheIndexOrder() {
+    for (final String query : new String[] { "MATCH (p:Person) WHERE p.age >= 20 RETURN collect(p.id) AS ids",
+        "MATCH (p:Person) WHERE p.age >= 20 RETURN p.age % 3 AS k, count(*) AS n LIMIT 1" })
+      assertThat(profile(query, Map.of())).as(query).contains("NodeIndexRangeScan").doesNotContain("served");
+  }
+
   private TreeSet<Integer> ids(final String query, final Map<String, Object> params) {
     final TreeSet<Integer> ids = new TreeSet<>();
     try (final ResultSet rs = database.query("opencypher", query, params)) {

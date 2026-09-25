@@ -83,6 +83,7 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
@@ -112,6 +113,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -4077,6 +4080,14 @@ public class SelectExecutionPlanner {
     final boolean aggregates = info.aggregateProjection != null || info.groupBy != null;
     if (!aggregates && info.orderBy == null)
       return null;
+    if (aggregates) {
+      // Groups come out in the order they are first met: without an ORDER BY, a LIMIT or SKIP picks different ones
+      if (info.groupBy != null && info.orderBy == null && (info.limit != null || info.skip != null))
+        return null;
+      // An aggregate such as list() keeps the rows' order in its value, which no outer ORDER BY re-sorts
+      if (!onlyOrderInsensitiveAggregates(info.aggregateProjection) || !onlyOrderInsensitiveAggregates(info.projection))
+        return null;
+    }
 
     final Index index = desc.getIndex();
     if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
@@ -4116,6 +4127,39 @@ public class SelectExecutionPlanner {
       return null;
 
     return new GetValueFromIndexEntryStep.ScanFallback(type.getName(), filterBuckets, createWhereFrom(keyFilter));
+  }
+
+  /** The aggregate functions whose value does not depend on the order their rows arrive in. */
+  private static final Set<String> ORDER_INSENSITIVE_AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "stddev",
+      "variance", "median", "percentile");
+  private static final Pattern     FUNCTION_CALL                = Pattern.compile("([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(");
+
+  /**
+   * Whether every aggregate the projection calls is one whose value ignores the row order. A function the built-in
+   * registry does not know - a user function, a method call - counts as order-sensitive, which only keeps the index
+   * order.
+   */
+  private static boolean onlyOrderInsensitiveAggregates(final Projection projection) {
+    if (projection == null)
+      return true;
+    final Matcher matcher = FUNCTION_CALL.matcher(projection.toString());
+    while (matcher.find()) {
+      final String name = matcher.group(1).toLowerCase(Locale.ENGLISH);
+      if (ORDER_INSENSITIVE_AGGREGATES.contains(name))
+        continue;
+      final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(name);
+      if (function == null)
+        return false;
+      try {
+        if (function.aggregateResults())
+          return false;
+      } catch (final RuntimeException e) {
+        // Some functions only know whether they aggregate once configured with their arguments (list() with one
+        // argument aggregates, with several builds a list per row): unknown counts as order-sensitive
+        return false;
+      }
+    }
+    return true;
   }
 
   private static boolean isRangeComparison(final BinaryCompareOperator operator) {

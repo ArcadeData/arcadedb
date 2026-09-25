@@ -330,6 +330,49 @@ class Issue8333IndexRangeSelectivityTest extends TestHelper {
     }
   }
 
+  @Test
+  void orderSensitiveAggregatesKeepTheIndexOrder() {
+    // list() keeps the rows' order in its value, a grouped LIMIT without ORDER BY picks the groups met first: both
+    // would show the order, so the index keeps serving them in key order
+    final String bound = BASE.plusDays(10).toString();
+    for (final String query : new String[] {
+        "SELECT list(l_seq) AS seqs FROM LineItem WHERE l_shipdate >= '" + bound + "'",
+        "SELECT l_code, count(*) AS n FROM LineItem WHERE l_shipdate >= '" + bound + "' GROUP BY l_code LIMIT 1" })
+      try (final ResultSet rs = database.query("sql", query)) {
+        rs.stream().count();
+        assertThat(findStep(rs.getExecutionPlan().get()).getScanFallback()).as(query).isNull();
+      }
+    // The same grouped query sorted by the output adapts
+    try (final ResultSet rs = database.query("sql",
+        "SELECT l_code, count(*) AS n FROM LineItem WHERE l_shipdate >= '" + bound + "' GROUP BY l_code ORDER BY l_code LIMIT 1")) {
+      rs.stream().count();
+      assertThat(findStep(rs.getExecutionPlan().get()).getStrategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.SCAN);
+    }
+  }
+
+  @Test
+  void aCollectionKeyValueKeepsTheIndex() {
+    // The index seeks every element of the list; the scan would compare the value with the whole list
+    final List<String> days = new ArrayList<>();
+    for (int i = 0; i < ROWS; i++)
+      days.add(BASE.plusDays(i).toString());
+    final Execution execution = run("SELECT FROM LineItem WHERE l_shipdate = :days ORDER BY l_seq", Map.of("days", days));
+    assertThat(execution.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.INDEX_ORDER);
+    assertThat(execution.rids()).hasSize(ROWS);
+  }
+
+  @Test
+  void profileKeepsTheMatchedCountAfterTheResultIsClosed() {
+    final String from = BASE.plusDays(1000).toString();
+    final ExecutionPlan plan;
+    try (final ResultSet rs = database.query("sql",
+        "SELECT FROM LineItem WHERE l_shipdate >= '" + from + "' AND l_shipdate < '" + BASE.plusDays(1100) + "' ORDER BY l_seq")) {
+      rs.stream().count();
+      plan = rs.getExecutionPlan().get();
+    }
+    assertThat(plan.prettyPrint(0, 2)).contains("physical order (100 entries matched)");
+  }
+
   private record Execution(List<RID> rids, GetValueFromIndexEntryStep step, GetValueFromIndexEntryStep.Strategy strategy,
                            String plan) {
   }

@@ -18,6 +18,12 @@
  */
 package com.arcadedb.query.opencypher.optimizer.plan;
 
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
+import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
+import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 
 /**
@@ -88,6 +94,36 @@ public class PhysicalPlan {
    * Generates an EXPLAIN output for this physical plan.
    * Shows the operator tree with costs and cardinalities.
    */
+  /**
+   * Whether an operator of this plan reads a Graph Analytical View that can no longer serve it: it went stale (and is
+   * not to be used stale), was dropped, or is being rebuilt. A plan picks its view when it is planned, so a cached plan
+   * would otherwise keep reading a view the planner would no longer choose; the caller plans again instead.
+   */
+  public boolean readsAnUnavailableView() {
+    return readsAnUnavailableView(rootOperator);
+  }
+
+  private static boolean readsAnUnavailableView(final PhysicalOperator operator) {
+    if (operator == null)
+      return false;
+    final GraphTraversalProvider provider;
+    if (operator instanceof GAVExpandAll expand)
+      provider = expand.getProvider();
+    else if (operator instanceof GAVExpandInto expand)
+      provider = expand.getProvider();
+    else if (operator instanceof GAVFusedChainOperator chain)
+      provider = chain.getProvider();
+    else
+      provider = null;
+    if (provider != null && !provider.isReady())
+      return true;
+    if (operator instanceof NodeHashJoin join)
+      return readsAnUnavailableView(join.getLeftChild()) || readsAnUnavailableView(join.getRightChild());
+    if (operator instanceof CartesianProduct product && readsAnUnavailableView(product.getRight()))
+      return true;
+    return readsAnUnavailableView(operator.getChild());
+  }
+
   public String explain() {
     final StringBuilder sb = new StringBuilder();
     sb.append("Physical Plan:\n");

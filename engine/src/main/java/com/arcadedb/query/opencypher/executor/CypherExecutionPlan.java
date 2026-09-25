@@ -146,6 +146,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
+import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -4722,6 +4723,9 @@ public class CypherExecutionPlan {
    */
   private AbstractExecutionStep tryGAVOneHopScan(final CommandContext context) {
     if (physicalPlan == null || statement.getWhereClause() != null || statement.getClausesInOrder() == null)
+      return null;
+    // The sources come in the view's order rather than the label scan's: only where that order cannot show
+    if (!CypherOptimizer.rowOrderIsInvisible(statement))
       return null;
 
     MatchClause matchClause = null;

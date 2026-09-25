@@ -236,4 +236,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
 
     return sb.toString();
   }
+
+  public GraphTraversalProvider getProvider() {
+    return provider;
+  }
 }
