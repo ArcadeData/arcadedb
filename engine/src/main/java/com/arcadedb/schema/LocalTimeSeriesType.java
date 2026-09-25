@@ -207,6 +207,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void setTimestampColumn(final String timestampColumn) {
+    checkForSchemaMutation();
     this.timestampColumn = timestampColumn;
   }
 
@@ -216,6 +217,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void setPrecision(final String precision) {
+    checkForSchemaMutation();
     this.precision = precision;
   }
 
@@ -225,6 +227,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void setShardCount(final int shardCount) {
+    checkForSchemaMutation();
     this.shardCount = shardCount;
   }
 
@@ -234,6 +237,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void setRetentionMs(final long retentionMs) {
+    checkForSchemaMutation();
     this.retentionMs = retentionMs;
   }
 
@@ -243,6 +247,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void setCompactionBucketIntervalMs(final long compactionBucketIntervalMs) {
+    checkForSchemaMutation();
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
   }
 
@@ -252,6 +257,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   public void addTsColumn(final ColumnDefinition column) {
+    checkForSchemaMutation();
     tsColumns.add(column);
   }
 
