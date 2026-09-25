@@ -255,6 +255,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           if (entry == null) {
             finished = true;
             fetcher.close();
+            fetcher = null;
             return;
           }
           guard.check();

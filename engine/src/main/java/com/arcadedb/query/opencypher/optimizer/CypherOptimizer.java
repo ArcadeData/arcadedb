@@ -638,6 +638,9 @@ public class CypherOptimizer {
    * that an unsorted group order would decide. A statement that returns its rows as they come shows the index order,
    * which callers rely on; one with a WITH is left alone, whatever its shape, since a WITH can hand the rows on in
    * their order under a LIMIT. Shared by every rewrite that changes the order the MATCH produces its rows in.
+   * <p>
+   * Relies on the Cypher plan always sorting for an ORDER BY (an OrderByStep, never elided because the MATCH already
+   * produced its rows sorted): a future sort elision must not treat an adaptive scan as sorted.
    */
   public static boolean rowOrderIsInvisible(final CypherStatement statement) {
     if (statement == null || statement.getReturnClause() == null)
