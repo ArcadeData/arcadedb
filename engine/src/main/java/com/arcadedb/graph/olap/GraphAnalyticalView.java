@@ -448,7 +448,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         newer.await();
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
-    } catch (final RuntimeException e) {
+    } catch (final RuntimeException | Error e) {
+      // An Error too: a watch left open would keep the view BUILDING and buffer every later commit until it overflowed
       synchronized (this) {
         closeBuildWatch(watch);
         if (myGeneration == generation) {
