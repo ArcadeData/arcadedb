@@ -72,6 +72,15 @@ public final class ForwardedRequestIdContext {
     return ordinal == 1 ? state.requestId : state.requestId + ORDINAL_SEPARATOR + ordinal;
   }
 
+  /**
+   * Starts counting forwards from the first again, keeping the published id. Called at the top of every attempt of
+   * an auto-commit retry: a forward the retried attempt takes repeats one the previous attempt took, so it must carry
+   * the id that forward had rather than the next ordinal, or the leader would see a fresh key and run it again.
+   */
+  public static void restartOrdinals() {
+    STATE.get().forwards = 0;
+  }
+
   /** Clears the id. Must run in a finally block: HTTP worker threads are pooled and reused. */
   public static void clear() {
     final State state = STATE.get();

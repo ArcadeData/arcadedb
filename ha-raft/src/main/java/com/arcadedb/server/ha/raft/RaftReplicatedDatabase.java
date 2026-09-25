@@ -3784,7 +3784,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // Published by AbstractServerHttpHandler only for a request it treats as idempotent, so a session-scoped or
     // streamed request, a request with no id, and an embedded caller relay nothing. A second forward taken by the
     // same request carries the id with its ordinal (see ForwardedRequestIdContext), so two forwards of one statement
-    // never share a cache key on the leader.
+    // never share a cache key on the leader. The id is read from a thread-local, so it reaches this forward only when
+    // the command runs on the HTTP worker thread that published it; a caller that ran it on another thread would
+    // relay nothing, which is the pre-#8323 behaviour and never a wrong replay.
     //
     // Not when this node became the leader while waiting above and the POST goes to itself: this node's cache is then
     // the leader's cache and the request being served already holds its reservation, and a forward whose body happens
