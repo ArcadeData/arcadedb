@@ -187,6 +187,27 @@ class PerTypeAclIndexAndTimeSeriesTest {
     assertThat(allKeys).as("with no user bound every type stays visible").contains("code", "ssn");
   }
 
+  /**
+   * A type the user can read may extend one it cannot: {@code schema:types} lists the child but must not name the
+   * hidden parent in its {@code parentTypes}.
+   */
+  @Test
+  void schemaTypesHidesUnreadableParentType() {
+    database.command("sql", "CREATE DOCUMENT TYPE SecretChild EXTENDS " + SECRET_TYPE);
+    bindUser(Set.of(SECRET_TYPE), Set.of());
+
+    final List<Result> rows = new ArrayList<>();
+    database.query("sql", "SELECT FROM schema:types WHERE name = 'SecretChild'").forEachRemaining(rows::add);
+    assertThat(rows).hasSize(1);
+    final List<String> parents = rows.getFirst().getProperty("parentTypes");
+    assertThat(parents).doesNotContain(SECRET_TYPE);
+
+    unbindUser();
+    final List<String> allParents = database.query("sql", "SELECT FROM schema:types WHERE name = 'SecretChild'").next()
+        .getProperty("parentTypes");
+    assertThat(allParents).contains(SECRET_TYPE);
+  }
+
   private void bindUser(final Set<String> deniedTypesByBucket, final Set<String> deniedTypesByName) {
     DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).setCurrentUser(restrictedUser(deniedTypesByBucket, deniedTypesByName));
   }
