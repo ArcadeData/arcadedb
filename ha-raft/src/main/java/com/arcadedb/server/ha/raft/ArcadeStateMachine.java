@@ -420,6 +420,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, Integer> bootstrapInstallsInFlight = new ConcurrentHashMap<>();
 
   /**
+   * Databases whose copy the committed bootstrap baseline ordered replaced, whose replacement has failed at least
+   * once, and which nothing has replaced since (issue #8367). Each name owns exactly one holder in
+   * {@link #bootstrapInstallsInFlight}, handed over by {@link #installFromLeaderForBootstrapWithRetry} when the first
+   * install failed, so the node stays out of the Service and the #8363 request gate keeps refusing clients for as
+   * long as the rejected copy is what is on disk.
+   * <p>
+   * Before this set, the holder was released in the one scheduled retry's {@code finally}, whatever the retry did:
+   * a second failed download put the node back in the pool serving the copy the cluster had decided against, and -
+   * since that retry consumed {@code needsSnapshotDownload} and {@code triggerSnapshotDownload()} re-arms it only
+   * under a stale-snapshot read floor - nothing ever tried the replacement again.
+   * <p>
+   * Released only by {@link #settleBootstrapReplacement}, which every path that actually replaces this node's copy
+   * with the leader's calls (the same paths that clear the #6124 unreconciled mark), and by the DROP of the
+   * database. Re-driven by {@link #retryPendingBootstrapReplacements()} on the {@link HealthMonitor} tick.
+   * <p>
+   * In memory on purpose, NOT the durable {@link #bootstrapUnreconciledDatabases}: that set means "this node kept a
+   * FRESHER copy and an operator must choose a side" and is published as a CRITICAL with a drastic remedy, which
+   * misdiagnoses the ordinary "no leader yet" failure (PR #7964). Never populated by the #6124 "local is fresher,
+   * refuse to overwrite" branch either, which returns before any install is attempted.
+   */
+  private final Set<String> bootstrapReplacementsPending = ConcurrentHashMap.newKeySet();
+
+  // Wall-clock of the last pending-bootstrap-replacement retry claimed by retryPendingBootstrapReplacements(); 0 = none
+  // yet. Throttles the HealthMonitor-driven retry to one attempt per snapshot watchdog window, like the other
+  // snapshot backstops: each attempt is a full download of the database from the leader.
+  private final AtomicLong lastBootstrapReplacementRetryMs = new AtomicLong();
+
+  /**
    * Databases a first-formation bootstrap pass has told this node it is deciding on, and that the pass has not
    * settled here yet (issue #8368).
    * <p>
@@ -2092,6 +2120,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
       // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
       clearAllBootstrapUnreconciled();
+      // Likewise every pending bootstrap replacement it did reinstall (issue #8367); one it gave up on is still the
+      // copy the baseline rejected, so it stays pending.
+      settleBootstrapReplacementsExcept(notInstalled);
       // ... except the ones it did not reinstall. Re-arm those AFTER clearDivergedState()/clearStaleSnapshotFloor()
       // above, which are written for the all-databases-refreshed case (issue #6760).
       markDatabasesNotAtSnapshotIndex(notInstalled, snapshotIndex);
@@ -3652,6 +3683,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       LogManager.instance().log(this, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
       clearBootstrapUnreconciled(databaseName);
+      settleBootstrapReplacement(databaseName);
       return;
     }
 
@@ -3941,7 +3973,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // still be settling - is none of those things and retries itself. Holding readiness must not also raise a
     // false CRITICAL with a drastic remedy.
     beginBootstrapInstall(dbName);
-    boolean retryOwnsTheHolder = false;
+    boolean holderHandedOver = false;
     try {
       installFromLeaderForBootstrap(dbName);
     } catch (final RuntimeException e) {
@@ -3965,9 +3997,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
             throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
           }
         }
-        // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
-        // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
+        // Flag the pending download and run it off-thread.
         needsSnapshotDownload.set(true);
+        // The holder goes to the pending-replacement set rather than to the retry (issue #8367): it is released
+        // when this node's copy is actually replaced, not when one retry happens to end. A name already pending
+        // (a replay of the same entry) already owns its holder, so this one is released in the finally below.
+        holderHandedOver = bootstrapReplacementsPending.add(dbName);
       }
 
       // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
@@ -3975,8 +4010,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // critical-error halt - the very outcome this handler exists to prevent.
       try {
         lifecycleExecutor.submit(() -> retryBootstrapInstall(dbName, hadLocalCopy));
-        // The retry now owns the holder and releases it in its own finally, whatever it decides to do.
-        retryOwnsTheHolder = true;
+        // Without a local copy the retry owns the holder and releases it in its own finally, whatever it decides
+        // to do: the database is absent, so nothing is being served in the cluster's stead (issue #8045).
+        if (!hadLocalCopy)
+          holderHandedOver = true;
       } catch (final RejectedExecutionException ree) {
         // The remediation differs by branch, and naming the wrong one is the defect this whole change is about.
         // With a local copy the needsSnapshotDownload flag is set above, so the HealthMonitor backstop genuinely
@@ -3996,10 +4033,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
               null, dbName, dbName);
       }
     } finally {
-      // Released here on every path the retry did NOT take ownership of: the install succeeded, or it failed and
-      // the executor was already shut down so nothing will retry. A holder nothing ever releases would wedge the
-      // node out of the Service for good, which is worse than the gap it would be covering.
-      if (!retryOwnsTheHolder)
+      // Released here on every path nothing else took ownership of: the install succeeded, or it failed without a
+      // local copy and the executor was already shut down so nothing will retry. A holder nothing ever releases
+      // would wedge the node out of the Service for good. The one handed to bootstrapReplacementsPending is not
+      // such a holder: every path that replaces the copy releases it, and retryPendingBootstrapReplacements()
+      // keeps driving one of those paths until it does.
+      if (!holderHandedOver)
         endBootstrapInstall(dbName);
     }
   }
@@ -4009,8 +4048,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code lifecycleExecutor}, where an escaping exception is only logged by the executor and helps nobody.
    */
   private void retryBootstrapInstall(final String dbName, final boolean hadLocalCopy) {
+    if (hadLocalCopy) {
+      // No holder to release here: bootstrapReplacementsPending owns it until the copy is actually replaced
+      // (issue #8367).
+      retryBootstrapReplacement(dbName);
+      return;
+    }
     try {
-      retryBootstrapInstallHoldingTheGate(dbName, hadLocalCopy);
+      retryMissingBootstrapInstall(dbName);
     } finally {
       // Releases the holder installFromLeaderForBootstrapWithRetry handed over when it scheduled this retry, so
       // the node has been continuously out of the Service from the first install to the end of this one, however
@@ -4019,18 +4064,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
   }
 
-  /** The body of {@link #retryBootstrapInstall}, which owns the readiness holder around it. */
-  private void retryBootstrapInstallHoldingTheGate(final String dbName, final boolean hadLocalCopy) {
-    if (hadLocalCopy) {
-      if (needsSnapshotDownload.compareAndSet(true, false))
-        triggerSnapshotDownload();
-      else
-        // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
-        // the download; skip this retry. Logged so operators can trace why this submission did nothing.
-        LogManager.instance().log(this, Level.INFO,
-            "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
-      return;
-    }
+  /**
+   * The first retry of a failed replacement of a copy this node holds. Drives the ordinary full resync, which
+   * settles the pending replacement when it reinstalls the database; when it does not - no leader yet, a second
+   * failed download, another path holding the flag - the replacement stays pending and the node stays out of the
+   * Service, and {@link #retryPendingBootstrapReplacements()} retries it on the next health tick (issue #8367).
+   */
+  private void retryBootstrapReplacement(final String dbName) {
+    if (needsSnapshotDownload.compareAndSet(true, false))
+      triggerSnapshotDownload();
+    else
+      // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
+      // the download; skip this retry. Logged so operators can trace why this submission did nothing.
+      LogManager.instance().log(this, Level.INFO,
+          "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
+
+    if (bootstrapReplacementsPending.contains(dbName))
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s' has still not been replaced by the leader's copy the cluster's bootstrap baseline chose. This "
+              + "node keeps it out of the Service and refuses client requests on it until it is; the periodic health "
+              + "check retries the install once a leader is reachable. To force it, run "
+              + "POST /api/v1/cluster/resync/%s on this node.", dbName, dbName);
+  }
+
+  /** The body of {@link #retryBootstrapInstall} for a database this node did not hold, which owns the readiness holder around it. */
+  private void retryMissingBootstrapInstall(final String dbName) {
 
     // No local copy, so the full resync above has nothing to iterate over: it reinstalls the databases this
     // server has REGISTERED, and this one is exactly the one it does not have. Retry the targeted install.
@@ -4119,6 +4177,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
       clearBootstrapUnreconciled(dbName);
+      settleBootstrapReplacement(dbName);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to install snapshot for bootstrap-mismatched database '" + dbName + "'", e);
     } finally {
@@ -4148,6 +4207,132 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void endBootstrapInstall(final String dbName) {
     bootstrapInstallsInFlight.computeIfPresent(dbName, (name, depth) -> depth > 1 ? depth - 1 : null);
+  }
+
+  /**
+   * Retires a pending bootstrap replacement of {@code dbName} and releases the readiness holder it owns (issue
+   * #8367). Called from every path that actually replaces this node's copy with the leader's, and from the DROP of
+   * the database. The removal from the set is the ownership test, so the holder is released exactly once however
+   * many of those paths race; a database with nothing pending costs one read of an empty set.
+   */
+  private void settleBootstrapReplacement(final String dbName) {
+    if (bootstrapReplacementsPending.isEmpty() || !bootstrapReplacementsPending.remove(dbName))
+      return;
+    endBootstrapInstall(dbName);
+    LogManager.instance().log(this, Level.INFO,
+        "Database '%s' now carries the leader's copy: the pending bootstrap replacement is complete", dbName);
+  }
+
+  /** {@link #settleBootstrapReplacement} for every pending name not in {@code notReplaced}, for the full installs. */
+  private void settleBootstrapReplacementsExcept(final Set<String> notReplaced) {
+    if (bootstrapReplacementsPending.isEmpty())
+      return;
+    for (final String dbName : new ArrayList<>(bootstrapReplacementsPending))
+      if (notReplaced == null || !notReplaced.contains(dbName))
+        settleBootstrapReplacement(dbName);
+  }
+
+  /**
+   * Databases whose bootstrap replacement failed and is still pending, sorted (issue #8367). Package-private for
+   * tests: operators see the same names in the {@code bootstrap-install-in-progress} alert, since each one keeps its
+   * holder in {@link #getBootstrapInstallsInFlight()}.
+   */
+  List<String> getPendingBootstrapReplacements() {
+    if (bootstrapReplacementsPending.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(bootstrapReplacementsPending);
+    Collections.sort(names);
+    return names;
+  }
+
+  /**
+   * Periodic retry of every bootstrap replacement that failed and is still pending (issue #8367), driven by the
+   * {@link HealthMonitor} tick. This is the re-arm the one-shot retry never had: that retry consumes
+   * {@code needsSnapshotDownload}, and {@code triggerSnapshotDownload()} restores the flag only while a
+   * stale-snapshot read floor is outstanding - which it is not at a first formation - so a second failed download
+   * used to leave the replacement pending with nothing that would ever try it again.
+   * <p>
+   * Each attempt is the same targeted install the bootstrap itself runs ({@link #installFromLeaderForBootstrap}),
+   * one database at a time rather than a full resync of every database on the node, submitted to the
+   * {@code lifecycleExecutor} like every other leader-facing download. It settles the replacement on success; on
+   * failure the replacement stays pending for the next window.
+   * <p>
+   * Zero cost in the normal case - the pending set is empty and this returns after one read. Otherwise throttled to
+   * one attempt per {@link #computeSnapshotWatchdogTimeoutMs()}, and it stands down while a download is already
+   * running (that one settles the replacement or leaves it for the next window) and while no leader address is
+   * known yet, without spending the throttle slot, so the first tick after a leader appears is the one that tries.
+   * <p>
+   * <b>On the leader it installs nothing</b>: a node cannot install from itself. It keeps holding - the copy is still
+   * the one the baseline rejected - and says so once per window, naming the leadership transfer that unblocks it.
+   */
+  public void retryPendingBootstrapReplacements() {
+    if (bootstrapReplacementsPending.isEmpty())
+      return;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null)
+      return;
+    if (snapshotDownloadInProgress.get())
+      return;
+
+    final long retryIntervalMs = computeSnapshotWatchdogTimeoutMs();
+    if (raftHA.isLeader()) {
+      if (claimBootstrapReplacementRetrySlot(System.currentTimeMillis(), retryIntervalMs))
+        LogManager.instance().log(this, Level.WARNING,
+            "Database(s) %s still hold the copy the cluster's bootstrap baseline rejected, and this node is the leader, "
+                + "so there is nowhere to install the replacement from. They stay out of service on this node until "
+                + "leadership moves (POST /api/v1/cluster/leader) and the replacement is installed from the new leader",
+            getPendingBootstrapReplacements());
+      return;
+    }
+
+    // The same precheck retryUnfilledSnapshotGap() makes, so a tick with no usable leader does not burn the slot.
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
+      return;
+    if (!claimBootstrapReplacementRetrySlot(System.currentTimeMillis(), retryIntervalMs))
+      return;
+
+    final List<String> pending = getPendingBootstrapReplacements();
+    LogManager.instance().log(this, Level.WARNING,
+        "Retrying the bootstrap replacement of %s from the leader: the copy on this node is still the one the "
+            + "cluster's committed baseline rejected (issue #8367)", pending);
+    try {
+      lifecycleExecutor.submit(() -> {
+        for (final String dbName : pending) {
+          if (!bootstrapReplacementsPending.contains(dbName))
+            continue; // settled by another path since the tick
+          try {
+            installFromLeaderForBootstrap(dbName);
+          } catch (final RuntimeException e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Replacing database '%s' with the leader's copy failed again: %s. It stays out of service on this node "
+                    + "and the next health check retries it; to force it, run POST /api/v1/cluster/resync/%s on this "
+                    + "node", dbName, e.getMessage(), dbName);
+          }
+        }
+      });
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule the pending bootstrap replacement retry: executor is shut down", ree);
+    }
+  }
+
+  /** Claims the one pending-replacement retry slot per {@code intervalMs}; a lost CAS means another tick has it. */
+  private boolean claimBootstrapReplacementRetrySlot(final long now, final long intervalMs) {
+    final long previous = lastBootstrapReplacementRetryMs.get();
+    if (previous != 0 && now - previous < intervalMs)
+      return false;
+    return lastBootstrapReplacementRetryMs.compareAndSet(previous, now);
+  }
+
+  /**
+   * Test barrier: returns once every task submitted to the single-threaded {@code lifecycleExecutor} before this
+   * call has finished, by queueing a no-op behind them and waiting for it.
+   */
+  // @VisibleForTesting
+  void awaitLifecycleTasksForTesting(final long timeoutMs) throws Exception {
+    lifecycleExecutor.submit(() -> {
+    }).get(timeoutMs, TimeUnit.MILLISECONDS);
   }
 
   /**
@@ -4422,8 +4607,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
       // This is the action the bootstrap-divergence alert asks the operator for: the local copy the
-      // overwrite guard kept has just been replaced, so the mark goes with it (issue #6124).
+      // overwrite guard kept has just been replaced, so the mark goes with it (issue #6124) - and so does a
+      // bootstrap replacement still pending on it (issue #8367).
       clearBootstrapUnreconciled(dbName);
+      settleBootstrapReplacement(dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
     }
@@ -5458,6 +5645,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (bootstrapBaselines.remove(dbName) != null || wasUnreconciled)
         persistBootstrapBaselinesFile();
     }
+    // A dropped database has no copy left to replace; a holder kept for it would refuse clients on a database
+    // later recreated under the same name (issue #8367).
+    settleBootstrapReplacement(dbName);
   }
 
   /**
@@ -5707,6 +5897,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (server.existsDatabase(dbName)) {
         SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
             leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        // Per database, right after its own install, rather than once at the end: a later database failing must
+        // not leave this one reported as still carrying the copy the bootstrap baseline rejected (issue #8367).
+        settleBootstrapReplacement(dbName);
         resynced++;
       }
     }
@@ -5972,6 +6165,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                   "Targeted snapshot resync of quarantined database '%s' completed", dbName);
               clearDivergedDatabase(dbName);
               clearBootstrapUnreconciled(dbName);
+              settleBootstrapReplacement(dbName);
             }
           } finally {
             snapshotDownloadLock.unlock();
