@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,8 +62,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * sources keep being registered until the build finishes. That is one entry per changed source for the length of one
  * scan, dropped with the watch, and bounding it would cost a check on every record event instead.
  * <p>
- * Under {@code OFF} a relevant commit during the build only marks the view to publish as STALE, and
- * {@code ASYNCHRONOUS} dispatches its own rebuild from the commit callback as it always did.
+ * Under {@code OFF} and {@code ASYNCHRONOUS} a relevant commit during the build only marks this watch, without taking
+ * the view's monitor: the build then publishes STALE ({@code OFF}) or rebuilds once published ({@code ASYNCHRONOUS}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -96,8 +95,6 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
 
   // Bound when the build publishes; read and written under the view's monitor only from then on
   private Map<String, CSRAdjacencyIndex>     csrPerType;
-  // Additions accounted so far, so a later deletion of the same edge is not taken for one the scan missed
-  private final Set<RID>                     accountedAdditions = new HashSet<>();
   // The answers for the delta being merged, by EdgeDelta instance: set by account(), read by the merge right after
   private final Map<TxDelta.EdgeDelta, Boolean> answers = new IdentityHashMap<>();
 
@@ -166,8 +163,16 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     return true;
   }
 
-  void markRelevantCommit() {
+  /**
+   * Records that a relevant commit raced this build, for the build to act on when it publishes.
+   *
+   * @return false when the build has already published: the caller acts on the commit itself
+   */
+  synchronized boolean markRelevantCommit() {
+    if (!open)
+      return false;
     relevantCommit = true;
+    return true;
   }
 
   boolean hadRelevantCommit() {
@@ -218,17 +223,14 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
-      accountedAdditions.add(ed.rid);
       if (sawEdge(ed))
         answers.put(ed, Boolean.TRUE);
     }
     for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
       if (!watchedSources.contains(ed.source))
         continue;
-      // An edge added after the scan and deleted again cancels out in the overlay by identity; one the scan
-      // captured is in the base and its deletion is news to it. Neither was missed by the scan.
-      if (accountedAdditions.remove(ed.rid))
-        continue;
+      // An edge added after the scan and deleted again never reaches this answer: the merge withdraws its overlay
+      // addition by identity first. One the scan captured is in what it saw, so its deletion is news to the base.
       final Map<RID, RID> seen = observedSources.get(ed.source);
       if (seen != null && !Objects.equals(seen.get(ed.rid), ed.target))
         answers.put(ed, Boolean.TRUE);

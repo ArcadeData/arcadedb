@@ -121,6 +121,20 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
   }
 
   @Test
+  void offBlockingBuildRacedByACommitIsPublishedStale() {
+    // The commits racing a blocking build() only mark its watch: they neither wait for the scan nor get lost
+    final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.OFF).build());
+    assertThat(view.isStale()).isTrue();
+  }
+
+  @Test
+  void asynchronousBlockingBuildRacedByACommitConverges() {
+    final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS).build());
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    assertDegreesMatchTheRecords(view);
+  }
+
+  @Test
   void asynchronousBuildRacedByACommitConverges() {
     final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS).buildAsync());
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();

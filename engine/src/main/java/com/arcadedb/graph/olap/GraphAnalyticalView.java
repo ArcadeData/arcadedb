@@ -502,6 +502,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       }
     } else if (updateMode == UpdateMode.OFF && watch.hadRelevantCommit())
       newStatus = Status.STALE;
+    final boolean rebuildNeeded = updateMode == UpdateMode.ASYNCHRONOUS && watch.hadRelevantCommit();
 
     this.snapshot = fresh;
     this.status = newStatus;
@@ -514,6 +515,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       forced.forceEdgePropertyRebuild = true;
       applyDelta(forced);
     }
+    // An ASYNCHRONOUS view raced by a relevant commit rebuilds now, rather than from the commit callback mid-scan
+    if (rebuildNeeded)
+      onRelevantCommit();
   }
 
   /**
@@ -2394,6 +2398,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Called by the DeltaCollector (ASYNCHRONOUS/OFF mode) after a committed transaction affected
    * covered vertex/edge types. ASYNCHRONOUS triggers an async rebuild, OFF marks the view as STALE.
    */
+  /**
+   * Entry point of the ASYNCHRONOUS/OFF commit callback. While a full build is in flight the commit only marks the
+   * build's watch, for the build to publish STALE (OFF) or rebuild (ASYNCHRONOUS) - without taking this instance's
+   * monitor, which a synchronous {@link #build()} holds for its whole scan, so the committing thread is not stalled
+   * behind it, and without dispatching a second scan beside the one in flight (issue #8378).
+   */
+  void onRelevantCommitCallback() {
+    final BuildWatch watch = buildWatch;
+    if (watch != null && updateMode != UpdateMode.SYNCHRONOUS && watch.markRelevantCommit())
+      return;
+    onRelevantCommit();
+  }
+
   synchronized void onRelevantCommit() {
     if (updateMode == UpdateMode.ASYNCHRONOUS) {
       if (!compacting.compareAndSet(false, true)) {
@@ -2474,9 +2491,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     } else {
       // A build in flight would publish READY over this: it publishes STALE instead (issue #8378)
       final BuildWatch watch = buildWatch;
-      if (watch != null)
-        watch.markRelevantCommit();
-      else
+      if (watch == null || !watch.markRelevantCommit())
         this.status = Status.STALE;
     }
   }
@@ -2496,7 +2511,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * </ul>
    */
   synchronized void applyDelta(final TxDelta delta) {
-    applyDelta(delta, null);
+    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
   }
 
   /**
@@ -2507,17 +2522,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   void onCommittedDelta(final TxDelta delta) {
     final BuildWatch watch = buildWatch;
+    // The base being served when the delta was buffered: it takes the delta only if still served when merged
+    final Snapshot served = snapshot;
     if (watch != null && watch.offer(delta)) {
-      if (snapshot != null)
-        applyDelta(delta, watch);
+      if (served != null)
+        applyDelta(delta, served.csrPerType);
       return;
     }
-    applyDelta(delta, null);
+    applyDelta(delta, (Map<String, CSRAdjacencyIndex>) null);
   }
 
-  private synchronized void applyDelta(final TxDelta delta, final BuildWatch bufferedIn) {
-    // Buffered for a build that has published since: the delta was re-applied on the CSR it published
-    if (bufferedIn != null && buildWatch != bufferedIn)
+  private synchronized void applyDelta(final TxDelta delta, final Map<String, CSRAdjacencyIndex> bufferedAgainst) {
+    // Buffered for a build, and the base served when it was buffered has been replaced since: by that build, which
+    // re-applied it on the CSR it published, or by one whose scan started after it committed. Merged only while the
+    // base it was buffered against is still served, even when another build superseded the one that buffered it
+    if (bufferedAgainst != null && (snapshot == null || snapshot.csrPerType != bufferedAgainst))
       return;
     // No CSR to apply it to: after shutdown, from a lingering commit callback. A delta that commits while the first
     // build is in flight never reaches here, it is buffered in the build's watch (issue #8378)
