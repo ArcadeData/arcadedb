@@ -55,6 +55,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * committed during the scan, but was delivered late), so the view keeps it for as long as the CSR it describes
  * stays the base.
  * <p>
+ * A build that supersedes another takes over its registrations and its buffered deltas ({@link #handOverTo}).
+ * <p>
  * A transaction already running when a view's first build arms the listeners reported its earlier changes to nobody,
  * as it would to any listener armed mid-transaction: the window this closes is the scan's, not that one.
  * <p>
@@ -136,6 +138,14 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     open = false;
     successor = next;
     next.watchedSources.addAll(watchedSources);
+    // The deltas buffered here go with them. Their commits usually precede the new scan, which then reads them and the
+    // reconciliation skips them; but a blocking build() can scan inside the caller's REPEATABLE_READ transaction,
+    // whose cached pages may predate such a commit, and then only this delta can bring it in
+    synchronized (next) {
+      next.bufferedDeltas.addAll(bufferedDeltas);
+      if (overflowed || next.bufferedDeltas.size() > next.maxBufferedDeltas)
+        next.overflowed = true;
+    }
   }
 
   @Override
