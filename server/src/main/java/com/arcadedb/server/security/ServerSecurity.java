@@ -755,8 +755,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * JavaScript/Java trigger or a {@code LANGUAGE js} function gets the real {@code database} object, so it can call
    * {@code database.getSecurity().createUser(...)}, and a function called from an idempotent {@code SELECT} runs on
    * a follower without any forward. There the mutation was built from the follower's own, possibly lagging, view of
-   * the user list and decided off the leader - a submission that could lose the compare-and-set of #7509 and retry,
-   * with a capability probe round run while this monitor was held.
+   * the user list and decided off the leader. The compare-and-set of #7509 kept that safe but not cheap: the stale
+   * payload could be refused and retried, and deciding whether to attach the precondition could dial every peer
+   * synchronously ({@code RaftHAPlugin.preconditionEveryPeerCanRead}) while this node's security monitor was held.
    * <p>
    * The refusal names the leader, like the gRPC {@code requireLeader} gate. Only these three entry points are
    * gated: the cluster-wide mutators ({@link #createUserClusterWide} and siblings) are what the forwarding routes
