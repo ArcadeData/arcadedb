@@ -110,7 +110,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private static final long MULTIPLICITY_UNKNOWN = -1L;
 
   /** Semaphore bounding concurrent CPU-intensive build operations. */
-  private static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
+  // Package-private so a test can hold a build back between opening its watch and starting its scan
+  static final Semaphore BUILD_PERMITS = new Semaphore(MAX_CONCURRENT_BUILDS);
 
   /** The answer for a node with no edges of the type and direction asked for. */
   private static final int[]            EMPTY_INT          = new int[0];
@@ -441,6 +442,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     buildWatch = watch;
     if (deltaCollector == null)
       registerChangeListeners();
+    else
+      // Listeners armed before this watch existed: a transaction still open may have reported edge sources to no
+      // watch. Read after publishing the watch, the reverse of the order a transaction writes them in
+      deltaCollector.registerInFlightEdgeSources(watch);
     return watch;
   }
 

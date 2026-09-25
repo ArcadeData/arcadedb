@@ -107,10 +107,14 @@ class Issue8352WALSettingsScopeTest extends TestHelper {
     assertThat(own.isUseWAL()).isFalse();
     assertThat(own.isAsyncFlush()).isFalse();
 
+    // The Database getter answers for the calling thread, its own setting included
+    assertThat(database.isAsyncFlush()).isFalse();
+
     onAnotherThread(tx -> {
       assertThat(tx.getWALFlush()).isEqualTo(WALFile.FlushType.YES_NOMETADATA);
       assertThat(tx.isUseWAL()).isTrue();
       assertThat(tx.isAsyncFlush()).isTrue();
+      assertThat(database.isAsyncFlush()).isTrue();
     });
 
     // Handing the thread back to the database's settings

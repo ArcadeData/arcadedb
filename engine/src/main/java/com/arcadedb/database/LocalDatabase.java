@@ -1177,8 +1177,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return walFlushSetting;
   }
 
+  /**
+   * @return whether the calling thread's transactions flush their pages in the background: the thread's own setting
+   * when it has one, otherwise the database's
+   */
   @Override
   public boolean isAsyncFlush() {
+    return getTransaction().isAsyncFlush();
+  }
+
+  /** @return the database-wide asynchronous flush setting, ignoring any thread's own. */
+  public boolean isAsyncFlushSetting() {
     return asyncFlush;
   }
 
