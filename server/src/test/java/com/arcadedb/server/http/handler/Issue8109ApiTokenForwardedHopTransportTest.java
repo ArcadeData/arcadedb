@@ -68,8 +68,8 @@ class Issue8109ApiTokenForwardedHopTransportTest {
 
   /** The refusal {@code checkTransport} builds for a cleartext mint from a peer that is not on this machine. */
   private static ExecutionResponse cleartextRemoteRefusal() {
-    final ExecutionResponse refusal = PostApiTokenHandler.checkTransport("http", new InetSocketAddress("203.0.113.7", 51234),
-        true);
+    final ExecutionResponse refusal = PostApiTokenHandler.checkTransport("http",
+        new InetSocketAddress("203.0.113.7", 51234), true);
     assertThat(refusal).as("a cleartext mint from a remote peer must be refused with the setting on").isNotNull();
     return refusal;
   }

@@ -1227,11 +1227,11 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   /**
    * Refuses an operation that may only run on the cluster leader when this node is a follower.
    * <p>
-   * The HTTP control plane forwards these same commands - create/drop database and create/drop user, the set
-   * {@code PostServerCommandHandler.execute} hands to {@code forwardToLeaderIfReplica}, and the group and API-token
-   * routes (issue #8109) - by proxying the request to the leader. gRPC has no such proxy, so the equivalent gate is a refusal that names the leader, which is
-   * the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183). Without
-   * it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
+   * The HTTP control plane forwards these same commands to the leader: create/drop database and create/drop user
+   * (the set {@code PostServerCommandHandler.execute} hands to {@code forwardToLeaderIfReplica}), and since issue
+   * #8109 the group and API-token routes too. gRPC has no such proxy, so the equivalent gate is a refusal that names
+   * the leader - the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183).
+   * Without it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
    * which is exactly the state the HTTP path never gets into.
    * <p>
    * A server with HA inactive is always allowed: there is no leader to be, and {@code getHA()} is null.

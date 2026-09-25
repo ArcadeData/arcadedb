@@ -1172,8 +1172,8 @@ public class ServerControlPlane {
   }
 
   /**
-   * The refusal {@link #deleteApiToken} answers a plaintext token with. Shared with {@code DeleteApiTokenHandler}, which
-   * gives it before forwarding to the leader so the token never travels to a second node (issue #8109).
+   * The refusal {@link #deleteApiToken} answers a plaintext token with. Shared with {@code DeleteApiTokenHandler},
+   * which gives it before forwarding to the leader so the token never travels to a second node (issue #8109).
    */
   public static final String PLAINTEXT_TOKEN_DELETE_REFUSAL =
       "Use token hash (from list endpoint) instead of plaintext token for deletion";
