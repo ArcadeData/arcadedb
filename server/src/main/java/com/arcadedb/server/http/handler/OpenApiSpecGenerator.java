@@ -294,16 +294,17 @@ public class OpenApiSpecGenerator {
         Seconds to wait before retrying the request with the same '%s'.""".formatted(IdempotencyCache.HEADER_REQUEST_ID)));
 
     components.addParameters(REQUEST_ID_PARAM_COMPONENT, SpecBuilders.headerParam(IdempotencyCache.HEADER_REQUEST_ID, """
-        Correlation id, echoed on the response and logged with the request. On this POST route it also makes a \
-        retry safe to send verbatim: a successful (2xx) response is kept for up to '%s' ms, keyed by this id \
-        together with the method, path, database and body and bound to the authenticated user, and an identical \
-        retry is answered from it instead of executing again. The cache is also bounded by entry count and total \
-        size, so under pressure a completed response can be evicted before its TTL, and a retry then executes again. A failed request is not kept, so its retry executes afresh. \
-        While the first request is still executing, an identical retry waits briefly for it and then answers 409 \
-        with Retry-After rather than executing a second time. Not replayed: a request inside a client-managed \
-        transaction (it carries 'arcadedb-session-id'), a request asking for an NDJSON stream, and a response \
-        larger than '%s' bytes. A restore or import asked for as an SSE stream is replayed as a one-event stream \
-        carrying its 'completed' event. Use a new id for every distinct request.""".formatted(
+        Correlation id, echoed on the response and logged with the request. On this POST route it also makes a retry \
+        safe to send verbatim: a successful (2xx) response is kept for up to the milliseconds set by the '%s' server \
+        setting, keyed by this id together with the method, path, database and body and bound to the authenticated \
+        user, and an identical retry is answered from it instead of executing again. The cache is also bounded by \
+        entry count and total size, so under pressure a completed response can be evicted before its TTL, and a retry \
+        then executes again. A failed request is not kept, so its retry executes afresh. While the first request is \
+        still executing, an identical retry waits briefly for it and then answers 409 with Retry-After rather than \
+        executing a second time. Not replayed: a request inside a client-managed transaction (it carries 'arcadedb- \
+        session-id'), a request asking for an NDJSON stream, and a response larger than the bytes set by the '%s' \
+        server setting. A restore or import asked for as an SSE stream is replayed as a one-event stream carrying its \
+        'completed' event. Use a new id for every distinct request.""".formatted(
         GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS.getKey(), GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BODY_BYTES.getKey()),
         false));
 
