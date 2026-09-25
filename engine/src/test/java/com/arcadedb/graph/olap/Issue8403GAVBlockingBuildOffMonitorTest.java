@@ -123,6 +123,35 @@ class Issue8403GAVBlockingBuildOffMonitorTest extends TestHelper {
   }
 
   @Test
+  void aSupersededBlockingRebuildWhoseScanFailsReportsTheNewerOutcome() throws Exception {
+    // The call reports what the view now holds, whichever way its own discarded scan ended
+    final GraphAnalyticalView view = syncView();
+    final CountDownLatch scanReached = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Runnable pause = pause(scanReached, release, new AtomicBoolean());
+    final AtomicBoolean failed = new AtomicBoolean();
+    view.setBeforeBuildScanForTest(() -> {
+      pause.run();
+      if (release.getCount() == 0 && failed.compareAndSet(false, true))
+        throw new IllegalStateException("scan failed");
+    });
+    final CompletableFuture<Void> rebuild = CompletableFuture.runAsync(view::build);
+    try {
+      assertThat(scanReached.await(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+      view.buildAsync();
+      assertThat(view.awaitReady(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      release.countDown();
+    }
+    rebuild.get(HANG_SECONDS, TimeUnit.SECONDS);
+
+    assertThat(failed.get()).as("the superseded scan did fail").isTrue();
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    assertThat(view.getBuildError()).isNull();
+    view.drop();
+  }
+
+  @Test
   void aCommitDuringABlockingRebuildDoesNotStartACompaction() throws Exception {
     // A compaction beside the rebuild would supersede it, and never publish the view READY
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gav8403c").withVertexTypes("Person")

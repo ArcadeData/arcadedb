@@ -27,6 +27,7 @@ import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -434,8 +435,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           committed = true;
         } else {
           closeBuildWatch(watch);
-          // Superseded by a build dispatched while this one scanned: that one publishes, and this call returns once it
-          // has, so a caller still finds the view at least as fresh as its own scan. None when shut down meanwhile
+          // Superseded by a build dispatched while this one scanned: that one publishes, and this call reports its
+          // outcome (see adoptNewerOutcome()). None when shut down meanwhile
           if (readyLatch != latch)
             newer = readyLatch;
           LogManager.instance().log(this, Level.FINE,
@@ -445,11 +446,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (committed)
         invalidateGraphStatisticsCache();
       else if (newer != null)
-        newer.await();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
+        adoptNewerOutcome(newer);
     } catch (final RuntimeException | Error e) {
       // An Error too: a watch left open would keep the view BUILDING and buffer every later commit until it overflowed
+      CountDownLatch newer = null;
       synchronized (this) {
         closeBuildWatch(watch);
         if (myGeneration == generation) {
@@ -458,14 +458,49 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
           if (snapshot == null)
             unregisterChangeListeners();
-        }
+        } else if (readyLatch != latch)
+          newer = readyLatch;
         this.notifyAll();
       }
-      throw e;
+      // Superseded while it scanned: what this call reports is the newer build's outcome, as when its own scan succeeds
+      if (newer == null)
+        throw e;
+      adoptNewerOutcome(newer);
     } finally {
       latch.countDown();
       taskCompleted();
     }
+  }
+
+  /**
+   * Reports, for a {@link #build()} call a newer build superseded while it scanned, the outcome of the build that
+   * publishes instead: returns once it has published, and throws its failure if it failed. Either way the caller
+   * learns what the view now holds, not what its own discarded scan would have produced. Follows the chain when the
+   * newer build is itself superseded.
+   */
+  private void adoptNewerOutcome(CountDownLatch newer) {
+    final Throwable failure;
+    try {
+      while (true) {
+        newer.await();
+        synchronized (this) {
+          if (readyLatch == newer || status != Status.BUILDING) {
+            failure = buildError;
+            break;
+          }
+          newer = readyLatch;
+        }
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return;
+    }
+    if (failure instanceof RuntimeException runtime)
+      throw runtime;
+    if (failure instanceof Error error)
+      throw error;
+    if (failure != null)
+      throw new DatabaseOperationException("Rebuild of GraphAnalyticalView '" + name + "' failed", failure);
   }
 
   /**
@@ -494,12 +529,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     watch.close();
     if (buildWatch == watch)
       buildWatch = null;
-  }
-
-  private void closeBuildWatch() {
-    final BuildWatch watch = buildWatch;
-    if (watch != null)
-      closeBuildWatch(watch);
   }
 
   /**

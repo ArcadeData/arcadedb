@@ -107,19 +107,18 @@ public final class GAVEdgeRef {
   public static GAVEdgeRef[] collect(final Result row, final Set<String> variables) {
     if (variables == null || variables.isEmpty())
       return null;
-    GAVEdgeRef[] refs = null;
+    // Counted first, so the per-row array is allocated once and at its size
     int count = 0;
     for (final String variable : variables)
-      if (row.getProperty(variable) instanceof GAVEdgeRef ref) {
-        if (refs == null)
-          refs = new GAVEdgeRef[variables.size()];
-        refs[count++] = ref;
-      }
-    if (refs != null && count < refs.length) {
-      final GAVEdgeRef[] trimmed = new GAVEdgeRef[count];
-      System.arraycopy(refs, 0, trimmed, 0, count);
-      return trimmed;
-    }
+      if (row.getProperty(variable) instanceof GAVEdgeRef)
+        ++count;
+    if (count == 0)
+      return null;
+    final GAVEdgeRef[] refs = new GAVEdgeRef[count];
+    int i = 0;
+    for (final String variable : variables)
+      if (row.getProperty(variable) instanceof GAVEdgeRef ref)
+        refs[i++] = ref;
     return refs;
   }
 
