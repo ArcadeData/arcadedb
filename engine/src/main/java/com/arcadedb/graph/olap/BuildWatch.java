@@ -198,14 +198,12 @@ final class BuildWatch implements CSRBuilder.ScanObserver, DeltaOverlay.ExactSca
     return !watchedSources.isEmpty();
   }
 
-  /** Binds this watch to the CSR its build produced, from which point it answers {@link #occurrences}. */
+  /**
+   * Binds this watch to the CSR its build produced, from which point it answers the merge. The view drops the watch
+   * whenever that CSR stops being the base.
+   */
   void bindTo(final Map<String, CSRAdjacencyIndex> csrPerType) {
     this.csrPerType = csrPerType;
-  }
-
-  /** Whether this watch describes the scan that produced {@code csr}, and so can reconcile deltas against it. */
-  boolean describes(final Map<String, CSRAdjacencyIndex> csr) {
-    return csrPerType == csr;
   }
 
   Map<String, CSRAdjacencyIndex> getCsrPerType() {
