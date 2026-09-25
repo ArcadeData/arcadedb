@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -36,7 +35,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -57,7 +55,10 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     // the only place the order was lost, so the same record read remotely and embedded disagreed (issue #7140).
     this.map = new LinkedHashMap<>(attributes.size());
 
-    final Map<String, Type> propTypes = parsePropertyTypes((String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
+    // The same parser the projection rows use: the private one this class had put() into a null map, so every hint
+    // threw, was logged as SEVERE and was lost, and it could not read an element-type suffix such as "9(6)" (#8332).
+    final Map<String, RemoteDatabase.ColumnTypeHint> propTypes = RemoteDatabase.parsePropertyTypes(
+        (String) attributes.get(Property.PROPERTY_TYPES_PROPERTY));
 
     for (Map.Entry<String, Object> entry : attributes.entrySet()) {
       final String fieldName = entry.getKey();
@@ -65,7 +66,13 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         Object value = entry.getValue();
 
         final Property property = type.getPolymorphicPropertyIfExists(fieldName);
-        final Type propType = property != null ? property.getType() : propTypes.get(fieldName);
+        final Type propType;
+        if (property != null)
+          propType = property.getType();
+        else {
+          final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
+          propType = hint != null ? hint.type() : null;
+        }
 
         Class javaImplementation = value != null ? value.getClass() : null;
         if (propType == Type.DATE)
@@ -232,24 +239,5 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     }
 
     return value;
-  }
-
-  private Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
-    Map<String, Type> propTypes = null;
-    if (propTypesAsString != null) {
-      for (String entry : propTypesAsString.split(",")) {
-        try {
-          final String[] entryPair = entry.split(":");
-          if (entryPair.length == 2) {
-            final Type propType = Type.getById((byte) Integer.parseInt(entryPair[1]));
-            propTypes.put(entryPair[0], propType);
-          } else
-            LogManager.instance().log(this, Level.SEVERE, "Error parsing property types " + entryPair);
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error parsing property types", e);
-        }
-      }
-    }
-    return propTypes != null ? propTypes : Collections.emptyMap();
   }
 }
