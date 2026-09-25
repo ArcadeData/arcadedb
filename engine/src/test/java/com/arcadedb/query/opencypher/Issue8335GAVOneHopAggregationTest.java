@@ -123,6 +123,27 @@ class Issue8335GAVOneHopAggregationTest extends TestHelper {
   }
 
   @Test
+  void aSourceLabelThatIsASmallShareOfTheViewIsEnumeratedFromItsBuckets() {
+    // Products outnumber the persons: walking the whole view would visit them all to find the few sources
+    database.command("sql", "CREATE VERTEX TYPE Product");
+    database.transaction(() -> {
+      for (int i = 0; i < PERSONS * 3; i++)
+        database.newVertex("Product").set("id", i).save();
+    });
+
+    final Map<String, List<String>> expected = new LinkedHashMap<>();
+    for (final String query : ELIGIBLE)
+      expected.put(query, answer(query));
+
+    createView("VERTEX TYPES (Person, Employee, Company, Product) EDGE TYPES (KNOWS) PROPERTIES (id, city, age)");
+
+    for (final String query : ELIGIBLE) {
+      assertThat(plan(query)).as(query).contains("GAV ONE-HOP SCAN");
+      assertThat(answer(query)).as(query).isEqualTo(expected.get(query));
+    }
+  }
+
+  @Test
   void profileReportsTheScanAndItsRows() {
     createView("VERTEX TYPES (Person, Employee, Company) EDGE TYPES (KNOWS) PROPERTIES (id, city, age)");
     try (final ResultSet rs = database.query("opencypher",
