@@ -48,6 +48,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
+import com.arcadedb.function.polyglot.PolyglotFunctionDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -3927,12 +3928,17 @@ public class LocalSchema implements Schema {
    *
    * @param libraryName name of the library that receives the function
    * @param newLibrary  library to register under {@code libraryName} if the schema has none, or {@code null} when the
-   *                    caller found one
+   *                    library already exists
    * @param function    the function to add
    */
   public void defineFunction(final String libraryName, final FunctionLibraryDefinition newLibrary,
       final FunctionDefinition function) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    // A polyglot function is host code a later SELECT can invoke, so defining one takes security-admin on top of
+    // UPDATE_SCHEMA - the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g), held here as well so a direct
+    // call to this public method is no way around it.
+    if (function instanceof PolyglotFunctionDefinition)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
     recordFileChanges(() -> {
       final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
       if (existing != null)
