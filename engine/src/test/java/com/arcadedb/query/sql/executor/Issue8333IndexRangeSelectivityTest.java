@@ -309,6 +309,27 @@ class Issue8333IndexRangeSelectivityTest extends TestHelper {
     }
   }
 
+  @Test
+  void settingOutsideZeroToOneIsClampedOrDisabling() {
+    final String query = "SELECT FROM LineItem WHERE l_shipdate > '1992-01-01' ORDER BY l_seq";
+    try {
+      // Above 1: no range can hold more than the whole type, so it never gives way to the scan
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY, 2F);
+      final Execution clamped = run(query, Map.of());
+      assertThat(clamped.strategy()).isEqualTo(GetValueFromIndexEntryStep.Strategy.PHYSICAL_ORDER);
+      assertThat(clamped.rids()).hasSize(ROWS - 1);
+
+      // Negative: off, like 0
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY, -1F);
+      final Execution disabled = run(query, Map.of());
+      assertThat(disabled.step().getScanFallback()).isNull();
+      assertThat(disabled.rids()).hasSize(ROWS - 1);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY,
+          GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY.getDefValue());
+    }
+  }
+
   private record Execution(List<RID> rids, GetValueFromIndexEntryStep step, GetValueFromIndexEntryStep.Strategy strategy,
                            String plan) {
   }

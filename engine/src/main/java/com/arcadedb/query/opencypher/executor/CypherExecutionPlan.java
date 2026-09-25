@@ -4762,7 +4762,12 @@ public class CypherExecutionPlan {
     if (!source.hasLabels())
       return null;
 
-    if (!isLabelScanExpandedThroughView(physicalPlan.getRootOperator()))
+    // The label the optimizer scans must be one of the pattern's two: the step enumerates the view by the pattern's
+    // labels, so a plan scanning anything else (a rule widening or rewriting the anchor label) is not the plan it
+    // replaces, and is kept
+    final String scannedLabel = scannedLabelExpandedThroughView(physicalPlan.getRootOperator());
+    if (scannedLabel == null || !(scannedLabel.equals(source.getFirstLabel())
+        || (target.hasLabels() && scannedLabel.equals(target.getFirstLabel()))))
       return null;
 
     final List<String> types = relationship.getTypes();
@@ -4805,21 +4810,21 @@ public class CypherExecutionPlan {
   }
 
   /**
-   * Whether the operator tree is a full label scan expanded once through a view, with filters anywhere in between:
-   * the plan {@link GAVOneHopScanStep} replaces. Anything else - an index seek, a second expansion, a join - is a
-   * plan the optimizer preferred for a reason the step cannot reproduce.
+   * The label scanned when the operator tree is a full label scan expanded once through a view, with filters anywhere
+   * in between - the plan {@link GAVOneHopScanStep} replaces - or null for anything else: an index seek, a second
+   * expansion, a join, a plan the optimizer preferred for a reason the step cannot reproduce.
    */
-  private static boolean isLabelScanExpandedThroughView(final PhysicalOperator root) {
+  private static String scannedLabelExpandedThroughView(final PhysicalOperator root) {
     int expansions = 0;
     for (PhysicalOperator current = root; current != null; current = current.getChild()) {
       if (current instanceof GAVExpandAll)
         ++expansions;
-      else if (current instanceof NodeByLabelScan)
-        return expansions == 1 && current.getChild() == null;
+      else if (current instanceof NodeByLabelScan scan)
+        return expansions == 1 && current.getChild() == null ? scan.getLabel() : null;
       else if (!(current instanceof FilterOperator))
-        return false;
+        return null;
     }
-    return false;
+    return null;
   }
 
   /**

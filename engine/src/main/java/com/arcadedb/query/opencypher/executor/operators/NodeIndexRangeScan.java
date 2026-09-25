@@ -226,9 +226,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           fetcher = null;
           // Every vertex of the label: the pattern's WHERE is evaluated downstream on each of them, exactly as it is
           // on what the index returns, so the rows that survive are the same
-          @SuppressWarnings("unchecked")
-          final Iterator<Record> iterator = (Iterator<Record>) (Object) context.getDatabase().iterateType(label, true);
-          labelScan = iterator;
+          labelScan = context.getDatabase().iterateType(label, true);
           servedByScan = true;
         } else
           servedByScan = false;
