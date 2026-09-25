@@ -6114,11 +6114,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final long deadlineNanos) {
     if (worker == Thread.currentThread())
       return true;
+    // Logged as the budget THIS wait had: the two waits share one deadline, so the second can get far less than
+    // CLOSE_AWAIT_MS.
+    final long budgetNanos = Math.max(0L, deadlineNanos - System.nanoTime());
     try {
-      if (!executor.awaitTermination(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS))
+      if (!executor.awaitTermination(budgetNanos, TimeUnit.NANOSECONDS))
         LogManager.instance().log(this, Level.WARNING,
-            "State machine closed while a task on '%s' was still running after %d ms; it keeps running in the "
-                + "background and may still write under the database directory", null, threadName, CLOSE_AWAIT_MS);
+            "State machine closed while a task on '%s' was still running after a %d ms wait; it keeps running in the "
+                + "background and may still write under the database directory", null, threadName,
+            TimeUnit.NANOSECONDS.toMillis(budgetNanos));
       return true;
     } catch (final InterruptedException e) {
       return false;
