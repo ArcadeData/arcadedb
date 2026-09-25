@@ -625,6 +625,8 @@ public class PluginApiSpec implements OpenApiContributor {
         escalation a previous run of this node recorded next to its Raft storage. The liveness counterpart of the \
         two above: an escalation raised in this process makes '/api/v1/health' answer unhealthy, once, so the \
         process is restarted a single time; an inherited one does not (issue #7736)."""));
+    // The #7519 bootstrap install window, the readiness input #7872 still left unpublished (issue #8044).
+    schema.addProperty("bootstrapInstalls", bootstrapInstallsSchema());
     // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
     // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
     // explicit null rather than going absent (issues #7578, #7872).
@@ -632,7 +634,29 @@ public class PluginApiSpec implements OpenApiContributor {
         "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
-        "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
+        "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
+        "alerts"));
+    return schema;
+  }
+
+  /**
+   * The databases this node is installing from the leader's first-formation bootstrap snapshot (issue #8044). The
+   * #7519 readiness gate answers 503 while one of them replaces a copy this node holds, and its body points at this
+   * document, which until this member said nothing about it.
+   */
+  private Schema<?> bootstrapInstallsSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        The databases this node is installing from the leader's first-formation bootstrap snapshot. Present on \
+        every answer. While an install replaces a copy this node already holds, '/api/v1/ready' answers 503: that \
+        copy is the one the cluster's committed baseline decided against. Not a resync, so 'localResync' does not \
+        reflect it; the 'bootstrap-install-in-progress' alert does.""");
+    schema.addProperty("inProgress", SpecBuilders.bool("True while at least one bootstrap install is running"));
+    schema.addProperty("count", SpecBuilders.integer(
+        "How many databases are being installed, before the authorization filter below"));
+    schema.addProperty("databases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
+        "The databases being installed, reduced to the ones the caller is authorized on"));
+    // Built as one chained expression by GetClusterHandler.buildBootstrapInstalls, so it is present whole.
+    schema.setRequired(List.of("inProgress", "count", "databases"));
     return schema;
   }
 
@@ -735,7 +759,8 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("inProgress", SpecBuilders.bool("""
         True while a resync is holding this node out of the ready set. NOT the whole answer '/api/v1/ready' \
         gives: a node halted by a critical error or wedged by a log-write failure has this false and answers 503 \
-        anyway, so read it together with 'criticalHalt' and 'raftLogFailure' (issue #7872)."""));
+        anyway, so read it together with 'criticalHalt' and 'raftLogFailure' (issue #7872), and \
+        'bootstrapInstalls' (issue #8044)."""));
     schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),

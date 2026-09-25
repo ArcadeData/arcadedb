@@ -209,6 +209,9 @@ public interface HAServerPlugin extends ServerPlugin {
    * other peer shares. That is durable, survives restarts, and until an operator or an automatic remedy replaces
    * the copy, every read this node serves for that database is data the cluster never adopted.
    * <p>
+   * A database this node does not hold at all is neither, and does not take it out of the Service (issue #8045):
+   * nothing is being served in the cluster's stead, and the node keeps serving every database it does hold.
+   * <p>
    * Consulted by {@code ServerControlPlane.notReadyReason()} and deliberately NOT behind
    * {@code arcadedb.server.readinessRequiresHA}, for the same reason as {@link #getRaftLogFailure()}: that switch
    * is opt-in because it gates a node that is merely BEHIND, and a deployment can reasonably serve reads from
