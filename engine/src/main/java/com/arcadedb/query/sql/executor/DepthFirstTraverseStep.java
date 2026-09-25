@@ -167,7 +167,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (!improvesDepth(nextStep.getIdentity(), depth))
       return;
 
-    final TraverseResult res = new TraverseResult((Document) nextStep);
+    final TraverseResult res = new TraverseResult((Document) nextStep.getRecord());
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
