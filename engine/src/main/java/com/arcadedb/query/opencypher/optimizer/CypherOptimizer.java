@@ -361,8 +361,8 @@ public class CypherOptimizer {
    * of an edge, and labels compare only with labels. Relationship uniqueness therefore holds either when every
    * relationship of the clause that could collide binds a label, or when every one of them binds an edge record - never
    * a mix. A clause qualifies when each of those relationships is anonymous (a named one is materialized so that it can
-   * be tracked), has a fixed length (variable-length expansion walks edge records) and is covered by a ready view that
-   * can enumerate its edge types one by one, none of which has a sub-type. Otherwise all of them walk the edge records.
+   * be tracked), has a fixed length (variable-length expansion walks edge records) and is covered by a ready view, and
+   * none of the edge types it walks has a sub-type. Otherwise all of them walk the edge records.
    *
    * @return the view for every relationship that binds a label; the others must not be walked through a view
    */
@@ -387,7 +387,7 @@ public class CypherOptimizer {
         }
         final String[] edgeTypes = rel.getTypes().toArray(new String[0]);
         final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
-        if (provider == null || !walksOnlyLeafEdgeTypes(provider, edgeTypes)) {
+        if (provider == null || !walksOnlyLeafEdgeTypes(edgeTypes)) {
           eligible = false;
           break;
         }
@@ -403,13 +403,11 @@ public class CypherOptimizer {
    * Whether every edge type a tracked hop would walk has no sub-type. A view builds a type's adjacency polymorphically,
    * so the slice of a type with sub-types holds their edges too, under the parent's name: two hops asking for the parent
    * and for the sub-type would then label one edge twice, under two names, and never see the collision (#8394). A leaf
-   * type's slice holds exactly its own edges, which is what makes the type part of a label an identity.
+   * type's slice holds exactly its own edges, which is what makes the type part of a label an identity. An untyped hop
+   * walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have to be leaves.
    */
-  private boolean walksOnlyLeafEdgeTypes(final GraphTraversalProvider provider, final String[] edgeTypes) {
-    final String[] walked = edgeTypes.length > 0 ? edgeTypes : provider.getMaterializedEdgeTypes();
-    if (walked == null)
-      return false;
-    for (final String type : walked) {
+  private boolean walksOnlyLeafEdgeTypes(final String[] edgeTypes) {
+    for (final String type : GAVEdgeRef.trackedEdgeTypes(database, edgeTypes)) {
       final DocumentType schemaType = database.getSchema().getTypeOrNull(type);
       if (schemaType == null || !schemaType.getSubTypes().isEmpty())
         return false;

@@ -201,6 +201,33 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
   }
 
   @Test
+  void anUntypedHopWalksAnEdgeTypeTheSnapshotHasNoSliceFor() {
+    // A view over every edge type, then a type created after its build: its edges live only in the overlay, and an
+    // untyped hop that enumerated the snapshot's types would never see them
+    createView("VERTEX TYPES (P) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
+    database.command("sql", "CREATE EDGE TYPE Z");
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 1").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 2").next().getVertex().get();
+      a.modify().newEdge("Z", b);
+      a.modify().newEdge("Z", b);
+      b.modify().newEdge("Z", b);
+    });
+    final String[] queries = {
+        "MATCH (a:P {id:1})-[]->(b:P)-[]->(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[]-(b:P {id:2})-[]-(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:Z]->(b:P)-[:Z]->(c:P) RETURN count(*) AS n" };
+    final Map<String, List<String>> withView = new LinkedHashMap<>();
+    for (final String query : queries)
+      withView.put(query, answer(query));
+    assertThat(plan(queries[0])).contains("provider=gav8394").contains("unique relationships");
+
+    database.command("sql", "DROP GRAPH ANALYTICAL VIEW gav8394");
+    for (final String query : queries)
+      assertThat(withView.get(query)).as(query).isEqualTo(answer(query));
+  }
+
+  @Test
   void answersMatchWithChangesServedFromTheOverlay() {
     createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
 

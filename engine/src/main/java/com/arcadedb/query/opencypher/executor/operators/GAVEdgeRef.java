@@ -18,9 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -68,6 +73,21 @@ public final class GAVEdgeRef {
   /** A label whose occurrence is already known. */
   public static GAVEdgeRef ranked(final String type, final RID out, final RID in, final int occurrence) {
     return new GAVEdgeRef(type, out, in, null, -1, occurrence);
+  }
+
+  /**
+   * The edge types a tracked hop walks one by one: its own, or every edge type of the schema for an untyped hop. Read
+   * from the schema rather than from the view's snapshot, which holds no slice for a type that had no edges when it was
+   * built: edges of that type committed since live in the view's overlay, and a walk skipping the type would miss them.
+   */
+  public static String[] trackedEdgeTypes(final Database database, final String[] hopTypes) {
+    if (hopTypes != null && hopTypes.length > 0)
+      return hopTypes;
+    final List<String> names = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes())
+      if (type instanceof EdgeType)
+        names.add(type.getName());
+    return names.toArray(new String[0]);
   }
 
   /** Ranks {@code slice[index]} among the equal entries of the slice that precede it. */

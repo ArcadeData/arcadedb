@@ -136,7 +136,8 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private int bufferIndex = 0;
       private boolean finished = false;
       // Tracked mode (#8394): the current source's adjacency, one slice per (edge type, orientation)
-      private final String[] trackedTypes = edgeTrackingVar != null ? resolveTrackedTypes() : null;
+      private final String[] trackedTypes = edgeTrackingVar != null ?
+          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
       private GAVEdgeRef[] boundRefs;
       private int sourceNodeId;
       private RID sourceRID;
@@ -455,14 +456,6 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         inputResults.close();
       }
     };
-  }
-
-  /** The edge types a tracked hop walks one by one: its own, or every type the view holds for an untyped hop. */
-  private String[] resolveTrackedTypes() {
-    if (edgeTypes != null && edgeTypes.length > 0)
-      return edgeTypes;
-    final String[] materialized = provider.getMaterializedEdgeTypes();
-    return materialized != null ? materialized : new String[0];
   }
 
   @Override

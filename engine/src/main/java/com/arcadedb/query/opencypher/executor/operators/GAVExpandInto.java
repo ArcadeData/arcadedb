@@ -174,7 +174,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         final RID target = targetVertex.getIdentity();
         final int srcId = provider.getNodeId(source);
         final int tgtId = provider.getNodeId(target);
-        for (final String type : resolveTrackedTypes()) {
+        for (final String type : GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes)) {
           if (direction != Direction.IN)
             emitTracked(inputResult, bound, type, source, target, srcId, tgtId, Vertex.DIRECTION.OUT, sourceVertex, targetVertex);
           // Undirected: a self-loop is one relationship, already counted in the outgoing orientation
@@ -281,14 +281,6 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         inputResults.close();
       }
     };
-  }
-
-  /** The edge types a tracked hop counts one by one: its own, or every type the view holds for an untyped hop. */
-  private String[] resolveTrackedTypes() {
-    if (edgeTypes != null && edgeTypes.length > 0)
-      return edgeTypes;
-    final String[] materialized = provider.getMaterializedEdgeTypes();
-    return materialized != null ? materialized : new String[0];
   }
 
   @Override
