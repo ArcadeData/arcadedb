@@ -244,7 +244,11 @@ public class IdempotencyCache {
       return;
 
     final boolean cacheable = statusCode >= 200 && statusCode < 300;
-    final CachedEntry completed = cacheable ? new CachedEntry(statusCode, body, binary, eventStream, principal) : null;
+    CachedEntry completed = cacheable ? new CachedEntry(statusCode, body, binary, eventStream, principal) : null;
+    // The event-stream replay is an extra encoding of the same answer: when it is what pushes the entry past the cap,
+    // it is dropped and the answer kept, so a retry is still replayed (as the body) rather than executed again
+    if (completed != null && eventStream != null && completed.sizeInBytes() > maxBodyBytes)
+      completed = new CachedEntry(statusCode, body, binary, null, principal);
     if (completed != null && completed.sizeInBytes() <= maxBodyBytes)
       store(key, completed);
     else

@@ -277,4 +277,18 @@ class IdempotencyCacheTest {
     assertThat(r.isHit()).isTrue();
     assertThat(r.isReserved()).isFalse();
   }
+
+  @Test
+  void anOversizedEventStreamReplayIsDroppedButTheAnswerIsKept() {
+    // Issue #8331: the SSE replay is a second encoding of the same answer; when only it breaks the per-body cap, the
+    // JSON answer is still cached so a retry is replayed rather than executed again
+    final IdempotencyCache cache = new IdempotencyCache(60_000, 100, Long.MAX_VALUE, 32);
+    final IdempotencyCache.Reservation r = cache.reserve("k");
+    cache.complete("k", r, 200, "{\"result\":\"ok\"}", null, "data: " + "x".repeat(64) + "\n\n", "root");
+
+    final IdempotencyCache.CachedEntry entry = cache.get("k");
+    assertThat(entry).isNotNull();
+    assertThat(entry.body).isEqualTo("{\"result\":\"ok\"}");
+    assertThat(entry.eventStream).isNull();
+  }
 }
