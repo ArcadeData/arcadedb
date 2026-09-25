@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -29,9 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SleepStatementExecutionTest extends TestHelper {
   @Test
   void basic() {
-    final long begin = System.currentTimeMillis();
+    // Monotonic clock: Thread.sleep is measured against it, while the wall clock can be adjusted during the sleep and
+    // report a 1000 ms sleep as 957 ms (seen on a full engine run)
+    final long begin = System.nanoTime();
     final ResultSet result = database.command("sql", "sleep 1000");
-    assertThat(System.currentTimeMillis() - begin >= 1000).isTrue();
+    assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin)).isGreaterThanOrEqualTo(1000L);
     //printExecutionPlan(null, result);
 //    assertThat(result).isNotNull();
     assertThat(result.hasNext()).isTrue();

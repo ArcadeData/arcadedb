@@ -2498,11 +2498,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Computes the content-byte offset where a new record's bytes should start within {@code page}, given the
-   * page's CURRENT record count - i.e. right after the last live record/placeholder/chunk head on the page.
+   * page's CURRENT record count - i.e. right after the last live record/placeholder/chunk head on the page, which is
+   * also where the page's free tail starts.
    * Mirrors the core of {@link #getFreeSpaceInPage}, minus the free-slot search (the caller already has an exact
-   * target slot) and minus its {@code totalRecordsInPage >= maxRecordsInPage} short-circuit: that short-circuit
-   * exists only to make the ALLOCATOR give up on this page and try a different one, which is not an option for
-   * {@link #restoreRecordAtPosition} - the target page is fixed.
+   * target slot, or only wants the tail measured) and minus its {@code totalRecordsInPage >= maxRecordsInPage}
+   * short-circuit: that short-circuit exists only to make the ALLOCATOR give up on this page and try a different one,
+   * which is not an option for {@link #restoreRecordAtPosition} - the target page is fixed - and would leave a
+   * MEASUREMENT of the free tail with no answer at all (#8401).
    */
   private int findContentInsertionOffset(final BasePage page, final int totalRecordsInPage) throws IOException {
     return contentEndOffset(page, getLastRecordPositionInPage(page, totalRecordsInPage));
@@ -3070,10 +3072,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // Kept rather than left to the compressPage the commit runs on this page a moment later (which measures the
         // same thing), because the walk is already done here and dropping the call would also drop the
         // changesFromLastStats increment that schedules the next full statistics gather.
-        final PageAnalysis pageAnalysis = new PageAnalysis(page);
-        pageAnalysis.totalRecordsInPage = recordCountInPage;
-        getFreeSpaceInPage(pageAnalysis);
-        updatePageStatistics(page, pageAnalysis.spaceAvailableInCurrentPage, 0);
+        //
+        // #8401: measured with findContentInsertionOffset, NOT with the allocator's getFreeSpaceInPage. That one
+        // answers a different question - "can a NEW record go here?" - and on a page whose slot table is full it gives
+        // up before measuring anything, leaving its -1 default where the free tail should be. Small records reach that
+        // shape routinely (2048 edges of ~14 bytes fill the slot table of a 64 KB page with half its bytes free), and
+        // the -1 went to the statistics as if it were a measurement.
+        updatePageStatistics(page, page.getMaxContentSize() - findContentInsertionOffset(page, recordCountInPage), 0);
       } else
         changesFromLastStats.incrementAndGet();
 
@@ -4325,12 +4330,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (database.getConfiguration().getValueAsBoolean(GlobalConfiguration.BUCKET_WIPEOUT_ONDELETE)) {
       // WIPE OUT FREE SPACE IN THE PAGE. THIS HELPS WITH THE BACKUP OF DATABASE INCREASING THE COMPRESSION RATE
       try {
-        final PageAnalysis pageAnalysis = new PageAnalysis(page);
-        pageAnalysis.totalRecordsInPage = recordCountInPage;
-        getFreeSpaceInPage(pageAnalysis);
-
-        if (pageAnalysis.spaceAvailableInCurrentPage > 0)
-          page.writeZeros(pageAnalysis.newRecordPositionInPage, page.getMaxContentSize() - pageAnalysis.newRecordPositionInPage);
+        // #8401: the free tail is measured directly. The allocator's getFreeSpaceInPage measures nothing on a page whose
+        // slot table is full, which skipped the wipe on exactly the pages a delete of small records leaves behind.
+        final int contentEnd = findContentInsertionOffset(page, recordCountInPage);
+        if (contentEnd < page.getMaxContentSize())
+          page.writeZeros(contentEnd, page.getMaxContentSize() - contentEnd);
       } catch (Exception e) {
         // IGNORE IT
         LogManager.instance().log(this, Level.SEVERE, "Error on wiping out page content", e);
