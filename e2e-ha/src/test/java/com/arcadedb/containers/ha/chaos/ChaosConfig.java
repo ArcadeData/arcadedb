@@ -37,10 +37,12 @@ import java.util.regex.Pattern;
 public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps, int writers,
                           Map<String, Integer> faultWeights, Duration holdMin, Duration holdMax, Duration calmMin,
                           Duration calmMax, Duration convergenceTimeout, Duration electionTimeout,
-                          Duration availabilityGrace, String nodeHeap) {
+                          Duration availabilityGrace, String nodeHeap, String serverOpts) {
 
   private static final long    MIN_NODE_HEAP_BYTES = 256L << 20;
   private static final Pattern HEAP_SIZE           = Pattern.compile("(\\d+)([mMgG])");
+  /** One JVM option appended to every node's command line; the server script splits on spaces and does not quote. */
+  private static final Pattern SERVER_OPTION       = Pattern.compile("-(D[\\w.\\-]+=[^\\s'\"]*|XX:[^\\s'\"]+)");
 
   public static final List<String> ALL_FAULTS = List.of("kill", "stop", "rolling", "pause", "isolate", "split", "latency",
       "loss");
@@ -64,6 +66,13 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
     faultWeights = Collections.unmodifiableMap(new LinkedHashMap<>(faultWeights));
     if (heapBytes(nodeHeap) < MIN_NODE_HEAP_BYTES)
       throw new IllegalArgumentException("chaos.nodeHeap must be at least 256M, got " + nodeHeap);
+    serverOpts = serverOpts == null ? "" : serverOpts.trim().replaceAll("\\s+", " ");
+    if (!serverOpts.isEmpty())
+      for (final String option : serverOpts.split(" "))
+        if (!SERVER_OPTION.matcher(option).matches())
+          throw new IllegalArgumentException(
+              "chaos.serverOpts accepts space-separated -D<property>=<value> or -XX:<flag> options without quotes or spaces"
+                  + " inside a value, got '" + option + "'");
   }
 
   public static ChaosConfig fromProperties(final Properties properties) {
@@ -82,7 +91,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         duration(properties, "chaos.convergenceTimeout", "PT2M"),
         duration(properties, "chaos.electionTimeout", "PT60S"),
         duration(properties, "chaos.availabilityGrace", "PT20S"),
-        properties.getProperty("chaos.nodeHeap", "1G").trim());
+        properties.getProperty("chaos.nodeHeap", "1G").trim(),
+        properties.getProperty("chaos.serverOpts", ""));
   }
 
   /**
@@ -127,7 +137,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         + " -Dchaos.holdMax=" + holdMax
         + " -Dchaos.calmMin=" + calmMin
         + " -Dchaos.calmMax=" + calmMax
-        + " -Dchaos.nodeHeap=" + nodeHeap;
+        + " -Dchaos.nodeHeap=" + nodeHeap
+        + (serverOpts.isEmpty() ? "" : " '-Dchaos.serverOpts=" + serverOpts + "'");
   }
 
   /** Heap of each ArcadeDB node in bytes; the container limit is twice this, for direct memory and page cache. */

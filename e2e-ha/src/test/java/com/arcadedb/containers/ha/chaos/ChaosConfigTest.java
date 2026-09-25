@@ -101,6 +101,21 @@ class ChaosConfigTest {
   }
 
   @Test
+  void serverOptsArePassedThroughAndValidated() {
+    assertThat(ChaosConfig.fromProperties(props()).serverOpts()).isEmpty();
+    assertThat(ChaosConfig.fromProperties(props()).replayCommand()).doesNotContain("chaos.serverOpts");
+    final ChaosConfig config = ChaosConfig.fromProperties(
+        props("chaos.serverOpts", " -Darcadedb.ha.staleFollowerRecoveryDurationMs=10000  -XX:+UseZGC "));
+    assertThat(config.serverOpts()).isEqualTo("-Darcadedb.ha.staleFollowerRecoveryDurationMs=10000 -XX:+UseZGC");
+    assertThat(config.replayCommand())
+        .contains("'-Dchaos.serverOpts=-Darcadedb.ha.staleFollowerRecoveryDurationMs=10000 -XX:+UseZGC'");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.serverOpts", "-Da=1 rm")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.serverOpts");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.serverOpts", "-Da='x y'")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.serverOpts");
+  }
+
+  @Test
   void replayCommandCarriesTheDecisions() {
     final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.seed", "42", "chaos.faults", "kill:3,pause"));
     assertThat(config.replayCommand())
