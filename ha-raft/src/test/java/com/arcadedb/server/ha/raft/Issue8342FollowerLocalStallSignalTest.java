@@ -108,6 +108,19 @@ class Issue8342FollowerLocalStallSignalTest {
   }
 
   @Test
+  void anUnreadableLogIndexKeepsTheLogBaseline() {
+    // Review of PR #8358: a transient -1 used to erase the baseline, so the growth on the next tick went unseen.
+    final FollowerStallTracker tracker = new FollowerStallTracker();
+    tracker.observe(0L, true, 5_000L, 100L, 100L, THRESHOLD);
+    tracker.observe(3_000L, true, 5_000L, 100L, -1L, THRESHOLD);
+    tracker.observe(GRACE, true, 5_000L, 100L, 150L, THRESHOLD);
+    assertThat(tracker.current()).as("the log grew from 100 to 150 across the unreadable tick").isNull();
+    tracker.observe(GRACE + 3_000L, true, 5_000L, 100L, 150L, THRESHOLD);
+    tracker.observe(2 * GRACE + 3_000L, true, 5_000L, 100L, 150L, THRESHOLD);
+    assertThat(tracker.current()).as("the spell restarted at the growth and ran its own grace").isNotNull();
+  }
+
+  @Test
   void aLagWithinTheThresholdIsNeverAStall() {
     final FollowerStallTracker tracker = new FollowerStallTracker();
     for (long now = 0L; now <= 3 * GRACE; now += 3_000L)

@@ -301,6 +301,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Issue #8342: this follower's own view of a zero-progress stall behind its leader, measured against
   // leaderReportedCommitIndex above. Written by the health-monitor thread (trackFollowerStall), read by
   // GET /api/v1/cluster. The clock is a field so a unit test can move time without sleeping.
+  // followerStallLeader deliberately duplicates leaderCommitProbeLastLeader: the probe skips ticks while it backs
+  // off, so the two hooks can see a leader change on different ticks, and each must reset on the tick IT sees it.
+  // Merging them would make one of the two resets late.
   private final    FollowerStallTracker      followerStallTracker   = new FollowerStallTracker();
   private          RaftPeerId                followerStallLeader;
   private volatile LongSupplier              followerStallClock     = System::currentTimeMillis;

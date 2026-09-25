@@ -86,7 +86,10 @@ final class FollowerStallTracker {
     final boolean progressed = (baselineAppliedIndex >= 0 && appliedIndex > baselineAppliedIndex)
         || (baselineLogIndex >= 0 && logIndex > baselineLogIndex);
     baselineAppliedIndex = appliedIndex;
-    baselineLogIndex = logIndex;
+    // An unreadable log index (a transient null last entry) keeps the previous baseline rather than erasing it, so
+    // the log's progress is still judged against it on the next readable tick (review of PR #8358).
+    if (logIndex >= 0)
+      baselineLogIndex = logIndex;
 
     final long lag = leaderCommitIndex - appliedIndex;
     if (lag <= lagThreshold || progressed) {
