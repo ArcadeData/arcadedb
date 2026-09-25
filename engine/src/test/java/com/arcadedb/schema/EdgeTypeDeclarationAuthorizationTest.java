@@ -112,6 +112,15 @@ class EdgeTypeDeclarationAuthorizationTest {
   }
 
   @Test
+  void alterTypeWithBothSettingsNeedsSchemaPermission() {
+    bindUserWithoutSchemaPermission();
+
+    assertRefused("ALTER TYPE FriendOf WITH lightweight = true, unique = true");
+    assertThat(edgeType("FriendOf").isLightweight()).isFalse();
+    assertThat(edgeType("FriendOf").isUnique()).isFalse();
+  }
+
+  @Test
   void edgeTypeSettersNeedSchemaPermission() {
     bindUserWithoutSchemaPermission();
 
