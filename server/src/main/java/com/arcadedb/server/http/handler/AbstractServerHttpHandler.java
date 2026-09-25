@@ -490,8 +490,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // reach. Read only after the cluster token has been validated: the marker is a statement one node
         // makes to another, and honoring it from an ordinary client request would let any caller turn its own
         // transparent forward into a refusal by copying the header through.
+        // With it, under the same gate, the peer id of the node the peer meant to reach: what tells a leadership
+        // change in flight (retryable) from an address that names the wrong node (a configuration fault) when
+        // this node has to refuse the hop (issue #7603).
         if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
-          LeaderForwardContext.markAlreadyForwarded();
+          LeaderForwardContext.markAlreadyForwarded(
+              exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER));
 
         final HeaderValues forwardedUserValues = exchange.getRequestHeaders().get("X-ArcadeDB-Forwarded-User");
         if (forwardedUserValues != null && !forwardedUserValues.isEmpty()) {

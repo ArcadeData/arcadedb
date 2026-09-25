@@ -98,6 +98,7 @@ import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.handler.LeaderDial;
+import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
 import java.net.ConnectException;
@@ -124,6 +125,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
@@ -3565,17 +3567,38 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // here, so the caller retries - which re-resolves the leader from scratch - rather than this node posting a
     // non-idempotent write a second time on a path that cannot prove the first one did not execute.
     if (LeaderForwardContext.isAlreadyForwarded()) {
+      // The peer says which node it meant to reach, and that separates the two causes (issue #7603). If it meant
+      // THIS node, the address was right and leadership moved while the write travelled: an ordinary election the
+      // retry gets past. The refusal then names no leader, which the HTTP layer answers 503 - retryable - rather
+      // than the 400 a named leader gets, and it leaves the warning latch to the misconfiguration it reports.
+      final RaftPeerId localPeer = raft.getLocalPeerId();
+      final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(
+          localPeer != null ? localPeer.toString() : null);
+      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+        final String currentLeader = raft.getLeaderName();
+        throw new ServerIsNotTheLeaderException(
+            "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
+                + "the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
+                + ". The write was not executed: retry it", null);
+      }
+
+      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
       // and from there to the client, so without this line the only node that can name the misconfiguration -
       // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
-                + "That peer resolved an HTTP address for the leader which does not identify it - unless leadership "
-                + "just moved, declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
+                + "That peer resolved an HTTP address for the leader which does not identify it - "
+                + (misidentified ? "it meant to reach another node, so " : "unless leadership just moved, ")
+                + "declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
                 + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
             getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(
+      throw new ServerIsNotTheLeaderException(misidentified ?
+          "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
+              + "which is neither the leader nor the node that peer meant to reach, so the HTTP address that peer "
+              + "resolved for the leader does not identify it. Declaring every node's HTTP port "
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
           "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
               + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
               + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
@@ -3588,7 +3611,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // bounded time for a leader to appear and forward as soon as one does. If this node becomes the leader
     // while waiting, getLeaderHttpAddress() returns its own address and the POST to self executes locally.
     final long leaderWaitMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS);
-    final String leaderHttpAddress = awaitLeaderAddress(raft::getLeaderHttpAddress, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
+    //
+    // The leader's peer id is captured with every read of its address, so the id this write names on the wire is the
+    // one the address was resolved for (issue #7603) - checked again once the dial below is resolved.
+    final AtomicReference<RaftPeerId> leaderIdAtAddressRead = new AtomicReference<>();
+    final String leaderHttpAddress = awaitLeaderAddress(() -> {
+      leaderIdAtAddressRead.set(raft.getLeaderId());
+      return raft.getLeaderHttpAddress();
+    }, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
     if (leaderHttpAddress == null)
       throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available "
           + "(no leader elected within " + leaderWaitMs + "ms; tune " + GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS.getKey() + ")");
@@ -3600,6 +3630,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // further down cannot vet one address and dial another across a leadership change in between.
     final HAServerPlugin haPlugin = server.getHA();
     final LeaderDial dial = haPlugin != null ? LeaderDial.resolve(haPlugin, httpClient) : null;
+    final RaftPeerId leaderIdBeforeDial = leaderIdAtAddressRead.get();
+    final RaftPeerId leaderIdAfterDial = raft.getLeaderId();
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(
+        leaderIdBeforeDial != null ? leaderIdBeforeDial.toString() : null,
+        leaderIdAfterDial != null ? leaderIdAfterDial.toString() : null);
 
     // The cluster named an HTTPS endpoint for the leader and this node cannot reach it. Posting the write to the
     // plain listener instead would put it, and the cluster token below, on the wire in clear; refuse with the
@@ -3698,6 +3733,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // (issue #6191). Sent only with the token, because that is the only form in which a receiving node
       // trusts the marker - same pairing as PostServerCommandHandler's forward.
       builder.header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+      // Which node this write means to reach, so a node that has to refuse the hop can tell a leadership change in
+      // flight from an address that names the wrong node (issue #7603). Same gate as the marker.
+      if (intendedLeaderId != null)
+        builder.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeaderId);
     }
 
     String proxiedUser = proxied.getCurrentUserName();

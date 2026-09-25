@@ -71,14 +71,89 @@ public final class LeaderForwardContext {
   /** Request header a node sets when it redirects a request to the leader on a client's behalf. */
   public static final String FORWARDED_TO_LEADER_HEADER = "X-ArcadeDB-Forwarded-To-Leader";
 
-  private static final ThreadLocal<Boolean> ALREADY_FORWARDED = new ThreadLocal<>();
+  /**
+   * Request header naming the Raft peer id of the node the forwarding peer believed was the leader when it dialled
+   * (issue #7603). Travels beside {@link #FORWARDED_TO_LEADER_HEADER} and is honoured under the same cluster-token
+   * gate. It is what lets the node that refuses a second hop tell its two causes apart - see {@link Refusal}.
+   */
+  public static final String FORWARDED_LEADER_ID_HEADER = "X-ArcadeDB-Forwarded-Leader-Id";
+
+  /**
+   * Why a request that arrived already forwarded to the leader landed on a node that is not the leader
+   * (issue #7603). The one-hop refusal used to answer both causes the same way - HTTP 400 blaming
+   * {@code arcadedb.ha.serverList} - which told every client not to retry a routine election.
+   */
+  public enum Refusal {
+    /**
+     * The forwarding peer dialled the node it meant to - this one - and this node is no longer the leader:
+     * leadership moved while the request was in flight. Transient; the same request retried re-resolves the
+     * leader from scratch.
+     */
+    LEADERSHIP_MOVED,
+    /**
+     * The forwarding peer meant another node and its address for that node reached this one instead: the HTTP
+     * address it resolved for the leader does not identify the leader. A configuration fault, not transient.
+     */
+    ADDRESS_DOES_NOT_IDENTIFY_LEADER,
+    /**
+     * Either peer could not say - the forwarding peer sent no leader id (an older node during a rolling upgrade,
+     * or leadership changing while it resolved the address) or this node cannot name itself. Answered as before.
+     */
+    UNDETERMINED
+  }
+
+  private static final ThreadLocal<Boolean> ALREADY_FORWARDED  = new ThreadLocal<>();
+  private static final ThreadLocal<String>  INTENDED_LEADER_ID = new ThreadLocal<>();
 
   private LeaderForwardContext() {
   }
 
   /** Declares that the request being served on this thread was already redirected to the leader by a peer. */
   public static void markAlreadyForwarded() {
+    markAlreadyForwarded(null);
+  }
+
+  /**
+   * As {@link #markAlreadyForwarded()}, also recording which node the forwarding peer believed was the leader.
+   *
+   * @param intendedLeaderId the Raft peer id the peer dialled as the leader, or null when it did not say
+   */
+  public static void markAlreadyForwarded(final String intendedLeaderId) {
     ALREADY_FORWARDED.set(Boolean.TRUE);
+    if (intendedLeaderId != null && !intendedLeaderId.isBlank())
+      INTENDED_LEADER_ID.set(intendedLeaderId.trim());
+    else
+      INTENDED_LEADER_ID.remove();
+  }
+
+  /** The Raft peer id the forwarding peer meant to reach as the leader, or null when it did not say. */
+  public static String intendedLeaderId() {
+    return INTENDED_LEADER_ID.get();
+  }
+
+  /**
+   * Why the already-forwarded request being served on this thread cannot be executed here, given this node's own
+   * Raft peer id.
+   *
+   * @param localPeerId this node's Raft peer id, or null when it cannot name itself
+   */
+  public static Refusal classifyRefusal(final String localPeerId) {
+    final String intended = INTENDED_LEADER_ID.get();
+    if (intended == null || localPeerId == null || localPeerId.isBlank())
+      return Refusal.UNDETERMINED;
+    return intended.equals(localPeerId) ? Refusal.LEADERSHIP_MOVED : Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
+  }
+
+  /**
+   * The value of {@link #FORWARDED_LEADER_ID_HEADER} a forwarding node can send: the leader's peer id read before
+   * and after the leader's address was resolved, when the two agree. When they differ leadership changed in
+   * between, so the address and the id may name different nodes, and saying nothing is the only honest answer -
+   * the receiver then falls back to {@link Refusal#UNDETERMINED} rather than blaming the configuration.
+   */
+  public static String stableLeaderId(final String leaderIdBefore, final String leaderIdAfter) {
+    if (leaderIdBefore == null || leaderIdBefore.isBlank() || !leaderIdBefore.equals(leaderIdAfter))
+      return null;
+    return leaderIdBefore;
   }
 
   /**
@@ -92,5 +167,6 @@ public final class LeaderForwardContext {
   /** Clears the marker. Must run in a finally block: HTTP worker threads are pooled and reused. */
   public static void clear() {
     ALREADY_FORWARDED.remove();
+    INTENDED_LEADER_ID.remove();
   }
 }

@@ -1922,28 +1922,53 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // is not the leader either. Relaying it on would send it round the cycle that wrong address created, one
     // held request thread and one buffered upload per hop; refuse in one hop instead (issue #6191).
     if (LeaderForwardContext.isAlreadyForwarded()) {
+      // Two causes, two answers (issue #7603). The peer meant to reach THIS node: the address was right and
+      // leadership moved while the load travelled, which the same request retried gets past - 503, and the warning
+      // latch below is left for the misconfiguration it exists to report.
+      final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
+      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+        final String currentLeader = ha.getLeaderName();
+        return new ExecutionResponse(503, new JSONObject()
+            .put("error", "A cluster peer forwarded this batch here as the leader, and leadership moved away from this "
+                + "node while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader
+                + ")" : "") + ". Nothing was loaded: retry it")
+            .toString());
+      }
+
+      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Also said once in this node's log: the refusal is relayed back to the peer and from there to the
       // client, so otherwise the only node that can name the misconfiguration never mentions it.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a batch to this node as the leader, but this node is not the leader (db=%s). "
-                + "Unless leadership just moved, the HTTP address that peer resolved for the leader does not identify "
+                + (misidentified ? "That peer meant to reach another node, so " : "Unless leadership just moved, ")
+                + "the HTTP address that peer resolved for the leader does not identify "
                 + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
                 + "load is refused rather than relayed on. This notice is logged only once.",
             databaseName, GlobalConfiguration.HA_SERVER_LIST.getKey());
       return new ExecutionResponse(400, new JSONObject()
-          .put("error", "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
-              + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
-              + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
-              + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
-              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents")
+          .put("error", misidentified ?
+              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived on this "
+                  + "node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
+                  + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
+                  + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
+              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
+                  + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
+                  + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
+                  + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
+                  + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents")
           .toString());
     }
 
     // Where to dial the leader and on which scheme: its HTTPS endpoint when the cluster has one for it, the
     // plain-HTTP one otherwise (issue #7508). The relayed payload and the cluster token below would otherwise
     // cross an SSL cluster in cleartext.
+    //
+    // The leader's peer id is read on both sides of the resolution, so the id this forward names is the one the
+    // address was resolved for - or none, when leadership changed in between (issue #7603).
+    final String leaderIdBeforeDial = ha.getLeaderPeerId();
     final LeaderDial dial = LeaderDial.resolve(ha, httpClient);
+    final String intendedLeaderId = LeaderForwardContext.stableLeaderId(leaderIdBeforeDial, ha.getLeaderPeerId());
     if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
@@ -2004,7 +2029,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
         exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null,
-        Duration.ofMillis(deadlineMs));
+        Duration.ofMillis(deadlineMs), intendedLeaderId);
 
     try {
       if (streaming)
@@ -2117,6 +2142,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
       final String userName, final long contentLength, final InputStream body, final String accept, final Duration timeout) {
+    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, accept, timeout, null);
+  }
+
+  /**
+   * As above, and additionally names the node this forward means to reach as the leader (issue #7603), so a node
+   * that has to refuse the hop can tell a leadership change in flight from an address that names the wrong node.
+   *
+   * @param intendedLeaderId the leader's Raft peer id, or {@code null} to send none
+   */
+  static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
+      final String userName, final long contentLength, final InputStream body, final String accept, final Duration timeout,
+      final String intendedLeaderId) {
 
     final AtomicBoolean bodyTaken = new AtomicBoolean(false);
     final Supplier<InputStream> oneShotBody = () -> {
@@ -2142,6 +2179,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
         .POST(publisher);
 
+    if (intendedLeaderId != null)
+      forward.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeaderId);
     if (accept != null)
       forward.header("Accept", accept);
     if (timeout != null)

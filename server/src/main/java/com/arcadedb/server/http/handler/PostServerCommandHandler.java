@@ -105,6 +105,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         command_lc.startsWith(IMPORT_DATABASE)) {
       final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user,
           isLongRunningForwardedCommand(command_lc));
+      // The leader's progress stream was relayed straight to the client (issue #7603): the response is already on
+      // the wire, and null is how a handler says so to AbstractServerHttpHandler.
+      if (forwarded == LeaderCommandForwarder.STREAMED)
+        return null;
       if (forwarded != null)
         return forwarded;
     }
@@ -690,7 +694,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
   /**
    * If this node is an HA replica, forwards the server command to the leader and returns its response.
-   * Returns null if this node is the leader or HA is not enabled (caller should execute locally).
+   * Returns null if this node is the leader or HA is not enabled (caller should execute locally), and
+   * {@link LeaderCommandForwarder#STREAMED} when the leader's progress stream was relayed to the client as it arrived.
    * <p>
    * The mechanics live in {@link LeaderCommandForwarder}, shared with the REST {@code /server/users} routes
    * that perform the same operations and used to run them wherever the request landed (issue #7380).
@@ -699,7 +704,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       final ServerSecurityUser user, final boolean longRunningCommand) throws IOException {
     return httpServer.getLeaderCommandForwarder()
         .forwardIfReplica(exchange, user, LeaderCommandForwarder.currentPathWithQuery(exchange), payload.toString(),
-            longRunningCommand);
+            longRunningCommand, true);
   }
 
   /**

@@ -83,6 +83,23 @@ public interface HAServerPlugin extends ServerPlugin {
 
   String getLeaderName();
 
+  /**
+   * The Raft peer id of the current leader, or null when no leader is known or the plugin has no such notion.
+   * Unlike {@link #getLeaderName()} - a display name every node builds for itself, which can embed a per-node
+   * derived HTTP address - a peer id is the same string on every member, so it is what one node can send another
+   * to say which node it meant (issue #7603).
+   */
+  default String getLeaderPeerId() {
+    return null;
+  }
+
+  /**
+   * This node's own Raft peer id, in the same form {@link #getLeaderPeerId()} reports it, or null when unknown.
+   */
+  default String getLocalPeerId() {
+    return null;
+  }
+
   ELECTION_STATUS getElectionStatus();
 
   /**
