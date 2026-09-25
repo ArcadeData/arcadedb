@@ -269,6 +269,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
    * the scan threshold. See the class comment.
    */
   private void chooseStrategy(final CommandContext context, final ExecutionStepInternal prevStep) {
+    // The threshold is a share of the records the target buckets hold, so it needs them named: the planner always does
+    // when it builds a fallback, and a step without buckets keeps the index order
     if (scanFallback == null || !(prevStep instanceof FetchFromIndexStep indexStep) || filterBucketIds == null) {
       strategy = Strategy.INDEX_ORDER;
       return;
