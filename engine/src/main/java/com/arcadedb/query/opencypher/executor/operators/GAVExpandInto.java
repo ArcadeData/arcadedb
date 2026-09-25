@@ -98,6 +98,9 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // Resolved once per execution, not per row: an untyped hop reads every edge type of the schema
+      private final String[] trackedTypes = edgeTrackingVar != null ?
+          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
 
       @Override
       public boolean hasNext() {
@@ -174,7 +177,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         final RID target = targetVertex.getIdentity();
         final int srcId = provider.getNodeId(source);
         final int tgtId = provider.getNodeId(target);
-        for (final String type : GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes)) {
+        for (final String type : trackedTypes) {
           if (direction != Direction.IN)
             emitTracked(inputResult, bound, type, source, target, srcId, tgtId, Vertex.DIRECTION.OUT, sourceVertex, targetVertex);
           // Undirected: a self-loop is one relationship, already counted in the outgoing orientation
