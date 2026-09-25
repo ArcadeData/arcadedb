@@ -171,7 +171,7 @@ public class LineProtocolParser {
       if (pos < len && line.charAt(pos) == ',') {
         pos++; // skip comma
         while (pos < len && line.charAt(pos) != ' ') {
-          final ParsedString keyResult = readKeyWithLength(line, pos, '=');
+          final ParsedString keyResult = readKey(line, pos);
           pos += keyResult.length() + 1; // +1 for '='
           final ParsedString valResult = readTagValueWithLength(line, pos);
           pos += valResult.length();
@@ -190,7 +190,9 @@ public class LineProtocolParser {
       // Parse fields (comma-separated key=value pairs)
       final Map<String, Object> fields = new LinkedHashMap<>();
       while (pos < len && line.charAt(pos) != ' ') {
-        final ParsedString keyResult = readKeyWithLength(line, pos, '=');
+        final ParsedString keyResult = readKey(line, pos);
+        if (keyResult.value().isEmpty())
+          throw new IllegalArgumentException("Missing field key at position " + pos);
         pos += keyResult.length() + 1; // +1 for '='
         final ParsedValue valueAndLen = readFieldValue(line, pos);
         fields.put(keyResult.value(), valueAndLen.value());
@@ -227,10 +229,13 @@ public class LineProtocolParser {
   }
 
   /**
-   * Reads a key (tag key or field key) terminated by {@code stopChar}, handling backslash escapes.
-   * Returns the decoded string and the raw byte length consumed (not including the stop character).
+   * Reads a key (tag key or field key) terminated by '=', handling backslash escapes.
+   * Returns the decoded string and the raw byte length consumed (not including the '=').
+   * An unescaped ',' or ' ' cannot be part of a key, so reaching one, or the end of the line, before the '=' means the
+   * key has no value: the line is malformed. Reading on to the end of the line instead turned a line truncated after a
+   * field key into a field the caller then stored with a fabricated value (issue #8302).
    */
-  private static ParsedString readKeyWithLength(final String line, final int start, final char stopChar) {
+  private static ParsedString readKey(final String line, final int start) {
     final StringBuilder sb = new StringBuilder();
     int pos = start;
     while (pos < line.length()) {
@@ -240,12 +245,14 @@ public class LineProtocolParser {
         pos += 2;
         continue;
       }
-      if (c == stopChar)
+      if (c == '=')
+        return new ParsedString(sb.toString(), pos - start);
+      if (c == ',' || c == ' ')
         break;
       sb.append(c);
       pos++;
     }
-    return new ParsedString(sb.toString(), pos - start);
+    throw new IllegalArgumentException("Missing '=' after key '" + sb + "' at position " + start);
   }
 
   /**
@@ -293,7 +300,7 @@ public class LineProtocolParser {
    */
   private static ParsedValue readFieldValue(final String line, final int start) {
     if (start >= line.length())
-      return new ParsedValue(0.0, 0);
+      throw new IllegalArgumentException("Missing field value at position " + start);
 
     final char first = line.charAt(start);
 

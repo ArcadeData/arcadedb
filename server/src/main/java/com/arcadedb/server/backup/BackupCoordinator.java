@@ -22,6 +22,7 @@ import com.arcadedb.engine.MaintenanceCoordinator;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,7 +95,7 @@ import java.util.regex.Pattern;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BackupCoordinator implements MaintenanceCoordinator {
-  private static final DateTimeFormatter ARCHIVE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS");
+  private static final DateTimeFormatter ARCHIVE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS", Locale.ROOT);
   /**
    * Matches the archives this class names, and the second-precision ones every release before it wrote: retention and
    * the backup listing run over directories that hold both, and a name they cannot parse is a file they silently stop
