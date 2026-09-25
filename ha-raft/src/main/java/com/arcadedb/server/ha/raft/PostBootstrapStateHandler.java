@@ -205,9 +205,10 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
   /**
    * Applies what a first-formation bootstrap pass says about itself in the probe's body (issue #8368) - see
    * {@link BootstrapElection#announcePassBody} and {@link BootstrapElection#concludePassBody} for the two shapes.
-   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler, the #8360
-   * snapshot-marker read, the divergence re-check), and so does a leader that predates this change: none of them
-   * holds anything, which leaves a mixed-version cluster exactly as ungated as before rather than wedged.
+   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler's full listing,
+   * the divergence re-check) or {@code {"markerOnly": true}} (the #8374 snapshot-marker read, answered before this
+   * method runs), and so does a leader that predates this change: none of them holds anything, which leaves a
+   * mixed-version cluster exactly as ungated as before rather than wedged.
    * <p>
    * Safe to reach from outside a pass only as far as root can already reach: the route is root-only, the announce
    * is ignored by a node past first formation, and every hold it takes lapses on its own.
