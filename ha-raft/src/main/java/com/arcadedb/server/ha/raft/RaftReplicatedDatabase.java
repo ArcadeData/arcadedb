@@ -1883,15 +1883,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return;
     final ArcadeStateMachine stateMachine = raft.getStateMachine();
     final boolean anyInstall = SnapshotInstaller.hasInstallsInFlight();
-    // Read once: it is asked again below only to pick the message, and a hold that lapses in between must not turn a
-    // refusal decided here into a request served against the copy.
+    // Each read once: the answers decide the refusal and then pick its message, and a hold that lapses in between must
+    // not turn a refusal decided here into a request served against the copy. Both are an empty-map check on a
+    // healthy node.
     final boolean passPending = stateMachine != null && stateMachine.isBootstrapPassPending(getName());
-    if (!anyInstall && !passPending && (stateMachine == null || !stateMachine.isBootstrapInstallInFlight(getName())))
+    final boolean bootstrapInstall = stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName());
+    if (!anyInstall && !passPending && !bootstrapInstall)
       return;
     if (ProtocolContext.INTERNAL.equals(ProtocolContext.get()))
       return;
-    if ((anyInstall && SnapshotInstaller.isInstallInFlight(getDatabasePath()))
-        || (stateMachine != null && stateMachine.isBootstrapInstallInFlight(getName())))
+    if ((anyInstall && SnapshotInstaller.isInstallInFlight(getDatabasePath())) || bootstrapInstall)
       throw new NeedRetryException("Database '" + getName() + "' is being replaced on this server from the leader's "
           + "snapshot: the copy on disk is one the cluster has decided to discard, so it cannot serve this request. "
           + "Retry shortly, or send the request to another server of the cluster");

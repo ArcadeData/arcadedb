@@ -4195,7 +4195,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (passId == null || dbNames == null || dbNames.isEmpty() || !hasNeverAppliedApplicationEntry())
       return;
     ensureBootstrapBaselinesLoaded();
-    final long hold = Math.max(0L, Math.min(holdMs, MAX_BOOTSTRAP_PASS_HOLD_MS));
+    // A negative hold can only come from an overflowed configuration (2 x an absurd bootstrap timeout): fail towards
+    // holding, which costs availability, rather than towards not holding, which is the bug this hold exists for.
+    final long hold = holdMs < 0 ? MAX_BOOTSTRAP_PASS_HOLD_MS : Math.min(holdMs, MAX_BOOTSTRAP_PASS_HOLD_MS);
     final PendingBootstrapPass pending = new PendingBootstrapPass(passId,
         System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(hold));
     for (final String dbName : dbNames) {

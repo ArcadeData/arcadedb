@@ -29,6 +29,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,11 +38,22 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 /**
@@ -282,5 +295,80 @@ class Issue8368BootstrapPassWindowTest {
     } finally {
       ProtocolContext.clear();
     }
+  }
+
+  /**
+   * A leader whose pass elects a remote source is about to become a follower of a pass that may reject its copy: it
+   * holds its own databases from that decision on, and keeps holding them once leadership has moved - the elected
+   * source's own pass announces and concludes for it.
+   */
+  @Test
+  void aLeaderThatTransfersHoldsItsOwnCopyThroughTheTransfer() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+
+    final boolean[] heldAtTheTransfer = new boolean[1];
+    doAnswer(invocation -> {
+      heldAtTheTransfer[0] = sm.isBootstrapPassPending(DB_NAME);
+      return null;
+    }).when(ha).transferLeadership(anyString(), anyLong());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
+    assertThat(heldAtTheTransfer[0]).as("held from the decision, before leadership moves").isTrue();
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).as("not concluded by the pass that handed over").isTrue();
+  }
+
+  /**
+   * The transfer the self-hold anticipated never happens: the pass fails, and its conclusion releases the hold, so a
+   * failed transfer never keeps the leader out of the Service while it waits for a retry on the next term.
+   */
+  @Test
+  void aFailedTransferReleasesTheLeadersOwnHold() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    doThrow(new IllegalStateException("transfer timed out")).when(ha).transferLeadership(anyString(), anyLong());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.FAILED);
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+    assertThat(sm.bootstrapWindowReason()).isNull();
+  }
+
+  private static final RaftPeerId LOCAL_PEER  = RaftPeerId.valueOf("local-8368");
+  private ArcadeDBServer          passServer;
+  private static final RaftPeerId REMOTE_PEER = RaftPeerId.valueOf("remote-8368");
+
+  /** A first-formation leader over {@code sm}, with one remote peer whose HTTP port refuses at once. */
+  private RaftHAServer leaderOfAPassThatElects(final ArcadeStateMachine sm) {
+    final ContextConfiguration config = configuration();
+    config.setValue(GlobalConfiguration.HA_BOOTSTRAP_FROM_LOCAL_DATABASE, true);
+    config.setValue(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS, 1_000L);
+    final ArcadeDBServer server = stubbedServer();
+    when(server.getConfiguration()).thenReturn(config);
+    when(server.getDatabaseNames()).thenReturn(Set.of(DB_NAME));
+    sm.setServer(server);
+    passServer = server;
+
+    final RaftHAServer ha = mock(RaftHAServer.class);
+    when(ha.isLeader()).thenReturn(true);
+    when(ha.getCommitIndex()).thenReturn(0L);
+    when(ha.getStateMachine()).thenReturn(sm);
+    when(ha.getLocalPeerId()).thenReturn(LOCAL_PEER);
+    when(ha.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(LOCAL_PEER).build(),
+        RaftPeer.newBuilder().setId(REMOTE_PEER).build()));
+    // Port 1 refuses at once: the conclusion the failed pass sends it is best effort and must not delay the test.
+    when(ha.getHttpAddresses()).thenReturn(Map.of(REMOTE_PEER, "localhost:1"));
+    return ha;
+  }
+
+  /** The remote peer answers the probe with a fresher copy, so the pass elects it and transfers. */
+  private BootstrapElection electionWhereTheRemotePeerIsFresher(final RaftHAServer ha) {
+    final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
+    election.probeRetryBackoffMs = 0L;
+    doReturn(CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+        Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), Long.MAX_VALUE / 2)))))
+        .when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+    return election;
   }
 }
