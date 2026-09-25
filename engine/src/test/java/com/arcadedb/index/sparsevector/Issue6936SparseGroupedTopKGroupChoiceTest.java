@@ -78,22 +78,21 @@ class Issue6936SparseGroupedTopKGroupChoiceTest extends TestHelper {
 
     inTx(() -> {
       final PaginatedSegmentReader reader = readerHolder[0];
-      final DimCursor[] cursors = new DimCursor[queryDims.length];
-      try {
+      // A fresh cursor array per traversal, as the CursorSource contract requires: the scorer closes what it gets,
+      // and may traverse twice when a winning group entered by eviction (issue #8002).
+      final BmwScorer.CursorSource cursors = () -> {
+        final DimCursor[] opened = new DimCursor[queryDims.length];
         for (int i = 0; i < queryDims.length; i++)
-          cursors[i] = new DimCursor(queryDims[i], List.of(reader.openCursor(queryDims[i])));
+          opened[i] = new DimCursor(queryDims[i], List.of(reader.openCursor(queryDims[i])));
+        return opened;
+      };
 
-        final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, () -> cursors, 3, 2,
-            rid -> groupOf.get(rid), null);
+      final List<RidScore> got = BmwScorer.topKGrouped(queryDims, queryWeights, cursors, 3, 2, rid -> groupOf.get(rid),
+          null);
 
-        final List<String> groups = got.stream().map(rs -> groupOf.get(rs.rid())).distinct().toList();
-        assertThat(groups).as("groups returned for %s", got).contains("Z");
-        assertThat(got.getFirst().rid()).isEqualTo(new RID(0, 1_000L));
-      } finally {
-        for (final DimCursor c : cursors)
-          if (c != null)
-            c.close();
-      }
+      final List<String> groups = got.stream().map(rs -> groupOf.get(rs.rid())).distinct().toList();
+      assertThat(groups).as("groups returned for %s", got).contains("Z");
+      assertThat(got.getFirst().rid()).isEqualTo(new RID(0, 1_000L));
     });
   }
 
