@@ -405,12 +405,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
-    // Return 503 during snapshot installation to prevent cryptic errors
+    // Return 503 during snapshot installation to prevent cryptic errors. The body names RetryLaterException and carries
+    // the back-off in exceptionArgs: that is the proof a follower that forwarded a SQL write here needs to tell this
+    // refusal - nothing ran - from an anonymous 503 something between the two nodes may have sent after the write ran,
+    // and to answer its own client 503 + Retry-After only for this one (issue #8355). The detail repeats the reason so
+    // a client that reads a typed body's detail (RemoteHttpComponent) keeps it.
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
+      final String retryAfter = String.valueOf(RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS);
       exchange.setStatusCode(503);
-      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, "5");
-      exchange.getResponseSender().send(
-          error2json("Server is installing a snapshot, please retry", "", null, null, null));
+      exchange.getResponseHeaders().put(RETRY_AFTER_HEADER, retryAfter);
+      exchange.getResponseSender().send(new JSONObject()
+          .put("error", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("detail", RetryLaterException.SNAPSHOT_INSTALL_REFUSAL)
+          .put("exception", RetryLaterException.class.getName())
+          .put("exceptionArgs", retryAfter).toString());
       return;
     }
 

@@ -37,6 +37,15 @@ import com.arcadedb.exception.NeedRetryException;
  * the second.
  */
 public class RetryLaterException extends NeedRetryException {
+  /**
+   * The {@code error} of the refusal a node installing a snapshot answers with. Part of the wire contract: a follower
+   * recognizes the untyped refusal of a leader that predates issue #8355 by this exact text, so it must not change.
+   */
+  public static final String SNAPSHOT_INSTALL_REFUSAL = "Server is installing a snapshot, please retry";
+
+  /** The back-off a node installing a snapshot tells every client to wait. */
+  public static final long SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS = 5L;
+
   private final long retryAfterSeconds;
 
   public RetryLaterException(final String message, final long retryAfterSeconds) {

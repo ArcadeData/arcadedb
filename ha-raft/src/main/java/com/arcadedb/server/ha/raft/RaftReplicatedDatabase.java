@@ -4081,8 +4081,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link TransactionException} message string. Other known types are reconstructed via
    * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
    * <p>
-   * An untyped {@code 503} - a JSON body naming no exception, or no body at all - is the one exception to that
-   * fallback: see {@link #reconstructLeaderException(int, String, String)}.
+   * The untyped {@code 503} of a leader that predates issue #8355 is the one exception to that fallback: see
+   * {@link #reconstructLeaderException(int, String, String)}.
    * <p>
    * If the body is non-JSON, or the exception class is missing or not recognised, a generic
    * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
@@ -4095,18 +4095,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * As {@link #reconstructLeaderException(int, String)}, with the {@code Retry-After} header the leader sent, or
    * {@code null} when it sent none.
    * <p>
-   * An untyped {@code 503} is rebuilt as a {@link RetryLaterException} carrying that back-off (issue #8355). ArcadeDB
-   * answers a 503 with no exception class only for refusals it issues before any handler runs - above all a node
-   * installing a snapshot, which answers {@code 503} + {@code Retry-After: 5} from
-   * {@code AbstractServerHttpHandler.handleRequest} - so the forwarded command did not run: the same
-   * refusal-before-execution contract {@code RemoteHttpComponent.manageException} applies to an untyped 503. As a
-   * plain {@link TransactionException} it left this node as a 500 "Error on transaction commit" with no back-off, for
-   * a write that is safe to retry. It is a {@link com.arcadedb.exception.NeedRetryException}, so a server-side retry
-   * loop on this node may forward the command again under a new forward ordinal (issue #8323); that is safe because
-   * the refusing node answered before its idempotency gate, so it neither ran the command nor reserved its id.
+   * A node installing a snapshot refuses every request before any handler runs, so the forwarded command did not run.
+   * Since issue #8355 it says so with a typed body, rebuilt below as a {@link RetryLaterException}; a leader that
+   * predates that fix sends the same refusal untyped, and is recognized by the gate's exact
+   * {@link RetryLaterException#SNAPSHOT_INSTALL_REFUSAL} text, with the back-off from its {@code Retry-After} header.
+   * As a plain {@link TransactionException} the refusal left this node as a 500 "Error on transaction commit" with no
+   * back-off, for a write that is safe to retry. It is a {@link com.arcadedb.exception.NeedRetryException}, so a
+   * server-side retry loop on this node may forward the command again under a new forward ordinal (issue #8323); that
+   * is safe because the refusing node answered before its idempotency gate, so it neither ran the command nor reserved
+   * its id.
    * <p>
-   * A 503 whose body is not JSON did not come from ArcadeDB's own gate - a proxy in between, say - and nothing proves
-   * the command did not run behind it, so it keeps the generic fallback.
+   * Any other untyped 503 keeps the generic fallback, deliberately narrower than the "every untyped 503 is a refusal"
+   * contract {@code RemoteHttpComponent.manageException} applies (PR #8402 review): this node retries on its own, and
+   * a 503 it cannot attribute to the leader's gate may have been produced by something between the two nodes after the
+   * command ran. Retried under a new ordinal, which the leader keys separately, it would run a second time.
    */
   static RuntimeException reconstructLeaderException(final int httpStatus, final String body, final String retryAfterHeader) {
     final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
@@ -4128,10 +4130,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     if (exceptionClass == null) {
-      if (httpStatus == 503)
-        return new RetryLaterException("The leader refused the forwarded command without executing it: "
-            + (detail != null && !detail.isBlank() ? detail : reason != null && !reason.isBlank() ? reason :
-            "service unavailable") + ". Retry it", parseRetryAfterSeconds(retryAfterHeader));
+      if (httpStatus == 503 && RetryLaterException.SNAPSHOT_INSTALL_REFUSAL.equals(reason))
+        return new RetryLaterException("The leader refused the forwarded command without executing it: " + reason,
+            parseRetryAfterSeconds(retryAfterHeader));
       return new TransactionException(message);
     }
 
@@ -4152,7 +4153,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (RequestStillInFlightException.class.getName().equals(exceptionClass))
       return new RequestStillInFlightException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
-    // A refusal-before-execution with a back-off that another hop already rebuilt and answered typed (issue #8355).
+    // A refusal-before-execution with a back-off: a node installing a snapshot, or another hop that already rebuilt one
+    // and answered it typed (issue #8355).
     if (RetryLaterException.class.getName().equals(exceptionClass))
       return new RetryLaterException(detail != null ? detail : message, parseRetryAfterSeconds(exceptionArgs));
 
