@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.security;
 
+import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -196,6 +197,53 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
       // Cleanup the functions created on the shared server database
       assertThat(adminCommand(serverIndex, "DELETE FUNCTION deflib.adminfn")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "DELETE FUNCTION deflib.seed")).isEqualTo(200);
+    });
+  }
+
+  /**
+   * The edge-type declarations set through the bare {@code ALTER TYPE <name> WITH <settings>} form, which carries no
+   * item and so reached the edge-type setters without passing any guarded mutator, and the type rebuild it can chain.
+   * A read-only identity must be denied (403) on each, with the declaration left as it was, while the administrator
+   * must still be able to change them.
+   */
+  @Test
+  void readOnlyTokenCannotChangeEdgeTypeDeclarations() throws Exception {
+    testEachServer(serverIndex -> {
+      assertThat(adminCommand(serverIndex, "CREATE EDGE TYPE FriendOf")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "CREATE EDGE TYPE UniqueLink")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "ALTER TYPE UniqueLink WITH unique = true")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "CREATE DOCUMENT TYPE Rebuilt")).isEqualTo(200);
+
+      final String token = "Bearer " + createReadOnlyToken(serverIndex, "edge-declaration-token");
+      try {
+        assertThat(command(serverIndex, token, "ALTER TYPE FriendOf WITH lightweight = true"))
+            .as("read-only token must not declare an edge type LIGHTWEIGHT").isEqualTo(403);
+        assertThat(command(serverIndex, token, "ALTER TYPE FriendOf WITH unique = true"))
+            .as("read-only token must not declare an edge type UNIQUE").isEqualTo(403);
+        assertThat(command(serverIndex, token, "ALTER TYPE UniqueLink WITH unique = false"))
+            .as("read-only token must not withdraw an edge type's UNIQUE").isEqualTo(403);
+        assertThat(command(serverIndex, token, "ALTER TYPE Rebuilt WITH repartition = true"))
+            .as("read-only token must not chain a type rebuild").isEqualTo(403);
+        assertThat(command(serverIndex, token, "REBUILD TYPE Rebuilt"))
+            .as("read-only token must not REBUILD TYPE").isEqualTo(403);
+      } finally {
+        deleteToken(serverIndex, "edge-declaration-token");
+      }
+
+      final LocalEdgeType friendOf = (LocalEdgeType) getServerDatabase(serverIndex, getDatabaseName()).getSchema().getType("FriendOf");
+      final LocalEdgeType uniqueLink = (LocalEdgeType) getServerDatabase(serverIndex, getDatabaseName()).getSchema()
+          .getType("UniqueLink");
+      assertThat(friendOf.isLightweight()).isFalse();
+      assertThat(friendOf.isUnique()).isFalse();
+      assertThat(uniqueLink.isUnique()).isTrue();
+
+      // Positive controls: the administrator must still be able to change each declaration
+      assertThat(adminCommand(serverIndex, "ALTER TYPE FriendOf WITH lightweight = true, unique = true")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "ALTER TYPE UniqueLink WITH unique = false")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "REBUILD TYPE Rebuilt")).isEqualTo(200);
+      assertThat(friendOf.isLightweight()).isTrue();
+      assertThat(friendOf.isUnique()).isTrue();
+      assertThat(uniqueLink.isUnique()).isFalse();
     });
   }
 

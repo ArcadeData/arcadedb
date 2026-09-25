@@ -63,6 +63,7 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    * vertex edge lists are unaffected either way, because the flag is not consulted on read.
    */
   public void setLightweight(final boolean lightweight) {
+    checkForSchemaMutation();
     if (lightweight && !this.lightweight)
       for (final Bucket bucket : getBuckets(false))
         if (bucket.count() > 0)
@@ -72,6 +73,7 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
   }
 
   public void setUnique(final boolean unique) {
+    checkForSchemaMutation();
     this.unique = unique;
   }
 

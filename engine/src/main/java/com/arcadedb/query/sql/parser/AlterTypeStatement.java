@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -230,6 +231,11 @@ public class AlterTypeStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
+    // Every form of ALTER TYPE mutates the schema, so it is gated once here rather than relying on each item and
+    // setting to reach a guarded mutator: the bare `ALTER TYPE <name> WITH <settings>` form has no items at all.
+    // No-op with no bound user (embedded, schema load, HA replication apply).
+    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final DocumentType type = context.getDatabase().getSchema().getType(name.getStringValue());
     if (type == null)
       throw new CommandExecutionException("Type not found: " + name);

@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.logging.Level;
@@ -127,6 +128,11 @@ public class RebuildTypeStatement extends DDLStatement {
    * {@code ALTER TYPE ...} (without {@code WITH repartition = true}) when the type is large.
    */
   ResultSet executeRebuild(final CommandContext context, final int finalBatchSize, final boolean finalRepartition) {
+    // Rebuilding a type rewrites its records and, on success, the schema's needsRepartition flag: schema maintenance,
+    // gated by UPDATE_SCHEMA like REBUILD INDEX. Checked here rather than in executeDDL so the rebuild chained by
+    // ALTER TYPE ... WITH repartition = true is covered too. No-op with no bound user.
+    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final Database db = context.getDatabase();
     final Schema schema = db.getSchema();
     final DocumentType type = schema.getType(typeName.getStringValue());
