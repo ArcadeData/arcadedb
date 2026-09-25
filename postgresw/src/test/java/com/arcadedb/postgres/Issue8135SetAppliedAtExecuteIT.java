@@ -199,8 +199,21 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /**
+   * Issue #8261: this test used to assert the retry's SQLSTATE was {@code 55P02} (refused again, same reason),
+   * which was meant to prove {@code applyPendingSetting()}'s marker-clearing rule - cleared only AFTER the SET
+   * applies, so a refused attempt leaves the marker standing and a replay is refused again rather than answered
+   * {@code CommandComplete SET}. That specific ordering has no wire-observable form any more: in autocommit (this
+   * test's shape) the Sync after the refused Execute ends the implicit transaction and drops the portal with it
+   * (#8212), so the retry is answered {@code 34000} (portal missing) before it ever reaches the marker, and inside
+   * an explicit block the refusal aborts the block with no way to recover it and retry the same portal, since
+   * {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846). The test still passes whether the marker is cleared
+   * before or after the apply - only the weaker assertion below (an error either way, never a false success) is
+   * still real and wire-observable, so that is what it now asserts. The marker-clearing order itself is pinned at
+   * unit level by {@link PostgresApplyPendingSettingTest}.
+   */
   @Test
-  @DisplayName("[#8135] a SET refused at Execute is refused again when the same portal is re-executed, not silently skipped")
+  @DisplayName("[#8135] a SET refused at Execute, then replayed, is never answered as CommandComplete")
   void refusedSetIsRefusedAgainOnReplay() throws Exception {
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -217,13 +230,14 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(refused)).as("the SET is refused at Execute").contains('E').doesNotContain('C');
         assertThat(sqlStateOf(refused)).as("cant_change_runtime_param, as PostgreSQL answers it").isEqualTo("55P02");
 
-        // Recovered by the Sync, the client retries the SAME bound portal - no new Bind. It must not answer
-        // "CommandComplete SET" having applied nothing. Since #8212 the Sync that ended the implicit transaction also
-        // dropped the portal, so the retry is answered 34000 (portal missing) before it reaches the SET marker at all.
+        // Recovered by the Sync, the client retries the SAME bound portal - no new Bind. Since #8212 the Sync that
+        // ended the implicit transaction also dropped the portal, so this is answered 34000 (portal missing), not
+        // 55P02 - see this method's javadoc. Either way it must not answer "CommandComplete SET" having applied
+        // nothing.
         sendExecute(out, "p");
         sendSync(out);
         final List<WireMessage> retried = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(retried)).as("the retried SET is refused again, not reported as applied")
+        assertThat(messageTypesOf(retried)).as("the replay is answered as an error, not reported as applied")
             .contains('E').doesNotContain('C');
 
         assertThat(show(out, in, "server_version")).as("a refused SET changes nothing")
