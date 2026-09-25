@@ -75,15 +75,25 @@ class DeferredDatabaseDeleter implements AutoCloseable {
   /** Makes every staging name minted by this JVM distinct, independently of the clock's granularity. */
   private static final AtomicLong STAGING_SEQUENCE = new AtomicLong();
 
+  static final String THREAD_NAME = "arcadedb-sm-database-deleter";
+
   private final ExecutorService executor;
   private final AtomicLong     lastSaturationWarningOn = new AtomicLong(Long.MIN_VALUE);
+  /**
+   * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
+   * identity that it is running on it (issue #8364). Null for an executor supplied by a test, whose threads are not
+   * ours to name.
+   */
+  private volatile Thread       worker;
 
   DeferredDatabaseDeleter() {
-    this(new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(MAX_PENDING_DELETIONS), r -> {
-      final Thread t = new Thread(r, "arcadedb-sm-database-deleter");
+    this.executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(MAX_PENDING_DELETIONS), r -> {
+      final Thread t = new Thread(r, THREAD_NAME);
+      worker = t;
       t.setDaemon(true);
       return t;
-    }, new ThreadPoolExecutor.AbortPolicy()));
+    }, new ThreadPoolExecutor.AbortPolicy());
   }
 
   // @VisibleForTesting
@@ -134,9 +144,26 @@ class DeferredDatabaseDeleter implements AutoCloseable {
     }
   }
 
+  /**
+   * Stops the worker: drops the queued deletions and interrupts the running one, and does NOT wait for it - see
+   * {@link #awaitTermination(long)}. Whatever is left behind is reserved, so it stays invisible to the server and the
+   * startup sweep finishes it.
+   */
   @Override
   public void close() {
     executor.shutdownNow();
+  }
+
+  /**
+   * Waits, until {@code deadlineNanos}, for the deletion {@link #close()} interrupted (issue #8364). A recursive delete
+   * does not look at the interrupt flag, so without this wait it goes on removing entries under the server's database
+   * directory after the state machine that owns it has returned from its own close.
+   *
+   * @return false if the caller was interrupted while waiting, for the caller to restore the flag
+   */
+  boolean awaitTermination(final long deadlineNanos) {
+    return ExecutorTermination.await(this, executor, worker, THREAD_NAME, deadlineNanos,
+        "delete entries of a dropped database directory");
   }
 
   private static List<Path> listStagingDirectories(final Path databasesDirectory) {
