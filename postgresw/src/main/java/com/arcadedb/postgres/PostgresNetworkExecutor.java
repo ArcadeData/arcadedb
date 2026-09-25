@@ -45,16 +45,26 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.CreateEdgeStatement;
+import com.arcadedb.query.sql.parser.CreateVertexStatement;
+import com.arcadedb.query.sql.parser.DeleteStatement;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InsertStatement;
+import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -72,6 +82,7 @@ import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
@@ -134,6 +145,7 @@ public class PostgresNetworkExecutor extends Thread {
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
+  private static final Pattern                                        TIME_ZONE_NAME     = Pattern.compile("(?i)^TIME\\s+ZONE$");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -519,6 +531,7 @@ public class PostgresNetworkExecutor extends Thread {
           portal.executed = true;
           resolvePortalColumns(portal);
           answerWithColumns(portal);
+          portal.describedNoData = false;
         } catch (final CommandParsingException e) {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
@@ -541,6 +554,7 @@ public class PostgresNetworkExecutor extends Thread {
         // per row and a client that negotiated binary transfer off the promise cannot have it swapped
         // underneath (issue #6725).
         answerWithColumns(portal);
+        portal.describedNoData = false;
       } else
         // In practice SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK (issues #6930, #7905): they are the
         // portals that carry no statement, never produce a result, and never get columns - ROLLBACK TO used to
@@ -557,8 +571,16 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Now send RowDescription or NoData
       // For SELECT queries, we need to determine the columns from the type schema
-      if (portal.isExpectingResult && portal.columns == null && !portal.catalogQuery) {
-        portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
+      if (portal.isExpectingResult && portal.columns == null) {
+        if (!portal.catalogQuery)
+          portal.columns = getColumnsFromQuerySchema(portal.query, portal.sqlStatement);
+        else {
+          // A catalog query whose filters are bound parameters is answered at Execute, but the columns are those of
+          // the emulated catalog relation whatever the filter values are, so they can be named now (issue #8379)
+          final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query);
+          if (catalogAnswer != null)
+            portal.columns = catalogAnswer.columns();
+        }
       }
 
       if (portal.columns != null && !portal.columns.isEmpty()) {
@@ -568,10 +590,12 @@ public class PostgresNetworkExecutor extends Thread {
         // non-null for some other reason (a catalog answer recomputed per-Bind, or bindCommand()'s fallback
         // onto an already-executed portal), which carries no such promise.
         portal.columnsDescribed = true;
+        portal.describedNoData = false;
       } else {
-        // We can't determine columns at DESCRIBE time (e.g., INSERT without schema info)
-        // Send NoData, but keep isExpectingResult = true so EXECUTE can handle it properly
-        // The actual query execution will determine if there are results
+        // No columns can be named before the statement runs: a write with no RETURN (which PostgreSQL answers with
+        // NoData too) or a statement whose shape only its execution reveals (a non-SQL language). NoData is a promise
+        // that no result set follows, and Execute keeps it (issue #8379): see answerDescribedNoData().
+        portal.describedNoData = true;
         writeNoData();
       }
     } else
@@ -759,6 +783,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
+        if (portal.describedNoData && portal.isExpectingResult && portal.fullResultSet != null && !portal.fullResultSet.isEmpty()) {
+          answerDescribedNoData(portal);
+          return;
+        }
+
         // Computes this Execute's slice of the portal's materialized result (issue #6458). Runs on every
         // Execute, not only the one that just populated fullResultSet above: a follow-up Execute continuing a
         // previously suspended fetch reaches here with portal.executed already true and fullResultSet already
@@ -845,6 +874,50 @@ public class PostgresNetworkExecutor extends Thread {
         recordPostgresProfile(profile, portal.language, portal.query);
       QueryProfile.popCurrent();
     }
+  }
+
+  /**
+   * Answers an Execute whose statement a {@code Describe('S')} announced with {@code NoData}, but which produced rows
+   * (issue #8379). A DataRow is only legal after a RowDescription, Execute never sends one (issue #8244), and a client
+   * that described the statement rather than the portal - asyncpg, npgsql, pgx - has no column list or type OIDs to
+   * decode them with, so the rows cannot be sent as they are:
+   * <ul>
+   *   <li>a write with no RETURN clause is what PostgreSQL itself answers with NoData, and its rows are only ArcadeDB
+   *       echoing the records it wrote: the exchange is PostgreSQL's own, CommandComplete tagged with the row count
+   *       and no DataRow;</li>
+   *   <li>anything else really returns a result set its Describe could not name: refused with an error rather than
+   *       answered with rows no RowDescription announced, which no client can decode. Describing the portal instead
+   *       ({@code Describe('P')}, what pgjdbc and libpq send) runs it first and names the columns it produced.</li>
+   * </ul>
+   */
+  private void answerDescribedNoData(final PostgresPortal portal) {
+    final int rows = portal.fullResultSet.size();
+    portal.resultCursor = rows;
+    portal.suspended = false;
+    if (isRowlessWrite(portal.sqlStatement))
+      writeCommandComplete(portal.query, rows);
+    else {
+      setExtendedProtocolError();
+      writeError(ERROR_SEVERITY.ERROR, "The statement was described as returning no rows because its columns cannot be determined "
+          + "before it runs, but it returned " + rows + " row(s): describe the portal (Describe 'P') to receive its row description",
+          "0A000"); // feature_not_supported
+    }
+  }
+
+  /**
+   * True for a SQL write whose result PostgreSQL would not return as a result set: INSERT, UPDATE, DELETE and
+   * CREATE VERTEX/EDGE with no RETURN clause. ArcadeDB answers them with the records (or the count) they wrote, which
+   * a client that prepared them expects only as a CommandComplete tag.
+   */
+  static boolean isRowlessWrite(final Statement statement) {
+    return switch (statement) {
+      case InsertStatement insert -> insert.getReturnStatement() == null;
+      case CreateVertexStatement createVertex -> createVertex.getReturnStatement() == null;
+      case CreateEdgeStatement ignored -> true;
+      case UpdateStatement update -> !update.isReturnBefore() && !update.isReturnAfter() && update.getReturnProjection() == null;
+      case DeleteStatement delete -> !delete.isReturnBefore();
+      case null, default -> false;
+    };
   }
 
   private CommandContext createCommandContext() {
@@ -971,7 +1044,7 @@ public class PostgresNetworkExecutor extends Thread {
         final String level = dbIsolationLevel.name().replace('_', ' ');
         resultSet = new IteratorResultSet(createResultSet("LEVEL", level).iterator());
       } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        final String varName = parameterName(query.query.substring(5));
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
       } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
@@ -1487,6 +1560,11 @@ public class PostgresNetworkExecutor extends Thread {
       }
     }
 
+    // A write with no RETURN has no result set, whatever type its FROM names: "DELETE FROM T" was announced with T's
+    // columns and then answered with a count row under them (issue #8379)
+    if (isRowlessWrite(parsed))
+      return null;
+
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
     final String upperQuery = query.toUpperCase(Locale.ROOT);
@@ -1604,7 +1682,10 @@ public class PostgresNetworkExecutor extends Thread {
       if (alias == null)
         return null;
 
-      columns.put(alias, PostgresType.VARCHAR);
+      // Empty on purpose: this path only runs when the row source has no discoverable schema (issue #6156), so a
+      // property reference inside the expression could never resolve anyway - only literals and count() can.
+      final PostgresType inferred = inferComputedColumnType(item.getExpression(), Map.of());
+      columns.put(alias, inferred != null ? inferred : PostgresType.VARCHAR);
     }
 
     return columns.isEmpty() ? null : columns;
@@ -1746,9 +1827,13 @@ public class PostgresNetworkExecutor extends Thread {
         continue;
       }
 
-      // resolve the type from the projected expression when it is a plain property, else from the alias itself
-      final String source = item.getExpression() != null ? item.getExpression().toString() : null;
+      // resolve the type from the projected expression when it is a plain property, else infer it from the
+      // parse tree (an aggregate or an arithmetic expression, issue #8285), else from the alias itself
+      final Expression itemExpression = item.getExpression();
+      final String source = itemExpression != null ? itemExpression.toString() : null;
       PostgresType type = source != null ? columns.get(source) : null;
+      if (type == null)
+        type = inferComputedColumnType(itemExpression, columns);
       if (type == null)
         type = columns.getOrDefault(alias, PostgresType.VARCHAR);
 
@@ -1756,6 +1841,173 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return projected.isEmpty() ? columns : projected;
+  }
+
+  /**
+   * Statically infers the Postgres type of a computed projection item - {@code count()}/{@code min()}/
+   * {@code max()}/{@code sum()} or an arithmetic expression - from the parse tree and the declared types of the
+   * properties it reads. Without this, {@code Describe('S')} announced {@code varchar} (OID 1043) for every
+   * projection that was not a plain property, even though the RowDescription of an executed query reports the
+   * real type (issue #8285): a statement Describe is the contract later Executes of that statement honor (issue
+   * #6725), so pgjdbc's {@code PreparedStatement} and Arrow's ADBC PostgreSQL driver, which build their schema
+   * from the statement Describe, returned every aggregate and expression as a string for good.
+   *
+   * @param expression    the projected expression, or null
+   * @param sourceColumns the FROM target's declared columns (property name to type), possibly empty when the row
+   *                      source carries no discoverable schema
+   *
+   * @return the inferred type, or null when it cannot be decided statically - the caller then keeps its own
+   * default ({@code varchar})
+   */
+  private static PostgresType inferComputedColumnType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+    if (expression == null || expression.mathExpression == null)
+      return null;
+
+    final MathExpression math = expression.mathExpression;
+
+    if (!math.getOperators().isEmpty())
+      return inferArithmeticType(math, sourceColumns);
+
+    // A modifier applied to the aggregate/literal (count(*).asString()) runs AFTER it and can change the result's
+    // type entirely - inferring from the un-modified inner node would describe the modifier's input, not its output.
+    if (!(math instanceof BaseExpression base) || base.getModifier() != null)
+      return null;
+
+    if (base.number != null)
+      return numericLiteralType(base.number.getValue());
+
+    final BaseIdentifier identifier = base.getIdentifier();
+    final LevelZeroIdentifier levelZero = identifier != null ? identifier.getLevelZero() : null;
+    final FunctionCall call = levelZero != null ? levelZero.functionCall : null;
+    if (call == null || call.name == null)
+      return null;
+
+    return inferFunctionType(call, sourceColumns);
+  }
+
+  private static PostgresType inferFunctionType(final FunctionCall call, final Map<String, PostgresType> sourceColumns) {
+    final String name = call.name.getStringValue();
+    if (name == null)
+      return null;
+
+    if ("count".equalsIgnoreCase(name))
+      // Every count() overload - count(*), count(prop), count(DISTINCT prop) - answers a row count.
+      return PostgresType.LONG;
+
+    if (("min".equalsIgnoreCase(name) || "max".equalsIgnoreCase(name) || "sum".equalsIgnoreCase(name))
+        && call.params != null && call.params.size() == 1) {
+      final PostgresType argType = resolveOperandType(call.params.get(0), sourceColumns);
+      if (argType == null)
+        return null;
+      return "sum".equalsIgnoreCase(name) ? widenForSum(argType) : argType; // min/max keep the operand's own type
+    }
+
+    return null;
+  }
+
+  /**
+   * The type an argument or arithmetic operand contributes: a plain property's declared type, a number literal's
+   * type, or - for a nested aggregate/arithmetic operand such as {@code sum(a + b)} - resolved the same way a
+   * top-level projected item would be.
+   */
+  private static PostgresType resolveOperandType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+    if (expression == null)
+      return null;
+    if (expression.mathExpression instanceof BaseExpression base && base.getModifier() == null) {
+      if (base.number != null)
+        return numericLiteralType(base.number.getValue());
+      if (base.getIdentifier() != null)
+        return sourceColumns.get(expression.toString());
+    }
+    return inferComputedColumnType(expression, sourceColumns);
+  }
+
+  private static PostgresType inferArithmeticType(final MathExpression math, final Map<String, PostgresType> sourceColumns) {
+    // SLASH is not statically typeable: MathExpression.Operator.SLASH returns the widest INTEGER/LONG operand
+    // type only when the division happens to be exact, and a DOUBLE otherwise (Type#increment does the same for
+    // NUMERIC) - which one depends on the row's values, not on the declared operand types.
+    //
+    // NULL_COALESCING (??) has the same problem from the opposite direction: it returns whichever operand is
+    // non-null UNCHANGED - never widened to a common type - so `longCol ?? doubleCol` can describe a row's actual
+    // Long as float8 and lose precision on binary encoding, depending on which operand happened to be null.
+    if (math.getOperators().contains(MathExpression.Operator.SLASH)
+        || math.getOperators().contains(MathExpression.Operator.NULL_COALESCING))
+      return null;
+
+    PostgresType widest = null;
+    for (final MathExpression child : math.getChildExpressions()) {
+      final PostgresType childType = childOperandType(child, sourceColumns);
+      if (childType == null || !isNumericPostgresType(childType))
+        return null;
+      widest = widest == null || numericTypeRank(childType) > numericTypeRank(widest) ? childType : widest;
+    }
+
+    // PLUS/MINUS/STAR.apply(Integer, Integer) silently widens to a Long on overflow (no exception, unlike the
+    // Long,Long overload) - the same "depends on the row's values" problem SLASH has above, just for the case
+    // where every operand happens to fit in int4/int2. Reporting int4/int2 here would describe an overflowing
+    // row's actual Long result wrong; LONG never has this problem since its own overflow throws instead of
+    // widening (review of #8285).
+    if (widest == PostgresType.SMALLINT || widest == PostgresType.INTEGER)
+      for (final MathExpression.Operator op : math.getOperators())
+        if (op == MathExpression.Operator.PLUS || op == MathExpression.Operator.MINUS || op == MathExpression.Operator.STAR)
+          return PostgresType.LONG;
+
+    return widest;
+  }
+
+  private static PostgresType childOperandType(final MathExpression child, final Map<String, PostgresType> sourceColumns) {
+    if (!child.getOperators().isEmpty())
+      return inferArithmeticType(child, sourceColumns);
+    if (!(child instanceof BaseExpression base) || base.getModifier() != null)
+      return null;
+    if (base.number != null)
+      return numericLiteralType(base.number.getValue());
+    if (base.getIdentifier() != null)
+      return sourceColumns.get(child.toString());
+    return null;
+  }
+
+  private static boolean isNumericPostgresType(final PostgresType type) {
+    return switch (type) {
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC -> true;
+      default -> false;
+    };
+  }
+
+  private static int numericTypeRank(final PostgresType type) {
+    return switch (type) {
+      case SMALLINT -> 0;
+      case INTEGER -> 1;
+      case LONG -> 2;
+      case REAL -> 3;
+      case DOUBLE -> 4;
+      case NUMERIC -> 5;
+      default -> -1;
+    };
+  }
+
+  private static PostgresType widenForSum(final PostgresType argType) {
+    return switch (argType) {
+      case SMALLINT, INTEGER, LONG -> PostgresType.LONG;
+      case REAL, DOUBLE -> PostgresType.DOUBLE;
+      // SQLFunctionSum/Type#increment keep a NUMERIC (BigDecimal) accumulator as BigDecimal: describing it as
+      // float8 would make binary encoding call doubleValue() and lose decimal precision (issue #8285 review).
+      case NUMERIC -> PostgresType.NUMERIC;
+      default -> null;
+    };
+  }
+
+  private static PostgresType numericLiteralType(final Number value) {
+    if (value == null)
+      return null;
+    if (value instanceof Float)
+      return PostgresType.REAL;
+    if (value instanceof Double)
+      return PostgresType.DOUBLE;
+    if (value instanceof BigDecimal)
+      return PostgresType.NUMERIC;
+    // An integer literal folds the same way ArcadeDB's own arithmetic does: as a Long.
+    return PostgresType.LONG;
   }
 
   /**
@@ -2771,7 +3023,7 @@ public class PostgresNetworkExecutor extends Thread {
         createResultSet(portal, "LEVEL", level);
 
       } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = portal.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        final String varName = parameterName(portal.query.substring(5));
         createResultSet(portal, varName, getShowConfigValue(varName));
 
       } else if (PostgresCopyStatement.isCopy(portal.query)) {
@@ -2893,7 +3145,7 @@ public class PostgresNetworkExecutor extends Thread {
    */
   static PostgresSessionSettings.Assignment parseSetCommand(final String query) {
     if (query.regionMatches(true, 0, "RESET ", 0, 6)) {
-      final String name = query.substring("RESET ".length()).trim().toLowerCase(Locale.ENGLISH);
+      final String name = parameterName(query.substring("RESET ".length()));
       if (name.isEmpty() || name.indexOf(' ') >= 0)
         return null;
       return "all".equals(name) ? PostgresSessionSettings.Assignment.RESET_ALL : new PostgresSessionSettings.Assignment(name, null, false);
@@ -3000,6 +3252,19 @@ public class PostgresNetworkExecutor extends Thread {
 
   private String buildServerVersionString() {
     return "PostgreSQL " + PG_SERVER_VERSION + " (ArcadeDB " + Constants.getRawVersion() + ")";
+  }
+
+  /**
+   * The parameter name a SHOW or RESET names, spelled the way {@link #parseSetCommand} spells it for SET, so one
+   * parameter has one name whichever statement names it. {@code TIME ZONE} is PostgreSQL's SQL-standard spelling of
+   * {@code timezone}: {@code SHOW TIME ZONE} answered an empty string while {@code SHOW timezone} answered the value, and
+   * {@code RESET TIME ZONE} was rejected as malformed (issue #8391).
+   */
+  static String parameterName(final String rawName) {
+    final String name = rawName.trim();
+    if (TIME_ZONE_NAME.matcher(name).matches())
+      return "timezone";
+    return name.toLowerCase(Locale.ENGLISH);
   }
 
   private String getShowConfigValue(final String varName) {

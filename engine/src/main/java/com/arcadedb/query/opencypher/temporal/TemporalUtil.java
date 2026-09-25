@@ -18,6 +18,11 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
+
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
@@ -308,42 +313,17 @@ public final class TemporalUtil {
     final LocalDateTime fromDT = resolveDateTime(from, to);
     final LocalDateTime toDT = resolveDateTime(to, from);
 
-    // Calendar component: months and days
-    final Period period = fromDT.toLocalDate().until(toDT.toLocalDate());
-    long months = period.toTotalMonths();
-    long days = period.getDays();
+    // Split exactly as Neo4j does: whole months first, then whole days after them, then the clock remainder, each unit
+    // truncated towards zero on the full date-time. Every component therefore carries the same sign, and
+    // from.plusMonths(m).plusDays(d).plusSeconds(s) - the order ArithmeticExpression applies a duration in - lands
+    // exactly on `to`. Borrowing from a Period with a fixed month length did not, for any month that was not 30 days
+    // long (issue #8386).
+    final long months = ChronoUnit.MONTHS.between(fromDT, toDT);
+    final LocalDateTime afterMonths = fromDT.plusMonths(months);
+    final long days = ChronoUnit.DAYS.between(afterMonths, toDT);
+    final Duration clockDuration = Duration.between(afterMonths.plusDays(days), toDT);
 
-    // Clock component: seconds between same-day times
-    final LocalDateTime afterCalendar = fromDT.plusMonths(months).plusDays(days);
-    final Duration clockDuration = Duration.between(afterCalendar, toDT);
-    long seconds = clockDuration.getSeconds();
-    int nanos = clockDuration.getNano();
-
-    // Normalize: ensure days and seconds have the same sign (or one is zero).
-    // If clock (seconds) is negative but calendar (days) is positive, borrow from days.
-    if ((seconds < 0 || (seconds == 0 && nanos < 0)) && (days > 0 || months > 0)) {
-      if (days > 0) {
-        days--;
-        seconds += 86400;
-      } else {
-        months--;
-        days += 29;
-        seconds += 86400;
-      }
-    }
-    // If clock is positive but calendar (days) is negative, lend to days.
-    else if ((seconds > 0 || (seconds == 0 && nanos > 0)) && days < 0) {
-      days++;
-      seconds -= 86400;
-    }
-    // If seconds exceed a day and calendar is also positive, carry to days.
-    else if (seconds >= 86400 && (months > 0 || days > 0)) {
-      final long extraDays = seconds / 86400;
-      days += extraDays;
-      seconds %= 86400;
-    }
-
-    return new CypherDuration(months, days, seconds, nanos);
+    return new CypherDuration(months, days, clockDuration.getSeconds(), clockDuration.getNano());
   }
 
   /**
@@ -477,6 +457,36 @@ public final class TemporalUtil {
    * Shared by every property-read path (variable-bound and chained) so a persisted temporal
    * value dereferences identically regardless of which AST node reads it.
    */
+  /**
+   * Reads {@code propertyName} from {@code document} and restores its Cypher temporal type, like
+   * {@link #convertFromStorage(Object)}, unless the schema declares the property {@link Type#STRING}. A declared STRING
+   * property holds text by contract, so a value such as an opening-hours range {@code "09:00-17:00"} (which is also a
+   * well-formed ISO {@code OffsetTime}) or a part number {@code "P100D"} (also an ISO duration) must read back as the
+   * String that was stored, the same as SQL reads it (issue #8384). The schema lookup runs only for a String that could
+   * be sniffed as a temporal, so ordinary strings and every other type pay nothing for it.
+   */
+  public static Object convertFromStorage(final Document document, final String propertyName) {
+    final Object value = document.get(propertyName);
+    if (value instanceof String str && mayBeTemporalString(str) && isDeclaredString(document, propertyName))
+      return value;
+    return convertFromStorage(value);
+  }
+
+  /**
+   * True when the schema declares {@code propertyName} as {@link Type#STRING} on the document's type or a supertype.
+   */
+  public static boolean isDeclaredString(final Document document, final String propertyName) {
+    final DocumentType type = document.getType();
+    if (type == null)
+      return false;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    return property != null && property.getType() == Type.STRING;
+  }
+
+  public static boolean mayBeTemporalString(final String str) {
+    return str.length() >= 5 && (Character.isDigit(str.charAt(0)) || str.charAt(0) == 'P');
+  }
+
   public static Object convertFromStorage(final Object value) {
     // Fast path: common non-temporal types don't need conversion
     if (value == null || value instanceof Number || value instanceof Boolean)
@@ -493,11 +503,11 @@ public final class TemporalUtil {
 
     if (value instanceof String str) {
       // Fast path: short strings and common patterns can't be temporal
-      if (str.length() < 5 || !Character.isDigit(str.charAt(0)) && str.charAt(0) != 'P')
+      if (!mayBeTemporalString(str))
         return value;
 
       // Duration strings start with P (ISO-8601)
-      if (str.length() > 1 && str.charAt(0) == 'P') {
+      if (str.charAt(0) == 'P') {
         try {
           return CypherDuration.parse(str);
         } catch (final Exception ignored) {

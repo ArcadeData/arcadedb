@@ -53,6 +53,12 @@ public class PostgresPortal {
    */
   public boolean                   columnsDescribed     = false;
   /**
+   * True when the latest Describe of this statement or portal answered {@code NoData}: a promise that the portal returns
+   * no result set, which {@code executeCommand()} must keep, because a DataRow is only legal after a RowDescription and
+   * Execute never sends one (issue #8379). A {@code Describe('P')} that answers with a RowDescription clears it.
+   */
+  public boolean                   describedNoData      = false;
+  /**
    * Memoizes {@code PostgresNetworkExecutor.resolveQueryTargetType(sqlStatement)} (issue #6447): a portal can
    * be described and executed - possibly executed repeatedly, for a cursor-based fetch with a LIMIT - several
    * times over its lifetime, and the schema type its FROM target names does not change between them.
@@ -167,6 +173,7 @@ public class PostgresPortal {
     portal.cachedResultSet = template.cachedResultSet;
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
+    portal.describedNoData = template.describedNoData;
     portal.queryTargetType = template.queryTargetType;
     portal.queryTargetTypeResolved = template.queryTargetTypeResolved;
     portal.aliasToSourceProperty = template.aliasToSourceProperty;

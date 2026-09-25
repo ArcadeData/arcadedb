@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.schema.Type;
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -243,10 +244,14 @@ public class OrderByStep extends AbstractExecutionStep {
           if (obj == null)
             return null;
 
-          if (obj instanceof Vertex)
-            return convertFromStorage(((Vertex) obj).get(parts[1]));
-          else if (obj instanceof Edge)
-            return convertFromStorage(((Edge) obj).get(parts[1]));
+          if (obj instanceof Vertex || obj instanceof Edge) {
+            final Document document = (Document) obj;
+            final Object value = document.get(parts[1]);
+            // A schema-declared STRING property is never sniffed as a temporal (issue #8384)
+            if (value instanceof String str && TemporalUtil.mayBeTemporalString(str) && TemporalUtil.isDeclaredString(document, parts[1]))
+              return value;
+            return convertFromStorage(value);
+          }
         }
 
         return convertFromStorage(result.getProperty(expression));
@@ -284,47 +289,9 @@ public class OrderByStep extends AbstractExecutionStep {
           return converted;
         }
 
-        if (value instanceof String str) {
-          // Fast path: short strings and common patterns can't be temporal
-          if (str.length() < 5 || !Character.isDigit(str.charAt(0)) && str.charAt(0) != 'P')
-            return value;
-
-          // Duration strings start with P (ISO-8601)
-          if (str.length() > 1 && str.charAt(0) == 'P') {
-            try {
-              return CypherDuration.parse(str);
-            } catch (final Exception ignored) {
-              // Not a valid duration string
-            }
-          }
-          // DateTime strings: contain 'T' with date part before it and timezone/offset
-          final int tIdx = str.indexOf('T');
-          if (tIdx >= 4 && tIdx < str.length() - 1 && Character.isDigit(str.charAt(0))) {
-            try {
-              return CypherDateTime.parse(str);
-            } catch (final Exception ignored) {
-              // Not a valid datetime string
-            }
-          }
-          // Time strings: HH:MM:SS[.nanos][+/-offset] or HH:MM:SS[.nanos]Z
-          if (str.length() >= 8 && str.charAt(2) == ':' && str.charAt(5) == ':') {
-            // Check if it has a timezone offset
-            final boolean hasOffset = str.contains("+") || str.contains("-") || str.endsWith("Z");
-            if (hasOffset) {
-              try {
-                return CypherTime.parse(str);
-              } catch (final Exception ignored) {
-                // Not a valid time string
-              }
-            } else {
-              try {
-                return CypherLocalTime.parse(str);
-              } catch (final Exception ignored) {
-                // Not a valid local time string
-              }
-            }
-          }
-        }
+        // One sniff for every Cypher read path: this copy had drifted from TemporalUtil's (it missed the short HH:MM form)
+        if (value instanceof String)
+          return TemporalUtil.convertFromStorage(value);
         return value;
       }
 

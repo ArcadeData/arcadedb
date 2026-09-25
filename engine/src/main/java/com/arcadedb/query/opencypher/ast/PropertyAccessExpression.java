@@ -58,8 +58,7 @@ public class PropertyAccessExpression implements Expression {
       // avoid loading all vertices upfront. Either way the record is loaded only when a property is actually read.
       return readLinkedProperty(rid, propertyName);
     } else if (variable instanceof Document) {
-      final Object rawValue = ((Document) variable).get(propertyName);
-      return TemporalUtil.convertFromStorage(rawValue);
+      return TemporalUtil.convertFromStorage((Document) variable, propertyName);
     } else if (variable instanceof Map) {
       // Handle Map types (e.g., from UNWIND with parameter maps)
       return ((Map<?, ?>) variable).get(propertyName);
@@ -116,7 +115,7 @@ public class PropertyAccessExpression implements Expression {
     if (!(record instanceof Document document))
       throw new CommandExecutionException(brokenLinkMessage(rid, propertyName, "the linked record has no properties"));
 
-    return TemporalUtil.convertFromStorage(document.get(propertyName));
+    return TemporalUtil.convertFromStorage(document, propertyName);
   }
 
   /**
