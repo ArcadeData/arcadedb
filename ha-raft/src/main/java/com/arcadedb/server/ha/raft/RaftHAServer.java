@@ -2238,6 +2238,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return runtimeJoinDetector.hasJoinedAtRuntime();
   }
 
+  /**
+   * The security documents not installed from an entry after the configuration that (last) added this node
+   * (issue #8317). See {@link RuntimeJoinDetector#securityDocumentsNotInstalledSinceJoin()}.
+   */
+  public List<String> securityDocumentsNotInstalledSinceRuntimeJoin() {
+    return runtimeJoinDetector.securityDocumentsNotInstalledSinceJoin();
+  }
+
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
   }

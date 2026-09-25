@@ -25,8 +25,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -61,19 +64,23 @@ import java.util.logging.Level;
  * <p>
  * <b>Replay on restart is inert, not suppressed.</b> A node that was added at runtime and later restarts replays
  * the joint entry that added it, for as long as that entry has not been compacted into a snapshot, and arms again.
- * The gate that reads this also requires an absent replicated fingerprint, and the fingerprint is on disk
- * ({@code ReplicatedSecurityFingerprintRepository}), so a node that did converge is not held for a single probe.
- * One that never converged is held again, which is the honest answer for it: it is still enforcing its own copy.
+ * The gate that reads this waits for security documents installed by entries after that joint entry, and a log
+ * that still holds the joint entry also holds every entry after it - the seed that converged the node the first
+ * time included - so the replay converges it again by the time it has caught up. One that never converged is held
+ * again, which is the honest answer for it: it is still enforcing its own copy.
  * Suppressing the replay instead would need the log index this process started from, which Ratis does not hand
  * the state machine before it starts applying.
  * <p>
  * <b>Persisted, because the replay does not always happen (issue #8329).</b> A joiner that restarts AFTER the entry
  * that added it was compacted into a snapshot observes only configurations containing itself, so neither rule can
  * fire again. When constructed with a marker file, the detector writes it the moment it arms and a later process
- * reading it back starts armed. {@link RaftHAServer} places the marker NEXT TO the Raft storage directory rather
+ * reading it back starts armed. The marker also carries the join index and each document's install index (see
+ * below), rewritten on every change of either, because a restart after compaction replays neither the join nor the
+ * installs that converged it: without them, a converged joiner would be held for the whole readiness window on every
+ * restart. {@link RaftHAServer} places the marker NEXT TO the Raft storage directory rather
  * than inside it, so the divergence reformat of {@code RaftHAServer.restartRatis(true)} - which deletes that
- * directory - does not take the marker with it. A marker that outlives convergence is inert for the same reason
- * the replay re-arm is: the gate also requires an absent replicated fingerprint. A marker that could not be
+ * directory - does not take the marker with it. A marker that outlives convergence is inert, because the install
+ * indexes it carries follow its join index. A marker that could not be
  * written is logged and leaves the in-memory arm in place; a restart after compaction then comes back unarmed,
  * which is the behaviour before issue #8329, not a new failure.
  * <p>
@@ -88,6 +95,18 @@ import java.util.logging.Level;
  * marker, for the life of that marker - and what releases it is convergence (or the gate's own bounded window),
  * not a later configuration.
  * <p>
+ * <b>Convergence is measured from the join, not from the fingerprints (issue #8317).</b> A recorded replicated
+ * fingerprint only says that the cluster installed a document here at some point. A node removed from the cluster
+ * and re-added with its config volume retained holds one for every document, from its PREVIOUS membership, and
+ * would pass a gate that asked nothing else while enforcing a user dropped, a group narrowed or a token revoked
+ * while it was out. So each arming also records the log index of the configuration that added this node, the
+ * state machine reports the index of every security document it installs from the log, and a document counts as
+ * converged only when it was installed by an entry AFTER that join index - which, since the leader seeds a peer
+ * only once the configuration adding it has committed (issue #7531), is exactly the seed or a later change. A
+ * re-add moves the join index forward even though the node is already armed, so installs from the previous
+ * membership stop counting at that point. The index only moves forward: a snapshot-install callback delivering
+ * an older configuration cannot pull it back.
+ * <p>
  * Owned by {@link RaftHAServer} rather than by a state machine, so the answer survives the in-place Ratis restart
  * of {@code RaftHAServer.restartRatis}, which builds a new {@link ArcadeStateMachine}.
  *
@@ -95,11 +114,50 @@ import java.util.logging.Level;
  */
 public final class RuntimeJoinDetector {
 
+  /** The security documents whose installs are tracked, as {@link #onSecurityDocumentInstalled} takes them. */
+  public static final int USERS      = 0;
+  public static final int GROUPS     = 1;
+  public static final int API_TOKENS = 2;
+
+  /**
+   * The names the readiness gate reports, in the order {@code ServerSecurity.unconvergedClusterSecurityDocuments()}
+   * reports its own, indexed by the constants above.
+   */
+  private static final String[] DOCUMENT_NAMES = { "users", "groups", "API tokens" };
+
+  /** Stands for "no index known": no join recorded, or no install of that document observed. */
+  private static final long NO_INDEX = -1L;
+
+  /** The marker keys of the join index and of each document's install index, in {@link #DOCUMENT_NAMES} order. */
+  private static final String   JOIN_INDEX_KEY     = "joinIndex";
+  private static final String[] INSTALLED_KEYS     = { "installed.users", "installed.groups", "installed.apiTokens" };
+
   /** Where the armed state is persisted; {@code null} keeps it in memory only. */
   private final    File    marker;
+  /** Serializes marker writes, which run outside this instance's monitor. */
+  private final    Object  persistLock        = new Object();
+  /** Bumped under the monitor on every change the marker records; the writer skips a snapshot older than it wrote. */
+  private          long    stateVersion;
+  /** The {@link #stateVersion} of the last marker written; guarded by {@link #persistLock}. */
+  private          long    persistedVersion   = -1L;
+  /** The peer id the marker names, set when this detector arms. */
+  private volatile String  armedPeer;
   /** Whether the last configuration observed contained this node; {@code null} before the first one. */
   private          Boolean lastObservedMembership;
   private volatile boolean joinedAtRuntime;
+  /** The log index of the latest configuration that added this node; guarded by this instance's monitor. */
+  private          long    joinIndex          = NO_INDEX;
+  /** Per document, the highest log index it was installed at; guarded by this instance's monitor. */
+  private final    long[]  lastInstalledIndex = { NO_INDEX, NO_INDEX, NO_INDEX };
+
+  /**
+   * {@link #onConfiguration(RaftPeerId, Collection, Collection, long)} for a configuration whose log index is not
+   * known. The join it records has no position, so every install this detector records counts as following it.
+   */
+  public boolean onConfiguration(final RaftPeerId self, final Collection<RaftPeerId> peers,
+      final Collection<RaftPeerId> oldPeers) {
+    return onConfiguration(self, peers, oldPeers, NO_INDEX);
+  }
 
   /** A detector whose armed state lives only as long as this instance. */
   public RuntimeJoinDetector() {
@@ -122,6 +180,7 @@ public final class RuntimeJoinDetector {
 
     if (restore) {
       joinedAtRuntime = true;
+      restoreIndexes(marker);
       LogManager.instance().log(this, Level.INFO,
           "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the cluster "
               + "security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
@@ -140,11 +199,12 @@ public final class RuntimeJoinDetector {
    *                 not been initialized by Ratis yet cannot say which of the peers is itself)
    * @param peers    the peers of the applied configuration
    * @param oldPeers the old peers of a joint-consensus configuration, empty for a final one
+   * @param index    the log index of the configuration, which becomes the join index when it added this node
    *
-   * @return {@code true} when THIS call armed the detector
+   * @return {@code true} when THIS call armed the detector, or re-armed it on a later join (a re-add)
    */
   public boolean onConfiguration(final RaftPeerId self, final Collection<RaftPeerId> peers,
-      final Collection<RaftPeerId> oldPeers) {
+      final Collection<RaftPeerId> oldPeers, final long index) {
     if (self == null)
       return false;
 
@@ -152,47 +212,184 @@ public final class RuntimeJoinDetector {
     final boolean addedByThisEntry = member && !oldPeers.isEmpty() && !oldPeers.contains(self);
 
     final boolean armedNow;
+    final boolean rearmedNow;
     synchronized (this) {
       final boolean addedSinceLastObservation = member && Boolean.FALSE.equals(lastObservedMembership);
       lastObservedMembership = member;
-      armedNow = (addedByThisEntry || addedSinceLastObservation) && !joinedAtRuntime;
-      if (armedNow)
+      final boolean added = addedByThisEntry || addedSinceLastObservation;
+      armedNow = added && !joinedAtRuntime;
+      // A re-add of a node that is already armed: the installs it holds from before this index belong to its
+      // previous membership (issue #8317). Only ever forward, so an older configuration cannot undo it.
+      rearmedNow = added && joinedAtRuntime && index > joinIndex;
+      if (armedNow) {
         joinedAtRuntime = true;
+        joinIndex = index;
+      } else if (rearmedNow)
+        joinIndex = index;
+      if (armedNow || rearmedNow)
+        stateVersion++;
     }
 
-    if (armedNow) {
+    if (armedNow)
       LogManager.instance().log(this, Level.INFO,
           "Peer %s was added to the Raft configuration while running: readiness waits for the cluster security "
               + "documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)", self);
-      // Outside the monitor, and only by the one call that armed, so there is a single writer.
-      persist(self);
+    else if (rearmedNow)
+      LogManager.instance().log(this, Level.INFO,
+          "Peer %s was added to the Raft configuration again at index %d: the security documents it installed "
+              + "before no longer count, and readiness waits for the cluster's current ones to reach it "
+              + "(arcadedb.ha.securityConvergenceReadinessTimeout)", self, index);
+    if (armedNow || rearmedNow) {
+      armedPeer = self.toString();
+      // Outside the monitor: the readiness probe reads it, and must not wait on a SYNC write.
+      persist();
     }
-    return armedNow;
+    return armedNow || rearmedNow;
   }
 
   /**
-   * Writes the marker. A failure is logged, never thrown: this runs on a Ratis callback thread, and the in-memory
-   * arm stays in place for the rest of the process either way.
-   * <p>
-   * The file content is written with {@code SYNC}, but the parent directory is not fsynced, so an OS crash in the
-   * instant after the arm can lose the new directory entry. That restart then comes back unarmed, which is the
-   * behaviour before issue #8329.
+   * Records that the state machine installed {@code document} from the replicated log entry at {@code index}.
+   * Called on the apply thread for every install, armed or not, so a join observed later still judges it by its
+   * index. Cheap and non-blocking beyond this instance's monitor, except on a node that joined at runtime and has a
+   * marker: there the new index is persisted, so a restart after the entry is compacted still knows the document
+   * converged. Security documents change rarely, so that write is not on any hot path.
+   *
+   * @param document one of {@link #USERS}, {@link #GROUPS}, {@link #API_TOKENS}
    */
-  private void persist(final RaftPeerId self) {
+  public void onSecurityDocumentInstalled(final int document, final long index) {
+    final boolean changed;
+    synchronized (this) {
+      changed = index > lastInstalledIndex[document];
+      if (changed) {
+        lastInstalledIndex[document] = index;
+        if (joinedAtRuntime)
+          stateVersion++;
+      }
+    }
+    if (changed && joinedAtRuntime)
+      persist();
+  }
+
+  /**
+   * The security documents this node has not installed from an entry after the configuration that (last) added
+   * it, in the order users, groups, API tokens (issue #8317). Empty when this node did not join at runtime - the
+   * gate is not armed there, see {@link #hasJoinedAtRuntime()}.
+   */
+  public List<String> securityDocumentsNotInstalledSinceJoin() {
+    if (!joinedAtRuntime)
+      return List.of();
+    final List<String> awaited = new ArrayList<>(DOCUMENT_NAMES.length);
+    synchronized (this) {
+      for (int i = 0; i < DOCUMENT_NAMES.length; i++)
+        if (lastInstalledIndex[i] == NO_INDEX || lastInstalledIndex[i] <= joinIndex)
+          awaited.add(DOCUMENT_NAMES[i]);
+    }
+    return awaited;
+  }
+
+  /** The names {@link #securityDocumentsNotInstalledSinceJoin()} reports, all of them. */
+  public static List<String> allSecurityDocumentNames() {
+    return List.of(DOCUMENT_NAMES);
+  }
+
+  /** The log index of the configuration that last added this node, {@code -1} when none did. For tests. */
+  synchronized long joinIndex() {
+    return joinIndex;
+  }
+
+  /**
+   * Writes the marker: the arm, the join index and each document's install index. A failure is logged, never
+   * thrown: this runs on a Ratis callback thread, and the in-memory state stays in place for the rest of the process
+   * either way.
+   * <p>
+   * The content goes to a temporary file written with {@code SYNC} and is then renamed over the marker, so a restart
+   * reads either the previous marker or the new one, never a torn one. The parent directory is not fsynced, so an OS
+   * crash in the instant after a write can lose it; the restart then reads the previous marker, or none, which is
+   * the behaviour before issue #8329.
+   */
+  private void persist() {
     if (marker == null)
       return;
+    synchronized (persistLock) {
+      final long version;
+      final long join;
+      final long[] installed;
+      synchronized (this) {
+        version = stateVersion;
+        join = joinIndex;
+        installed = lastInstalledIndex.clone();
+      }
+      // A concurrent caller already wrote this state or a newer one.
+      if (version <= persistedVersion)
+        return;
+
+      final StringBuilder content = new StringBuilder(160);
+      content.append("peer=").append(armedPeer).append('\n');
+      content.append("armedAt=").append(System.currentTimeMillis()).append('\n');
+      content.append(JOIN_INDEX_KEY).append('=').append(join).append('\n');
+      for (int i = 0; i < INSTALLED_KEYS.length; i++)
+        content.append(INSTALLED_KEYS[i]).append('=').append(installed[i]).append('\n');
+
+      try {
+        final File parent = marker.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
+          throw new IOException("cannot create directory " + parent);
+        final File temp = new File(marker.getAbsolutePath() + ".tmp");
+        Files.writeString(temp.toPath(), content, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, StandardOpenOption.SYNC);
+        Files.move(temp.toPath(), marker.toPath(), StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE);
+        persistedVersion = version;
+      } catch (final IOException | RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not persist the runtime-join marker %s: a restart after the Raft log is compacted past the entry "
+                + "that added this peer will not hold readiness for the cluster security documents, or will hold it "
+                + "for documents that already converged (%s)", marker.getAbsolutePath(), e.toString());
+      }
+    }
+  }
+
+  /**
+   * Reads back the join index and the install indexes a previous run persisted (issues #8317, #8329). A marker that
+   * predates them, or a value that does not parse, leaves that index unknown, which awaits the document: the safe
+   * answer, bounded by the gate's own window.
+   */
+  private void restoreIndexes(final File marker) {
+    final List<String> lines;
     try {
-      final File parent = marker.getAbsoluteFile().getParentFile();
-      if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
-        throw new IOException("cannot create directory " + parent);
-      Files.writeString(marker.toPath(), "peer=" + self + "\narmedAt=" + System.currentTimeMillis() + "\n",
-          StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-          StandardOpenOption.WRITE, StandardOpenOption.SYNC);
+      lines = Files.readAllLines(marker.toPath(), StandardCharsets.UTF_8);
     } catch (final IOException | RuntimeException e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not persist the runtime-join marker %s: a restart after the Raft log is compacted past the entry "
-              + "that added this peer will not hold readiness for the cluster security documents (%s)",
+          "Could not read the runtime-join marker %s: readiness waits for every cluster security document (%s)",
           marker.getAbsolutePath(), e.toString());
+      return;
+    }
+    synchronized (this) {
+      for (final String line : lines) {
+        final int eq = line.indexOf('=');
+        if (eq <= 0)
+          continue;
+        final String key = line.substring(0, eq);
+        final String value = line.substring(eq + 1);
+        if ("peer".equals(key))
+          armedPeer = value;
+        else if (JOIN_INDEX_KEY.equals(key))
+          joinIndex = parseIndex(value);
+        else
+          for (int i = 0; i < INSTALLED_KEYS.length; i++)
+            if (INSTALLED_KEYS[i].equals(key))
+              lastInstalledIndex[i] = parseIndex(value);
+      }
+      // What is on disk is the state as restored: nothing to rewrite until it changes.
+      persistedVersion = stateVersion;
+    }
+  }
+
+  private static long parseIndex(final String value) {
+    try {
+      return Long.parseLong(value.trim());
+    } catch (final NumberFormatException e) {
+      return NO_INDEX;
     }
   }
 
