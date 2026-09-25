@@ -59,6 +59,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * A transaction already running when a view's first build arms the listeners reported its earlier changes to nobody,
  * as it would to any listener armed mid-transaction: the window this closes is the scan's, not that one.
  * <p>
+ * The registrations are not bounded the way the buffered deltas are: past the overflow the view publishes STALE, yet
+ * sources keep being registered until the build finishes. That is one entry per changed source for the length of one
+ * scan, dropped with the watch, and bounding it would cost a check on every record event instead.
+ * <p>
  * Under {@code OFF} a relevant commit during the build only marks the view to publish as STALE, and
  * {@code ASYNCHRONOUS} dispatches its own rebuild from the commit callback as it always did.
  *
