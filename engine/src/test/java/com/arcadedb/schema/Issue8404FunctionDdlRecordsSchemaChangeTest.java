@@ -112,6 +112,25 @@ class Issue8404FunctionDdlRecordsSchemaChangeTest extends TestHelper {
   }
 
   /**
+   * The caller built a library because the name was free, but another definition registered one first. Merging into
+   * it could hand a function of one language to a library of another, so the late definition is refused - as
+   * {@code Schema.registerFunctionLibrary} refused it before - and the winner is left untouched.
+   */
+  @Test
+  void aLibraryThatAppearedSinceTheCallerLookedIsNotMergedInto() {
+    database.command("sql", "define function lib8404race.first \"return 1;\" language js");
+    final LocalSchema schema = (LocalSchema) database.getSchema();
+
+    assertThatThrownBy(() -> schema.defineFunction("lib8404race",
+        FunctionLibraryFactory.createLibrary(database, "lib8404race", "sql"),
+        FunctionLibraryFactory.createFunction(database, "sql", "second", "select 2 as r", new String[] {})))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("already registered");
+
+    assertThat(schema.getFunctionLibrary("lib8404race").hasFunction("second")).isFalse();
+    assertThat((Integer) schema.getFunction("lib8404race", "first").execute()).isEqualTo(1);
+  }
+
+  /**
    * {@link LocalSchema#defineFunction} is public, so it holds the {@code DEFINE FUNCTION ... LANGUAGE js} gate
    * itself: a polyglot function needs {@code UPDATE_SECURITY}, a declarative one only {@code UPDATE_SCHEMA}.
    */

@@ -3920,7 +3920,9 @@ public class LocalSchema implements Schema {
    * Adds a user-defined function to the library {@code libraryName}: the schema change behind {@code DEFINE FUNCTION}.
    * When the schema has no such library yet, {@code newLibrary} is registered under that name - AFTER the function was
    * accepted into it, so a definition the library rejects (a polyglot body that does not compile) leaves no empty
-   * library behind to be persisted. A library that appeared in the meantime is used instead of {@code newLibrary}.
+   * library behind to be persisted. If a library of that name appeared since the caller looked (a concurrent
+   * {@code DEFINE FUNCTION} on the same new name, possibly in another language), the definition is refused rather than
+   * merged into a library the caller did not build.
    * <p>
    * Runs inside a schema recording session (issue #8404), so the change is persisted to {@code schema.json} and,
    * under HA, proposed to the followers as a {@code SCHEMA_ENTRY} like any other DDL. A bare
@@ -3941,9 +3943,11 @@ public class LocalSchema implements Schema {
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
     recordFileChanges(() -> {
       final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
-      if (existing != null)
+      if (existing != null) {
+        if (newLibrary != null)
+          throw new IllegalArgumentException("Function library '" + libraryName + "' already registered");
         existing.registerFunction(function);
-      else {
+      } else {
         if (newLibrary == null)
           throw new IllegalArgumentException("Function library '" + libraryName + "' not defined");
         newLibrary.registerFunction(function);
