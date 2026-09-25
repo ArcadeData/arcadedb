@@ -321,9 +321,9 @@ class Issue6760PartialSnapshotInstallTest {
     }
 
     @Override
-    Set<String> reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken) {
-      return givenUp;
+      return new ReconcileFromLeaderResult(givenUp, null);
     }
   }
 

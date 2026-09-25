@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -93,6 +94,17 @@ public class DatabaseReconciler {
    *                        itself caught up over stale data
    */
   public record ReconcileVerdict(boolean retryWorthwhile, Set<String> givenUp) {
+  }
+
+  /**
+   * The outcome of {@link #reconcileDatabasesFromLeader} (issue #8360).
+   *
+   * @param notInstalled            the databases this pass gave up on (issue #6760); see that method's javadoc
+   * @param leaderSnapshotTermIndex the leader's own latest Raft snapshot {@link TermIndex}, fetched over the same
+   *                                bootstrap-state RPC call used to reconcile the database list, or {@code null}
+   *                                on any path that never reached the leader for it
+   */
+  record ReconcileFromLeaderResult(Set<String> notInstalled, TermIndex leaderSnapshotTermIndex) {
   }
 
   /**
@@ -199,14 +211,17 @@ public class DatabaseReconciler {
    * {@link AcquireState#LEADER_MISSING} alert plus the leadership-transfer flow cover the #4522 redistribution
    * edge, so this boundary is not reachable in normal operation.
    *
-   * @return the databases this pass gave up on, i.e. that failed and have exhausted their retry budget so the
-   *         install is allowed to proceed without them. The caller MUST treat those as not-at-the-snapshot-index
-   *         (issue #6760). Empty on every clean pass and on every path that fails the install outright.
+   * @return a {@link ReconcileFromLeaderResult} carrying the databases this pass gave up on - i.e. that failed and
+   *         have exhausted their retry budget so the install is allowed to proceed without them; the caller MUST
+   *         treat those as not-at-the-snapshot-index (issue #6760), empty on every clean pass and on every path
+   *         that fails the install outright - together with the leader's own latest Raft snapshot
+   *         {@link TermIndex}, fetched over the same bootstrap-state RPC call (issue #8360), or {@code null} on
+   *         every path that never reaches the leader (auto-acquire disabled, or the RPC failed).
    *
    * @throws IOException if a database install fails while still inside its retry budget (so the caller leaves the
    *                     Ratis snapshot install incomplete and Ratis re-triggers it; installs are idempotent).
    */
-  Set<String> reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+  ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) throws IOException {
 
     final boolean autoAcquire = server.getConfiguration().getValueAsBoolean(
@@ -214,17 +229,17 @@ public class DatabaseReconciler {
 
     if (!autoAcquire) {
       refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return Set.of();
+      return new ReconcileFromLeaderResult(Set.of(), null);
     }
 
     // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
     // refresh-existing-only path rather than failing the whole install - UNLESS this node holds no databases at
     // all, in which case ACKing the snapshot index would leave a fresh/empty follower believing it is caught up
     // with zero data installed (issue #4799); fail the install instead so Ratis retries.
-    final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs;
+    final LeaderDatabaseQuery.BootstrapState bootstrapState;
     try {
       final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
-      leaderDbs = LeaderDatabaseQuery.fetch(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
+      bootstrapState = LeaderDatabaseQuery.fetch(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
     } catch (final InterruptedException e) {
       // Preserve the interrupt so the pool/executor can observe it and shut down cleanly.
       Thread.currentThread().interrupt();
@@ -232,14 +247,15 @@ public class DatabaseReconciler {
           "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
               + "already present locally.");
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return Set.of();
+      return new ReconcileFromLeaderResult(Set.of(), null);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
               + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
       refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return Set.of();
+      return new ReconcileFromLeaderResult(Set.of(), null);
     }
+    final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs = bootstrapState.databases();
 
     // Build the leader's database set. Skip entries the leader reported it could not open (lastTxId < 0): such a
     // database is not a usable snapshot source, so trying to acquire it would only fail validation every pass.
@@ -288,7 +304,7 @@ public class DatabaseReconciler {
     if (verdict.retryWorthwhile())
       throw new IOException(String.format("Reconcile from leader had database failure(s); will retry (acquire=%s, refresh=%s)",
           outcome.acquireFailures(), outcome.refreshFailures()));
-    return verdict.givenUp();
+    return new ReconcileFromLeaderResult(verdict.givenUp(), bootstrapState.snapshotTermIndex());
   }
 
   /**

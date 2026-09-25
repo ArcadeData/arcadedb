@@ -18,15 +18,17 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link LeaderDatabaseQuery} endpoint/scheme selection (issue #4727). Locks in the fix that the
- * database-list RPC honors SSL: it must prefer the peer's HTTPS endpoint when SSL is enabled, so the feature is
- * not silently disabled on SSL-only clusters (the StatefulSet/empty-node deployments it targets). No network is
- * involved - this exercises the pure scheme-selection logic.
+ * Unit tests for {@link LeaderDatabaseQuery} endpoint/scheme selection (issue #4727) and response parsing (issue
+ * #8360). Locks in the fix that the database-list RPC honors SSL: it must prefer the peer's HTTPS endpoint when
+ * SSL is enabled, so the feature is not silently disabled on SSL-only clusters (the StatefulSet/empty-node
+ * deployments it targets). No network is involved - this exercises the pure scheme-selection and JSON-parsing
+ * logic.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -61,5 +63,38 @@ class LeaderDatabaseQueryTest {
     assertThat(LeaderDatabaseQuery.chooseEndpoint(null, null, false)).isNull();
     // SSL on but only a null https and null http -> still nothing usable.
     assertThat(LeaderDatabaseQuery.chooseEndpoint(null, null, true)).isNull();
+  }
+
+  // ---- response parsing (issue #8360) ----
+
+  @Test
+  void parsesDatabasesAndSnapshotTermIndexWhenPresent() {
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody("""
+        {"databases":[{"name":"heimdall","fingerprint":"abc","lastTxId":42}],"snapshotTerm":7,"snapshotIndex":39707283}""");
+
+    assertThat(state.databases()).containsExactly(new LeaderDatabaseQuery.DatabaseInfo("heimdall", 42L));
+    assertThat(state.snapshotTermIndex()).isEqualTo(TermIndex.valueOf(7L, 39707283L));
+  }
+
+  @Test
+  void snapshotTermIndexIsNullWhenThePeerHasNoSnapshotYet() {
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody(
+        """
+        {"databases":[]}""");
+
+    assertThat(state.databases()).isEmpty();
+    assertThat(state.snapshotTermIndex())
+        .as("no snapshot yet must parse as null, not as a fabricated (0, -1)/(0, 0) boundary")
+        .isNull();
+  }
+
+  @Test
+  void snapshotTermDefaultsToZeroWhenOmittedButIndexIsPresent() {
+    // Defensive: a well-formed peer never sends an index without its term, but the parser must not throw on it.
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody(
+        """
+        {"databases":[],"snapshotIndex":100}""");
+
+    assertThat(state.snapshotTermIndex()).isEqualTo(TermIndex.valueOf(0L, 100L));
   }
 }

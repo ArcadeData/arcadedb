@@ -277,11 +277,11 @@ class Issue6202SnapshotInstallGuardTest {
     private volatile Set<String> givenUp = Set.of();
 
     @Override
-    Set<String> reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken) {
       this.httpAddr = leaderHttpAddr;
       this.httpsAddr = leaderHttpsAddr;
-      return givenUp;
+      return new ReconcileFromLeaderResult(givenUp, null);
     }
   }
 
