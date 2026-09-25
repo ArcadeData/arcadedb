@@ -271,6 +271,47 @@ public final class RuntimeJoinDetector {
   }
 
   /**
+   * Records that the leader compared this node's security documents, read at applied index {@code appliedIndex},
+   * against its own live ones and found all three equal (issue #8346). Recorded as an install of every document at
+   * that index, so it counts toward convergence exactly when an install there would: only when it follows the join.
+   * <p>
+   * This is what releases a re-added node that caught up by snapshot install PAST its re-admission seed while holding
+   * documents that already equal the cluster's. The seed entries are never applied on it, no snapshot carries the
+   * security documents, and the leader - finding nothing to change - writes nothing, so no install after the join
+   * would ever be observed and the gate would hold the node for its whole window before reporting documents that
+   * "never reached" a node that had them all along.
+   * <p>
+   * Why the applied index and not the join index or "now": the caller reads the index BEFORE reading the fingerprints
+   * it sends, and the apply loop installs a document before it advances the applied index, so the documents compared
+   * include every entry up to that index. Equal to the leader's live documents, they are the cluster's as of at least
+   * that position - the same claim an install at that index makes. A match read at or before the join therefore does
+   * not count (it may be the previous membership's copy, compared before the change the join started), and a later
+   * re-add discards it like any other install. Recording it against a position also keeps it correct when the
+   * snapshot-install callback delivers the configuration that re-added this node only after the match was recorded.
+   *
+   * @param appliedIndex the applied index read before the compared fingerprints were; negative (unknown) records
+   *                     nothing
+   */
+  public void onSecurityDocumentsMatchedLeader(final long appliedIndex) {
+    if (appliedIndex < 0)
+      return;
+    final boolean changed;
+    synchronized (this) {
+      boolean any = false;
+      for (int i = 0; i < lastInstalledIndex.length; i++)
+        if (appliedIndex > lastInstalledIndex[i]) {
+          lastInstalledIndex[i] = appliedIndex;
+          any = true;
+        }
+      changed = any;
+      if (changed && joinedAtRuntime)
+        stateVersion++;
+    }
+    if (changed && joinedAtRuntime)
+      persist();
+  }
+
+  /**
    * The security documents this node has not installed from an entry after the configuration that (last) added
    * it, in the order users, groups, API tokens (issue #8317). Empty when this node did not join at runtime - the
    * gate is not armed there, see {@link #hasJoinedAtRuntime()}.
