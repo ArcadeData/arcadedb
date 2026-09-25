@@ -96,7 +96,9 @@ class HaChaosIT extends ContainersTestTemplate {
     final List<GenericContainer<?>> nodes = new ArrayList<>();
     for (int i = 0; i < config.nodes(); i++)
       nodes.add(createPersistentArcadeContainer("arcadedb-" + i, serverList.toString(), "majority", network,
-          "-Xms" + config.nodeHeap() + " -Xmx" + config.nodeHeap(), 2 * config.nodeHeapBytes()));
+          // ARCADEDB_OPTS_MEMORY follows JAVA_OPTS on the server's command line, so chaos.serverOpts override defaults
+          ("-Xms" + config.nodeHeap() + " -Xmx" + config.nodeHeap() + " " + config.serverOpts()).trim(),
+          2 * config.nodeHeapBytes()));
 
     final List<ServerWrapper> servers = startCluster();
     final int leader = waitForRaftLeader(servers, 120);
