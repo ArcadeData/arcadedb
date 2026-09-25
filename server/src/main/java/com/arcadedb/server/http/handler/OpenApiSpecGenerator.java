@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.http.handler.openapi.AiApiSpec;
@@ -53,6 +54,7 @@ import io.swagger.v3.oas.models.tags.Tag;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Generates the OpenAPI 3.0 specification for the ArcadeDB HTTP API. The document is assembled by
@@ -163,8 +165,12 @@ public class OpenApiSpecGenerator {
       if (existing == null)
         post.getResponses().addApiResponse("409",
             SpecBuilders.errorResponse(IN_FLIGHT_DESCRIPTION).addHeaderObject("Retry-After", retryAfterRef));
-      // A 409 declared by $ref cannot take sibling keys in OpenAPI 3.0: it is left as is. No contributor declares one
-      else if (existing.get$ref() == null) {
+      // A 409 declared by $ref cannot take sibling keys in OpenAPI 3.0: it is left as is, loudly, since the operation
+      // then does not document the in-flight case. No contributor declares one
+      else if (existing.get$ref() != null)
+        LogManager.instance().log(this, Level.WARNING,
+            "OpenAPI: POST %s declares its 409 by $ref, so the in-flight retry answer is not documented on it", entry.getKey());
+      else {
         existing.setDescription(existing.getDescription() + ". Also: " + IN_FLIGHT_DESCRIPTION);
         existing.addHeaderObject("Retry-After", retryAfterRef);
       }
