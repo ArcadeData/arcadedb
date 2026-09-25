@@ -2003,7 +2003,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
       final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
       final TermIndex leaderSnapshotTermIndex = reconcileResult.leaderSnapshotTermIndex();
-      if (leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() != snapshotIndex)
+      if (leaderSnapshotTermIndex != null && !leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
         LogManager.instance().log(this, Level.WARNING,
             "Leader-reported snapshot boundary %s does not match the computed install index %d; falling back to "
                 + "the approximate term of the next log entry (issue #8360). This is expected only on a race with "
@@ -2149,9 +2149,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   static long resolveInstalledSnapshotTerm(final long snapshotIndex, final long fallbackTerm,
       final TermIndex leaderSnapshotTermIndex) {
-    if (leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() == snapshotIndex)
+    if (leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
       return leaderSnapshotTermIndex.getTerm();
     return fallbackTerm;
+  }
+
+  /** The one rule for trusting the leader's marker, shared by the decision and the fallback WARNING. */
+  static boolean leaderSnapshotMatches(final long snapshotIndex, final TermIndex leaderSnapshotTermIndex) {
+    return leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() == snapshotIndex;
   }
 
   public long getElectionCount() {

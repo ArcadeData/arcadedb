@@ -99,7 +99,7 @@ public class DatabaseReconciler {
   /**
    * The outcome of {@link #reconcileDatabasesFromLeader} (issue #8360).
    *
-   * @param notInstalled           the databases this pass gave up on (issue #6760); see that method's javadoc
+   * @param notInstalled            the databases this pass gave up on (issue #6760); see that method's javadoc
    * @param leaderSnapshotTermIndex the leader's own latest Raft snapshot {@link TermIndex}, fetched over the same
    *                                bootstrap-state RPC call used to reconcile the database list, or {@code null}
    *                                on any path that never reached the leader for it
