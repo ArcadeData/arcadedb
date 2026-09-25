@@ -251,8 +251,9 @@ public class DatabaseReconciler {
       throw new IOException("Interrupted while listing the leader's databases for auto-acquire", e);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
-              + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
+          "Could not list the leader's databases for auto-acquire (%s); reading the leader's snapshot marker alone "
+              + "and refreshing only the databases already present locally. Missing databases will be retried on the "
+              + "next reconcile.", e.getMessage());
       // The full listing fingerprints every database on the leader and can time out where the marker-only read does
       // not; the install still needs the marker, so ask for it alone, and fail the install if even that fails.
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
