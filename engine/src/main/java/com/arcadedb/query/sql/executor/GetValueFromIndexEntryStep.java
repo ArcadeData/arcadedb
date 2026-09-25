@@ -77,7 +77,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
 
-  // runtime
+  // runtime: plain fields, unlike the per-thread state of Cypher's NodeIndexRangeScan, because a cached SQL plan is
+  // copied for every execution (ExecutionPlanCache.get()) while a cached Cypher operator is shared by all of them
   private ResultSet                   prevResult = null;
   private Strategy                    strategy;
   private PhysicalOrderRidFetcher     fetcher;
