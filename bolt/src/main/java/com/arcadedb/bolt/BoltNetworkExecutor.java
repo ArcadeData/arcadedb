@@ -1301,20 +1301,19 @@ public class BoltNetworkExecutor extends Thread {
         // Database name changed, need to switch
         database = null;
       } else {
-        // LOGOFF/LOGON keeps the connection, and with it the database the previous user had open: the user now
-        // bound to the connection is checked against it too, not only against a database it names.
+        // Re-checked on every request that reuses the open database, not only on the one that opened it: LOGOFF/LOGON
+        // keeps the connection, and with it the database the previous user had open, so the user bound NOW is the
+        // one that has to be granted it. Past this check a user is always bound.
         if (!authorizeDatabase(database.getName()))
           return false;
         // Update current user on the existing context to handle LOGOFF/LOGON re-authentication
         // on the same connection without disrupting any open transactions.
-        if (user != null) {
-          final DatabaseContext.DatabaseContextTL ctx =
-              DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
-          if (ctx != null) {
-            ctx.setCurrentUser(user.getDatabaseUser(database));
-            // Attach this connection's GQL session so SESSION statements and param merging can reach it.
-            ctx.setQuerySession(session);
-          }
+        final DatabaseContext.DatabaseContextTL ctx =
+            DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
+        if (ctx != null) {
+          ctx.setCurrentUser(user.getDatabaseUser(database));
+          // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+          ctx.setQuerySession(session);
         }
         return true;
       }
@@ -1380,12 +1379,11 @@ public class BoltNetworkExecutor extends Thread {
         state = State.FAILED;
         return false;
       }
-      if (user != null) {
-        final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
-        ctx.setCurrentUser(user.getDatabaseUser(database));
-        // Attach this connection's GQL session so SESSION statements and param merging can reach it.
-        ctx.setQuerySession(session);
-      }
+      // authorizeDatabase() above only lets a request through with a user bound
+      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+      ctx.setCurrentUser(user.getDatabaseUser(database));
+      // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+      ctx.setQuerySession(session);
       return true;
     } catch (final Exception e) {
       // The database handle is dropped before the failure is reported: getDatabase() assigns the field before the
