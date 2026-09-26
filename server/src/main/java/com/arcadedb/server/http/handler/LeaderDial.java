@@ -25,7 +25,14 @@ import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -186,6 +193,48 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * one-time notices about an SSL cluster's peer transport.
    */
   private static final AtomicBoolean HTTPS_CLIENT_UNAVAILABLE_WARNED = new AtomicBoolean(false);
+
+  /**
+   * Sends {@code request} and waits for the answer for at most {@code deadlineMs}, then cancels the exchange and throws
+   * {@link HttpTimeoutException} (issue #8325). Otherwise it behaves like {@link HttpClient#send}: the answer, or the
+   * exception the exchange failed with, of its own type ({@link java.net.http.HttpConnectTimeoutException},
+   * {@link java.net.ConnectException}, ...), so a caller's existing catch arms keep telling those apart.
+   * <p>
+   * {@code HttpRequest.timeout} cannot be relied on for the same bound, because what it covers depends on the JDK. On
+   * JDK 21-25 it stops at the response HEADERS: a leader that sends headers and then stalls inside its body leaves a
+   * {@code BodyHandlers.ofString()} read with no bound at all. On JDK 26+ it covers the body too. Awaiting the future
+   * applies one bound on every JDK, and what it covers is decided by the body handler: the whole body for a buffered
+   * handler, which completes the future only once the body is read; the headers alone for a streaming one such as
+   * {@code ofInputStream()}, whose body the caller then has to bound itself.
+   * <p>
+   * The future is cancelled on the deadline and on an interrupt, which aborts the exchange and closes its connection
+   * rather than leaving it to the leader.
+   *
+   * @param deadlineMs the longest to wait, floored at {@link #MIN_FORWARD_TIMEOUT_MS}
+   */
+  public static <T> HttpResponse<T> sendBounded(final HttpClient client, final HttpRequest request,
+      final HttpResponse.BodyHandler<T> handler, final long deadlineMs) throws IOException, InterruptedException {
+    final long deadline = Math.max(deadlineMs, MIN_FORWARD_TIMEOUT_MS);
+    final CompletableFuture<HttpResponse<T>> pending = client.sendAsync(request, handler);
+    try {
+      return pending.get(deadline, TimeUnit.MILLISECONDS);
+    } catch (final TimeoutException e) {
+      pending.cancel(true);
+      throw new HttpTimeoutException("no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
+    } catch (final InterruptedException e) {
+      pending.cancel(true);
+      throw e;
+    } catch (final ExecutionException e) {
+      final Throwable cause = e.getCause();
+      if (cause instanceof IOException io)
+        throw io;
+      if (cause instanceof RuntimeException runtime)
+        throw runtime;
+      if (cause instanceof Error error)
+        throw error;
+      throw new IOException("Error sending " + request.method() + " " + request.uri(), cause);
+    }
+  }
 
   /** True when the cluster requires TLS for this forward and it cannot be established; {@link #refusal} says why. */
   public boolean refused() {

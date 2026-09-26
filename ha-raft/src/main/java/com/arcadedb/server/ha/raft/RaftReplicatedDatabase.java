@@ -3972,7 +3972,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     try {
-      final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      // Bounded over the whole exchange, body included, on every JDK (issue #8325): the request timeout above stops at
+      // the response headers on JDK 21-25, so a leader that stalled inside its body parked this thread unbounded.
+      final HttpResponse<String> response = LeaderDial.sendBounded(dialClient, builder.build(),
+          HttpResponse.BodyHandlers.ofString(), deadlineMs);
       if (response.statusCode() != 200)
         throw reconstructLeaderException(response.statusCode(), response.body(),
             response.headers().firstValue("Retry-After").orElse(null));
