@@ -759,7 +759,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
         if (currentStatus == Status.READY && !rebuildPending)
           return true;
-        if (currentStatus == Status.STALE)
+        // STALE, or NOT_BUILT after a failed build or a shutdown: nothing is on the way, and the latch of the build that
+        // ended is already counted down, so waiting on it again would spin until the timeout (issue #8403)
+        if (currentStatus != Status.READY && currentStatus != Status.BUILDING)
           return false;
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
@@ -806,8 +808,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     awaitInFlightTasks(shutdownAwaitMs);
     synchronized (this) {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
-      // view that is gone (issue #8403)
+      // view that is gone (issue #8403). Nor may the view keep saying BUILDING: that build will never publish it
       ++generation;
+      if (status == Status.BUILDING)
+        status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
       // awaitReady()/getStatus() caller blocks for the duration of the write - accepted
       // because it only happens once per close and is gated by GAV_PERSIST_CSR.

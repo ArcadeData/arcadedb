@@ -170,6 +170,10 @@ class Issue8403GAVBlockingBuildOffMonitorTest extends TestHelper {
     }
     assertThatThrownBy(() -> rebuild.get(HANG_SECONDS, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
         .cause().hasMessageContaining("was shut down while it was being built");
+    // A caller waiting for the view is answered, not left spinning on a latch that already fired: nothing will publish
+    assertThat(view.getStatus()).isNotEqualTo(GraphAnalyticalView.Status.BUILDING);
+    assertThat(CompletableFuture.supplyAsync(() -> view.awaitReady(HANG_SECONDS, TimeUnit.SECONDS))
+        .get(HANG_SECONDS / 2, TimeUnit.SECONDS)).isFalse();
     assertThat(view.hasChangeListeners()).as("a shut-down view keeps no listener").isFalse();
   }
 
