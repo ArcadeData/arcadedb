@@ -283,7 +283,7 @@ public class ClusterMonitor {
     // for it, so the leader repeatedly re-notifies the same install-snapshot boundary instead of replicating.
     // leaderLogStartIndex > 0 requires the leader to have actually compacted at least once: a brand-new,
     // never-compacted log has start index 0, where nextIndex == 0 <= 0 would otherwise misclassify a perfectly
-    // healthy, empty cluster on its very first tick. The grace mirrors neverAppendedGraceMs below so a
+    // healthy, empty cluster on its very first tick. It shares neverAppendedGraceMs so a
     // genuinely in-progress (and progressing) snapshot install is not interrupted mid-flight.
     // In the loop the follower keeps answering (every ALREADY_INSTALLED reply refreshes its last-RPC time), so an
     // unreachable follower is excluded: it is a partition, owned by the reachability narrative and channel reset.
@@ -293,9 +293,8 @@ public class ClusterMonitor {
       state.installSnapshotLoopSinceMs = -1;
     else if (state.installSnapshotLoopSinceMs == -1)
       state.installSnapshotLoopSinceMs = now;
-    final long installSnapshotLoopGraceMs = stalledResyncDurationMs > 0 ? stalledResyncDurationMs : NEVER_APPENDED_STALL_GRACE_MS;
     final boolean installSnapshotLoopStalled =
-        installSnapshotLoopActive && now - state.installSnapshotLoopSinceMs >= installSnapshotLoopGraceMs;
+        installSnapshotLoopActive && now - state.installSnapshotLoopSinceMs >= neverAppendedGraceMs;
 
     // Compute current status based on this tick.
     final ReplicaStatus status;

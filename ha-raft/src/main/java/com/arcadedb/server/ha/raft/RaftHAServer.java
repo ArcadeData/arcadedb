@@ -4474,9 +4474,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * This leader's own Raft log start index ({@code RaftLog.getStartIndex()}), or {@code -1} when it is not
-   * currently a leader or the division cannot be read (same degrade-to-unknown reasoning as
-   * {@link #getCommitIndex()}, issue #5271).
+   * This node's own Raft log start index ({@code RaftLog.getStartIndex()}), or {@code -1} when the division cannot
+   * be read (same degrade-to-unknown reasoning as {@link #getCommitIndex()}, issue #5271). It does not check the role:
+   * the value is only meaningful to the lag monitor on the leader, which checks {@link #isLeader()} before reading it.
    * <p>
    * Fed to {@link ClusterMonitor#updateReplicaMatchIndex(String, long, long, long, long)} so it can tell a
    * follower whose {@code nextIndex} has fallen at or below this leader's own compacted log start - the
