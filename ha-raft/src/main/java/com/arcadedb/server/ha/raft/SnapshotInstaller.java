@@ -775,7 +775,7 @@ public final class SnapshotInstaller {
     // live open in ArcadeDBServer.getDatabase, rather than opening under defaults that could diverge.
     try (final DatabaseFactory factory = new DatabaseFactory(stagingPath.toString())
         .setAutoTransaction(true)
-        .setSecurity(server.getSecurity());
+        .setSecurity(server.getDatabaseSecurityManager());
         final Database db = factory.open(ComponentFile.MODE.READ_ONLY)) {
       // Opening + closing is the validation: it confirms the configuration, schema and component files load.
       if (db == null)

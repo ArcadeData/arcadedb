@@ -37,6 +37,7 @@ import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiConfiguration;
@@ -1248,7 +1249,7 @@ public class ArcadeDBServer {
 
       final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true);
 
-      factory.setSecurity(getSecurity());
+      factory.setSecurity(getDatabaseSecurityManager());
 
       if (factory.exists())
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -1498,6 +1499,16 @@ public class ArcadeDBServer {
     return security;
   }
 
+  /**
+   * The security manager the databases of this server are opened with: a view of {@link #getSecurity()} restricted to
+   * the {@link SecurityManager} interface, because a database hands it to host code through
+   * {@code database.getSecurity()} (issue #8405). Null before the security plugin exists.
+   */
+  public SecurityManager getDatabaseSecurityManager() {
+    final ServerSecurity current = security;
+    return current != null ? current.getDatabaseSecurityManager() : null;
+  }
+
   public AiConfiguration getAiConfiguration() {
     return aiConfiguration;
   }
@@ -1630,7 +1641,7 @@ public class ArcadeDBServer {
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
-        factory.setSecurity(getSecurity());
+        factory.setSecurity(getDatabaseSecurityManager());
 
         ComponentFile.MODE defaultDbMode =
             configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE,

@@ -172,6 +172,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   private final        Object                             permissionsPublishLock     = new Object();
 
+  /**
+   * The security manager every database of this server is opened with, and therefore what host code reaches through
+   * {@code database.getSecurity()} (issue #8405). See {@link #getDatabaseSecurityManager()}.
+   */
+  private final        SecurityManager                    databaseSecurityManager    = new DatabaseSecurityManager(this);
+
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
@@ -199,6 +205,27 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       LogManager.instance().log(this, Level.SEVERE, "Security algorithm '%s' not available (error=%s)", e, algorithm);
       throw new ServerSecurityException("Security algorithm '" + algorithm + "' not available", e);
     }
+  }
+
+  /**
+   * The {@link SecurityManager} to hand to the databases this server opens, in place of this instance (issue #8405).
+   * <p>
+   * A database exposes its security manager through {@code database.getSecurity()}, and host code gets the real
+   * {@code database} object: a JavaScript trigger or a {@code LANGUAGE js} function runs in a GraalVM context bound
+   * with {@code HostAccess.ALL} minus reflection, which resolves members against the RUNTIME class, and a Java trigger
+   * can simply cast. Handing out this instance let host code call any public mutator here - the cluster-wide ones,
+   * which the {@link SecurityManager} entry points refuse off the leader since #8370, and the node-local ones
+   * ({@link #createUser(JSONObject)}, {@link #updateUser}, {@link #dropUserLocally}, {@link #saveGroup},
+   * {@link #deleteGroup}), which change this node's security files with no replication at all.
+   * <p>
+   * The returned object is a non-public class that implements {@link SecurityManager} and nothing else, delegating
+   * every method to this instance, so the interface keeps its behaviour (the openCypher admin commands and host code
+   * calling {@code createUser}/{@code dropUser}/{@code setUserPassword} are unaffected) while the rest of this class
+   * is out of reach. Server code that needs the full API holds the {@link ServerSecurity} from
+   * {@link ArcadeDBServer#getSecurity()}, never from a database.
+   */
+  public SecurityManager getDatabaseSecurityManager() {
+    return databaseSecurityManager;
   }
 
   @Override
@@ -704,7 +731,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return null;
     final Map<String, Object> info = new HashMap<>();
     info.put("name", user.getName());
-    info.put("databases", user.getAuthorizedDatabases());
+    // Read-only: the set is the user's live authorization state, and this map reaches host code through
+    // database.getSecurity() (issue #8405).
+    info.put("databases", Collections.unmodifiableSet(user.getAuthorizedDatabases()));
     return info;
   }
 
@@ -2206,5 +2235,69 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         merged.put(groupName, value);
     }
     return merged;
+  }
+
+  /**
+   * The restricted view returned by {@link #getDatabaseSecurityManager()}. Private and final on purpose: GraalVM
+   * exposes only the public methods of the public types it implements, which is {@link SecurityManager}, and the
+   * delegate field is private, so with host reflection disabled a script has no way from here back to the
+   * {@link ServerSecurity} instance. Every method must stay a pure delegation, with no policy of its own: the checks
+   * (leader-only, cluster-wide replication, session revocation) live in the delegate so that every caller gets them.
+   */
+  private static final class DatabaseSecurityManager implements SecurityManager {
+    private final ServerSecurity delegate;
+
+    private DatabaseSecurityManager(final ServerSecurity delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void updateSchema(final DatabaseInternal database) {
+      delegate.updateSchema(database);
+    }
+
+    /**
+     * Read-only: {@link ServerSecurity#getUsers()} is the live key set of the user map, and removing from it would
+     * drop a user from this node's memory with nothing persisted and nothing replicated.
+     */
+    @Override
+    public Set<String> getUsers() {
+      return Collections.unmodifiableSet(delegate.getUsers());
+    }
+
+    @Override
+    public boolean existsUser(final String name) {
+      return delegate.existsUser(name);
+    }
+
+    @Override
+    public Map<String, Object> getUserInfo(final String name) {
+      return delegate.getUserInfo(name);
+    }
+
+    @Override
+    public void createUser(final String name, final String password) {
+      delegate.createUser(name, password);
+    }
+
+    @Override
+    public boolean dropUser(final String name) {
+      return delegate.dropUser(name);
+    }
+
+    @Override
+    public void setUserPassword(final String name, final String password) {
+      delegate.setUserPassword(name, password);
+    }
+
+    @Override
+    public String encodePassword(final String password) {
+      return delegate.encodePassword(password);
+    }
+
+    @Override
+    public String toString() {
+      return "DatabaseSecurityManager";
+    }
   }
 }
