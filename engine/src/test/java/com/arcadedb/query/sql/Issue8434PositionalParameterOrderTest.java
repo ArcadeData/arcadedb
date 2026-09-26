@@ -20,7 +20,10 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.PositionalParameter;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -117,6 +120,18 @@ class Issue8434PositionalParameterOrderTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT uuid FROM bucket:? WHERE uuid = ?", bucketName, "u9")) {
       assertThat(collect(rs)).containsExactly("u9");
     }
+  }
+
+  /** The standalone expression and condition entry points number their placeholders by the same source order. */
+  @Test
+  void standaloneExpressionAndConditionBindInSourceOrder() {
+    final SQLAntlrParser parser = new SQLAntlrParser(database);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    context.setInputParameters(new Object[] { 10, 3 });
+
+    assertThat(((Number) parser.parseExpression("? - ?").execute((Result) null, context)).intValue()).isEqualTo(7);
+    assertThat(parser.parseCondition("? > ?").matchesFilters(new ResultInternal(), context)).isTrue();
   }
 
   @Test

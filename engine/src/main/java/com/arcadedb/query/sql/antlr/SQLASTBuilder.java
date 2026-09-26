@@ -273,6 +273,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       sequentialParamTokenIndexes = Arrays.copyOf(holder[0], count);
     }
 
+    // The array is sorted, as binarySearch requires: the collector is a left-to-right depth-first walk, and ANTLR adds
+    // a node's children in the order their tokens were consumed, so the token indexes it meets strictly increase.
     final int number = Arrays.binarySearch(sequentialParamTokenIndexes, token.getTokenIndex());
     if (number < 0)
       throw new CommandSQLParsingException("Cannot number the parameter at '" + token.getText() + "'");
