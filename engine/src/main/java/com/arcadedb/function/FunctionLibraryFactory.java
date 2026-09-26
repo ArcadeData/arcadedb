@@ -26,6 +26,8 @@ import com.arcadedb.function.polyglot.JavascriptFunctionLibraryDefinition;
 import com.arcadedb.function.sql.SQLFunctionDefinition;
 import com.arcadedb.function.sql.SQLFunctionLibraryDefinition;
 
+import java.util.Locale;
+
 /**
  * Central factory that maps a language identifier ("js", "sql", "opencypher"/"cypher") to the concrete
  * {@link FunctionLibraryDefinition} / {@link FunctionDefinition} implementation. It is shared by the {@code DEFINE
@@ -43,10 +45,14 @@ public class FunctionLibraryFactory {
    * ({@code cypher} is an alias of {@code opencypher}), or {@code null} if the language is not supported.
    */
   public static String canonicalLanguage(final String language) {
-    return switch (language) {
-      case "js", "sql", "opencypher" -> language;
+    if (language == null)
+      return null;
+    // CASE-INSENSITIVE, AS EVERY OTHER KEYWORD OF THE STATEMENT: "LANGUAGE JS" USED TO BE REPORTED AS NOT SUPPORTED
+    final String lower = language.toLowerCase(Locale.ENGLISH);
+    return switch (lower) {
+      case "js", "sql", "opencypher" -> lower;
       case "cypher" -> "opencypher";
-      case null, default -> null;
+      default -> null;
     };
   }
 
@@ -65,31 +71,36 @@ public class FunctionLibraryFactory {
       throw new IllegalArgumentException(
           "Cannot define a function in library '" + library.getName() + "': it is not a user-defined function library");
 
-    final String canonical = canonicalLanguage(language);
-    if (canonical == null)
-      throw new IllegalArgumentException("Error on function creation: language '" + language + "' not supported");
+    final String canonical = languageOrFail(language);
     if (!libraryLanguage.equals(canonical))
       throw new IllegalArgumentException(
           "Cannot define a '" + language + "' function in library '" + library.getName() + "': it is a '" + libraryLanguage
               + "' library, and a library holds functions of one language only");
   }
 
+  private static String languageOrFail(final String language) {
+    final String canonical = canonicalLanguage(language);
+    if (canonical == null)
+      throw new IllegalArgumentException("Error on function creation: language '" + language + "' not supported");
+    return canonical;
+  }
+
   public static FunctionLibraryDefinition createLibrary(final Database database, final String libraryName, final String language) {
-    return switch (language) {
+    return switch (languageOrFail(language)) {
       case "js" -> new JavascriptFunctionLibraryDefinition(database, libraryName);
       case "sql" -> new SQLFunctionLibraryDefinition(database, libraryName);
-      case "opencypher", "cypher" -> new CypherFunctionLibraryDefinition(database, libraryName);
-      default -> throw new IllegalArgumentException("Error on function creation: language '" + language + "' not supported");
+      case "opencypher" -> new CypherFunctionLibraryDefinition(database, libraryName);
+      default -> throw new IllegalStateException("Unreachable language '" + language + "'");
     };
   }
 
   public static FunctionDefinition createFunction(final Database database, final String language, final String functionName,
       final String code, final String[] parameters) {
-    return switch (language) {
+    return switch (languageOrFail(language)) {
       case "js" -> new JavascriptFunctionDefinition(functionName, code, parameters);
       case "sql" -> new SQLFunctionDefinition(database, functionName, code, parameters);
-      case "opencypher", "cypher" -> new CypherFunctionDefinition(database, functionName, code, parameters);
-      default -> throw new IllegalArgumentException("Error on function creation: language '" + language + "' not supported");
+      case "opencypher" -> new CypherFunctionDefinition(database, functionName, code, parameters);
+      default -> throw new IllegalStateException("Unreachable language '" + language + "'");
     };
   }
 }

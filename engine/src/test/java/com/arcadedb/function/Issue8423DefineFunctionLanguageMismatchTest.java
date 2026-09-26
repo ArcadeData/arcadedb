@@ -84,6 +84,21 @@ class Issue8423DefineFunctionLanguageMismatchTest extends TestHelper {
   }
 
   @Test
+  void languageIsCaseInsensitive() {
+    database.command("sql", "DEFINE FUNCTION upper.twice 'return x * 2' PARAMETERS [x] LANGUAGE JS");
+    database.command("sql", "DEFINE FUNCTION upper.thrice 'return x * 3' PARAMETERS [x] LANGUAGE Js");
+    database.command("sql", "DEFINE FUNCTION upcy.double 'RETURN $x * 2' PARAMETERS [x] LANGUAGE CYPHER");
+
+    assertThat(database.getSchema().getFunctionLibrary("upper").getLanguage()).isEqualTo("js");
+    assertThat(database.getSchema().getFunctionLibrary("upcy").getLanguage()).isEqualTo("opencypher");
+    assertThat(callFunction("SELECT `upper.thrice`(3) AS result")).isEqualTo(9);
+
+    assertThatThrownBy(() -> database.command("sql", "DEFINE FUNCTION upper.f 'SELECT 1 AS result' LANGUAGE SQL"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("'js' library");
+  }
+
+  @Test
   void unsupportedLanguageIntoExistingLibraryIsRefused() {
     database.command("sql", "DEFINE FUNCTION lib2.one 'SELECT 1 AS result' LANGUAGE sql");
 
