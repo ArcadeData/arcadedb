@@ -214,6 +214,33 @@ class Issue8403GAVBlockingBuildOffMonitorTest extends TestHelper {
   }
 
   @Test
+  void aBuildWhoseListenersCannotBeArmedIsNotLeftBuilding() throws Exception {
+    // Arming the listeners can fail (the database closing, say): the view must answer, not stay BUILDING behind a latch
+    // nobody counts down, and must not keep the half-opened watch that would disable its compactions
+    final GraphAnalyticalView view = syncView();
+    view.setAfterBuildWatchOpenedForTest(() -> {
+      throw new IllegalStateException("listeners cannot be armed");
+    });
+
+    assertThatThrownBy(view::build).hasMessageContaining("listeners cannot be armed");
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+    assertThat(view.getBuildError()).isNotNull();
+    assertThat(CompletableFuture.supplyAsync(() -> view.awaitReady(HANG_SECONDS, TimeUnit.SECONDS))
+        .get(HANG_SECONDS / 2, TimeUnit.SECONDS)).isFalse();
+
+    assertThatThrownBy(view::buildAsync).hasMessageContaining("listeners cannot be armed");
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.STALE);
+
+    // Neither left anything behind: the next build proceeds, publishes, and compacts again
+    view.setAfterBuildWatchOpenedForTest(null);
+    view.buildAsync();
+    assertThat(view.awaitReady(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+    view.build();
+    assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
+    view.drop();
+  }
+
+  @Test
   void aCommitDuringABlockingRebuildDoesNotStartACompaction() throws Exception {
     // A compaction beside the rebuild would supersede it, and never publish the view READY
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gav8403c").withVertexTypes("Person")
