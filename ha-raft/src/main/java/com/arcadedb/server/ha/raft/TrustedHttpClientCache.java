@@ -68,7 +68,9 @@ final class TrustedHttpClientCache {
   /**
    * Clients replaced by a rotation that were told to shut down but may still be draining an exchange another
    * thread sent before the rotation (issue #8025). Kept so {@link #close()} can release them too; pruned of the
-   * ones that have terminated on every rebuild, so repeated rotations do not accumulate them. Guarded by this.
+   * ones that have terminated on every rebuild, so repeated rotations do not accumulate them. It is usually empty
+   * or holds one client, but it is bounded by the number of retired clients still draining a straggler, not by
+   * one: rotations in quick succession while a long exchange is in flight each retire another. Guarded by this.
    */
   private final List<HttpClient> retired = new ArrayList<>(1);
   // Latched by close(), so a probe that outlived stopCapabilityMonitor()'s shutdownNow() cannot have a client
