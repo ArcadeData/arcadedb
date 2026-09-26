@@ -240,6 +240,8 @@ public class SelectStatement extends Statement {
       result.limit = limit == null ? null : limit.copy();
       result.letClause = letClause == null ? null : letClause.copy();
       result.timeout = timeout == null ? null : timeout.copy();
+      // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
+      result.resultCacheable = resultCacheable;
       return result;
     } catch (final Exception e) {
       throw new ArcadeDBException(e);

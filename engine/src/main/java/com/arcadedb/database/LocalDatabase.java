@@ -220,6 +220,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    WALFileFactory                            walFactory;
   protected final    DocumentIndexer                           indexer;
   protected final    DatabaseStats                             stats                     = new DatabaseStats();
+  // SEE getModificationCount(): A DEDICATED COUNTER, NOT A SUM OF STATISTICS THAT MISS SOME WRITE PATHS (#8400)
+  private final      AtomicLong                                modificationCount         = new AtomicLong();
   protected          FileManager                               fileManager;
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
@@ -589,6 +591,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public long getModificationCount() {
+    return modificationCount.get();
+  }
+
+  /**
+   * Moves {@link #getModificationCount()}. Called at every write boundary: a record created, updated or deleted, a
+   * write transaction committed, a replicated or recovered transaction applied to the files, and a command (which
+   * may be DDL or a bulk operation that bypasses the record paths). Over-counting only costs a memoized result;
+   * under-counting serves a stale one, so a NEW write path that bypasses all of these must call this too.
+   */
+  public void markModified() {
+    modificationCount.incrementAndGet();
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
@@ -692,6 +709,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public void incrementStatsWriteTx() {
     stats.writeTx.incrementAndGet();
+    markModified();
   }
 
   public void incrementStatsReadTx() {
@@ -711,9 +729,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
         final Binary result = current.getLastTransaction().commit();
-        if (result != null)
+        if (result != null) {
           stats.writeTx.incrementAndGet();
-        else
+          markModified();
+        } else
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
@@ -1220,6 +1239,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
+    markModified();
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already " +
           "persistent");
@@ -1580,6 +1600,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
       // events right below, so the two stay in step.
       stats.updateRecord.incrementAndGet();
+      // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
+      markModified();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterUpdate(record);
@@ -1614,6 +1636,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
+    markModified();
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
@@ -1690,6 +1713,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                         and always {@code null} on the ordinary delete path.
    */
   private boolean deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
+    markModified();
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
@@ -2255,6 +2279,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration());
@@ -2267,6 +2292,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
@@ -2280,6 +2306,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
@@ -2298,6 +2325,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Map<String, Object> parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
