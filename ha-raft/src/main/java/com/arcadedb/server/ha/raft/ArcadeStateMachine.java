@@ -2077,43 +2077,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
           reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       final Set<String> notInstalled = reconcileResult.notInstalled();
 
-      // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
-      // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
-      // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
-      // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
-      //    purged log entries up to firstTermIndexInLog.getIndex() instead of getIndex()-1.
-      // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
-      //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
-      //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
-      final long computedSnapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+      // Compute the installed snapshot TermIndex: normally firstTermIndexInLog - 1, the end of what the snapshot covers,
+      // or firstTermIndexInLog itself when the leader's marker is past it (issue #8449, see
+      // resolveInstalledSnapshotBoundary). Whatever is returned must also be what registerSnapshotMarker() records
+      // below: StateMachineUpdater.reload() reads getLatestSnapshot() back and expects the two to match - returning a
+      // TermIndex storage never recorded caused a NullPointerException (and before that, an IllegalStateException
+      // from the PAUSED check). SnapshotInstallationHandler then purges this follower's log up to the returned index,
+      // which the copied databases cover in both cases.
       final TermIndex leaderSnapshotTermIndex = reconcileResult.leaderSnapshotTermIndex();
+      final TermIndex installedTermIndex = resolveInstalledSnapshotBoundary(firstTermIndexInLog, leaderSnapshotTermIndex);
+      final long snapshotIndex = installedTermIndex.getIndex();
+      final long snapshotTerm = installedTermIndex.getTerm();
+      // Logged from the decision's result, so the message cannot drift from what was registered
       if (leaderSnapshotTermIndex == null)
         LogManager.instance().log(this, Level.WARNING,
             "Leader %s reported no snapshot marker (a build that predates issue #8360); registering the approximate "
                 + "term of the next log entry for install index %d. A term change exactly at that boundary would stall "
                 + "this follower until the leader compacts past it; upgrading the leader closes the window (issue #8374).",
-            leaderId, computedSnapshotIndex);
-      else if (leaderSnapshotTermIndex.getIndex() < computedSnapshotIndex)
-        // Unexpected: Ratis purges only up to its snapshot, so the notifying leader's marker is at least S-1. A leader
-        // change between the notification and the marker read could produce it; the approximation is kept
-        // (issues #8360, #8449).
-        LogManager.instance().log(this, Level.FINE,
-            "Leader-reported snapshot boundary %s is older than the computed install index %d; registering the "
-                + "approximate term of the next log entry (issue #8360).",
-            leaderSnapshotTermIndex, computedSnapshotIndex);
-      else if (leaderSnapshotTermIndex.getIndex() > computedSnapshotIndex)
-        // Segment-granularity purging left the leader's log start at or before its marker: computedSnapshotIndex is
+            leaderId, snapshotIndex);
+      else if (installedTermIndex.equals(firstTermIndexInLog))
+        // Segment-granularity purging left the leader's log start at or before its marker: the index before it is
         // neither in the leader's log nor its marker, so LogAppender.getPrevious would answer null and the leader
-        // would re-notify this install forever. Registering the log start itself, which is in the log, lets it
-        // resume (issue #8449).
+        // would re-notify this install forever (issue #8449).
         LogManager.instance().log(this, Level.INFO,
             "Leader snapshot marker %s is past its log start %s; registering the log start as the install boundary "
                 + "so the leader can resume replication (issue #8449).",
             leaderSnapshotTermIndex, firstTermIndexInLog);
-      final TermIndex installedTermIndex = resolveInstalledSnapshotBoundary(computedSnapshotIndex,
-          firstTermIndexInLog.getTerm(), leaderSnapshotTermIndex);
-      final long snapshotIndex = installedTermIndex.getIndex();
-      final long snapshotTerm = installedTermIndex.getTerm();
+      else if (!leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
+        // Unexpected: Ratis purges only up to its snapshot, so the notifying leader's marker is at least S-1. A leader
+        // change between the notification and the marker read could produce it; the approximation is kept
+        // (issues #8360, #8449).
+        LogManager.instance().log(this, Level.FINE,
+            "Leader-reported snapshot boundary %s is older than the install index %d; registering the approximate "
+                + "term of the next log entry (issue #8360).",
+            leaderSnapshotTermIndex, snapshotIndex);
 
       // Issue #8353: the entries this install skips may include the removal and the re-add of THIS node, which then
       // never reaches the runtime-join detector as a configuration change, so its previous membership's security
@@ -2297,11 +2294,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Package-private and static so the decision is unit-testable without a live Raft cluster.
    */
-  static TermIndex resolveInstalledSnapshotBoundary(final long computedSnapshotIndex, final long fallbackTerm,
+  static TermIndex resolveInstalledSnapshotBoundary(final TermIndex firstTermIndexInLog,
       final TermIndex leaderSnapshotTermIndex) {
+    final long computedSnapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
     if (leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() > computedSnapshotIndex)
-      return TermIndex.valueOf(fallbackTerm, computedSnapshotIndex + 1);
-    return TermIndex.valueOf(resolveInstalledSnapshotTerm(computedSnapshotIndex, fallbackTerm, leaderSnapshotTermIndex),
+      return firstTermIndexInLog;
+    return TermIndex.valueOf(
+        resolveInstalledSnapshotTerm(computedSnapshotIndex, firstTermIndexInLog.getTerm(), leaderSnapshotTermIndex),
         computedSnapshotIndex);
   }
 

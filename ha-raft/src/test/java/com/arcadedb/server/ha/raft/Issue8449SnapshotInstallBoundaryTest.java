@@ -53,7 +53,7 @@ import static org.mockito.Mockito.when;
  * leader's log, so {@code getPrevious(S + 1)} returns exactly that TermIndex. The marker's own TermIndex is not used
  * for an index inside the log, because {@code getPrevious} reads the log first and a marker term can differ from it.
  *
- * @see ArcadeStateMachine#resolveInstalledSnapshotBoundary(long, long, TermIndex)
+ * @see ArcadeStateMachine#resolveInstalledSnapshotBoundary(TermIndex, TermIndex)
  */
 class Issue8449SnapshotInstallBoundaryTest {
 
@@ -75,7 +75,7 @@ class Issue8449SnapshotInstallBoundaryTest {
   void registersTheLogStartWhenTheMarkerIsPastIt() {
     // The chaos-run shape: log start 206194, marker 206950 - a partly purged segment is still in the log.
     final TermIndex marker = TermIndex.valueOf(FIRST_LOG_TERM, COMPUTED_SNAPSHOT_INDEX + 2_481L);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM, marker))
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG, marker))
         .as("S-1 is neither in the leader's log nor its marker; S is in the log, so getPrevious(S + 1) resolves")
         .isEqualTo(FIRST_LOG);
   }
@@ -83,7 +83,7 @@ class Issue8449SnapshotInstallBoundaryTest {
   @Test
   void registersTheLogStartWhenTheMarkerIsExactlyAtIt() {
     final TermIndex marker = TermIndex.valueOf(FIRST_LOG_TERM, FIRST_LOG_INDEX);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM, marker))
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG, marker))
         .isEqualTo(FIRST_LOG);
   }
 
@@ -92,7 +92,7 @@ class Issue8449SnapshotInstallBoundaryTest {
     // takeSnapshot() pairs the applied index with the applied term, which a configuration entry can advance on its own,
     // so the marker's term (12) can exceed the log's (9). getPrevious reads the log first, so only the log term matches.
     final TermIndex inflatedMarker = TermIndex.valueOf(12L, COMPUTED_SNAPSHOT_INDEX + 2_481L);
-    final TermIndex boundary = ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM,
+    final TermIndex boundary = ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG,
         inflatedMarker);
     assertThat(boundary.getTerm()).isEqualTo(FIRST_LOG_TERM);
     assertThat(boundary).isNotEqualTo(inflatedMarker);
@@ -102,20 +102,28 @@ class Issue8449SnapshotInstallBoundaryTest {
   void registersTheMarkerWhenItEndsRightBeforeTheLogStart() {
     // Unchanged #8360 case: getPrevious(S) reads the marker itself, so its term is the one to match.
     final TermIndex marker = TermIndex.valueOf(8L, COMPUTED_SNAPSHOT_INDEX);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM, marker))
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG, marker))
         .isEqualTo(marker);
   }
 
   @Test
   void keepsTheApproximationWhenTheMarkerIsOlder() {
     final TermIndex olderMarker = TermIndex.valueOf(7L, COMPUTED_SNAPSHOT_INDEX - 500L);
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM, olderMarker))
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG, olderMarker))
         .isEqualTo(TermIndex.valueOf(FIRST_LOG_TERM, COMPUTED_SNAPSHOT_INDEX));
   }
 
   @Test
+  void registersTheLogStartVerbatimEvenWhenTheIndexClampApplies() {
+    // S-1 is clamped to 0 for S <= 1. The boundary must still be the log start itself, never a clamped index + 1.
+    final TermIndex logStartAtZero = TermIndex.valueOf(FIRST_LOG_TERM, 0L);
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(logStartAtZero, TermIndex.valueOf(FIRST_LOG_TERM, 5L)))
+        .isEqualTo(logStartAtZero);
+  }
+
+  @Test
   void keepsTheApproximationWhenThereIsNoMarker() {
-    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(COMPUTED_SNAPSHOT_INDEX, FIRST_LOG_TERM, null))
+    assertThat(ArcadeStateMachine.resolveInstalledSnapshotBoundary(FIRST_LOG, null))
         .isEqualTo(TermIndex.valueOf(FIRST_LOG_TERM, COMPUTED_SNAPSHOT_INDEX));
   }
 
