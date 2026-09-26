@@ -31,7 +31,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -61,20 +63,41 @@ final class TrustedHttpClientCache {
   private record TrustMaterial(String storePath, String passwordDigest, long lastModified, long length) {
   }
 
-  private TrustMaterial material;
-  private HttpClient   client;
+  private       TrustMaterial    material;
+  private       HttpClient       client;
+  /**
+   * Clients replaced by a rotation that were told to shut down but may still be draining an exchange another
+   * thread sent before the rotation (issue #8025). Kept so {@link #close()} can release them too; pruned of the
+   * ones that have terminated on every rebuild, so repeated rotations do not accumulate them. It is usually empty
+   * or holds one client, but it is bounded by the number of retired clients still draining a straggler, not by
+   * one: rotations in quick succession while a long exchange is in flight each retire another. Guarded by this.
+   */
+  private final List<HttpClient> retired = new ArrayList<>(1);
   // Latched by close(), so a probe that outlived stopCapabilityMonitor()'s shutdownNow() cannot have a client
   // built for it that nothing will ever close - the leak this cache exists to prevent (PR #7314 review).
-  private boolean      closed;
+  private       boolean          closed;
 
   /**
    * The client for {@code server}, building one when the truststore behind it has changed since the last call.
    * <p>
-   * The previous client is closed on a rebuild. {@link HttpClient#close()} is an orderly shutdown that waits for
-   * in-flight operations, and the one production caller - {@code RaftHAServer.refreshPeerCapabilities} - is
-   * sequential on a single scheduled thread, so on THIS path nothing of the server's own is ever in flight: the
-   * thread that would be sending is the thread asking for the client. {@link #close()} carries no such guarantee;
-   * see its own note.
+   * <b>The previous client is retired, not closed, on a rebuild</b> (issue #8025). This method is entered
+   * concurrently: {@code RaftHAServer} holds the class twice, the leader-forward instance is asked by every HTTP
+   * worker thread forwarding a request to the leader ({@code LeaderDial.resolve}), and the peer-RPC instance by
+   * {@code PeerAuthSessionQuery} on request threads as well as by the capability probe. So when the truststore
+   * rotates, other threads can have exchanges in flight on the client being replaced.
+   * <p>
+   * {@link HttpClient#close()} used to be called here, and it waits for every one of those exchanges to complete
+   * - bounded only by each one's own deadline, {@code arcadedb.ha.proxyCommandTimeout} (one hour at its default)
+   * for a forward - while this method holds the monitor every other caller queues on. The shutdown path's
+   * {@code LeaderDial.releaseBounded} is not the answer either: it cancels, and these are live forwards whose
+   * callers are still waiting on the answer. {@link HttpClient#shutdown()} is the call that fits: it returns at
+   * once, refuses new requests, lets the ones in flight finish, and the client terminates on its own when the
+   * last one does. The retired client is remembered so {@link #close()} can still release it if a straggler
+   * outlives the server.
+   * <p>
+   * A caller that took the previous client just before the rotation and sends on it just after gets an
+   * {@code IOException}, as it would have from {@code close()}: the forward fails exactly as it does when the
+   * leader is unreachable, and the window is the few instructions between being handed the client and sending.
    */
   synchronized HttpClient clientFor(final ArcadeDBServer server) throws IOException {
     if (closed)
@@ -103,8 +126,12 @@ final class TrustedHttpClientCache {
 
     if (previous != null) {
       LogManager.instance().log(this, Level.FINE,
-          "The truststore backing the cluster capability probe changed; its HTTPS client was rebuilt");
-      previous.close();
+          "The truststore backing the cluster's peer HTTPS client changed; the client was rebuilt");
+      // Non-blocking: in-flight exchanges on it finish on their own, and it terminates after the last one.
+      previous.shutdown();
+      retired.removeIf(HttpClient::isTerminated);
+      if (!previous.isTerminated())
+        retired.add(previous);
     }
     return client;
   }
@@ -142,7 +169,7 @@ final class TrustedHttpClientCache {
    * Safe to call more than once, and safe to call on a cache that never built anything. One-way: a closed cache
    * refuses to build again, since whoever asked after this has no one left to close what it would get.
    * <p>
-   * Unlike the rebuild path above, this one can run while a peer dial is in flight: {@code stopCapabilityMonitor()}
+   * Like the rebuild path above, this one can run while a peer dial is in flight: {@code stopCapabilityMonitor()}
    * ends the refresh with {@code shutdownNow()} and does not wait for the round to unwind, and the request is
    * sent outside this object's monitor. So a straggler either delays this close or fails on the closed client.
    * Both are benign and both are on a server that is shutting down: the failure lands in
@@ -159,11 +186,21 @@ final class TrustedHttpClientCache {
    */
   synchronized void close() {
     closed = true;
+    // A client retired by a rotation may still be draining a straggler; it is this cache's to release too, or it
+    // holds its selector thread until that straggler's own deadline (issue #8025).
+    for (final HttpClient r : retired)
+      LeaderDial.releaseBounded(r);
+    retired.clear();
     if (client == null)
       return;
     LeaderDial.releaseBounded(client);
     client = null;
     material = null;
+  }
+
+  /** How many retired clients are still being tracked; for tests (issue #8025). */
+  synchronized int retiredCount() {
+    return retired.size();
   }
 
   private static TrustMaterial trustMaterialOf(final ArcadeDBServer server) {
