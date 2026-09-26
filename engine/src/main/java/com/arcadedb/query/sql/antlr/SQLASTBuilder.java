@@ -205,11 +205,14 @@ import com.arcadedb.query.sql.parser.WhileBlock;
 import com.arcadedb.query.sql.parser.WithinOperator;
 import com.arcadedb.schema.Property;
 import com.arcadedb.utility.CollectionUtils;
+import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -245,7 +248,60 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
 
-  private int positionalParamCounter = 0;
+  /**
+   * Token indexes of every parameter that takes a sequential number ({@code ?}, {@code :name}, {@code bucket:?},
+   * {@code bucket::name}), in source order. A parameter's number is its position in this array, so it follows where
+   * the placeholder is WRITTEN, not the order in which the clauses happen to be visited: SKIP is built before LIMIT
+   * and FROM before the projection, which numbered {@code LIMIT ? SKIP ?} backwards (issue #8434). Built on the first
+   * parameter met; statements without parameters never pay for it.
+   */
+  private int[]     sequentialParamTokenIndexes;
+  private ParseTree sequentialParamTreeRoot;
+
+  /**
+   * Returns the sequential number of the parameter written at {@code token}: how many sequentially numbered
+   * parameters precede it in the whole parse tree (a script numbers its parameters across all its statements).
+   */
+  private int sequentialParamNumber(final ParserRuleContext owner, final Token token) {
+    ParseTree root = owner;
+    while (root.getParent() != null)
+      root = root.getParent();
+
+    if (sequentialParamTokenIndexes == null || sequentialParamTreeRoot != root) {
+      final int[][] holder = { new int[8] };
+      final int count = collectSequentialParamTokens(root, holder, 0);
+      sequentialParamTokenIndexes = Arrays.copyOf(holder[0], count);
+      sequentialParamTreeRoot = root;
+    }
+
+    final int number = Arrays.binarySearch(sequentialParamTokenIndexes, token.getTokenIndex());
+    if (number < 0)
+      throw new CommandSQLParsingException("Cannot number the parameter at '" + token.getText() + "'");
+    return number;
+  }
+
+  private static int collectSequentialParamTokens(final ParseTree node, final int[][] holder, int count) {
+    if (node instanceof TerminalNode terminal) {
+      if (isSequentialParamToken(terminal)) {
+        if (count == holder[0].length)
+          holder[0] = Arrays.copyOf(holder[0], count * 2);
+        holder[0][count++] = terminal.getSymbol().getTokenIndex();
+      }
+      return count;
+    }
+    for (int i = 0; i < node.getChildCount(); i++)
+      count = collectSequentialParamTokens(node.getChild(i), holder, count);
+    return count;
+  }
+
+  private static boolean isSequentialParamToken(final TerminalNode terminal) {
+    return switch (terminal.getSymbol().getType()) {
+      case SQLParser.BUCKET_NAMED_PARAM, SQLParser.BUCKET_POSITIONAL_PARAM -> true;
+      // ? and :name are sequentially numbered only as an inputParameter; $1 carries its own number
+      case SQLParser.HOOK, SQLParser.COLON -> terminal.getParent() instanceof SQLParser.InputParameterContext;
+      default -> false;
+    };
+  }
 
   /**
    * Pushed for a statement whose target carries no alias. {@link ArrayDeque} rejects nulls, and a marker is needed
@@ -2005,12 +2061,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final String paramName = text.substring("bucket::".length());
       final NamedParameter param = new NamedParameter();
       param.paramName = paramName;
-      param.paramNumber = positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.BUCKET_NAMED_PARAM().getSymbol());
       bucket.inputParam = param;
     } else if (ctx.BUCKET_POSITIONAL_PARAM() != null) {
       // bucket:? - create a positional parameter
       final PositionalParameter param = new PositionalParameter();
-      param.paramNumber = positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.BUCKET_POSITIONAL_PARAM().getSymbol());
       bucket.inputParam = param;
     }
 
@@ -4286,11 +4342,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public InputParameter visitInputParameter(final SQLParser.InputParameterContext ctx) {
     if (ctx.HOOK() != null) {
-      // Positional parameter: ?
-      // Increment counter to assign sequential parameter numbers
+      // Positional parameter: ?, numbered by where it is written (#8434)
       final PositionalParameter param = new PositionalParameter();
-      param.paramNumber = positionalParamCounter;
-      positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.HOOK().getSymbol());
       return param;
     } else if (ctx.COLON() != null && (ctx.identifier() != null || ctx.FROM() != null)) {
       // Named parameter: :name or :from (keyword used as param name)
@@ -4303,8 +4357,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
       final NamedParameter param = new NamedParameter();
       param.paramName = paramName;
-      param.paramNumber = positionalParamCounter;
-      positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.COLON().getSymbol());
       return param;
     } else if (ctx.INTEGER_LITERAL() != null) {
       // Positional parameter: $1, $2, etc.
@@ -5320,12 +5373,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final String paramName = text.substring("bucket::".length());
       final NamedParameter param = new NamedParameter();
       param.paramName = paramName;
-      param.paramNumber = positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.BUCKET_NAMED_PARAM().getSymbol());
       bucketId.inputParam = param;
     } else if (ctx.BUCKET_POSITIONAL_PARAM() != null) {
       // bucket:? format
       final PositionalParameter param = new PositionalParameter();
-      param.paramNumber = positionalParamCounter++;
+      param.paramNumber = sequentialParamNumber(ctx, ctx.BUCKET_POSITIONAL_PARAM().getSymbol());
       bucketId.inputParam = param;
     }
 
