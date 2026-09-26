@@ -203,6 +203,84 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
     });
   }
 
+  /**
+   * A subquery that scans a multi-bucket type, run outside a transaction, fetches in parallel: each worker gets its
+   * own copy of the subquery's context ({@link BasicCommandContext#copy()}). The copies must stay tracking contexts
+   * that share one tracker, so the fixture drives that path and checks every row's rows still carry its own binding.
+   */
+  @Test
+  void parallelScanOfTheSubqueryKeepsTrackingThroughWorkerContextCopies() {
+    database.command("sql", "create vertex type ParNode buckets 4").close();
+    database.transaction(() -> {
+      for (int i = 0; i < 16; i++)
+        database.command("sql", "create vertex ParNode set seq = " + i).close();
+    });
+
+    final ResultSet explain = database.query("sql", "explain select seq from ParNode");
+    assertThat(explain.getExecutionPlan().get().prettyPrint(0, 2)).as("fixture scans in parallel").contains("(parallel)");
+    explain.close();
+
+    final ResultSet rs = database.query("sql",
+        "select name, office, $par as par from CacheNode " +
+            "let $office = office, $par = (select seq, $parent.office as po from ParNode) " +
+            "where name like 'Leaf%'");
+    int rows = 0;
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      final List<Result> par = row.getProperty("par");
+      assertThat(par).hasSize(16);
+      for (final Result r : par)
+        assertThat(r.<Integer>getProperty("po")).isEqualTo(row.<Integer>getProperty("office"));
+      ++rows;
+    }
+    assertThat(rows).isEqualTo(OFFICES * LEAVES_PER_OFFICE);
+
+    final CorrelatedSubQueryCache cache = findLetStep(rs, "par").getResultCache();
+    assertThat(cache.isDisabled()).isFalse();
+    assertThat(cache.getMisses()).isEqualTo(OFFICES);
+    assertThat(cache.getHits()).isEqualTo(OFFICES * LEAVES_PER_OFFICE - OFFICES);
+    rs.close();
+  }
+
+  /**
+   * {@code $root} walks past the outer context, which the tracker cannot follow: the first run disables the cache,
+   * every row still gets exactly what it gets with the cache off, and no later row goes through a lookup again.
+   */
+  @Test
+  void anUntrackableReadDisablesTheCacheForTheRestOfTheExecution() {
+    final String query = "select name, $peers.size() as peers from CacheNode " +
+        "let $office = office, $peers = (select from CacheNode where office = $root.office or name = $parent.name) " +
+        "where name like 'Leaf%' order by name";
+
+    final List<Object> withoutCache = new ArrayList<>();
+    database.getConfiguration().setValue(GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE, 0);
+    try {
+      database.transaction(() -> {
+        final ResultSet rs = database.query("sql", query);
+        while (rs.hasNext())
+          withoutCache.add(rs.next().getProperty("peers"));
+        rs.close();
+      });
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE,
+          GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE.getDefValue());
+    }
+
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql", query);
+      final List<Object> withCache = new ArrayList<>();
+      while (rs.hasNext())
+        withCache.add(rs.next().getProperty("peers"));
+      assertThat(withCache).hasSize(OFFICES * LEAVES_PER_OFFICE).isEqualTo(withoutCache);
+
+      final CorrelatedSubQueryCache cache = findLetStep(rs, "peers").getResultCache();
+      assertThat(cache.isDisabled()).isTrue();
+      assertThat(cache.getHits()).isZero();
+      assertThat(cache.getMisses()).as("only the first row looked the cache up").isEqualTo(1);
+      rs.close();
+    });
+  }
+
   @Test
   void nonDeterministicSubqueryIsNeverCached() {
     database.transaction(() -> {
@@ -294,6 +372,9 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
   @Test
   void staticCheckAdmitsTheIssueShapeAndRejectsSideEffectsAndNonRepeatableCalls() {
     assertThat(CorrelatedSubQueryCache.isCacheable(parse(ISSUE_QUERY))).isTrue();
+    // THE ANSWER IS MEMOIZED ON THE PARSED INSTANCE THE STATEMENT CACHE HANDS OUT, NOT RECOMPUTED PER EXECUTION
+    assertThat(parse(ISSUE_QUERY).resultCacheable).isTrue();
+    assertThat(CorrelatedSubQueryCache.isCacheable(parse("select from CacheNode where out('CacheNode_parent').size() > 0 or name.out() is null"))).isTrue();
     assertThat(CorrelatedSubQueryCache.isCacheable(parse("select count(*) as c, max(office) from CacheNode where office = $parent.office"))).isTrue();
     assertThat(CorrelatedSubQueryCache.isCacheable(parse("select name.toLowerCase() from CacheNode"))).isTrue();
 

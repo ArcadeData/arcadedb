@@ -79,6 +79,9 @@ public final class CorrelatedSubQueryCache {
   private static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "uuid", "sysdate", "eval", "promql");
   /** Built-in methods that mutate the collection they are applied to, which may be an outer variable. */
   private static final Set<String> MUTATING_METHODS         = Set.of("remove", "removeall");
+  /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
+  private static final Set<String> GRAPH_METHODS            = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv",
+      "bothv");
 
   private static final ClassValue<Field[]> AST_FIELDS = new ClassValue<>() {
     @Override
@@ -138,7 +141,14 @@ public final class CorrelatedSubQueryCache {
    * FROM-subquery, a nested LET) is seen without every node type having to implement a visitor.
    */
   static boolean isCacheable(final Statement statement) {
-    return statement != null && isCacheable(statement, new IdentityHashMap<>());
+    if (statement == null)
+      return false;
+    Boolean cacheable = statement.resultCacheable;
+    if (cacheable == null) {
+      cacheable = isCacheable(statement, new IdentityHashMap<>());
+      statement.resultCacheable = cacheable;
+    }
+    return cacheable;
   }
 
   private static boolean isCacheable(final Object node, final IdentityHashMap<Object, Boolean> visited) {
@@ -191,10 +201,14 @@ public final class CorrelatedSubQueryCache {
     }
 
     if (node instanceof MethodCall call) {
-      if (call.isCacheable())
-        return true;
       final String name = call.methodName == null ? null : call.methodName.getStringValue().toLowerCase(Locale.ENGLISH);
-      return name != null && !MUTATING_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().getMethods().containsKey(name);
+      if (name == null)
+        return false;
+      // GRAPH TRAVERSAL METHODS (.out(), .inE(), ...) ARE NOT IN THE METHOD REGISTRY: THEY RESOLVE AS FUNCTIONS. LISTED
+      // HERE RATHER THAN READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
+      if (GRAPH_METHODS.contains(name))
+        return true;
+      return !MUTATING_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().getMethods().containsKey(name);
     }
 
     return true;

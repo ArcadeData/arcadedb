@@ -95,10 +95,12 @@ public class LetQueryStep extends AbstractExecutionStep {
         final DatabaseInternal database = context.getDatabase();
         final CorrelatedSubQueryCache cache = getResultCache(database);
 
-        List<Result> value = cache != null ? cache.lookup(context, database) : null;
+        // NO ROW CAN HIT A DISABLED CACHE: STOP PAYING FOR THE TRACKING CONTEXT TOO
+        final boolean useCache = cache != null && !cache.isDisabled();
+        List<Result> value = useCache ? cache.lookup(context, database) : null;
         if (value == null) {
           final BasicCommandContext subCtx;
-          if (cache != null)
+          if (useCache)
             subCtx = cache.newContext(context);
           else {
             subCtx = new BasicCommandContext();
@@ -116,7 +118,7 @@ public class LetQueryStep extends AbstractExecutionStep {
           }
 
           value = toList(new LocalResultSet(subExecutionPlan));
-          if (cache != null)
+          if (useCache)
             cache.store((CorrelatedSubQueryCache.TrackingContext) subCtx, context, database, value);
         }
         // Not every upstream Result is a ResultInternal (e.g. wrapper Results): guard the cast to avoid a
