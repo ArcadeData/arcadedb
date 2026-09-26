@@ -118,6 +118,10 @@ public class CypherOptimizer {
   // TODO: replace with runtime statistics once histogram-based selectivity estimation is implemented
   private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
   private static final double DEFAULT_FILTER_SELECTIVITY      = 0.5;
+  /** The key types whose index order is the order Cypher sorts their values in. */
+  private static final Set<Type> INDEX_ORDERED_KEY_TYPES = EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
+      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
+      Type.DATETIME_MICROS, Type.DATETIME_NANOS);
 
   private final DatabaseInternal    database;
   private final CypherStatement     statement;
@@ -300,11 +304,6 @@ public class CypherOptimizer {
     // 11. Build physical plan with complete operator tree
     return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality, indexOrdered != null);
   }
-
-  /** The key types whose index order is the order Cypher sorts their values in. */
-  private static final Set<Type> INDEX_ORDERED_KEY_TYPES = EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
-      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
-      Type.DATETIME_MICROS, Type.DATETIME_NANOS);
 
   /**
    * Makes the anchor produce the rows in the order the statement's ORDER BY asks for, when an index holds that order,
