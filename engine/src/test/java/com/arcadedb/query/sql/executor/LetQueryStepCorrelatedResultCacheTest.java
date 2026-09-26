@@ -518,6 +518,9 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
 
     database.transaction(() -> database.command("sql", "create vertex CacheNode set name = 'Tmp3'").close());
     moved.run();
+
+    database.getSchema().createVertexType("Issue8400SchemaChange");
+    moved.run();
   }
 
   @Test

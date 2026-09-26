@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
@@ -3760,6 +3761,11 @@ public class LocalSchema implements Schema {
 
   public synchronized void saveConfiguration() {
     rebuildBucketTypeMap();
+
+    // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
+    // A MEMOIZED QUERY RESULT (THE PER-RECORD LET CACHE, #8400) DOES NOT OUTLIVE IT
+    if (database.getEmbedded() instanceof LocalDatabase localDatabase)
+      localDatabase.markModified();
 
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || database.isTransactionActive()) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty

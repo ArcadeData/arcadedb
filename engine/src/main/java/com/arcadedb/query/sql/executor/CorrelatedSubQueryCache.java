@@ -67,6 +67,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * </ul>
  * A run that reaches the outer context through a path the tracker cannot follow (a bare {@code $parent} handed to a
  * function, {@code $root}, a write to the outer context) disables the cache for the rest of the execution.
+ * <p>
+ * <b>Threading.</b> Not thread-safe, by design: {@link #lookup} and {@link #store} are called only by the one thread
+ * pulling rows through the owning {@link LetQueryStep}. The one concurrent part is a run's {@link Tracker}, which
+ * parallel-scan workers write to through their copies of the run's context, and which is thread-safe.
  */
 public final class CorrelatedSubQueryCache {
   /** A subquery result bigger than this is recomputed rather than retained, to keep the cache's heap bounded. */
