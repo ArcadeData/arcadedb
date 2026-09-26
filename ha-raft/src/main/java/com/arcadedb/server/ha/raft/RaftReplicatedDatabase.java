@@ -3654,14 +3654,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * caller's slot is about to be released regardless (the {@code finally} in {@code ServerControlPlane}) - so
    * silently returning would hand out the "drop finished" guarantee on nothing but hope. Throwing surfaces a
    * clear failure instead of a directory that might still be there when the next operation starts.
+   * <p>
+   * The caller must hold this database's maintenance slot as an exclusive operation ({@code DROP}, or
+   * {@code RESTORE} for the drop a restore performs): the local apply of the entry relies on it rather than
+   * reserving the slot a second time (issue #8035, see {@link LocalDropVerbs}).
    */
   @Override
   public void dropInReplicas() {
     final long committedLogIndex;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
-      raft.waitForAppliedIndex(getName(), committedLogIndex, true);
+      // Registered for the length of the submit and the wait (issue #8035): the caller holds this database's
+      // maintenance slot, and the apply of this entry on THIS node reserves the same slot before it drops the
+      // database. The registration is how the apply knows the slot is already held for it, rather than waiting on
+      // the request thread that is waiting on it.
+      final LocalDropVerbs localDropVerbs = raft.getLocalDropVerbs();
+      final LocalDropVerbs.Registration registration = localDropVerbs.register(getName());
+      try {
+        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
+        raft.waitForAppliedIndex(getName(), committedLogIndex, true);
+      } finally {
+        localDropVerbs.release(getName(), registration);
+      }
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {

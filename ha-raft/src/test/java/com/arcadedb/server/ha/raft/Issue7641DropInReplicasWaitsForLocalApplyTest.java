@@ -24,10 +24,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -67,6 +69,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
   @Test
   void waitsForTheCommittedIndexToBeLocallyAppliedBeforeReturning() {
     final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.getLocalDropVerbs()).thenReturn(new LocalDropVerbs());
     final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(broker.replicateDropDatabase(DB_NAME)).thenReturn(COMMITTED_LOG_INDEX);
@@ -86,6 +89,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
   @Test
   void theWaitRunsAfterReplicationUsingTheCommittedEntrysOwnIndex() {
     final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.getLocalDropVerbs()).thenReturn(new LocalDropVerbs());
     final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(broker.replicateDropDatabase(DB_NAME)).thenReturn(COMMITTED_LOG_INDEX);
@@ -105,6 +109,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
   @Test
   void aTimeoutConfirmingTheLocalApplyThrowsRatherThanReturningSilently() {
     final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.getLocalDropVerbs()).thenReturn(new LocalDropVerbs());
     final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     when(broker.replicateDropDatabase(DB_NAME)).thenReturn(COMMITTED_LOG_INDEX);
@@ -120,6 +125,7 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
   @Test
   void aReplicationFailureNeverReachesTheApplyWait() {
     final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.getLocalDropVerbs()).thenReturn(new LocalDropVerbs());
     final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
     when(raft.getTransactionBroker()).thenReturn(broker);
     doThrow(new ReplicationException("quorum not reached")).when(broker).replicateDropDatabase(DB_NAME);
@@ -129,5 +135,48 @@ class Issue7641DropInReplicasWaitsForLocalApplyTest {
         .hasCauseInstanceOf(ReplicationException.class);
 
     verify(raft, never()).waitForAppliedIndex(anyString(), anyLong(), anyBoolean());
+  }
+
+  /**
+   * Issue #8035: the local apply of the drop must know this node's verb holds the maintenance slot for it, so the
+   * verb is registered for the whole wait - and withdrawn afterwards, so a later peer-style apply reserves the slot.
+   */
+  @Test
+  void theVerbIsRegisteredAsAwaitingTheDropForTheLengthOfTheWait() {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    final LocalDropVerbs verbs = new LocalDropVerbs();
+    when(raft.getLocalDropVerbs()).thenReturn(verbs);
+    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    when(raft.getTransactionBroker()).thenReturn(broker);
+    when(broker.replicateDropDatabase(DB_NAME)).thenAnswer(inv -> {
+      assertThat(verbs.isAwaiting(DB_NAME)).as("registered before the entry is submitted").isTrue();
+      return COMMITTED_LOG_INDEX;
+    });
+    final boolean[] registeredDuringWait = new boolean[1];
+    doAnswer(inv -> {
+      registeredDuringWait[0] = verbs.isAwaiting(DB_NAME);
+      return null;
+    }).when(raft).waitForAppliedIndex(DB_NAME, COMMITTED_LOG_INDEX, true);
+
+    databaseWith(raft).dropInReplicas();
+
+    assertThat(registeredDuringWait[0]).isTrue();
+    assertThat(verbs.isAwaiting(DB_NAME)).isFalse();
+  }
+
+  /** A failed drop withdraws the registration too. */
+  @Test
+  void aFailedDropWithdrawsTheRegistration() {
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    final LocalDropVerbs verbs = new LocalDropVerbs();
+    when(raft.getLocalDropVerbs()).thenReturn(verbs);
+    final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
+    when(raft.getTransactionBroker()).thenReturn(broker);
+    when(broker.replicateDropDatabase(DB_NAME)).thenReturn(COMMITTED_LOG_INDEX);
+    doThrow(new ReplicationException("local apply did not catch up in time"))
+        .when(raft).waitForAppliedIndex(DB_NAME, COMMITTED_LOG_INDEX, true);
+
+    assertThatThrownBy(() -> databaseWith(raft).dropInReplicas()).isInstanceOf(TransactionException.class);
+    assertThat(verbs.isAwaiting(DB_NAME)).isFalse();
   }
 }
