@@ -412,7 +412,8 @@ public class CypherOptimizer {
    * Whether every operator from the root down to the anchor hands its rows on in the order it received them: a filter
    * drops rows, and an expansion emits all the rows of one input row before reading the next.
    */
-  private static boolean preservesInputOrder(PhysicalOperator operator, final PhysicalOperator anchorOperator) {
+  private static boolean preservesInputOrder(final PhysicalOperator rootOperator, final PhysicalOperator anchorOperator) {
+    PhysicalOperator operator = rootOperator;
     while (operator != anchorOperator) {
       if (!(operator instanceof FilterOperator || operator instanceof ExpandAll || operator instanceof ExpandInto
           || operator instanceof VarLengthExpand))
