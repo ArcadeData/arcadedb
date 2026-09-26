@@ -86,6 +86,7 @@ import com.arcadedb.query.sql.method.string.SQLMethodTrim;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Default method factory.
@@ -99,6 +100,7 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
   private static final DefaultSQLMethodFactory INSTANCE = new DefaultSQLMethodFactory();
 
   private final Map<String, Object> methods = new HashMap<>();
+  private final Set<String>         builtInMethodNames;
 
   public static DefaultSQLMethodFactory getInstance() {
     return INSTANCE;
@@ -176,6 +178,15 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodToLowerCase.NAME, new SQLMethodToLowerCase());
     register(SQLMethodToUpperCase.NAME, new SQLMethodToUpperCase());
     register(SQLMethodTrim.NAME, new SQLMethodTrim());
+    builtInMethodNames = Set.copyOf(methods.keySet());
+  }
+
+  /**
+   * The names this factory registered itself, as of construction; {@link #register} is public, so the live
+   * {@link #getMethods()} can also hold methods added later. See {@code DefaultSQLFunctionFactory#getBuiltInFunctionNames()}.
+   */
+  public Set<String> getBuiltInMethodNames() {
+    return builtInMethodNames;
   }
 
   public Map<String, Object> getMethods() {

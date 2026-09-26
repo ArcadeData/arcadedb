@@ -21,6 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -387,6 +393,139 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
     // NESTED DEEP INSIDE A FROM-SUBQUERY STILL COUNTS
     assertThat(CorrelatedSubQueryCache.isCacheable(parse("select from (select from (select uuid() as u)) where u is not null"))).isFalse();
     assertThat(CorrelatedSubQueryCache.isCacheable(parse("update CacheNode set x = 1"))).isFalse();
+  }
+
+  /**
+   * Built-in functions reviewed as answering the same for the same arguments within one execution, and without side
+   * effects. {@link CorrelatedSubQueryCache} admits every registered built-in not in its deny list, so a newly
+   * registered function that reads the clock or a random source would silently be cached: this test fails on any
+   * registered name that is in neither list, until it is classified.
+   */
+  private static final Set<String> REVIEWED_REPEATABLE_FUNCTIONS = Set.of(
+      "abs", "astar", "avg", "bellmanford", "bool_and", "bool_or", "both", "bothe", "bothv", "circle",
+      "coalesce", "concat", "count", "cypherrid", "date", "decode", "difference", "dijkstra", "distance",
+      "duansssp", "duration", "encode", "first", "format", "fulltext.searchfields",
+      "fulltext.searchfieldsmore", "fulltext.searchindex", "fulltext.searchindexmore", "geo.area",
+      "geo.asgeojson", "geo.astext", "geo.buffer", "geo.contains", "geo.crosses", "geo.disjoint",
+      "geo.distance", "geo.dwithin", "geo.envelope", "geo.equals", "geo.geomfromtext", "geo.intersects",
+      "geo.linestring", "geo.overlaps", "geo.point", "geo.polygon", "geo.touches", "geo.within", "geo.x",
+      "geo.y", "if", "ifempty", "ifnull", "in", "ine", "intersect", "inv", "last", "linestring", "list",
+      "map", "math_abs", "math_absexact", "math_acos", "math_addexact", "math_asin", "math_atan",
+      "math_atan2", "math_cbrt", "math_ceil", "math_ceildiv", "math_ceildivexact", "math_ceilmod",
+      "math_clamp", "math_copysign", "math_cos", "math_cosh", "math_decrementexact", "math_divideexact",
+      "math_exp", "math_expm1", "math_floor", "math_floordiv", "math_floordivexact", "math_floormod",
+      "math_fma", "math_getexponent", "math_hypot", "math_ieeeremainder", "math_incrementexact", "math_log",
+      "math_log10", "math_log1p", "math_max", "math_min", "math_multiplyexact", "math_multiplyfull",
+      "math_multiplyhigh", "math_negateexact", "math_nextafter", "math_nextdown", "math_nextup", "math_pow",
+      "math_powexact", "math_rint", "math_round", "math_scalb", "math_signum", "math_sin", "math_sinh",
+      "math_sqrt", "math_subtractexact", "math_tan", "math_tanh", "math_todegrees", "math_tointexact",
+      "math_toradians", "math_ulp", "math_unsignedmultiplyexact", "math_unsignedmultiplyhigh",
+      "math_unsignedpowexact", "max", "median", "min", "mode", "out", "oute", "outv", "percentile", "point",
+      "polygon", "pow", "rectangle", "search_fields", "search_fields_more", "search_index",
+      "search_index_more", "set", "shortestpath", "sqrt", "stddev", "stddevp", "strcmpci", "sum",
+      "symmetricdifference", "ts.correlate", "ts.delta", "ts.first", "ts.interpolate", "ts.lag", "ts.last",
+      "ts.lead", "ts.movingavg", "ts.percentile", "ts.rank", "ts.rate", "ts.rownumber", "ts.timebucket",
+      "unionall", "variance", "variancep", "vector.add", "vector.approxdistance", "vector.avg",
+      "vector.boost", "vector.clamp", "vector.clip", "vector.cosinesimilarity", "vector.densetosparse",
+      "vector.dequantizebinary", "vector.dequantizeint8", "vector.dimension", "vector.discover",
+      "vector.dotproduct", "vector.fuse", "vector.hasinf", "vector.hasnan", "vector.hasnull",
+      "vector.hybridscore", "vector.isnormalized", "vector.l1distance", "vector.l1norm", "vector.l2distance",
+      "vector.l2norm", "vector.linfnorm", "vector.magnitude", "vector.manhattandistance", "vector.max",
+      "vector.min", "vector.mmr", "vector.multiply", "vector.multiscore", "vector.neighbors",
+      "vector.normalize", "vector.normalizescores", "vector.quantizebinary", "vector.quantizeint8",
+      "vector.recommend", "vector.rerank", "vector.rrfscore", "vector.scale", "vector.scoretransform",
+      "vector.sparsecreate", "vector.sparsedot", "vector.sparseneighbors", "vector.sparsetodense",
+      "vector.sparsity", "vector.stddev", "vector.subtract", "vector.sum", "vector.tostring",
+      "vector.variance", "vectoradd", "vectorapproxdistance", "vectoravg", "vectorboost", "vectorclamp",
+      "vectorclip", "vectorcosinesimilarity", "vectordensetosparse", "vectordequantizebinary",
+      "vectordequantizeint8", "vectordimension", "vectordiscover", "vectordotproduct", "vectorfuse",
+      "vectorhasinf", "vectorhasnan", "vectorhasnull", "vectorhybridscore", "vectorisnormalized",
+      "vectorl1distance", "vectorl1norm", "vectorl2distance", "vectorl2norm", "vectorlinfnorm",
+      "vectormagnitude", "vectormanhattandistance", "vectormax", "vectormin", "vectormmr", "vectormultiply",
+      "vectormultiscore", "vectorneighbors", "vectornormalize", "vectornormalizescores",
+      "vectorquantizebinary", "vectorquantizeint8", "vectorrecommend", "vectorrerank", "vectorrrfscore",
+      "vectorscale", "vectorscoretransform", "vectorsparsecreate", "vectorsparsedot", "vectorsparseneighbors",
+      "vectorsparsetodense", "vectorsparsity", "vectorstddev", "vectorsubtract", "vectorsum",
+      "vectortostring", "vectorvariance", "version");
+
+  /** Built-in methods reviewed as not mutating their receiver or arguments; see REVIEWED_REPEATABLE_FUNCTIONS. */
+  private static final Set<String> REVIEWED_NON_MUTATING_METHODS = Set.of(
+      "append", "asboolean", "asbyte", "ascypherrid", "asdate", "asdatetime", "asdecimal", "asdouble",
+      "asfloat", "asinteger", "asjson", "aslist", "aslong", "asmap", "asrecord", "asrid", "asset", "asshort",
+      "assparse", "asstring", "asvector", "capitalize", "charat", "convert", "exclude", "field", "first",
+      "format", "hash", "ifempty", "ifnull", "include", "indexof", "intersectswith", "iswithin", "javatype",
+      "join", "keys", "last", "lastindexof", "left", "length", "normalize", "precision", "prefix", "replace",
+      "right", "size", "sort", "split", "substring", "tojson", "tolowercase", "touppercase", "transform",
+      "trim", "trimprefix", "trimsuffix", "type", "values");
+
+  @Test
+  void everyRegisteredBuiltInIsClassified() {
+    final Set<String> functions = new TreeSet<>(DefaultSQLFunctionFactory.getInstance().getBuiltInFunctionNames());
+    functions.removeAll(REVIEWED_REPEATABLE_FUNCTIONS);
+    functions.removeAll(CorrelatedSubQueryCache.NON_REPEATABLE_FUNCTIONS);
+    assertThat(functions).as("classify these functions in CorrelatedSubQueryCache.NON_REPEATABLE_FUNCTIONS or in this test").isEmpty();
+
+    final Set<String> methods = new TreeSet<>(DefaultSQLMethodFactory.getInstance().getBuiltInMethodNames());
+    methods.removeAll(REVIEWED_NON_MUTATING_METHODS);
+    methods.removeAll(CorrelatedSubQueryCache.MUTATING_METHODS);
+    assertThat(methods).as("classify these methods in CorrelatedSubQueryCache.MUTATING_METHODS or in this test").isEmpty();
+
+    assertThat(CorrelatedSubQueryCache.isCacheable(parse("select math_random() from CacheNode"))).isFalse();
+  }
+
+  /** A function registered at run time (by an application or a plugin) is not a built-in the engine can vouch for. */
+  @Test
+  void aFunctionRegisteredAtRunTimeIsNotTrusted() {
+    final String name = "issue8400runtimefn";
+    DefaultSQLFunctionFactory.getInstance().register(new SQLFunctionAbstract(name) {
+      @Override
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+          final CommandContext context) {
+        return System.nanoTime();
+      }
+
+      @Override
+      public String getSyntax() {
+        return name + "()";
+      }
+    });
+    try {
+      assertThat(CorrelatedSubQueryCache.isCacheable(parse("select " + name + "() from CacheNode"))).isFalse();
+    } finally {
+      DefaultSQLFunctionFactory.getInstance().unregister(name);
+    }
+  }
+
+  @Test
+  void modificationCountMovesOnEveryLocalWritePath() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final long[] before = { db.getModificationCount() };
+    final Runnable moved = () -> {
+      final long now = db.getModificationCount();
+      assertThat(now).isGreaterThan(before[0]);
+      before[0] = now;
+    };
+
+    database.begin();
+    final MutableDocument doc = database.newVertex("CacheNode").set("name", "Tmp").save();
+    moved.run();
+    doc.set("name", "Tmp2").save();
+    moved.run();
+    doc.delete();
+    moved.run();
+    database.commit();
+    moved.run();
+
+    database.transaction(() -> database.command("sql", "create vertex CacheNode set name = 'Tmp3'").close());
+    moved.run();
+  }
+
+  @Test
+  void copiesOfAParsedStatementCarryTheMemo() {
+    final Statement statement = parse(ISSUE_QUERY);
+    assertThat(CorrelatedSubQueryCache.isCacheable(statement)).isTrue();
+    assertThat(statement.copy().resultCacheable).isTrue();
+    assertThat(parse("traverse out() from CacheNode").copy().resultCacheable).isNull();
   }
 
   private Statement parse(final String sql) {

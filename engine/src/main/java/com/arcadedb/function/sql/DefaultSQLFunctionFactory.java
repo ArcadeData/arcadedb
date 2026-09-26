@@ -167,6 +167,8 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorSum;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorToString;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorVariance;
 
+import java.util.Set;
+
 /**
  * Default set of SQL functions.
  * <p>
@@ -177,6 +179,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   private static final DefaultSQLFunctionFactory INSTANCE = new DefaultSQLFunctionFactory();
 
   private final SQLFunctionReflectionFactory reflectionFactory;
+  private final Set<String>                  builtInFunctionNames;
 
   public static DefaultSQLFunctionFactory getInstance() {
     return INSTANCE;
@@ -371,9 +374,20 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionVectorFuse.NAME, new SQLFunctionVectorFuse());
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);
+    builtInFunctionNames = Set.copyOf(getFunctionNames());
   }
 
   public SQLFunctionReflectionFactory getReflectionFactory() {
     return reflectionFactory;
+  }
+
+  /**
+   * The names this factory registered itself, as of construction. {@link #register} is public, so the live
+   * {@link #getFunctionNames()} can also hold functions an application or a plugin added later, whose behaviour the
+   * engine knows nothing about: a caller that needs to trust a function's behaviour (the per-record LET result
+   * cache, issue #8400) checks this set instead.
+   */
+  public Set<String> getBuiltInFunctionNames() {
+    return builtInFunctionNames;
   }
 }

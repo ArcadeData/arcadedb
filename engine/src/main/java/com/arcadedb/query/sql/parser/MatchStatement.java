@@ -401,6 +401,8 @@ public class MatchStatement extends Statement {
     result.timeout = timeout == null ? null : timeout.copy();
     result.returnDistinct = this.returnDistinct;
     result.buildPatterns();
+    // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
+    result.resultCacheable = resultCacheable;
     return result;
   }
 

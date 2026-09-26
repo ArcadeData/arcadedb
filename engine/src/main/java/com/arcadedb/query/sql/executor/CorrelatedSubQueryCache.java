@@ -75,10 +75,12 @@ public final class CorrelatedSubQueryCache {
   /**
    * Built-in functions whose answer can differ between two calls with the same arguments inside one execution, or
    * that evaluate a query string the static check cannot see into. Every other call must resolve to a built-in.
+   * Every registered built-in is classified either here or in LetQueryStepCorrelatedResultCacheTest's reviewed list,
+   * which fails on a newly registered name until someone decides which side it belongs on.
    */
-  private static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "uuid", "sysdate", "eval", "promql");
+  static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
   /** Built-in methods that mutate the collection they are applied to, which may be an outer variable. */
-  private static final Set<String> MUTATING_METHODS         = Set.of("remove", "removeall");
+  static final Set<String> MUTATING_METHODS         = Set.of("remove", "removeall");
   /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
   private static final Set<String> GRAPH_METHODS            = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv",
       "bothv");
@@ -196,8 +198,8 @@ public final class CorrelatedSubQueryCache {
       // date() WITHOUT ARGUMENTS READS THE CLOCK, date('2020-01-01', ...) PARSES ITS ARGUMENTS
       if ("date".equals(name) && call.getParams().isEmpty())
         return false;
-      // A NAME THE BUILT-IN REGISTRY DOES NOT HOLD IS A USER-DEFINED OR LIBRARY FUNCTION: ITS BEHAVIOUR IS UNKNOWN
-      return DefaultSQLFunctionFactory.getInstance().hasFunction(name);
+      // A NAME THE ENGINE DID NOT REGISTER ITSELF IS A USER-DEFINED, LIBRARY OR APPLICATION FUNCTION: ITS BEHAVIOUR IS UNKNOWN
+      return DefaultSQLFunctionFactory.getInstance().getBuiltInFunctionNames().contains(name);
     }
 
     if (node instanceof MethodCall call) {
@@ -208,7 +210,7 @@ public final class CorrelatedSubQueryCache {
       // HERE RATHER THAN READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
       if (GRAPH_METHODS.contains(name))
         return true;
-      return !MUTATING_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().getMethods().containsKey(name);
+      return !MUTATING_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().getBuiltInMethodNames().contains(name);
     }
 
     return true;

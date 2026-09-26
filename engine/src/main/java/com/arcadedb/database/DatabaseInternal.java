@@ -272,8 +272,8 @@ public interface DatabaseInternal extends Database {
 
   /**
    * A counter that moves whenever this database may have changed: a record created, updated or deleted, a write
-   * transaction committed, or a command executed. Only its movement means anything - compare two reads, never the
-   * value itself. A reader that memoizes a query result across calls (the per-record LET subquery cache, issue
+   * transaction committed, a replicated or recovered transaction applied, or a command executed. Only its movement
+   * means anything - compare two reads, never the value itself. A reader that memoizes a query result across calls (the per-record LET subquery cache, issue
    * #8400) invalidates on any change, so a caller who updates the database while still iterating the query sees
    * the update on the next row instead of a result computed before it.
    *

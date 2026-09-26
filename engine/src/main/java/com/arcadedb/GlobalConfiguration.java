@@ -694,7 +694,8 @@ public enum GlobalConfiguration {
       distinct binding instead of once per row. The binding is the set of outer variables the subquery actually \
       read, observed while it ran. A subquery that calls a non-deterministic or user-defined function, or that is \
       not a read-only statement, is never cached, and any change to the database drops the cache. Least recently \
-      used bindings are evicted first; results larger than 1000 rows are not cached. 0 disables the cache.""",
+      used bindings are evicted first; results larger than 1000 rows are not cached, so one LET can retain up to \
+      this many times 1000 rows for the length of the execution. 0 disables the cache.""",
       Integer.class, 128),
 
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
