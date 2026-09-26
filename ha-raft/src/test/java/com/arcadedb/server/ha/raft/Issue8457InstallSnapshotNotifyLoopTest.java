@@ -18,11 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -115,6 +119,55 @@ class Issue8457InstallSnapshotNotifyLoopTest {
     monitor.updateLeaderCommitIndex(500);
     monitor.updateReplicaMatchIndex(REPLICA, 50, 0L, 51, 200);
     assertThat(monitor.getReplicaStatus(REPLICA)).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+  }
+
+  /**
+   * A partitioned follower can sit at the same nextIndex-behind-log-start position, but it answers nothing, while a
+   * follower in the notify loop keeps replying ALREADY_INSTALLED. The partition must not be diagnosed as the loop,
+   * whose remediation (wipe the Raft storage) is destructive and useless for a network problem.
+   */
+  @Test
+  void unreachableFollowerIsNotDiagnosedAsTheNotifyLoop() {
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(1000L, 60_000L, id -> {
+    }, false, 10_000L);
+    monitor.setClock(now::get);
+
+    monitor.updateLeaderCommitIndex(5_000);
+    monitor.updateReplicaMatchIndex(REPLICA, 99, 60_000L, 100, 100);
+    now.set(120_000);
+    monitor.updateLeaderCommitIndex(5_000);
+    monitor.updateReplicaMatchIndex(REPLICA, 99, 120_000L, 100, 100);
+    // lag 4901 > threshold, so the lag-warning switch is reached and picks a STALLED message.
+    // STALLED through the ordinary lag rules is fine; what must not happen is the notify-loop diagnosis.
+    final List<String> messages = new ArrayList<>();
+    LogManager.instance().setLogger(new Logger() {
+      @Override
+      public void log(final Object req, final Level level, final String msg, final Throwable t, final String ctx,
+          final Object a1, final Object a2, final Object a3, final Object a4, final Object a5, final Object a6,
+          final Object a7, final Object a8, final Object a9, final Object a10, final Object a11, final Object a12,
+          final Object a13, final Object a14, final Object a15, final Object a16, final Object a17) {
+        messages.add(msg);
+      }
+
+      @Override
+      public void log(final Object req, final Level level, final String msg, final Throwable t, final String ctx,
+          final Object... args) {
+        messages.add(msg);
+      }
+
+      @Override
+      public void flush() {
+      }
+    });
+    try {
+      now.set(240_000);
+      monitor.updateLeaderCommitIndex(5_000);
+      monitor.updateReplicaMatchIndex(REPLICA, 99, 240_000L, 100, 100);
+    } finally {
+      LogManager.instance().setLogger(new DefaultLogger());
+    }
+    assertThat(messages).noneMatch(m -> m.contains("install-snapshot notify loop"));
   }
 
   /** A brand-new, never-compacted leader log (start index 0) must never be misread as this condition. */

@@ -285,8 +285,10 @@ public class ClusterMonitor {
     // never-compacted log has start index 0, where nextIndex == 0 <= 0 would otherwise misclassify a perfectly
     // healthy, empty cluster on its very first tick. The grace mirrors neverAppendedGraceMs below so a
     // genuinely in-progress (and progressing) snapshot install is not interrupted mid-flight.
+    // In the loop the follower keeps answering (every ALREADY_INSTALLED reply refreshes its last-RPC time), so an
+    // unreachable follower is excluded: it is a partition, owned by the reachability narrative and channel reset.
     final boolean installSnapshotLoopActive =
-        nextIndex >= 0 && leaderLogStartIndex > 0 && nextIndex <= leaderLogStartIndex;
+        !unreachableStale && nextIndex >= 0 && leaderLogStartIndex > 0 && nextIndex <= leaderLogStartIndex;
     if (!installSnapshotLoopActive)
       state.installSnapshotLoopSinceMs = -1;
     else if (state.installSnapshotLoopSinceMs == -1)
@@ -363,9 +365,10 @@ public class ClusterMonitor {
               Replica '%s' stuck behind an install-snapshot notify loop: nextIndex has not cleared this leader's \
               log start for %dms (lag=%d). The leader is repeatedly re-notifying the same snapshot boundary and \
               the replica keeps answering ALREADY_INSTALLED without progressing. POST /api/v1/cluster/resync/{database} \
-              will NOT clear this (it only replaces database files, not the Raft log position). Remove and re-add \
-              this peer to the Raft configuration, or stop it, delete its Raft storage directory and restart it, \
-              to force a fresh join.""",
+              will NOT clear this (it only replaces database files, not the Raft log position). If the replica is \
+              not in the middle of a snapshot download (check GET /api/v1/cluster on it), remove and re-add this \
+              peer to the Raft configuration, or stop it, delete its Raft storage directory and restart it, to force \
+              a fresh join.""",
               replicaId, now - state.installSnapshotLoopSinceMs, lag);
         else if (neverAppendedStalled)
           // Issue #5295: distinct message - this is not a slow/disk-saturated replica, it has never
