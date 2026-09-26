@@ -3973,7 +3973,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     try {
       // Bounded over the whole exchange, body included, on every JDK (issue #8325): the request timeout above stops at
-      // the response headers on JDK 21-25, so a leader that stalled inside its body parked this thread unbounded.
+      // the response headers on JDK 21-25, so a leader that stalled inside its body parked this thread unbounded. The
+      // request timeout stays: on JDK 26+ it covers the same span with the same value, and either one firing lands in
+      // the HttpTimeoutException arm below.
       final HttpResponse<String> response = LeaderDial.sendBounded(dialClient, builder.build(),
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
       if (response.statusCode() != 200)

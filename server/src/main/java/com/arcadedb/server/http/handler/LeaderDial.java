@@ -220,7 +220,10 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
       return pending.get(deadline, TimeUnit.MILLISECONDS);
     } catch (final TimeoutException e) {
       pending.cancel(true);
-      throw new HttpTimeoutException("no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
+      final HttpTimeoutException timeout = new HttpTimeoutException(
+          "no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
+      timeout.initCause(e);
+      throw timeout;
     } catch (final InterruptedException e) {
       pending.cancel(true);
       throw e;

@@ -289,7 +289,8 @@ public final class ClusterSecuritySeedQuery {
 
     try {
       // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
-      // response headers.
+      // response headers. It stays on the request: on JDK 26+ it covers the same span with the same value, and either
+      // one firing is the same IOException to the retry loop above.
       return parseAnswer(LeaderDial.sendBounded(dial.client(), builder.build(), HttpResponse.BodyHandlers.ofString(),
           timeoutMs), dial.address());
     } catch (final InterruptedException e) {

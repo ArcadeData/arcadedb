@@ -148,7 +148,8 @@ public final class LeaderDatabaseQuery {
       }
     }
     // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
-    // response headers, so a peer that stalled inside its body parked the caller unbounded.
+    // response headers, so a peer that stalled inside its body parked the caller unbounded. The request timeout stays:
+    // on JDK 26+ it covers the same span with the same value, and either one firing is the same HttpTimeoutException.
     return parse(LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs), endpoint.url());
   }
 
