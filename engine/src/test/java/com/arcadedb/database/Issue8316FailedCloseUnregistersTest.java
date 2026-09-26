@@ -36,8 +36,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #8316: a {@code close()} that marked the instance closed and then threw skipped the step that removes it from
  * {@link DatabaseFactory}'s active-instance registry. The closed instance stayed registered: the next open of the path
  * was refused as "already in use", and the server's lookup reused the dead instance instead of opening the files.
- * The unregistration now runs in a finally, keyed on the instance being closed, and a query engine that fails to close
- * no longer aborts the rest of the teardown.
+ * Every step after the instance is marked closed now runs whatever the one before it did - the files and the lock are
+ * released - and the unregistration runs in a finally, keyed on the instance being closed. A query engine that fails to
+ * close no longer aborts the rest of the teardown either.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -56,6 +57,8 @@ class Issue8316FailedCloseUnregistersTest {
   @Test
   void aCloseThatThrowsAfterMarkingTheInstanceClosedStillUnregistersIt() {
     final LocalDatabase database = (LocalDatabase) new DatabaseFactory(DB_PATH).create();
+    database.getSchema().createDocumentType("Doc");
+    database.transaction(() -> database.newDocument("Doc").set("n", 1).save());
     assertThat(DatabaseFactory.getActiveDatabaseInstance(DB_PATH)).isSameAs(database);
 
     LocalDatabase.TEST_AFTER_MARKED_CLOSED_HOOK = () -> {
@@ -72,6 +75,13 @@ class Issue8316FailedCloseUnregistersTest {
     assertThatCode(() -> Profiler.INSTANCE.toJSON())
         .as("nor may it stay in the JVM-wide profiler, whose every read would then fail on it")
         .doesNotThrowAnyException();
+    // The rest of the teardown still ran: the files and the lock were released, so the path opens again, with its data.
+    final Database reopened = new DatabaseFactory(DB_PATH).open();
+    try {
+      assertThat(reopened.countType("Doc", true)).isEqualTo(1L);
+    } finally {
+      reopened.drop();
+    }
   }
 
   @Test

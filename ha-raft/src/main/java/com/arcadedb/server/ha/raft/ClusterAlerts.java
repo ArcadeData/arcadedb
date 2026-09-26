@@ -263,7 +263,7 @@ public class ClusterAlerts {
         .put("title", "This node is stuck at a stale term and not counting toward quorum")
         .put("message", "This node recognizes a leader at a newer term but keeps rejecting its current-term "
             + "entries: it has applied everything it could locally commit, so this document's localCommitIndex and "
-            + "localAppliedIndex agree and every other field here still looks healthy, but this node makes no further progress and "
+            + "localAppliedIndex agree and only localStuckAtStaleTerm reports it, but this node makes no further progress and "
             + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
             + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
             + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
@@ -302,7 +302,7 @@ public class ClusterAlerts {
         .put("message", "This node is " + stall.lag() + " entries behind the commit index its leader reported ("
             + stall.leaderCommitIndex() + ") and has applied nothing and received no new log entry for "
             + stall.stalledForMs() / 1000 + "s. Its own commit index only covers the entries it holds, so this "
-            + "document's localCommitIndex and localAppliedIndex can agree and every other field here can look healthy. While this "
+            + "document's localCommitIndex and localAppliedIndex can agree and only localStalledBehindLeader reports it. While this "
             + "lasts the node does not count toward the Raft quorum, and if the cluster loses one more node, writes "
             + "stop. The leader reports the same replica as STALLED in its own lagging-followers alert.")
         .put("recommendation", "If arcadedb.ha.stalledReplicaResyncDurationMs is enabled (the default), the leader "
