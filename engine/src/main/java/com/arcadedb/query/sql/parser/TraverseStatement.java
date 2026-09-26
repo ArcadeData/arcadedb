@@ -169,6 +169,8 @@ public class TraverseStatement extends Statement {
     result.maxDepth = maxDepth == null ? null : maxDepth.copy();
     result.postFilter = postFilter == null ? null : postFilter.copy();
     result.timeout = timeout == null ? null : timeout.copy();
+    // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
+    result.resultCacheable = resultCacheable;
     return result;
   }
 

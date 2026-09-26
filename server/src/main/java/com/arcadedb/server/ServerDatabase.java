@@ -142,6 +142,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public long getModificationCount() {
+    return wrapped.getModificationCount();
+  }
+
+  @Override
   public String getDatabasePath() {
     return wrapped.getDatabasePath();
   }

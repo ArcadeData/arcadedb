@@ -1730,7 +1730,7 @@ public class SelectExecutionPlanner {
           if (item.getExpression() != null)
             plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), context));
           else
-            plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
+            plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), statement, context));
         }
       } else {
 
@@ -1741,7 +1741,7 @@ public class SelectExecutionPlanner {
                 new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), context));
           } else {
             info.fetchExecutionPlan.chain(
-                new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), context));
+                new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), statement, context));
             containsSubQuery = true;
           }
         }

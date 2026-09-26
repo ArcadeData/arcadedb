@@ -1351,6 +1351,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public long getModificationCount() {
+    return proxied.getModificationCount();
+  }
+
+  @Override
   public LocalDatabase getEmbedded() {
     return proxied;
   }

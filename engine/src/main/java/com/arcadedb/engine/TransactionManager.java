@@ -916,6 +916,9 @@ public class TransactionManager {
       }
     }
 
+    // A REPLICATED OR RECOVERED TRANSACTION CHANGES THE FILES WITHOUT GOING THROUGH ANY RECORD PATH (#8400)
+    if (changed && database instanceof LocalDatabase localDatabase)
+      localDatabase.markModified();
     return changed;
   }
 
