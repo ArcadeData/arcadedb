@@ -299,6 +299,25 @@ public interface HAServerPlugin extends ServerPlugin {
     return List.of();
   }
 
+  /**
+   * The log index of the configuration change that (last) added this node at runtime - the join boundary
+   * {@link #securityDocumentsNotInstalledSinceRuntimeJoin()} is measured from - or {@code -1} when none is known
+   * (issue #8414).
+   * <p>
+   * It is what makes the security-convergence readiness window per join rather than per process: a re-add moves it
+   * forward, and the gate opens a fresh window for the new join instead of inheriting the one the previous join
+   * already spent. It only ever moves forward within a membership; a value that does not (the {@code -1} of a Raft
+   * server that is not readable this tick) is no evidence of a join.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code true}. {@code -1} when this HA
+   * implementation has no such concept, which leaves the window reset by convergence alone, as before issue #8414.
+   *
+   * @return the join index, {@code -1} when unknown
+   */
+  default long getRuntimeJoinIndex() {
+    return -1L;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();
