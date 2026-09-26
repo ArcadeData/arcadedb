@@ -30,10 +30,9 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
     // Schema.unregisterFunctionLibrary (GHSA-8vr5-263f-x5r3), the sibling operation that drops a whole function library.
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    database.getSchema().getFunctionLibrary(libraryName.getStringValue()).unregisterFunction(functionName.getStringValue());
-
-    // Persist the removal so it survives a restart (issue #5121).
-    ((LocalSchema) database.getSchema()).saveConfiguration();
+    // Through the schema, which persists the removal so it survives a restart (issue #5121) and, under HA, replicates
+    // it to every node (issue #8404).
+    ((LocalSchema) database.getSchema()).deleteFunction(libraryName.getStringValue(), functionName.getStringValue());
 
     return new InternalResultSet().add(new ResultInternal(database).setProperty("operation", "delete function").setProperty("libraryName", libraryName.getStringValue())
         .setProperty("functionName", functionName.getStringValue()));
