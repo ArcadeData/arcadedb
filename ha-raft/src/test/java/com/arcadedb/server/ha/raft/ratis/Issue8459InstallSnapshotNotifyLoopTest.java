@@ -48,6 +48,7 @@ import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
 import org.apache.ratis.util.CodeInjectionForTesting;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.SizeInBytes;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -135,6 +136,7 @@ class Issue8459InstallSnapshotNotifyLoopTest {
    * leader ships the entries from its log start on and the follower catches up after a single install.
    */
   @Test
+  @Tag("slow")
   void leaderResumesAppendEntriesAfterInstallBoundaryOneBeforeItsLogStart() throws Exception {
     final Scenario scenario = new Scenario();
     scenario.run(false);
@@ -156,6 +158,7 @@ class Issue8459InstallSnapshotNotifyLoopTest {
    * it receives another install notification, which is what re-confirms (or replaces) its snapshot.
    */
   @Test
+  @Tag("slow")
   void rejectedAnchoredAppendFallsBackToANewNotification() throws Exception {
     final Scenario scenario = new Scenario();
     scenario.run(true);
