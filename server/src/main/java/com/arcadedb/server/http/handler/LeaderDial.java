@@ -250,8 +250,16 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
     }
   }
 
-  /** Closes the body of an answer that completed but will never be read, so its connection is released. */
-  private static void closeBodyOf(final CompletableFuture<? extends HttpResponse<?>> done) {
+  /**
+   * Closes the body of an answer that completed but will never be read, so its connection is released. Never throws:
+   * it runs on the way out with an interrupt, which must reach the caller as it is. A future that completed with a
+   * failure has no body, and {@code getNow} would rethrow that failure in place of the interrupt.
+   */
+  // Package-private so a test can hand it a future that failed, which a live interrupt race cannot reliably produce.
+  // @VisibleForTesting
+  static void closeBodyOf(final CompletableFuture<? extends HttpResponse<?>> done) {
+    if (done.isCompletedExceptionally())
+      return;
     final HttpResponse<?> response = done.getNow(null);
     if (response != null && response.body() instanceof AutoCloseable body)
       try {

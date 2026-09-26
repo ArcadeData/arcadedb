@@ -54,6 +54,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
@@ -156,6 +157,45 @@ class Issue8325LeaderForwardBodyDeadlineTest {
       assertThatThrownBy(() -> LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), BUDGET_MS * 10))
           .isInstanceOf(ConnectException.class);
     }
+  }
+
+  /** An interrupt while waiting reaches the caller as itself, and the exchange it abandons is cancelled. */
+  @Test
+  void sendBoundedInterruptedWhileWaitingThrowsTheInterruptAndCancelsTheExchange() throws Exception {
+    try (final ScriptedLeader leader = new ScriptedLeader(out -> write(out, STALLED_BODY));
+        final HttpClient client = HttpClient.newHttpClient()) {
+      final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + leader.address() + "/")).GET().build();
+      final AtomicReference<Throwable> thrown = new AtomicReference<>();
+      final CountDownLatch done = new CountDownLatch(1);
+      final Thread caller = new Thread(() -> {
+        try {
+          LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), HANG_DETECT_MS);
+        } catch (final Throwable t) {
+          thrown.set(t);
+        } finally {
+          done.countDown();
+        }
+      }, "issue8325-interrupted-forward");
+      caller.setDaemon(true);
+      caller.start();
+
+      assertThat(leader.requestReceived.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
+      caller.interrupt();
+
+      assertThat(done.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).as("the interrupt releases the caller").isTrue();
+      assertThat(thrown.get()).isInstanceOf(InterruptedException.class);
+      assertThat(leader.connectionClosedByFollower.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
+    }
+  }
+
+  /**
+   * The interrupt path's clean-up, handed the one future a live race produces too rarely to test: one that already
+   * failed. {@code getNow} would rethrow that failure in place of the interrupt the caller is about to rethrow.
+   */
+  @Test
+  void closingTheBodyOfAFailedExchangeThrowsNothing() {
+    LeaderDial.closeBodyOf(CompletableFuture.failedFuture(new IOException("connection reset")));
+    LeaderDial.closeBodyOf(new CompletableFuture<>());
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -364,6 +404,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
     private final ServerSocket            serverSocket;
     private final AtomicReference<Socket> accepted                   = new AtomicReference<>();
     final CountDownLatch                  connectionClosedByFollower = new CountDownLatch(1);
+    final CountDownLatch                  requestReceived            = new CountDownLatch(1);
 
     ScriptedLeader(final LeaderScript script) throws IOException {
       serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
@@ -372,6 +413,7 @@ class Issue8325LeaderForwardBodyDeadlineTest {
           accepted.set(socket);
           final InputStream in = socket.getInputStream();
           skipRequestHeaders(in);
+          requestReceived.countDown();
           script.answer(socket.getOutputStream());
           final byte[] buffer = new byte[1024];
           while (in.read(buffer) >= 0) {
