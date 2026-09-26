@@ -163,6 +163,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // localCommitIndex stays this node's own figure, and leaderCommitIndex below the leader's.
     final long localAppliedIndex = raftHAServer.getLastAppliedIndex();
     final long localCommitIndex = raftHAServer.getCommitIndex();
+    // Derived from the figures already read above rather than through RaftHAServer.getFollowerCommitIndex(), which would
+    // read the commit index and the leadership a second time: the lag must be computed from the localCommitIndex and
+    // isLeader this response reports, not from a later instant of the Raft state.
     final long lagCommitIndex = isLeader ? localCommitIndex :
         RaftHAServer.followerCommitIndex(localCommitIndex, raftHAServer.getLeaderReportedCommitIndex());
     response.put("localAppliedIndex", localAppliedIndex);
