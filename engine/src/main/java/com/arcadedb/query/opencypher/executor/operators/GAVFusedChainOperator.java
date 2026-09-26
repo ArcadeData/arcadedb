@@ -614,8 +614,12 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
   }
 
-  /** The edge types the tracked hops walk, numbered: see {@link GAVEdgeRef#trackedEdgeTypes}. */
-  private record TrackedTypes(String[] names, int[][] hopTypeIds) {
+  /**
+   * The edge types the tracked hops walk, numbered: see {@link GAVEdgeRef#trackedEdgeTypes}. {@code views} holds, per
+   * type and orientation ({@code typeId * 2 + 1} for outgoing), the provider's zero-copy slice view, or null where the
+   * provider has none (pending changes, a type without a slice): the walk then asks for the neighbour ids.
+   */
+  private record TrackedTypes(String[] names, int[][] hopTypeIds, NeighborView[] views) {
   }
 
   private TrackedTypes resolveTrackedTypes(final Database database) {
@@ -635,7 +639,12 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         });
       }
     }
-    return new TrackedTypes(names.toArray(new String[0]), hopTypeIds);
+    final NeighborView[] views = new NeighborView[names.size() * 2];
+    for (int t = 0; t < names.size(); t++) {
+      views[t * 2] = provider.getNeighborView(Vertex.DIRECTION.IN, names.get(t));
+      views[t * 2 + 1] = provider.getNeighborView(Vertex.DIRECTION.OUT, names.get(t));
+    }
+    return new TrackedTypes(names.toArray(new String[0]), hopTypeIds, views);
   }
 
   /**
@@ -679,28 +688,48 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       for (final int typeId : types.hopTypeIds()[depth]) {
         final String type = types.names()[typeId];
         if (direction != Vertex.DIRECTION.IN)
-          size = append(depth, size, provider.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, type), (typeId << 1) | 1, -1);
+          size = appendSlice(depth, size, nodeId, typeId, Vertex.DIRECTION.OUT, type, -1);
         // Undirected: a self-loop is in the outgoing list already
         if (direction != Vertex.DIRECTION.OUT)
-          size = append(depth, size, provider.getNeighborIds(nodeId, Vertex.DIRECTION.IN, type), typeId << 1,
+          size = appendSlice(depth, size, nodeId, typeId, Vertex.DIRECTION.IN, type,
               direction == Vertex.DIRECTION.BOTH ? nodeId : -1);
       }
       return size;
     }
 
-    private int append(final int depth, int size, final int[] slice, final int entryMeta, final int skip) {
-      if (slice == null || slice.length == 0)
+    /**
+     * Appends one (type, orientation) slice of {@code nodeId}: read in place from the provider's slice view when it
+     * has one, as the untracked hops do, so a tracked hop allocates nothing per vertex; from its neighbour ids otherwise.
+     */
+    private int appendSlice(final int depth, final int size, final int nodeId, final int typeId,
+        final Vertex.DIRECTION orientation, final String type, final int skip) {
+      final int entryMeta = orientation == Vertex.DIRECTION.OUT ? (typeId << 1) | 1 : typeId << 1;
+      final NeighborView view = types.views()[orientation == Vertex.DIRECTION.OUT ? typeId * 2 + 1 : typeId * 2];
+      if (view != null && nodeId < view.nodeCount())
+        return append(depth, size, view.neighbors(), view.offset(nodeId), view.offsetEnd(nodeId), entryMeta, skip);
+      final int[] slice = provider.getNeighborIds(nodeId, orientation, type);
+      return slice == null ? size : append(depth, size, slice, 0, slice.length, entryMeta, skip);
+    }
+
+    private int append(final int depth, int size, final int[] source, final int from, final int to,
+        final int entryMeta, final int skip) {
+      final int length = to - from;
+      if (length <= 0)
         return size;
-      if (!GAVEdgeRef.isSorted(slice))
-        sorted[depth] = false;
-      if (size + slice.length > neighbors[depth].length) {
-        final int capacity = Math.max(neighbors[depth].length * 2, size + slice.length);
+      if (size + length > neighbors[depth].length) {
+        final int capacity = Math.max(neighbors[depth].length * 2, size + length);
         neighbors[depth] = Arrays.copyOf(neighbors[depth], capacity);
         meta[depth] = Arrays.copyOf(meta[depth], capacity);
       }
       final int[] n = neighbors[depth];
       final int[] m = meta[depth];
-      for (final int neighbor : slice) {
+      int previous = Integer.MIN_VALUE;
+      for (int i = from; i < to; i++) {
+        final int neighbor = source[i];
+        // Checked in the same pass: a provider does not promise sorted slices (see GAVEdgeRef.isSorted)
+        if (neighbor < previous)
+          sorted[depth] = false;
+        previous = neighbor;
         if (neighbor == skip)
           continue;
         n[size] = neighbor;
