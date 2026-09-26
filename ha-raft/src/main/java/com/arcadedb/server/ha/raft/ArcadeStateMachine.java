@@ -6141,12 +6141,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       // Writes the file once when it quarantines anything; a batch whose databases all were already quarantined
       // wrote nothing, and its floors still have to reach the disk
-      if (quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE).isEmpty() && !published.isEmpty()
-          && !persistAppliedIndexFile() && !closed)
-        LogManager.instance().log(this, Level.WARNING,
-            "The read floors of database(s) %s could NOT be written to %s: a restart before this is fixed serves their "
-                + "LINEARIZABLE reads unclamped. Check that the .raft directory is writable and has free space "
-                + "(issue #8137)", published.keySet(), getAppliedIndexFile());
+      final boolean written = !quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE).isEmpty();
+      if (!written && !published.isEmpty()) {
+        final boolean persisted = persistAppliedIndexFile();
+        if (!persisted && !closed)
+          LogManager.instance().log(this, Level.WARNING,
+              "The read floors of database(s) %s could NOT be written to %s: a restart before this is fixed serves their "
+                  + "LINEARIZABLE reads unclamped. Check that the .raft directory is writable and has free space "
+                  + "(issue #8137)", published.keySet(), getAppliedIndexFile());
+      }
     }
 
     for (final Map.Entry<String, Long> entry : published.entrySet()) {

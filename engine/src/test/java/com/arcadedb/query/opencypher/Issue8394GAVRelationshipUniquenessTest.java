@@ -228,6 +228,39 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
   }
 
   @Test
+  void aHubWithManyParallelEdgesKeepsRelationshipsUnique() {
+    // Parallel relationships of one type between the same pair are interchangeable to an anonymous hop: each walk
+    // numbers them 0..m-1 in its own adjacency slice, whichever physical edge lands on which number. Far past the size
+    // where the sort of a slice stops preserving the order of equal entries, so both sides are ordered independently
+    database.transaction(() -> {
+      final Vertex hub = database.newVertex("P").set("id", 500).save();
+      final Vertex x = database.newVertex("P").set("id", 501).save();
+      final Vertex y = database.newVertex("P").set("id", 502).save();
+      for (int i = 0; i < 150; i++)
+        hub.modify().newEdge("K", i % 3 == 0 ? y : x);
+      for (int i = 0; i < 70; i++)
+        x.modify().newEdge("K", hub);
+      for (int i = 0; i < 5; i++)
+        hub.modify().newEdge("K", hub);
+    });
+    final String[] queries = {
+        "MATCH (a:P {id:500})-[:K]-(b:P)-[:K]-(c:P) RETURN count(*) AS n",
+        "MATCH (a:P {id:500})-[:K]-(b:P)-[:K]-(a) RETURN count(*) AS n",
+        "MATCH (a:P {id:500})-[:K]->(b:P)-[:K]->(a) RETURN count(*) AS n",
+        "MATCH (a:P {id:500})-[:K]->(b:P), (a)-[:K]->(c:P) RETURN count(*) AS n",
+        "MATCH (a:P)-[:K]->(b:P {id:501})<-[:K]-(c:P) RETURN count(*) AS n" };
+    final Map<String, List<String>> expected = new LinkedHashMap<>();
+    for (final String query : queries)
+      expected.put(query, answer(query));
+
+    createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id)");
+    for (final String query : queries) {
+      assertThat(plan(query)).as(query).contains("unique relationships");
+      assertThat(answer(query)).as(query).isEqualTo(expected.get(query));
+    }
+  }
+
+  @Test
   void answersMatchWithChangesServedFromTheOverlay() {
     createView("VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
 
