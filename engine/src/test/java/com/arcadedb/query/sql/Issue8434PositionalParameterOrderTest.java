@@ -117,6 +117,13 @@ class Issue8434PositionalParameterOrderTest extends TestHelper {
     assertThat(((PositionalParameter) stmt.getSkip().inputParam).paramNumber).isEqualTo(1);
   }
 
+  /** More placeholders than the collector's initial capacity (8), so its growth path is exercised. */
+  @Test
+  void manyParametersKeepTheirSourceOrder() {
+    final String sql = "SELECT uuid FROM T WHERE uuid IN [?, ?, ?, ?, ?, ?, ?, ?, ?, ?] ORDER BY uuid LIMIT ? SKIP ?";
+    assertThat(uuids(sql, "u0", "u1", "u2", "u3", "u4", "x5", "x6", "x7", "x8", "x9", 2, 1)).containsExactly("u1", "u2");
+  }
+
   @Test
   void scriptNumbersParametersAcrossStatementsInSourceOrder() {
     try (final ResultSet rs = database.command("sqlscript",

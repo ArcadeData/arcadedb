@@ -253,25 +253,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * {@code bucket::name}), in source order. A parameter's number is its position in this array, so it follows where
    * the placeholder is WRITTEN, not the order in which the clauses happen to be visited: SKIP is built before LIMIT
    * and FROM before the projection, which numbered {@code LIMIT ? SKIP ?} backwards (issue #8434). Built on the first
-   * parameter met; statements without parameters never pay for it.
+   * parameter met; statements without parameters never pay for it. A builder visits exactly one parse tree (see
+   * {@link SQLAntlrParser}), so the array is never stale.
    */
-  private int[]     sequentialParamTokenIndexes;
-  private ParseTree sequentialParamTreeRoot;
+  private int[] sequentialParamTokenIndexes;
 
   /**
    * Returns the sequential number of the parameter written at {@code token}: how many sequentially numbered
    * parameters precede it in the whole parse tree (a script numbers its parameters across all its statements).
    */
   private int sequentialParamNumber(final ParserRuleContext owner, final Token token) {
-    ParseTree root = owner;
-    while (root.getParent() != null)
-      root = root.getParent();
+    if (sequentialParamTokenIndexes == null) {
+      ParseTree root = owner;
+      while (root.getParent() != null)
+        root = root.getParent();
 
-    if (sequentialParamTokenIndexes == null || sequentialParamTreeRoot != root) {
       final int[][] holder = { new int[8] };
       final int count = collectSequentialParamTokens(root, holder, 0);
       sequentialParamTokenIndexes = Arrays.copyOf(holder[0], count);
-      sequentialParamTreeRoot = root;
     }
 
     final int number = Arrays.binarySearch(sequentialParamTokenIndexes, token.getTokenIndex());
