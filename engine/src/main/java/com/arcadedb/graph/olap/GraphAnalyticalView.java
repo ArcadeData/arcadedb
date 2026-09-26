@@ -312,8 +312,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // transaction committed during the scan can be delivered after the build published (issue #8378). Accessed
   // only under synchronized(this).
   private BuildWatch             baseWatch;
-  // Test-only: see setBeforeBuildScanForTest()
+  // Test-only: see setBeforeBuildScanForTest() and setAfterBuildWatchOpenedForTest()
   private volatile Runnable      beforeBuildScanForTest;
+  private volatile Runnable      afterBuildWatchOpenedForTest;
   // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
   private volatile long          shutdownAwaitMs    = SHUTDOWN_AWAIT_MS;
   // Raised by shutdown(): a build() that learns the outcome of the build that superseded it must not report success
@@ -415,7 +416,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       status = Status.BUILDING;
       buildError = null;
       // Opened before the scan, with the listeners armed: see publishBuild() (issue #8378)
-      watch = openBuildWatch();
+      try {
+        watch = openBuildWatch();
+      } catch (final RuntimeException | Error e) {
+        failDispatch(latch, e);
+        throw e;
+      }
       // Counted like an async build, so shutdown() waits for the scan rather than unregistering under it
       inFlightTasks.incrementAndGet();
     }
@@ -531,6 +537,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (previous != null)
       previous.handOverTo(watch); // superseded: its build will not publish
     buildWatch = watch;
+    final Runnable afterOpened = afterBuildWatchOpenedForTest;
+    if (afterOpened != null)
+      afterOpened.run();
     if (deltaCollector == null)
       registerChangeListeners();
     else
@@ -538,6 +547,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // watch. Read after publishing the watch, the reverse of the order a transaction writes them in
       deltaCollector.registerInFlightEdgeSources(watch);
     return watch;
+  }
+
+  /**
+   * Undoes the dispatch of a build whose watch could not be opened - arming the listeners failed, say, because the
+   * database is closing: the view must not stay BUILDING behind a latch nobody counts down, nor keep a half-opened watch
+   * that would disable its compactions (issue #8403). Must be called under this instance's monitor.
+   */
+  private void failDispatch(final CountDownLatch latch, final Throwable e) {
+    final BuildWatch opened = buildWatch;
+    if (opened != null)
+      closeBuildWatch(opened);
+    buildError = e;
+    status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
+    if (snapshot == null)
+      unregisterChangeListeners();
+    latch.countDown();
+    notifyAll();
   }
 
   /** Closes the watch of a build that will not publish. Must be called under this instance's monitor. */
@@ -643,7 +669,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     status = Status.BUILDING;
     buildError = null;
     // Opened at dispatch, with the listeners armed, so no commit between now and publication escapes (issue #8378)
-    final BuildWatch watch = openBuildWatch();
+    final BuildWatch watch;
+    try {
+      watch = openBuildWatch();
+    } catch (final RuntimeException | Error e) {
+      failDispatch(latch, e);
+      buildQueued.set(false);
+      throw e;
+    }
     // Track the queued task synchronously so a concurrent close()/drop() can wait for it
     // even before the virtual thread has had a chance to mount.
     inFlightTasks.incrementAndGet();
@@ -3314,6 +3347,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Test-only hook: run by a full build right before its scan starts, outside this instance's monitor. */
   void setBeforeBuildScanForTest(final Runnable hook) {
     this.beforeBuildScanForTest = hook;
+  }
+
+  /** Test-only hook: run as a build's watch is published, before its listeners are armed, which may throw from there. */
+  void setAfterBuildWatchOpenedForTest(final Runnable hook) {
+    this.afterBuildWatchOpenedForTest = hook;
   }
 
   /** Test-only hook: bounds how long {@link #shutdown()} waits for in-flight builds before it proceeds. */

@@ -119,6 +119,24 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
   }
 
   @Test
+  void anInstallRecordsItsAppliedPositionsInTheSameWriteAsItsQuarantine(@TempDir final Path tempDir) throws IOException {
+    // The applied position the install records must never reach the disk without the quarantine and the floor of a
+    // database it gave up on: both are in the one file the install writes
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    try {
+      sm.writePersistedAppliedIndex(40L, STALE);
+      sm.completeSnapshotInstall(100L, Set.of(STALE));
+      final JSONObject persisted = new JSONObject(Files.readString(appliedIndexFile(tempDir)));
+      assertThat(persisted.getLong("global", -1)).isEqualTo(100L);
+      assertThat(persisted.getJSONObject("db").getLong(STALE, -1)).as("left where it was").isEqualTo(40L);
+      assertThat(persisted.getJSONObject("quarantine").keySet()).containsExactly(STALE);
+      assertThat(persisted.getJSONObject("floors").getLong(STALE, -1)).isEqualTo(40L);
+    } finally {
+      sm.close();
+    }
+  }
+
+  @Test
   void anInstallThatRefreshedEverythingLeavesNothingBehind(@TempDir final Path tempDir) throws IOException {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     try {

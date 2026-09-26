@@ -2112,7 +2112,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // replay-skip honest after a full resync (issue #4824).
       lastAppliedIndex.set(snapshotIndex);
       updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
-      writePersistedAppliedIndexForAllDatabases(snapshotIndex, notInstalled);
+      // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
+      // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
+      // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
+      completeSnapshotInstall(snapshotIndex, notInstalled);
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -2121,9 +2124,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
           notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
-      // Heals the diverged marks and read floors of every database the install refreshed and re-arms the ones it did
-      // not reinstall, in one durable write (issues #6760, #8137)
-      settleDivergedStateAfterInstall(notInstalled, snapshotIndex);
       // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
       // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
       clearAllBootstrapUnreconciled();
@@ -6123,6 +6123,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex) {
+    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, false);
+  }
+
+  /**
+   * {@link #settleDivergedStateAfterInstall} that also records {@code snapshotIndex} as the applied position, globally
+   * and for every present database the install refreshed, in the same write - what
+   * {@link #writePersistedAppliedIndexForAllDatabases(long, Set)} records on its own.
+   */
+  // @VisibleForTesting
+  void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled) {
+    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true);
+  }
+
+  private void settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
+      final boolean recordAppliedPositions) {
     final Map<String, Long> published = new LinkedHashMap<>();
     // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
     // is built under the lock and written ONCE (issue #8137). Clearing everything first and re-marking the give-ups in a
@@ -6131,6 +6146,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // in-memory maps either, so no reader sees them unclamped for an instant.
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
+      if (recordAppliedPositions) {
+        globalAppliedIndex = snapshotIndex;
+        if (server != null)
+          for (final String dbName : server.getDatabaseNames())
+            if (!notInstalled.contains(dbName))
+              appliedIndexByDb.put(dbName, snapshotIndex);
+      }
       for (final String dbName : notInstalled) {
         // The install deliberately did NOT advance the persisted position of this database, so it still carries whatever
         // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
