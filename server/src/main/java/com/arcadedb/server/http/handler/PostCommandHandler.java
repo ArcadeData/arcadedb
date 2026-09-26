@@ -111,7 +111,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * Tells whether the script's last statement is a {@code SELECT} or a {@code MATCH}, i.e. the statement a trailing
    * LIMIT lands on is a query. A script that does not parse is reported as not ending with one: it is then executed
    * as written and fails with an error that quotes the caller's own text, not one with a LIMIT appended by this
-   * handler.
+   * handler. Only the top-level statement list is inspected: a script ending with an {@code IF}, {@code WHILE} or
+   * {@code FOREACH} block is not one ending with a query, even when the block's body ends with a {@code SELECT},
+   * because the appended LIMIT would land after the closing brace, not inside it.
    */
   static boolean scriptEndsWithAQuery(final String script, final Database database) {
     final List<Statement> statements;
