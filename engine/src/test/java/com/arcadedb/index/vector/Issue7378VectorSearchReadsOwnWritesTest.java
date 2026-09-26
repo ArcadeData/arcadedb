@@ -454,7 +454,8 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
 
     assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
         .as("a rolled back write must leave no trace in the answer").doesNotContain("created-in-tx");
-    assertThat(index.getStats().get("deltaVectorsCount"))
+    // Nodes the seeding build left unreachable are re-queued on purpose and are not a trace of the write (#7190, #8200)
+    assertThat(PendingDeltaVectors.of(index))
         .as("and no trace in the index's own buffers either").isEqualTo(0L);
   }
 

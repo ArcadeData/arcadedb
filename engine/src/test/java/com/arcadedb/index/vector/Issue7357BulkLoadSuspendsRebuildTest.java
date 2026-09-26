@@ -272,7 +272,7 @@ class Issue7357BulkLoadSuspendsRebuildTest {
         // #8115). What this separates is a write the race left behind from a node the build could not wire in, so
         // only the first is counted.
         final Map<String, Long> stats = index.getStats();
-        assertThat(stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes"))
+        assertThat(PendingDeltaVectors.of(stats))
             .as("nothing is left stranded in the buffer after eight rounds of racing the boundary "
                 + "(deltaVectorsCount=%d, unreachableGraphNodes=%d)", stats.get("deltaVectorsCount"),
                 stats.get("unreachableGraphNodes"))

@@ -97,7 +97,7 @@ class Issue6559ApproximateDeltaScoringScaleTest extends TestHelper {
 
     // The twin: same vector, new record, and it stays in the delta buffer because the graph is frozen.
     database.transaction(() -> database.newDocument("Doc").set("id", "twin").set("embedding", vector(TWINNED)).save());
-    assertThat(index.getStats().get("deltaVectorsCount"))
+    assertThat(PendingDeltaVectors.of(index))
         .as("the fixture is only a regression test while the twin is still in the delta buffer").isEqualTo(1L);
 
     final List<Pair<RID, Float>> results = index.findNeighborsFromVectorApproximate(query, TOP_K, null);

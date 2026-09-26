@@ -104,13 +104,8 @@ public class TextEmbeddingsImporterLSM {
 
     final List<TextFloatsEmbedding> texts = loadFromFile();
 
-    if (settings.documentsSkipEntries != null) {
-      for (int i = 0; i < settings.documentsSkipEntries; i++)
-        texts.removeFirst();
-    }
-
     if (!texts.isEmpty()) {
-      final int dimensions = texts.get(1).dimensions();
+      final int dimensions = texts.getFirst().dimensions();
 
       logger.logLine(2, "- Parsed %,d embeddings with %,d dimensions in RAM", texts.size(), dimensions);
 
@@ -164,9 +159,13 @@ public class TextEmbeddingsImporterLSM {
             vertex.set(idPropertyName, embedding.id());
             vertex.set(vectorPropertyName, embedding.vector());
             vertex.save();
-            ++verticesCreated;
           }
         });
+
+        // COUNTED ONCE THE BATCH IS COMMITTED, NOT PER SAVE: transaction() RETRIES THE WHOLE BLOCK ON A CONFLICT, SO A
+        // PER-SAVE COUNT WOULD REPORT THE REPLAYED VERTICES TWICE. THE CONTEXT IS WHAT THE IMPORT REPORT CARRIES (#8174)
+        verticesCreated += end - start;
+        context.createdVertices.addAndGet(end - start);
 
         if ((i / batchSize) % 10 == 0) {
           logger.logLine(2, "- Inserted %,d / %,d vertices", verticesCreated, texts.size());
@@ -251,11 +250,21 @@ public class TextEmbeddingsImporterLSM {
       if (settings.parsingLimitEntries > 0)
         parser = parser.limit(settings.parsingLimitEntries);
 
+      // EVERY LINE READ IS A PARSED RECORD, INCLUDING THE ONES SKIPPED BELOW, SO THE REPORT ADDS UP:
+      // parsedRecords = createdVertices + skippedRecords (#8174)
+      parser = parser.peek(line -> {
+        ++embeddingsParsed;
+        context.parsed.incrementAndGet();
+      });
+
+      // SKIP BEFORE PARSING: A SKIPPED LINE (E.G. THE WORD2VEC "<count> <dimensions>" HEADER) IS NOT AN EMBEDDING
+      final long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0L;
+      if (skipEntries > 0)
+        parser = parser.skip(skipEntries);
+
       final AtomicInteger vectorSize = new AtomicInteger(301);
 
-      return parser.map(line -> {
-        ++embeddingsParsed;
-
+      final List<TextFloatsEmbedding> texts = parser.map(line -> {
         final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
         String word = tokens.getFirst();
@@ -272,6 +281,11 @@ public class TextEmbeddingsImporterLSM {
 
         return new TextFloatsEmbedding(word, vector);
       }).collect(Collectors.toList());
+
+      if (skipEntries > 0)
+        context.skippedRecords.addAndGet(Math.min(skipEntries, embeddingsParsed));
+
+      return texts;
     }
   }
 }
