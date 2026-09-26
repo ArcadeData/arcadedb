@@ -159,7 +159,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
         if (skipIndexing(toFind))
           continue;
 
-        final ResultSet result = database.query("sql", "select from Docs where text = '" + toFind + "'", toFind);
+        // CONTAINSTEXT, not =: since issue #8435 an equality on a FULL_TEXT-indexed property is exact, not a token search
+        final ResultSet result = database.query("sql", "select from Docs where text CONTAINSTEXT '" + toFind + "'", toFind);
         assertThat(result.hasNext())
             .isTrue()
             .withFailMessage("Cannot find key '" + toFind + "'");

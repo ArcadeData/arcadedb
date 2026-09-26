@@ -108,7 +108,7 @@ class Issue1062Test extends TestHelper {
 
   @Test
   void equalsOperatorWithFullTextIndex() {
-    // Test the workaround mentioned in issue comment: using = instead of CONTAINSTEXT
+    // The #1062 workaround (= instead of CONTAINSTEXT) is gone since #8435: = is exact, CONTAINSTEXT is the token search
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
@@ -120,7 +120,8 @@ class Issue1062Test extends TestHelper {
     });
 
     database.transaction(() -> {
-      // The workaround: using = operator with full-text index
+      // The old workaround (= answered by the full-text index with token semantics) was retired by issue #8435: = on a
+      // FULL_TEXT-indexed property is an exact comparison again, the same with or without the index.
       ResultSet result = database.query("sql", "SELECT FROM Article WHERE content = 'java'");
 
       final List<Integer> ids = new ArrayList<>();
@@ -128,8 +129,15 @@ class Issue1062Test extends TestHelper {
         ids.add(result.next().getProperty("id"));
       }
 
-      // Should find records containing "java"
-      assertThat(ids).containsExactlyInAnyOrder(1, 3);
+      assertThat(ids).isEmpty();
+
+      result = database.query("sql", "SELECT FROM Article WHERE content = 'java programming'");
+      ids.clear();
+      while (result.hasNext()) {
+        ids.add(result.next().getProperty("id"));
+      }
+
+      assertThat(ids).containsExactly(1);
     });
 
     database.transaction(() -> {
@@ -141,7 +149,7 @@ class Issue1062Test extends TestHelper {
         ids.add(result.next().getProperty("id"));
       }
 
-      // Should have the same result as the = operator
+      // CONTAINSTEXT is the token search
       assertThat(ids).containsExactlyInAnyOrder(1, 3);
     });
   }
