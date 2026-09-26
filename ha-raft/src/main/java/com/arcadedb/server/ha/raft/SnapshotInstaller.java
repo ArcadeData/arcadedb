@@ -288,6 +288,15 @@ public final class SnapshotInstaller {
   static volatile Runnable existsDatabaseRaceBarrierForTesting = null;
 
   /**
+   * Test-only barrier invoked with the database name once the leader's snapshot is fully staged in
+   * {@code .snapshot-new} and before {@link #swapAndReopen} takes the registry lock, i.e. while the live copy is
+   * still open. {@code null} in production (one reference read per install). The issue-#7958 regression test
+   * pauses here to commit a write on the leader in the window between the leader serving the snapshot and this
+   * node swapping it in, and proves the entry is not applied to the copy about to be discarded.
+   */
+  static volatile Consumer<String> snapshotStagedForTesting = null;
+
+  /**
    * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
    * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
    * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
@@ -506,6 +515,10 @@ public final class SnapshotInstaller {
     // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
     // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
     writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
+
+    final Consumer<String> staged = snapshotStagedForTesting;
+    if (staged != null)
+      staged.accept(databaseName);
 
     // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
     // while the files are being moved.
