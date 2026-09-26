@@ -318,6 +318,39 @@ public interface HAServerPlugin extends ServerPlugin {
     return -1L;
   }
 
+  /**
+   * On a node that did NOT join at runtime, the cluster-replicated security documents it has not installed from a
+   * replicated entry, nor had confirmed by the leader, since its latest leader-driven snapshot install in this process,
+   * in the order users, groups, API tokens (issue #8432).
+   * <p>
+   * A statically configured member removed while it was down, re-added with its config volume retained and caught up
+   * by a snapshot install past the leader's compaction point never observes the re-add, so it is never armed (see
+   * {@link #hasJoinedClusterAtRuntime()}), yet it may still enforce a user dropped, a group narrowed or a token revoked
+   * while it was out: no snapshot carries the security documents. It cannot tell that case from a member that merely
+   * lagged, so every such install holds readiness until the documents are confirmed, without arming the node.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code false} and {@link #getLastSnapshotInstallIndex()}
+   * reports an install. Empty when this HA implementation has no such concept, which leaves an unarmed node ungated,
+   * as before issue #8432.
+   *
+   * @return the document names, empty when all three have been confirmed since the install, or there was none
+   */
+  default List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    return List.of();
+  }
+
+  /**
+   * The log index of this node's latest leader-driven snapshot install while it had not joined at runtime, in this
+   * process, or {@code -1} when none is known (issue #8432). It is both what arms the transient hold of
+   * {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} and the key of its window: a later install opens a
+   * fresh one, the way a later join does on an armed node (issue #8414). Only moves forward.
+   *
+   * @return the install index, {@code -1} when unknown
+   */
+  default long getLastSnapshotInstallIndex() {
+    return -1L;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();

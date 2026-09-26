@@ -128,7 +128,9 @@ public class ServerControlPlane {
    * before any (issue #8414). The window is per join, not per process: when a re-add moves the join index forward
    * the window and the give-up flag are cleared exactly as convergence clears them, so the new join is held for a
    * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
-   * index - a Raft server that is not readable this tick - never restarts the bound.
+   * index - a Raft server that is not readable this tick - never restarts the bound. On an unarmed node held after
+   * a snapshot install (issue #8432) it is that install's index instead: both are log positions that only move
+   * forward, and a later one of either is a fresh window.
    */
   private volatile long    securityConvergenceJoinIndex      = -1L;
 
@@ -497,6 +499,15 @@ public class ServerControlPlane {
    * boundary (issue #8353), is a new join with a window and a give-up decision of its own. Nothing else clears it,
    * and a disarmed reading does not even look at it, so a Raft server that is briefly unreadable cannot restart
    * the bound.
+   * <p>
+   * <b>A static member caught up by snapshot install is held too, without being armed (issue #8432).</b> Removed
+   * while down, re-added and caught up past the leader's compaction point, it never observes the re-add, so the
+   * runtime-join event above never happens for it, while no snapshot carries the security documents. On an unarmed
+   * node that installed a snapshot from the leader in this process
+   * ({@link HAServerPlugin#getLastSnapshotInstallIndex()}), the gate waits for
+   * {@link HAServerPlugin#securityDocumentsNotConfirmedSinceSnapshotInstall()}: the leader-confirmed match the
+   * install asks for, or the seed a mismatch triggers. The fingerprints are not consulted there, and the same bounded
+   * window applies, keyed by the install index the way an armed node's is keyed by its join index.
    */
   private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
     final long window = server.getConfiguration()
@@ -513,16 +524,27 @@ public class ServerControlPlane {
       // raftHAServer is null - keeps the deadline it already opened. Deciding the convergence reset first would
       // let such a reading clear it on a re-added node, whose fingerprints from its previous membership make the
       // disarmed union empty.
-      if (!ha.hasJoinedClusterAtRuntime())
-        return null;
-
-      final ServerSecurity security = server.getSecurity();
-      final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
-      // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
-      // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
-      // the document must also have been installed after the change that (last) added it.
-      unconverged = unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin());
-      joinIndex = ha.getRuntimeJoinIndex();
+      if (!ha.hasJoinedClusterAtRuntime()) {
+        // Issue #8432: a static member removed while down, re-added and caught up by a snapshot install past the
+        // leader's compaction point is never armed, yet it may hold documents the cluster has since changed. Every
+        // such install holds it, transiently, until they are confirmed. Read FIRST, and nothing is held or reset
+        // without one: an unreadable Raft server reports none, so the #8414 rule above holds here too. The
+        // fingerprints are not consulted - a cluster that never replicated a security document has none anywhere,
+        // which is exactly what #7819 must not hold - only the installs and matches recorded since the install.
+        final long installIndex = ha.getLastSnapshotInstallIndex();
+        if (installIndex <= 0)
+          return null;
+        unconverged = ha.securityDocumentsNotConfirmedSinceSnapshotInstall();
+        joinIndex = installIndex;
+      } else {
+        final ServerSecurity security = server.getSecurity();
+        final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+        // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
+        // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
+        // the document must also have been installed after the change that (last) added it.
+        unconverged = unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin());
+        joinIndex = ha.getRuntimeJoinIndex();
+      }
     } catch (final Exception e) {
       // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
@@ -542,8 +564,8 @@ public class ServerControlPlane {
     }
 
     if (unconverged.isEmpty()) {
-      // Converged on an armed reading: forget the window. A disarmed reading never gets here (see above), and that
-      // is not a detail - resetting on it would restart the bound on every blip of the Raft server, and a node
+      // Converged on an armed reading, or on an unarmed one that reports an install (issue #8432): forget the
+      // window. A disarmed reading without an install never gets here (see above), and that is not a detail - resetting on it would restart the bound on every blip of the Raft server, and a node
       // whose HA layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;

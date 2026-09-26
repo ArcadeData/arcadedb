@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.logging.Level;
@@ -121,6 +122,15 @@ import java.util.logging.Level;
  * log, or the leader-confirmed match {@code SecurityCatchUp} asks for right after every install, read at an applied
  * index at or past the snapshot.
  * <p>
+ * <b>An unarmed node gets a transient hold instead (issue #8432).</b> A STATICALLY configured member removed while
+ * down, re-added and caught up the same way is never armed at all - every configuration it ever observes names it -
+ * so the boundary above does nothing for it. Arming it would change the contract above for every lagging static
+ * member and write a marker for each, so an install on an unarmed node only opens a hold of this process: the
+ * documents must be confirmed after the install, by the same evidence, before
+ * {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} reports them converged. It is not persisted, and it
+ * reads only the installs, never the replicated fingerprints, so a cluster that has never replicated a security
+ * document is released by the leader-confirmed match like any other.
+ * <p>
  * Owned by {@link RaftHAServer} rather than by a state machine, so the answer survives the in-place Ratis restart
  * of {@code RaftHAServer.restartRatis}, which builds a new {@link ArcadeStateMachine}.
  *
@@ -163,6 +173,17 @@ public final class RuntimeJoinDetector {
   private          long    joinIndex          = NO_INDEX;
   /** Per document, the highest log index it was installed at; guarded by this instance's monitor. */
   private final    long[]  lastInstalledIndex = { NO_INDEX, NO_INDEX, NO_INDEX };
+  /**
+   * The index of the latest leader-driven snapshot install on an UNARMED node in this process, {@link #NO_INDEX}
+   * before one (issue #8432). Not persisted; guarded by this instance's monitor.
+   */
+  private          long    snapshotInstallIndex = NO_INDEX;
+  /**
+   * Per document, the highest index it was installed or confirmed at SINCE {@link #snapshotInstallIndex}, recorded
+   * separately from {@link #lastInstalledIndex} so the transient hold leaves what the armed gate reads untouched;
+   * guarded by this instance's monitor.
+   */
+  private final    long[]  installedSinceSnapshot = { NO_INDEX, NO_INDEX, NO_INDEX };
 
   /**
    * {@link #onConfiguration(RaftPeerId, Collection, Collection, long)} for a configuration whose log index is not
@@ -273,6 +294,8 @@ public final class RuntimeJoinDetector {
   public void onSecurityDocumentInstalled(final int document, final long index) {
     final boolean changed;
     synchronized (this) {
+      if (index > installedSinceSnapshot[document])
+        installedSinceSnapshot[document] = index;
       changed = index > lastInstalledIndex[document];
       if (changed) {
         lastInstalledIndex[document] = index;
@@ -312,11 +335,14 @@ public final class RuntimeJoinDetector {
     final boolean changed;
     synchronized (this) {
       boolean any = false;
-      for (int i = 0; i < lastInstalledIndex.length; i++)
+      for (int i = 0; i < lastInstalledIndex.length; i++) {
+        if (appliedIndex > installedSinceSnapshot[i])
+          installedSinceSnapshot[i] = appliedIndex;
         if (appliedIndex > lastInstalledIndex[i]) {
           lastInstalledIndex[i] = appliedIndex;
           any = true;
         }
+      }
       changed = any;
       if (changed && joinedAtRuntime)
         stateVersion++;
@@ -348,19 +374,23 @@ public final class RuntimeJoinDetector {
    * snapshot, by the once-per-start catch-up, is at or below the boundary and does not count: the caller moves the
    * boundary before it advances the applied index.
    * <p>
-   * Only forward, like every other move of the join index, and a no-op on a node that did not join at runtime: the
-   * readiness gate is not armed there (issue #7819), and a snapshot install is no evidence of a runtime join.
-   * Persisted, so a restart right after the install stays held until the documents are confirmed.
+   * Only forward, like every other move of the join index. A node that did not join at runtime is not armed by it -
+   * a snapshot install is no evidence of a runtime join (issue #7819) - and writes no marker: it only opens the
+   * transient hold {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} reports (issue #8432), which the same
+   * match or a later seed releases and which a process restart forgets. On an armed node the boundary is persisted,
+   * so a restart right after the install stays held until the documents are confirmed.
    *
    * @param snapshotIndex the log index the install brought this node to; not positive records nothing
    *
-   * @return {@code true} when this changed what counts as converged
+   * @return {@code true} when this changed what counts as converged on an ARMED node; the transient hold of an
+   * unarmed one is not reported here
    */
   public boolean onSnapshotInstalledFromLeader(final long snapshotIndex) {
     if (snapshotIndex <= 0)
       return false;
     final long boundary = snapshotIndex - 1;
     boolean changed = false;
+    boolean heldUnarmed = false;
     synchronized (this) {
       if (joinedAtRuntime) {
         if (boundary > joinIndex) {
@@ -374,8 +404,19 @@ public final class RuntimeJoinDetector {
           }
         if (changed)
           stateVersion++;
+      } else if (snapshotIndex > snapshotInstallIndex) {
+        // Issue #8432: the same skipped range, on a node the configuration log never armed. Held for this process only,
+        // judged by installs recorded from here on, so the previous membership's installs cannot release it.
+        snapshotInstallIndex = snapshotIndex;
+        Arrays.fill(installedSinceSnapshot, NO_INDEX);
+        heldUnarmed = true;
       }
     }
+    if (heldUnarmed)
+      LogManager.instance().log(this, Level.INFO,
+          "This peer caught up by a snapshot install to index %d, which skips every log entry up to it, including any "
+              + "security change made while it was away: readiness waits for the leader to confirm its security "
+              + "documents (arcadedb.ha.securityConvergenceReadinessTimeout)", snapshotIndex);
     if (changed) {
       LogManager.instance().log(this, Level.INFO,
           "Peer %s caught up by a snapshot install to index %d, which skips every log entry up to it, including any "
@@ -402,6 +443,39 @@ public final class RuntimeJoinDetector {
           awaited.add(DOCUMENT_NAMES[i]);
     }
     return awaited;
+  }
+
+  /**
+   * On a node that did NOT join at runtime, the security documents not installed from the log, nor confirmed by the
+   * leader, since the latest leader-driven snapshot install of this process, in the order users, groups, API tokens
+   * (issue #8432). A document counts once it was installed or confirmed at an index at or past the snapshot index -
+   * the seed, a later change, or the match {@code SecurityCatchUp.afterSnapshotInstall} asks for, which is read at an
+   * applied index of at least the snapshot index. Empty on an armed node, whose gate is
+   * {@link #securityDocumentsNotInstalledSinceJoin()}, and on a node with no such install.
+   */
+  public List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    if (joinedAtRuntime)
+      return List.of();
+    synchronized (this) {
+      if (snapshotInstallIndex == NO_INDEX)
+        return List.of();
+      List<String> awaited = null;
+      for (int i = 0; i < DOCUMENT_NAMES.length; i++)
+        if (installedSinceSnapshot[i] < snapshotInstallIndex) {
+          if (awaited == null)
+            awaited = new ArrayList<>(DOCUMENT_NAMES.length);
+          awaited.add(DOCUMENT_NAMES[i]);
+        }
+      return awaited == null ? List.of() : awaited;
+    }
+  }
+
+  /**
+   * The index of the latest leader-driven snapshot install on this node while it was unarmed, in this process;
+   * {@code -1} when none (issue #8432). Only moves forward. The readiness gate opens a fresh window when it does.
+   */
+  synchronized long lastSnapshotInstallIndex() {
+    return snapshotInstallIndex;
   }
 
   /** The names {@link #securityDocumentsNotInstalledSinceJoin()} reports, all of them. */

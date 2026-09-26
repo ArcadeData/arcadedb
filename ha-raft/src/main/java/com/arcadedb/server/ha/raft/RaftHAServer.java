@@ -2299,6 +2299,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * On a node that did not join at runtime, the security documents not confirmed since its latest leader-driven
+   * snapshot install (issue #8432). See {@link RuntimeJoinDetector#securityDocumentsNotConfirmedSinceSnapshotInstall()}.
+   */
+  public List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    return runtimeJoinDetector.securityDocumentsNotConfirmedSinceSnapshotInstall();
+  }
+
+  /**
+   * The index of the latest leader-driven snapshot install on this node while unarmed, {@code -1} when none (issue
+   * #8432). See {@link RuntimeJoinDetector#lastSnapshotInstallIndex()}.
+   */
+  public long getLastSnapshotInstallIndex() {
+    return runtimeJoinDetector.lastSnapshotInstallIndex();
+  }
+
+  /**
    * Records that the leader found this node's security documents, read at {@code appliedIndex}, equal to its own
    * (issue #8346). See {@link RuntimeJoinDetector#onSecurityDocumentsMatchedLeader(long)}.
    */
