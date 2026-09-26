@@ -70,8 +70,14 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
 
   /**
    * Follower snapshot index the last {@link #shouldInstallSnapshot(boolean)} anchored on, or
-   * {@link RaftLog#INVALID_LOG_INDEX}. Written by the appender thread, read and cleared by the reply thread in
-   * {@link #getNextIndexForError(long)}, hence {@code volatile}.
+   * {@link RaftLog#INVALID_LOG_INDEX}. Written by the appender's {@code run()} loop, read and cleared in
+   * {@link #getNextIndexForError(long)}, which Ratis calls from the gRPC reply callback
+   * ({@code AppendLogResponseHandler.onError}), hence {@code volatile}.
+   * <p>
+   * Deliberately not cleared when the anchored append succeeds, so it can outlive the anchor. That is harmless:
+   * {@link #getNextIndexForError(long)} acts on it only while the follower's {@code snapshotIndex} and
+   * {@code matchIndex} are both still equal to it, which stops being true as soon as the follower acknowledges an
+   * entry past it; a stale value is then simply discarded.
    */
   private volatile long anchoredSnapshotIndex = RaftLog.INVALID_LOG_INDEX;
 
