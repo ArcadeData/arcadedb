@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.function.sql.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
@@ -449,13 +450,13 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
       "vectortostring", "vectorvariance", "version");
 
   /** Built-in methods reviewed as not mutating their receiver or arguments; see REVIEWED_REPEATABLE_FUNCTIONS. */
-  private static final Set<String> REVIEWED_NON_MUTATING_METHODS = Set.of(
+  private static final Set<String> REVIEWED_TRUSTED_METHODS = Set.of(
       "append", "asboolean", "asbyte", "ascypherrid", "asdate", "asdatetime", "asdecimal", "asdouble",
       "asfloat", "asinteger", "asjson", "aslist", "aslong", "asmap", "asrecord", "asrid", "asset", "asshort",
       "assparse", "asstring", "asvector", "capitalize", "charat", "convert", "exclude", "field", "first",
       "format", "hash", "ifempty", "ifnull", "include", "indexof", "intersectswith", "iswithin", "javatype",
       "join", "keys", "last", "lastindexof", "left", "length", "normalize", "precision", "prefix", "replace",
-      "right", "size", "sort", "split", "substring", "tojson", "tolowercase", "touppercase", "transform",
+      "right", "size", "sort", "split", "substring", "tojson", "tolowercase", "touppercase",
       "trim", "trimprefix", "trimsuffix", "type", "values");
 
   @Test
@@ -466,11 +467,12 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
     assertThat(functions).as("classify these functions in CorrelatedSubQueryCache.NON_REPEATABLE_FUNCTIONS or in this test").isEmpty();
 
     final Set<String> methods = new TreeSet<>(DefaultSQLMethodFactory.getInstance().getBuiltInMethodNames());
-    methods.removeAll(REVIEWED_NON_MUTATING_METHODS);
-    methods.removeAll(CorrelatedSubQueryCache.MUTATING_METHODS);
-    assertThat(methods).as("classify these methods in CorrelatedSubQueryCache.MUTATING_METHODS or in this test").isEmpty();
+    methods.removeAll(REVIEWED_TRUSTED_METHODS);
+    methods.removeAll(CorrelatedSubQueryCache.UNTRUSTED_METHODS);
+    assertThat(methods).as("classify these methods in CorrelatedSubQueryCache.UNTRUSTED_METHODS or in this test").isEmpty();
 
     assertThat(CorrelatedSubQueryCache.isCacheable(parse("select math_random() from CacheNode"))).isFalse();
+    assertThat(CorrelatedSubQueryCache.isCacheable(parse("select name.transform('toLowerCase') from CacheNode"))).isFalse();
   }
 
   /** A function registered at run time (by an application or a plugin) is not a built-in the engine can vouch for. */
@@ -494,6 +496,21 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
     } finally {
       DefaultSQLFunctionFactory.getInstance().unregister(name);
     }
+  }
+
+  /** Re-registering a built-in NAME with another implementation must not inherit the built-in's trust. */
+  @Test
+  void aBuiltInNameReRegisteredAtRunTimeIsNotTrusted() {
+    final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
+    final Object original = factory.getFunctions().get("abs");
+    assertThat(CorrelatedSubQueryCache.isCacheable(parse("select abs(-1) from CacheNode"))).isTrue();
+    factory.register("abs", SQLFunctionRandomInt.class);
+    try {
+      assertThat(CorrelatedSubQueryCache.isCacheable(parse("select abs(-1) as x from CacheNode"))).isFalse();
+    } finally {
+      factory.register("abs", original);
+    }
+    assertThat(factory.isBuiltIn("abs")).isTrue();
   }
 
   @Test

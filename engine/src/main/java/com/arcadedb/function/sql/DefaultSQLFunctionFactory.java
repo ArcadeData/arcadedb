@@ -167,6 +167,7 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorSum;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorToString;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorVariance;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -179,7 +180,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
   private static final DefaultSQLFunctionFactory INSTANCE = new DefaultSQLFunctionFactory();
 
   private final SQLFunctionReflectionFactory reflectionFactory;
-  private final Set<String>                  builtInFunctionNames;
+  private final Map<String, Object>          builtInFunctions;
 
   public static DefaultSQLFunctionFactory getInstance() {
     return INSTANCE;
@@ -374,7 +375,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionVectorFuse.NAME, new SQLFunctionVectorFuse());
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);
-    builtInFunctionNames = Set.copyOf(getFunctionNames());
+    builtInFunctions = Map.copyOf(getFunctions());
   }
 
   public SQLFunctionReflectionFactory getReflectionFactory() {
@@ -388,6 +389,16 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
    * cache, issue #8400) checks this set instead.
    */
   public Set<String> getBuiltInFunctionNames() {
-    return builtInFunctionNames;
+    return builtInFunctions.keySet();
+  }
+
+  /**
+   * Whether {@code lowercaseName} still resolves to the implementation this factory registered for it at
+   * construction. False for a name added later AND for a built-in name an application re-registered with its own
+   * implementation, since {@link #register} silently replaces.
+   */
+  public boolean isBuiltIn(final String lowercaseName) {
+    final Object builtIn = builtInFunctions.get(lowercaseName);
+    return builtIn != null && builtIn == getFunctions().get(lowercaseName);
   }
 }

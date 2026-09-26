@@ -83,8 +83,12 @@ public final class CorrelatedSubQueryCache {
    * which fails on a newly registered name until someone decides which side it belongs on.
    */
   static final Set<String> NON_REPEATABLE_FUNCTIONS = Set.of("randomint", "math_random", "uuid", "sysdate", "eval", "promql");
-  /** Built-in methods that mutate the collection they are applied to, which may be an outer variable. */
-  static final Set<String> MUTATING_METHODS         = Set.of("remove", "removeall");
+  /**
+   * Built-in methods not trusted: {@code remove}/{@code removeAll} change a collection (today on a defensive copy, not
+   * relied upon here), and {@code transform} resolves the methods it applies from its string arguments at run time,
+   * the same blind spot {@code eval()} is excluded for.
+   */
+  static final Set<String> UNTRUSTED_METHODS        = Set.of("remove", "removeall", "transform");
   /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
   private static final Set<String> GRAPH_METHODS            = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv",
       "bothv");
@@ -203,7 +207,7 @@ public final class CorrelatedSubQueryCache {
       if ("date".equals(name) && call.getParams().isEmpty())
         return false;
       // A NAME THE ENGINE DID NOT REGISTER ITSELF IS A USER-DEFINED, LIBRARY OR APPLICATION FUNCTION: ITS BEHAVIOUR IS UNKNOWN
-      return DefaultSQLFunctionFactory.getInstance().getBuiltInFunctionNames().contains(name);
+      return DefaultSQLFunctionFactory.getInstance().isBuiltIn(name);
     }
 
     if (node instanceof MethodCall call) {
@@ -214,7 +218,7 @@ public final class CorrelatedSubQueryCache {
       // HERE RATHER THAN READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
       if (GRAPH_METHODS.contains(name))
         return true;
-      return !MUTATING_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().getBuiltInMethodNames().contains(name);
+      return !UNTRUSTED_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().isBuiltIn(name);
     }
 
     return true;

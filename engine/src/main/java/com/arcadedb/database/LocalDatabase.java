@@ -598,7 +598,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /**
    * Moves {@link #getModificationCount()}. Called at every write boundary: a record created, updated or deleted, a
    * write transaction committed, a replicated or recovered transaction applied to the files, and a command (which
-   * may be DDL or a bulk operation that bypasses the record paths). Over-counting only costs a memoized result.
+   * may be DDL or a bulk operation that bypasses the record paths). Over-counting only costs a memoized result;
+   * under-counting serves a stale one, so a NEW write path that bypasses all of these must call this too.
    */
   public void markModified() {
     modificationCount.incrementAndGet();
