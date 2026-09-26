@@ -310,11 +310,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile LongSupplier              followerStallClock     = System::currentTimeMillis;
   /**
    * The HTTPS client that requests forwarded to the leader are sent on (issue #7508). A second cache rather than
-   * a share of {@link #capabilityHttpsClients}: that one is asked by a single scheduled thread, sequentially, and
-   * its rebuild path is documented against exactly that. This one is asked by HTTP worker threads, concurrently,
-   * so a truststore rotation makes one of them close the previous client - an orderly shutdown that waits for the
-   * forwards still in flight on it - while the others wait on the cache's monitor. That is bounded by their own
-   * request timeouts and happens only when the operator rotates a certificate.
+   * a share of {@link #capabilityHttpsClients}, so the forwards keep their own connection pool. This one is asked
+   * by HTTP worker threads, concurrently, so a truststore rotation happens while other threads have forwards in
+   * flight on the previous client. The cache retires that client with a non-blocking {@code shutdown()} rather
+   * than waiting for those forwards under its monitor, and without cancelling them (issue #8025).
    */
   private final    TrustedHttpClientCache    forwardHttpsClients    = new TrustedHttpClientCache();
   // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
