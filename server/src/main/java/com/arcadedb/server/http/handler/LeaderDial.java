@@ -219,25 +219,60 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
     try {
       return pending.get(deadline, TimeUnit.MILLISECONDS);
     } catch (final TimeoutException e) {
-      pending.cancel(true);
+      if (!pending.cancel(true))
+        // The answer completed between the wait expiring and the cancel. Handed over rather than dropped: dropping it
+        // would leave a streaming handler's body, and the connection under it, open with nobody to close it.
+        return completed(pending, request);
       final HttpTimeoutException timeout = new HttpTimeoutException(
           "no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
       timeout.initCause(e);
       throw timeout;
     } catch (final InterruptedException e) {
-      pending.cancel(true);
+      if (!pending.cancel(true))
+        closeBodyOf(pending);
       throw e;
     } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof IOException io)
-        throw io;
-      if (cause instanceof RuntimeException runtime)
-        throw runtime;
-      if (cause instanceof Error error)
-        throw error;
-      throw new IOException("Error sending " + request.method() + " " + request.uri(), cause);
+      throw unwrap(e, request);
     }
   }
+
+  /** The outcome of a future that is already done, failures unwrapped as {@link #sendBounded} unwraps them. */
+  private static <T> HttpResponse<T> completed(final CompletableFuture<HttpResponse<T>> done, final HttpRequest request)
+      throws IOException {
+    try {
+      return done.get();
+    } catch (final ExecutionException e) {
+      throw unwrap(e, request);
+    } catch (final InterruptedException e) {
+      // Not reachable on a completed future; kept so the interrupt is never swallowed.
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while reading the answer of " + request.method() + " " + request.uri(), e);
+    }
+  }
+
+  /** Closes the body of an answer that completed but will never be read, so its connection is released. */
+  private static void closeBodyOf(final CompletableFuture<? extends HttpResponse<?>> done) {
+    final HttpResponse<?> response = done.getNow(null);
+    if (response != null && response.body() instanceof AutoCloseable body)
+      try {
+        body.close();
+      } catch (final Exception ignored) {
+        // Best effort: the caller is already on its way out with the interrupt
+      }
+  }
+
+  /** The exception the exchange failed with, of its own type, so the callers' catch arms can tell them apart. */
+  private static IOException unwrap(final ExecutionException e, final HttpRequest request) {
+    final Throwable cause = e.getCause();
+    if (cause instanceof IOException io)
+      return io;
+    if (cause instanceof RuntimeException runtime)
+      throw runtime;
+    if (cause instanceof Error error)
+      throw error;
+    return new IOException("Error sending " + request.method() + " " + request.uri(), cause);
+  }
+
 
   /** True when the cluster requires TLS for this forward and it cannot be established; {@link #refusal} says why. */
   public boolean refused() {
