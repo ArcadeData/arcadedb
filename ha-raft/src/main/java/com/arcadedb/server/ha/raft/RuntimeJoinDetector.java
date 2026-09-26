@@ -409,7 +409,11 @@ public final class RuntimeJoinDetector {
     return List.of(DOCUMENT_NAMES);
   }
 
-  /** The log index of the configuration that last added this node, {@code -1} when none did. For tests. */
+  /**
+   * The log index of the configuration that last added this node - or the join boundary a snapshot install moved it
+   * to - {@code -1} when none did. Only ever moves forward. The readiness gate opens a fresh security-convergence
+   * window when it does (issue #8414).
+   */
   synchronized long joinIndex() {
     return joinIndex;
   }
