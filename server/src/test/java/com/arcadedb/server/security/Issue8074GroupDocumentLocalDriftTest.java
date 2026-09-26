@@ -360,6 +360,7 @@ class Issue8074GroupDocumentLocalDriftTest {
         }
         applied.set(n, log.size());
       }
+      assertThat(outcome).as("at least one node that is not lagging must have evaluated the entry").isNotNull();
       if (!outcome)
         refusals++;
       return outcome;

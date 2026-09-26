@@ -1448,7 +1448,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (!installed.equals(live))
       LogManager.instance().log(this, Level.WARNING,
           "This node's group document differs from the last one the cluster installed (installed fingerprint %s, "
-              + "in force here %s): it was changed locally, by a reload of '%s' or by the v1 to v2 migration. This "
+              + "in force here %s): it was changed locally - by a reload of '%s', by the v1 to v2 migration, or by the "
+              + "default document that replaces an unreadable file. This "
               + "group change is submitted as the whole document in force here, so that local difference now "
               + "reaches every node of the cluster (issue #8074)",
           installed, live, SecurityGroupFileRepository.FILE_NAME);
