@@ -125,7 +125,29 @@ public class DatabaseReconciler {
 
   private volatile ArcadeDBServer server;
 
+  /**
+   * Runs a snapshot install of one database with the Raft apply thread held off that database (issue #7958). The
+   * default runs the install as it is, for the unit tests that drive this class without a state machine;
+   * {@link ArcadeStateMachine} installs its own.
+   */
+  @FunctionalInterface
+  interface InstallGate {
+    void run(String databaseName, InstallAction install) throws IOException;
+  }
+
+  /** One install, as {@link InstallGate} runs it. */
+  @FunctionalInterface
+  interface InstallAction {
+    void run() throws IOException;
+  }
+
+  private volatile InstallGate installGate = (databaseName, install) -> install.run();
+
   public DatabaseReconciler() {
+  }
+
+  void setInstallGate(final InstallGate installGate) {
+    this.installGate = installGate;
   }
 
   public void setServer(final ArcadeDBServer server) {
@@ -294,14 +316,16 @@ public class DatabaseReconciler {
         dbName -> {
           acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
           LogManager.instance().log(this, Level.INFO, "Acquiring database '%s' from leader %s...", dbName, leaderHttpAddr);
-          SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
+          installGate.run(dbName,
+              () -> SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken,
+                  server));
         },
         dbName -> {
           LogManager.instance().log(this, Level.INFO, "Refreshing database '%s' from leader %s...", dbName, leaderHttpAddr);
           // install() downloads with the database still open and only closes + swaps once a complete copy is on
           // disk, rolling back on failure, so a failed download never leaves the database closed.
-          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+          installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+              leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
         });
 
     // Apply the status-map / failure-counter bookkeeping and decide whether to fail the overall install so Ratis
@@ -489,8 +513,8 @@ public class DatabaseReconciler {
       if (server.existsDatabase(dbName)) {
         LogManager.instance().log(this, Level.INFO,
             "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
-        SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
       }
     }
   }
