@@ -654,6 +654,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return s != null ? s.securityDocumentsNotInstalledSinceRuntimeJoin() : RuntimeJoinDetector.allSecurityDocumentNames();
   }
 
+  /**
+   * {@code -1} when the Raft server is not readable: no join is known this tick, and the gate only ever counts a
+   * join index that moves forward, so this reading cannot restart its bound (issue #8414).
+   */
+  @Override
+  public long getRuntimeJoinIndex() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getRuntimeJoinIndex() : -1L;
+  }
+
   @Override
   public String getCriticalHaltReason() {
     final RaftHAServer s = raftHAServer;
