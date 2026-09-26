@@ -87,7 +87,8 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
    * A server on which the database was applied in a previous session and is gone now, so the bootstrap entry takes
    * the reinstall arm. The first install runs on the caller and fails (no leader); the retry it schedules runs on the
    * lifecycle thread, where {@code onLifecycleThread} runs as the first thing the install does. It holds no databases
-   * and auto-acquire is off, so a leader-initiated install reconciles nothing and completes without dialling anyone.
+   * and auto-acquire is off, so a leader-initiated install reconciles nothing; with the leader's snapshot-marker read
+   * answered locally ({@link NoNetworkMarkerReconciler}, issue #8374) it completes without dialling anyone.
    */
   private ArcadeDBServer serverWhoseRetryRuns(final Runnable onLifecycleThread) {
     return serverWhoseRetryRuns(serverDir, onLifecycleThread);
@@ -147,6 +148,11 @@ class Issue8182StateMachineCloseAwaitsLifecycleTasksTest {
     sm = new ArcadeStateMachine();
     sm.setServer(server);
     sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()), storage);
+    try {
+      NoNetworkMarkerReconciler.installInto(sm, server);
+    } catch (final Exception e) {
+      throw new IOException(e);
+    }
     sm.setRaftHAServer(raftHA);
     return storage;
   }

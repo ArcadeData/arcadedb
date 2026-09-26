@@ -433,7 +433,8 @@ class Issue6202SnapshotInstallGuardTest {
 
   /**
    * A state machine with real Ratis storage (the install registers a snapshot marker through it) rooted at
-   * {@code tempDir}, and auto-acquire off so a reconcile over zero local databases needs no leader to answer.
+   * {@code tempDir}, auto-acquire off so a reconcile over zero local databases downloads nothing, and the leader's
+   * snapshot-marker read answered locally ({@link NoNetworkMarkerReconciler}, issue #8374) so no leader has to answer.
    */
   private static ArcadeStateMachine newInitializedStateMachine(final Path tempDir) throws IOException {
     final ContextConfiguration config = new ContextConfiguration();
@@ -443,9 +444,16 @@ class Issue6202SnapshotInstallGuardTest {
     config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 0);
 
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    sm.setServer(new ArcadeDBServer(config));
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    sm.setServer(server);
     sm.initialize(stubRaftServer(), RaftGroupId.valueOf(UUID.randomUUID()),
         newFormattedStorage(tempDir.resolve("raft")));
+    // The install reads the leader's snapshot marker even with auto-acquire off (issue #8374); answer it locally.
+    try {
+      NoNetworkMarkerReconciler.installInto(sm, server);
+    } catch (final Exception e) {
+      throw new IOException(e);
+    }
     return sm;
   }
 

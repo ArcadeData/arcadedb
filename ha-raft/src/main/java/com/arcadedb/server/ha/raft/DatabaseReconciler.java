@@ -228,8 +228,13 @@ public class DatabaseReconciler {
         GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES);
 
     if (!autoAcquire) {
+      // The legacy refresh-existing-only path needs nothing else from the leader, but the install still needs the
+      // leader's snapshot marker (issue #8360): without it the boundary is registered under an approximate term, and
+      // a wrong one is never revisited (issue #8374). Fetched first, so an unreachable leader fails the install before
+      // any database is downloaded.
+      final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return new ReconcileFromLeaderResult(Set.of(), null);
+      return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
 
     // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
@@ -238,22 +243,24 @@ public class DatabaseReconciler {
     // with zero data installed (issue #4799); fail the install instead so Ratis retries.
     final LeaderDatabaseQuery.BootstrapState bootstrapState;
     try {
-      final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
-      bootstrapState = LeaderDatabaseQuery.fetch(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
+      bootstrapState = fetchBootstrapState(leaderHttpAddr, leaderHttpsAddr, clusterToken);
     } catch (final InterruptedException e) {
-      // Preserve the interrupt so the pool/executor can observe it and shut down cleanly.
+      // Preserve the interrupt so the pool/executor can observe it and shut down cleanly. The marker cannot be
+      // fetched on an interrupted thread either, so the install fails rather than registering a guessed term.
       Thread.currentThread().interrupt();
-      LogManager.instance().log(this, Level.WARNING,
-          "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
-              + "already present locally.");
-      refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return new ReconcileFromLeaderResult(Set.of(), null);
+      throw new IOException("Interrupted while listing the leader's databases for auto-acquire", e);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
-              + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
-      refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      return new ReconcileFromLeaderResult(Set.of(), null);
+          "Could not list the leader's databases for auto-acquire (%s); reading the leader's snapshot marker alone "
+              + "and refreshing only the databases already present locally. Missing databases will be retried on the "
+              + "next reconcile.", e.getMessage());
+      // The full listing fingerprints every database on the leader and can time out where the marker-only read does
+      // not; the install still needs the marker, so ask for it alone, and fail the install if even that fails.
+      // The #4799 refusal first: on an empty follower it fails the install whatever the marker read would answer.
+      failInstallWhenNoLocalDatabases();
+      final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs = bootstrapState.databases();
 
@@ -405,20 +412,66 @@ public class DatabaseReconciler {
   }
 
   /**
-   * Failure-path fallback for the auto-acquire flow when the leader's database list could not be enumerated.
-   * Refreshes the databases already present locally (best effort, legacy behavior). If this node holds no
-   * databases at all, throws instead so the caller leaves the Ratis snapshot install incomplete and Ratis
-   * re-triggers it once the leader's list is reachable again - rather than ACKing the snapshot index on an
-   * empty follower that received no data (issue #4799).
+   * Failure-path guard for the auto-acquire flow when the leader's database list could not be enumerated. If this
+   * node holds no databases at all, throws so the caller leaves the Ratis snapshot install incomplete and Ratis
+   * re-triggers it once the leader's list is reachable again - rather than ACKing the snapshot index on an empty
+   * follower that received no data (issue #4799). Otherwise the caller keeps the legacy best-effort refresh.
    */
-  private void refreshExistingDatabasesOrFailWhenEmpty(final String leaderHttpAddr, final String leaderHttpsAddr,
-      final String clusterToken) throws IOException {
+  private void failInstallWhenNoLocalDatabases() throws IOException {
     if (mustFailInstallWhenLeaderListUnavailable(localUserDatabaseNames()))
       throw new IOException(
           "Cannot enumerate the leader's databases for auto-acquire and this node holds no databases locally; "
               + "failing the snapshot install so Ratis retries rather than ACKing the snapshot index with no data "
               + "installed (issue #4799)");
-    refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+  }
+
+  /**
+   * The full bootstrap-state RPC call ({@link LeaderDatabaseQuery#fetch}), factored out so a test can substitute a
+   * canned response or a thrown failure without touching the network.
+   */
+  LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException, InterruptedException {
+    final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
+    return LeaderDatabaseQuery.fetch(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
+  }
+
+  /**
+   * The marker-only bootstrap-state read ({@link LeaderDatabaseQuery#fetchSnapshotMarker}), which skips the
+   * per-database fingerprinting. Overridable for the same reason as {@link #fetchBootstrapState}.
+   */
+  LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException, InterruptedException {
+    final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
+    return LeaderDatabaseQuery.fetchSnapshotMarker(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
+  }
+
+  /**
+   * Reads the leader's latest Raft snapshot {@link TermIndex} for an install that did not get it from the full
+   * listing (issue #8374), and FAILS the install when the leader cannot be asked.
+   * <p>
+   * Failing is the only disposition that recovers. Once an install returns, Ratis answers every further notification
+   * at the same {@code firstAvailableLogIndex} with {@code ALREADY_INSTALLED} without calling the state machine again
+   * ({@code SnapshotInstallationHandler.notifyStateMachineToInstallSnapshot}), so a term guessed on this attempt is
+   * never re-fetched, and a wrong one wedges the follower until the leader compacts past the boundary. A failed
+   * install instead resets Ratis's in-progress index, the leader re-notifies, and the next attempt asks again.
+   * <p>
+   * A {@code null} return is a leader that answered without the fields - a build that predates #8360. The caller
+   * falls back to the approximate term for it: refusing would stall every follower upgraded ahead of its leader.
+   */
+  private TermIndex fetchLeaderSnapshotMarkerOrFail(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException {
+    final LeaderDatabaseQuery.BootstrapState state;
+    try {
+      state = fetchSnapshotMarker(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while reading the leader's snapshot marker", e);
+    } catch (final Exception e) {
+      throw new IOException("Cannot read the leader's snapshot marker (" + e.getMessage()
+          + "); failing the snapshot install so Ratis retries it rather than registering a guessed boundary term "
+          + "(issue #8374)", e);
+    }
+    return state.snapshotTermIndex();
   }
 
   /**
