@@ -150,7 +150,7 @@ class Issue7737ForwardDeadlineHeadroomTest {
   }
 
   private static Object invoke(final RaftReplicatedDatabase db, final ContextConfiguration cfg) throws Exception {
-    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0], cfg);
+    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0]);
   }
 
   private static Object invokeExpectingFailure(final RaftReplicatedDatabase db, final ContextConfiguration cfg)
@@ -165,13 +165,18 @@ class Issue7737ForwardDeadlineHeadroomTest {
 
   private static Method forwardMethod() throws NoSuchMethodException {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class, ContextConfiguration.class);
+        String.class, String.class, Map.class, Object[].class);
     m.setAccessible(true);
     return m;
   }
 
   private static RaftReplicatedDatabase databaseWith(final ArcadeDBServer server, final RaftHAServer raft) {
-    return new RaftReplicatedDatabase(server, mock(LocalDatabase.class), raft);
+    // The command budget is the DATABASE's arcadedb.command.timeout (issue #8313): the database here reads the same
+    // configuration the server does, as one opened with no settings of its own would.
+    final ContextConfiguration databaseConfiguration = server.getConfiguration();
+    final LocalDatabase local = mock(LocalDatabase.class);
+    when(local.getConfiguration()).thenReturn(databaseConfiguration);
+    return new RaftReplicatedDatabase(server, local, raft);
   }
 
   private static ArcadeDBServer serverWith(final ContextConfiguration cfg) {
