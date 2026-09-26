@@ -262,8 +262,8 @@ public class ClusterAlerts {
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node is stuck at a stale term and not counting toward quorum")
         .put("message", "This node recognizes a leader at a newer term but keeps rejecting its current-term "
-            + "entries: it has applied everything it could locally commit, so this document's localReplicationLag "
-            + "reads 0 and every other field here still looks healthy, but this node makes no further progress and "
+            + "entries: it has applied everything it could locally commit, so this document's localCommitIndex and "
+            + "localAppliedIndex agree and only localStuckAtStaleTerm reports it, but this node makes no further progress and "
             + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
             + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
             + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
@@ -284,7 +284,8 @@ public class ClusterAlerts {
    * {@code critical}, like the leader's {@code lagging-followers} alert for a {@code STALLED} replica, which is the
    * same condition seen from the other side: this node does not count toward the quorum while it lasts. Before this
    * alert only the leader's answer carried it, and this node's own answer read healthy with a
-   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds.
+   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds (that lag
+   * is measured against the leader's commit index too since issue #8321).
    * <p>
    * Suppressed while {@code stuckAtStaleTerm} holds: a node stuck at a stale term is stalled too, and that alert
    * already names the cause and the recovery. Two critical alerts for one condition would read as two incidents.
@@ -301,7 +302,7 @@ public class ClusterAlerts {
         .put("message", "This node is " + stall.lag() + " entries behind the commit index its leader reported ("
             + stall.leaderCommitIndex() + ") and has applied nothing and received no new log entry for "
             + stall.stalledForMs() / 1000 + "s. Its own commit index only covers the entries it holds, so this "
-            + "document's localReplicationLag can read 0 and every other field here can look healthy. While this "
+            + "document's localCommitIndex and localAppliedIndex can agree and only localStalledBehindLeader reports it. While this "
             + "lasts the node does not count toward the Raft quorum, and if the cluster loses one more node, writes "
             + "stop. The leader reports the same replica as STALLED in its own lagging-followers alert.")
         .put("recommendation", "If arcadedb.ha.stalledReplicaResyncDurationMs is enabled (the default), the leader "

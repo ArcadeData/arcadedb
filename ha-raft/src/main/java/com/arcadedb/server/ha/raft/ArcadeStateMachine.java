@@ -6584,7 +6584,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     LogManager.instance().log(this, Level.WARNING,
         "Persistent follower lag detected (applied=%d, commit=%d): re-arming snapshot download from leader",
-        lastAppliedIndex.get(), raftHA.getCommitIndex());
+        lastAppliedIndex.get(), raftHA.getFollowerCommitIndex());
     lifecycleExecutor.submit(this::triggerSnapshotDownload);
   }
 
