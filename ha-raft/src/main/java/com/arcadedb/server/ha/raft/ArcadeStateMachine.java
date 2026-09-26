@@ -35,6 +35,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
@@ -81,8 +82,10 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -5374,6 +5377,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The name arrives in a committed log entry rather than in a request this node validated, and what is found here is
    * deleted, so a name the server would refuse to open - one that resolves outside the databases directory - is
    * reported as having no directory rather than trusted.
+   * <p>
+   * Only a path that is confirmed missing counts as "no directory". A stat that fails for any other reason (permission,
+   * I/O error) fails the apply instead: reading it as absent would retire the database's bookkeeping and advance the
+   * applied index past the drop while its files are still there, to be reopened once the filesystem recovers.
+   *
+   * @throws ReplicationException when the filesystem cannot say whether the directory exists
    */
   private Path closedDatabaseDirectory(final String databaseName) {
     try {
@@ -5386,7 +5395,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     final Path directory = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
         databaseName);
-    return Files.isDirectory(directory) ? directory : null;
+    final BasicFileAttributes attributes;
+    try {
+      attributes = Files.readAttributes(directory, BasicFileAttributes.class);
+    } catch (final NoSuchFileException e) {
+      return null;
+    } catch (final IOException e) {
+      throw new ReplicationException(
+          "Cannot tell whether database '" + databaseName + "' still has files at '" + directory + "' to drop: " + e, e);
+    }
+    return attributes.isDirectory() ? directory : null;
   }
 
   /**
@@ -5396,8 +5414,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private static void closeUnregisteredInstance(final Path databaseDirectory) {
     final Database active = DatabaseFactory.getActiveDatabaseInstance(databaseDirectory.toString());
-    if (active != null && active.isOpen())
+    if (active == null || !active.isOpen())
+      return;
+    try {
       ((DatabaseInternal) active).getEmbedded().closeForDrop();
+    } catch (final DatabaseIsClosedException e) {
+      // Its holder is not serialized by the databases lock - it is not registered - so it can close it between the
+      // isOpen() above and closeForDrop(). Closed is exactly what this method wanted; anything else still fails.
+      if (active.isOpen())
+        throw e;
+    }
   }
 
   /**

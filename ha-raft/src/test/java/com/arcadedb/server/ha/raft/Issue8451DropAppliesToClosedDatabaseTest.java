@@ -30,8 +30,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -40,6 +43,8 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression tests for issue #8451: a replicated drop-database apply decided whether there was anything to drop from
@@ -145,6 +150,29 @@ class Issue8451DropAppliesToClosedDatabaseTest {
 
     assertThat(localDatabase.isOpen()).isFalse();
     assertThat(Files.exists(databaseDirectory)).isFalse();
+  }
+
+  /**
+   * A stat that fails for a reason other than "missing" must fail the apply, not read as "already absent": that would
+   * retire the drop while the files stay on disk, to be reopened once the filesystem recovers (review of PR #8466).
+   */
+  @Test
+  void anUnreadableDatabasesDirectoryFailsTheApplyInsteadOfReadingAsAbsent() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+    assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+    final ArcadeStateMachine sm = start();
+    closeDatabaseLikeTheVerb();
+    final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databasesDir);
+    Files.setPosixFilePermissions(databasesDir, Set.of());
+    try {
+      assertThatThrownBy(() -> applyDrop(sm, DB_NAME)).isInstanceOf(ReplicationException.class)
+          .hasMessageContaining(DB_NAME);
+    } finally {
+      Files.setPosixFilePermissions(databasesDir, original);
+    }
+    assertThat(Files.isDirectory(databaseDirectory)).isTrue();
+    assertThat(coordinator().isInProgress(DB_NAME)).isFalse();
   }
 
   /** Deleting a closed database's files is the same destructive step as dropping an open one: it waits for the slot. */
