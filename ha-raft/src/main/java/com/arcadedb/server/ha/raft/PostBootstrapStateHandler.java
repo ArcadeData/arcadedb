@@ -80,6 +80,12 @@ import java.util.logging.Level;
  */
 public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
 
+  /**
+   * Request flag (issue #8374): answer with this peer's snapshot marker only, skipping the per-database fingerprints.
+   * A snapshot install that needs nothing but the marker would otherwise hash every database on the leader.
+   */
+  static final String MARKER_ONLY = "markerOnly";
+
   private final RaftHAPlugin plugin;
 
   public PostBootstrapStateHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -116,6 +122,14 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
+
+    if (payload != null && payload.getBoolean(MARKER_ONLY, false)) {
+      final JSONObject response = new JSONObject();
+      response.put("databases", new JSONArray());
+      response.put("peerId", raftHAServer.getLocalPeerId().toString());
+      putSnapshotMarker(response, raftHAServer.getStateMachine());
+      return new ExecutionResponse(200, response.toString());
+    }
 
     final ArcadeDBServer server = httpServer.getServer();
 
@@ -175,22 +189,26 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     // cluster can register the snapshot it just received under the REAL term of the log entry it covers rather
     // than approximating it from the term of the next log entry. Omitted (not zeroed) when this peer has not
     // taken a Raft snapshot yet, so the caller can tell "no data" from "boundary is at term 0, index 0".
-    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+    putSnapshotMarker(response, raftHAServer.getStateMachine());
+
+    return new ExecutionResponse(200, response.toString());
+  }
+
+  private static void putSnapshotMarker(final JSONObject response, final ArcadeStateMachine stateMachine) {
     final TermIndex snapshotTermIndex = stateMachine != null ? stateMachine.getLatestSnapshotTermIndex() : null;
     if (snapshotTermIndex != null) {
       response.put("snapshotTerm", snapshotTermIndex.getTerm());
       response.put("snapshotIndex", snapshotTermIndex.getIndex());
     }
-
-    return new ExecutionResponse(200, response.toString());
   }
 
   /**
    * Applies what a first-formation bootstrap pass says about itself in the probe's body (issue #8368) - see
    * {@link BootstrapElection#announcePassBody} and {@link BootstrapElection#concludePassBody} for the two shapes.
-   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler, the #8360
-   * snapshot-marker read, the divergence re-check), and so does a leader that predates this change: none of them
-   * holds anything, which leaves a mixed-version cluster exactly as ungated as before rather than wedged.
+   * Every other caller of this route sends {@code {}} (the presence matrix, the database reconciler's full listing,
+   * the divergence re-check) or {@code {"markerOnly": true}} (the #8374 snapshot-marker read, answered before this
+   * method runs), and so does a leader that predates this change: none of them holds anything, which leaves a
+   * mixed-version cluster exactly as ungated as before rather than wedged.
    * <p>
    * Safe to reach from outside a pass only as far as root can already reach: the route is root-only, the announce
    * is ignored by a node past first formation, and every hold it takes lapses on its own.
