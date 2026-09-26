@@ -499,7 +499,15 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public CommandContext copy() {
-    final BasicCommandContext copy = new BasicCommandContext();
+    return copyInto(new BasicCommandContext());
+  }
+
+  /**
+   * Copies this context's state into {@code copy} and returns it: the body of {@link #copy()}, split out so that a
+   * subclass can hand back a copy of its OWN type (a parallel bucket-scan worker must keep a subclass's behaviour,
+   * not silently fall back to a plain context) without duplicating the field list below.
+   */
+  protected BasicCommandContext copyInto(final BasicCommandContext copy) {
     copy.init();
 
     if (variables != null && !variables.isEmpty())

@@ -589,6 +589,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public long getModificationCount() {
+    return stats.createRecord.get() + stats.updateRecord.get() + stats.deleteRecord.get() + stats.writeTx.get()
+        + stats.commands.get();
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());

@@ -686,6 +686,17 @@ public enum GlobalConfiguration {
   SQL_STATEMENT_CACHE("arcadedb.sqlStatementCache", SCOPE.DATABASE, "Maximum number of parsed statements to keep in cache",
       Integer.class, 300),
 
+  SQL_LET_SUBQUERY_CACHE_SIZE("arcadedb.sql.letSubqueryCacheSize", SCOPE.DATABASE,
+      """
+      Maximum number of distinct correlated bindings whose result a per-record LET subquery \
+      (SELECT ... LET $x = (SELECT ...)) remembers within one execution of the enclosing query. When many rows feed \
+      the subquery the same values - many rows sharing one parent, office or category - the subquery runs once per \
+      distinct binding instead of once per row. The binding is the set of outer variables the subquery actually \
+      read, observed while it ran. A subquery that calls a non-deterministic or user-defined function, or that is \
+      not a read-only statement, is never cached, and any change to the database drops the cache. Least recently \
+      used bindings are evicted first; results larger than 1000 rows are not cached. 0 disables the cache.""",
+      Integer.class, 128),
+
   SQL_MAX_EXPRESSION_DEPTH("arcadedb.sql.maxExpressionDepth", SCOPE.DATABASE,
       """
       Maximum nesting depth allowed for parentheses in a single SQL statement (WHERE conditions, sub-expressions, \
