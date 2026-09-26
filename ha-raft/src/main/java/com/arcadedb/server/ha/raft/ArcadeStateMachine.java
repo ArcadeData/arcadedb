@@ -2121,16 +2121,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
           notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
-      clearDivergedState();
+      // Heals the diverged marks and read floors of every database the install refreshed and re-arms the ones it did
+      // not reinstall, in one durable write (issues #6760, #8137)
+      settleDivergedStateAfterInstall(notInstalled, snapshotIndex);
       // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
       // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
       clearAllBootstrapUnreconciled();
       // Likewise every pending bootstrap replacement it did reinstall (issue #8367); one it gave up on is still the
       // copy the baseline rejected, so it stays pending.
       settleBootstrapReplacementsExcept(notInstalled);
-      // ... except the ones it did not reinstall. Re-arm those AFTER clearDivergedState()/clearStaleSnapshotFloor()
-      // above, which are written for the all-databases-refreshed case (issue #6760).
-      markDatabasesNotAtSnapshotIndex(notInstalled, snapshotIndex);
 
       // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
       // leader-driven snapshot install advances the applied index without going through
@@ -2139,8 +2138,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // LAST, after every floor and diverged mark of this install is in its final state. notifyApplied() holds
       // applyNotifier only long enough to notifyAll(), so a waiter can reacquire it and re-check
       // getTrustedAppliedIndex(db) immediately. Notifying any earlier than this leaves a window in which the
-      // global floor is already cleared and the per-database one is not yet published - clearDivergedState()
-      // above has just wiped it, or the first give-up never had one - so the woken waiter sees the raw Ratis
+      // global floor is already cleared and the per-database one is not yet published - the first give-up never
+      // had one - so the woken waiter sees the raw Ratis
       // index, which already equals snapshotIndex, and a LINEARIZABLE or read-your-writes read of a database
       // this install did NOT refresh passes its wait and is served from the stale copy. That is precisely the
       // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
@@ -5509,7 +5508,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * A floor only means something beside its quarantine, so one whose database is no longer quarantined is ignored.
    * A database quarantined by an incomplete snapshot install but carrying no floor - a file written by a build that
    * persisted the quarantine (#7735) but not yet the floor - is clamped at its own persisted applied position, which
-   * is where {@code markDatabasesNotAtSnapshotIndex} put the floor in the first place: the install deliberately
+   * is where {@code settleDivergedStateAfterInstall} put the floor in the first place: the install deliberately
    * left that position behind for it.
    */
   private void restorePersistedFloors(final JSONObject floors) {
@@ -6112,45 +6111,50 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Records that a snapshot install completed WITHOUT bringing {@code databases} to {@code snapshotIndex}
-   * (issue #6760).
+   * Settles the diverged marks and read floors after a leader-driven snapshot install: every database it refreshed is
+   * healed, and every one it did NOT bring to {@code snapshotIndex} is marked diverged with a read floor (issue #6760),
+   * in one durable write (issue #8137).
    * <p>
-   * Each one keeps its diverged mark - so the node does not advertise readiness while it holds a copy it knows is
+   * Each database left behind keeps its diverged mark - so the node does not advertise readiness while it holds a copy it knows is
    * behind - and publishes a read floor at its own honest applied position, so a LINEARIZABLE or read-your-writes
    * read targeting it fails or degrades instead of being served from the stale copy. Recovery is the existing
    * machinery: the mark keeps {@link #isResyncInProgress()} true, and {@link #retryUnfilledSnapshotGap()} re-drives
    * the resync on the HealthMonitor tick until the database is refreshed for real.
    */
   // @VisibleForTesting
-  void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
+  void settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex) {
     final Map<String, Long> published = new LinkedHashMap<>();
-    // One write for the whole batch, quarantine and floors together (code review on PR #8146, issue #8137). Since the
-    // quarantine became durable (#7735) a per-database markStateDiverged() would re-serialise the applied-index file
-    // and fsync+rename it once per database, back to back, while holding the lock the apply thread also needs - N
-    // synchronous rewrites where this loop used to do pure in-memory work. The set is what one install gave up on,
-    // so it can be more than a couple on a node with many co-located databases.
+    // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
+    // is built under the lock and written ONCE (issue #8137). Clearing everything first and re-marking the give-ups in a
+    // second write left a file with neither their quarantine nor their floor in between, and a crash there restarted
+    // the node ready and unclamped on the copies the install had given up on. The give-ups are never removed from the
+    // in-memory maps either, so no reader sees them unclamped for an instant.
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      for (final String dbName : databases) {
+      for (final String dbName : notInstalled) {
         // The install deliberately did NOT advance the persisted position of this database, so it still carries whatever
         // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
         // nothing is known about.
         final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
         staleDatabaseAppliedFloors.put(dbName, floor);
+        // The install is the newest verdict on the database, so its cause replaces an earlier one
+        divergedDatabases.put(dbName, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
         published.put(dbName, floor);
       }
-      // Writes the file once when it quarantines anything; a batch whose databases all were already quarantined
-      // wrote nothing, and its floors still have to reach the disk
-      final boolean written = !quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE).isEmpty();
-      if (!written && !published.isEmpty()) {
-        final boolean persisted = persistAppliedIndexFile();
-        if (!persisted && !closed)
-          LogManager.instance().log(this, Level.WARNING,
-              "The read floors of database(s) %s could NOT be written to %s: a restart before this is fixed serves their "
-                  + "LINEARIZABLE reads unclamped. Check that the .raft directory is writable and has free space "
-                  + "(issue #8137)", published.keySet(), getAppliedIndexFile());
-      }
+      staleDatabaseAppliedFloors.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
+      divergedDatabases.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
+
+      if (!persistAppliedIndexFile() && !closed && !published.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "Database(s) %s are quarantined (%s) with their read floors but could NOT be written to %s: a restart "
+                + "before this is fixed serves them ready and their LINEARIZABLE reads unclamped. Check that the .raft "
+                + "directory is writable and has free space (issues #7735, #8137)", published.keySet(),
+            DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE, getAppliedIndexFile());
     }
+    // As clearDivergedState() does after a full resync: whatever was diverged before this install has been reinstalled
+    // or re-marked above
+    lastDivergedResyncLogByDb.clear();
+    divergedSwallowedErrors.set(0);
 
     for (final Map.Entry<String, Long> entry : published.entrySet()) {
       final String dbName = entry.getKey();
@@ -6165,6 +6169,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           dbName, snapshotIndex, floor, dbName);
     }
   }
+
 
   /**
    * Triggers a targeted snapshot resync of a single database from the leader (issue #4797).
@@ -6320,7 +6325,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Every path that quarantines a database goes through here - the WAL version gap in
    * {@link #applyReplicatedTransaction}, the apply error and the undecodable entry in
    * {@link #handleUnexpectedApplyError}, and the incomplete snapshot install in
-   * {@code markDatabasesNotAtSnapshotIndex} through {@link #markStateDiverged(String, DivergenceCause)} - so
+   * {@code settleDivergedStateAfterInstall} through {@link #markStateDiverged(String, DivergenceCause)} - so
    * there is one place the durability can be missing from rather than four.
    * <p>
    * Written under {@link #appliedIndexFileLock}, the same lock {@link #ensureAppliedIndexLoaded()} and the

@@ -500,8 +500,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       }
     } catch (final InterruptedException e) {
+      // The newer build has not published yet: returning would report a success the caller cannot rely on
       Thread.currentThread().interrupt();
-      return;
+      throw new DatabaseOperationException(
+          "Interrupted while waiting for the rebuild of GraphAnalyticalView '" + name + "' that superseded this one", e);
     }
     if (failure instanceof RuntimeException runtime)
       throw runtime;
