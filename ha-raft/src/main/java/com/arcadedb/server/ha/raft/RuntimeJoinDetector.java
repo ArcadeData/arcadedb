@@ -107,6 +107,20 @@ import java.util.logging.Level;
  * membership stop counting at that point. The index only moves forward: a snapshot-install callback delivering
  * an older configuration cannot pull it back.
  * <p>
+ * <b>A leader-driven snapshot install is a join boundary of its own (issue #8353).</b> Both rules above read the
+ * configuration log, and a node removed from the cluster WHILE IT WAS DOWN, then re-added with its config volume
+ * retained, can reach the leader again without observing either: it never received the removal entry, so every
+ * configuration it replays after its restart names it, and the joint entry that re-added it lies below the leader's
+ * compaction point, so it is never applied - the snapshot install delivers only the final configuration, which names
+ * it too. The join index then stays at its FIRST join and the previous membership's installs keep counting. A node
+ * cannot tell that case apart from a member that merely lagged past the compaction point, so every leader-driven
+ * install on an armed node is treated as one: {@link #onSnapshotInstalledFromLeader(long)} moves the join index to
+ * just below the installed snapshot index and forgets every install recorded before it. That is sound for both: no
+ * security document travels in a snapshot, so a lagging member that skipped the entries really may be enforcing a
+ * stale copy too. What releases it is the same evidence as a seeded joiner: a seed or later change applied from the
+ * log, or the leader-confirmed match {@code SecurityCatchUp} asks for right after every install, read at an applied
+ * index at or past the snapshot.
+ * <p>
  * Owned by {@link RaftHAServer} rather than by a state machine, so the answer survives the in-place Ratis restart
  * of {@code RaftHAServer.restartRatis}, which builds a new {@link ArcadeStateMachine}.
  *
@@ -309,6 +323,68 @@ public final class RuntimeJoinDetector {
     }
     if (changed && joinedAtRuntime)
       persist();
+  }
+
+  /**
+   * Records that a leader-driven snapshot install brought this node to {@code snapshotIndex} without applying the
+   * log entries up to it (issue #8353). On a node that joined at runtime, every install recorded so far is
+   * forgotten and the join index moves forward to {@code snapshotIndex - 1}, so only a seed or later change applied
+   * from the log after the snapshot, or a leader-confirmed match read at the snapshot index or later, counts toward
+   * convergence from here.
+   * <p>
+   * Why a boundary at all: the skipped range may hold the entry that removed this node and the joint entry that
+   * re-added it, neither of which it will ever apply, so neither rule of {@link #onConfiguration} can see the re-add.
+   * The installs are forgotten rather than only judged by index because they were all recorded BEFORE the install,
+   * from the log this node had, which is precisely what the skipped range may have invalidated; judging by index
+   * alone would keep one whose index happens to lie past the boundary - an entry of a log the divergence reformat of
+   * {@code RaftHAServer.restartRatis(true)} since threw away, for one.
+   * <p>
+   * Why {@code snapshotIndex - 1} and not the snapshot index: the boundary must still let through the match
+   * {@code SecurityCatchUp.afterSnapshotInstall} asks for right after the install, which is read at an applied index
+   * of at least {@code snapshotIndex}. The documents compared there are this node's after the install, set against
+   * the leader's live ones, so the match describes the current membership whatever index the re-add was at. A
+   * boundary AT the snapshot index would refuse it and hold a node whose documents already equal the cluster's for
+   * the whole readiness window - the case issue #8346 fixed. A match read concurrently at an applied index below the
+   * snapshot, by the once-per-start catch-up, is at or below the boundary and does not count: the caller moves the
+   * boundary before it advances the applied index.
+   * <p>
+   * Only forward, like every other move of the join index, and a no-op on a node that did not join at runtime: the
+   * readiness gate is not armed there (issue #7819), and a snapshot install is no evidence of a runtime join.
+   * Persisted, so a restart right after the install stays held until the documents are confirmed.
+   *
+   * @param snapshotIndex the log index the install brought this node to; not positive records nothing
+   *
+   * @return {@code true} when this changed what counts as converged
+   */
+  public boolean onSnapshotInstalledFromLeader(final long snapshotIndex) {
+    if (snapshotIndex <= 0)
+      return false;
+    final long boundary = snapshotIndex - 1;
+    boolean changed = false;
+    synchronized (this) {
+      if (joinedAtRuntime) {
+        if (boundary > joinIndex) {
+          joinIndex = boundary;
+          changed = true;
+        }
+        for (int i = 0; i < lastInstalledIndex.length; i++)
+          if (lastInstalledIndex[i] != NO_INDEX) {
+            lastInstalledIndex[i] = NO_INDEX;
+            changed = true;
+          }
+        if (changed)
+          stateVersion++;
+      }
+    }
+    if (changed) {
+      LogManager.instance().log(this, Level.INFO,
+          "Peer %s caught up by a snapshot install to index %d, which skips every log entry up to it, including any "
+              + "that removed and re-added this peer: the security documents it installed before no longer count, "
+              + "and readiness waits for the cluster's current ones to be confirmed "
+              + "(arcadedb.ha.securityConvergenceReadinessTimeout)", armedPeer, snapshotIndex);
+      persist();
+    }
+    return changed;
   }
 
   /**

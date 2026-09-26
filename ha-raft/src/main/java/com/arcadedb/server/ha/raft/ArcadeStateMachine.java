@@ -2098,6 +2098,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
           leaderSnapshotTermIndex);
       final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
 
+      // Issue #8353: the entries this install skips may include the removal and the re-add of THIS node, which then
+      // never reaches the runtime-join detector as a configuration change, so its previous membership's security
+      // installs would keep counting toward readiness. Every install is a join boundary on an armed node instead.
+      // BEFORE the snapshot marker and the applied index: a restart must not find the marker without the boundary,
+      // and a catch-up match read concurrently must be judged against the boundary, not against the old join.
+      runtimeJoinDetector.onSnapshotInstalledFromLeader(snapshotIndex);
+
       // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
       // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
       // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
