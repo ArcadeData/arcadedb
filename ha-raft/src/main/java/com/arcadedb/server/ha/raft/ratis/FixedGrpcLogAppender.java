@@ -139,6 +139,11 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
    * time, keeps the stock answer. Covers both {@code shouldInstallSnapshot()} and
    * {@code shouldNotifyToInstallSnapshot()}, which both delegate here.
    * <p>
+   * Verified against Apache Ratis 3.3.0: that delegation, and the three previous-entry carve-outs above, are what this
+   * override relies on, and nothing checks them at startup. Re-read them on a Ratis upgrade.
+   * {@code Issue8459InstallSnapshotNotifyLoopTest.leaderResumesAppendEntriesAfterInstallBoundaryOneBeforeItsLogStart}
+   * runs in notification mode, so it fails if {@code shouldNotifyToInstallSnapshot()} stops consulting this method.
+   * <p>
    * If the follower's own state no longer matches what it reported (for instance its storage was wiped since), its
    * {@code assertEntries} rejects the append. {@link #getNextIndexForError(long)} then withdraws the anchor, so the next
    * iteration notifies again and the follower either re-confirms its snapshot or installs a new one.
