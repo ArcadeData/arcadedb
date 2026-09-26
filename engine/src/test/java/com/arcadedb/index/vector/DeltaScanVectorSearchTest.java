@@ -202,8 +202,9 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Search triggers rebuild (small graph < 1000 → synchronous) if using old path
     lsmIndex.findNeighborsFromVector(queryVector, 5);
 
-    // After rebuild or with live builder, delta should be empty (vectors are in the graph)
-    assertThat(lsmIndex.getStats().get("deltaVectorsCount")).isEqualTo(0L);
+    // After rebuild or with live builder, delta should hold nothing pending (vectors are in the graph). Nodes the build
+    // left unreachable are re-queued on purpose and are not pending (issues #7190, #8200)
+    assertThat(PendingDeltaVectors.of(lsmIndex)).isEqualTo(0L);
   }
 
   @Test

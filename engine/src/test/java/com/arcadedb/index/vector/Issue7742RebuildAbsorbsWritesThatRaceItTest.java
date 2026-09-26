@@ -145,7 +145,7 @@ class Issue7742RebuildAbsorbsWritesThatRaceItTest {
           final Map<String, Long> stats = idx.getStats();
           // Vectors this build orphaned are re-queued into the buffer on purpose (issue #7190) and are already in
           // the graph, so they are not pending work and no counter owes anything for them.
-          final long pending = stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes");
+          final long pending = PendingDeltaVectors.of(stats);
           if (pending > 0)
             assertThat(stats.get("mutationsSinceRebuild"))
                 .as("round %d left %d vector(s) buffered: the mutation counter must still owe them, or nothing "
@@ -164,7 +164,7 @@ class Issue7742RebuildAbsorbsWritesThatRaceItTest {
         // One last build with nothing writing: it must absorb everything that is genuinely pending.
         idx.buildVectorGraphNow();
         final Map<String, Long> stats = idx.getStats();
-        assertThat(stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes"))
+        assertThat(PendingDeltaVectors.of(stats))
             .as("a build with no writer racing it must leave nothing pending behind")
             .isZero();
       } finally {

@@ -173,7 +173,7 @@ class Issue7378ApproximateSearchReadsOwnWritesTest extends TestHelper {
     // a second row rather than the same one, is what makes this test able to fail.
     database.transaction(() -> database.newDocument("Doc").set("id", "buffered").set("embedding", nearly(query))
         .save());
-    assertThat(index.getStats().get("deltaVectorsCount"))
+    assertThat(PendingDeltaVectors.of(index))
         .as("the fixture is only a regression test while the row is in the buffer rather than the graph")
         .isEqualTo(1L);
 
@@ -183,7 +183,7 @@ class Issue7378ApproximateSearchReadsOwnWritesTest extends TestHelper {
 
       final List<String> ids = idsOf(index.findNeighborsFromVectorApproximate(query, TOP_K, null));
 
-      assertThat(index.getStats().get("deltaVectorsCount"))
+      assertThat(PendingDeltaVectors.of(index))
           .as("the search must not have drained the buffer, or this test proves nothing about augment()")
           .isEqualTo(1L);
       assertThat(ids).as("the rewritten row is scored on the vector this transaction wrote")

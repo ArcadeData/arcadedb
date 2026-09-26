@@ -188,7 +188,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           index.findNeighborsFromVector(randomUnitVector(random), 10);
-          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+          assertThat(PendingDeltaVectors.of(index)).isZero();
         });
   }
 
@@ -287,7 +287,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           index.findNeighborsFromVectorApproximate(randomUnitVector(random), 10);
-          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+          assertThat(PendingDeltaVectors.of(index)).isZero();
         });
   }
 
@@ -330,7 +330,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           index.findNeighborsFromVectorGrouped(randomUnitVector(random), 5, 1, -1, null, groupKey);
-          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+          assertThat(PendingDeltaVectors.of(index)).isZero();
         });
   }
 
@@ -373,7 +373,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     // Long enough for an async rebuild to have started and drained the buffer had anything triggered one.
     Thread.sleep(1_000);
 
-    assertThat(index.getStats().get("deltaVectorsCount"))
+    assertThat(PendingDeltaVectors.of(index))
         .as("with the policy off, nothing bounds the scan - which is precisely the behaviour issue #6797 reports")
         .isEqualTo((long) buffered);
     // The buffer count alone would also read unchanged if a rebuild had run and been immediately refilled, which
@@ -415,7 +415,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
         database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) vector);
     });
 
-    assertThat(index.getStats().get("deltaVectorsCount")).isEqualTo((long) planted.size());
+    assertThat(PendingDeltaVectors.of(index)).isEqualTo((long) planted.size());
 
     final int k = 5;
     final List<Pair<RID, Float>> results = index.findNeighborsFromVector(query, k);
@@ -507,7 +507,7 @@ class Issue6797DeltaScanScalingTest extends TestHelper {
     Awaitility.await("the initial synchronous build settles the buffer")
         .atMost(REBUILD_SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(50))
-        .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount")).isZero());
+        .untilAsserted(() -> assertThat(PendingDeltaVectors.of(index)).isZero());
     assertThat(index.getStats().get("graphNodeCount")).isGreaterThanOrEqualTo(1000L);
     return index;
   }

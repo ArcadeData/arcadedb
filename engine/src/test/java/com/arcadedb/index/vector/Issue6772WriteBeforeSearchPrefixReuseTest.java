@@ -313,7 +313,7 @@ class Issue6772WriteBeforeSearchPrefixReuseTest {
               .as("exactly one reuse must be published however many threads reached the decision - the losers must "
                   + "discard their work on the graphIndex double-check, not publish a second time")
               .isEqualTo(1L);
-          assertThat(index.getStats().get("deltaVectorsCount"))
+          assertThat(PendingDeltaVectors.of(index))
               .as("and the gap must still be buffered exactly once under contention: %d from the crashed session "
                   + "plus the 1 this session wrote", GAP_VECTORS)
               .isEqualTo((long) (GAP_VECTORS + 1));

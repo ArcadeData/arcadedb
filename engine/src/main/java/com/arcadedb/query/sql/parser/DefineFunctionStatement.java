@@ -49,6 +49,13 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
+    // LANGUAGE is optional in the grammar but not in the statement: without it there is no way to build the function,
+    // and the body used to be dereferenced into a NullPointerException
+    if (language == null)
+      throw new CommandSQLParsingException(
+          "DEFINE FUNCTION " + libraryName.getStringValue() + "." + functionName.getStringValue()
+              + " requires a LANGUAGE (sql, js or opencypher)");
+
     final FunctionLibraryDefinition fLib;
     if (!database.getSchema().hasFunctionLibrary(libraryName.getStringValue())) {
       try {
@@ -57,8 +64,15 @@ public class DefineFunctionStatement extends SimpleExecStatement {
         throw new CommandSQLParsingException(e.getMessage());
       }
       database.getSchema().registerFunctionLibrary(fLib);
-    } else
+    } else {
       fLib = database.getSchema().getFunctionLibrary(libraryName.getStringValue());
+      // BEFORE THE FUNCTION IS BUILT: A FUNCTION OF ANOTHER LANGUAGE CAN NEVER JOIN THIS LIBRARY (ISSUE #8423)
+      try {
+        FunctionLibraryFactory.checkLibraryLanguage(fLib, language.getStringValue());
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException(e.getMessage());
+      }
+    }
 
     final String[] parameterArray;
     if (parameters != null) {

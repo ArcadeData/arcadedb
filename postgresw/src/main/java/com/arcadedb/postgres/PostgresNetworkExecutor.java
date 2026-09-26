@@ -28,6 +28,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
@@ -150,6 +151,16 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
   private static final Pattern                                        TIME_ZONE_NAME     = Pattern.compile("(?i)^TIME\\s+ZONE$");
+  private static final Pattern                                        SESSION_AUTHORIZATION_NAME = Pattern.compile("(?i)^SESSION\\s+AUTHORIZATION$");
+  /**
+   * The {@code SET} forms PostgreSQL spells with keywords instead of a {@code =}/{@code TO} separator (issue #8392).
+   * Group 1 is the optional scope modifier, group 2 the keyword, group 3 the rest. The negative lookahead keeps the
+   * parameter forms of the same names ({@code SET role = x}, {@code SET role TO x}) on the ordinary path.
+   */
+  private static final Pattern                                        SET_KEYWORD_FORM   = Pattern.compile(
+      "(?is)^(?:(SESSION|LOCAL)\\s+)?(SESSION\\s+AUTHORIZATION|ROLE|NAMES|SCHEMA|SESSION\\s+CHARACTERISTICS\\s+AS\\s+TRANSACTION|TRANSACTION|CONSTRAINTS)\\s+(?!=|TO\\s)(.+)$");
+  private static final Pattern                                        SET_CONSTRAINTS_MODE = Pattern.compile("(?is)^(.+?)\\s+(DEFERRED|IMMEDIATE)$");
+  private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
   private final ChannelBinaryServer         channel;
@@ -1070,6 +1081,8 @@ public class PostgresNetworkExecutor extends Thread {
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
       if (isSettingCommand(upperCaseText)) {
+        // Throws for a SET this server cannot parse or cannot honour, which the catch arms below answer with an
+        // ErrorResponse: a CommandComplete SET is only ever sent for a SET that did what it asked (issue #8392)
         applySettingCommand(query.query);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -3041,9 +3054,10 @@ public class PostgresNetworkExecutor extends Thread {
         // prepares a statement, it does not run one, so a SET that is only prepared must not change the session,
         // and every later Bind+Execute of the cached statement must apply it again rather than only answer it.
         // RESET is a SET to the reset value and travels the same way (issue #8242).
-        portal.setting = parseSetCommand(portal.query);
-        if (portal.setting == null)
-          LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", portal.query);
+        // A SET this server cannot parse is refused HERE, at Parse, where PostgreSQL reports a malformed statement:
+        // it used to be logged and registered anyway, and its Execute answered CommandComplete SET having applied
+        // nothing (issue #8392). The catch arms below answer the ErrorResponse and register no statement.
+        portal.setting = resolveSetCommand(portal.query);
         portal.ignoreExecution = true;
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
@@ -3249,12 +3263,157 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void applySettingCommand(final String query) {
-    final PostgresSessionSettings.Assignment assignment = parseSetCommand(query);
-    if (assignment == null) {
-      LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
-      return;
+    sessionSettings.apply(resolveSetCommand(query));
+  }
+
+  /**
+   * Resolves a {@code SET}/{@code RESET} to the assignment it makes, or refuses it (issue #8392). A command neither
+   * {@link #parseKeywordSetCommand} nor {@link #parseSetCommand} understands used to be logged and answered
+   * {@code CommandComplete SET} having applied nothing - {@code SET SESSION AUTHORIZATION} and {@code SET ROLE}
+   * included, so a client that dropped privileges was told it had while it kept them. It is a syntax error now, as it is
+   * in PostgreSQL.
+   *
+   * @throws PostgresSessionSettings.SettingException {@code 42601} for a command that is not a {@code SET}/{@code RESET}
+   *                                                  this server can parse, or the SQLSTATE of a keyword form it
+   *                                                  refuses
+   */
+  static PostgresSessionSettings.Assignment resolveSetCommand(final String query) {
+    PostgresSessionSettings.Assignment assignment = parseKeywordSetCommand(query);
+    if (assignment == null)
+      assignment = parseSetCommand(query);
+    if (assignment == null)
+      throw new PostgresSessionSettings.SettingException(
+          "syntax error in \"" + query + "\": expected SET [SESSION | LOCAL] <parameter> { TO | = } <value>, or RESET <parameter>",
+          PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
+    return assignment;
+  }
+
+  /**
+   * The {@code SET} forms PostgreSQL spells with keywords rather than a {@code =}/{@code TO} separator (issue #8392),
+   * mapped onto the parameter each one sets, so {@link PostgresSessionSettings} decides once what is accepted whichever
+   * spelling reached it:
+   * <ul>
+   *   <li>{@code SET [SESSION | LOCAL] SESSION AUTHORIZATION <user> | DEFAULT} - {@code session_authorization};</li>
+   *   <li>{@code SET [SESSION | LOCAL] ROLE <role> | NONE} - {@code role};</li>
+   *   <li>{@code SET NAMES <encoding>} - {@code client_encoding}, and {@code SET SCHEMA <schema>} - {@code search_path};</li>
+   *   <li>{@code SET TRANSACTION <modes>} - {@code transaction_isolation}, and
+   *   {@code SET SESSION CHARACTERISTICS AS TRANSACTION <modes>} - {@code default_transaction_isolation};</li>
+   *   <li>{@code SET CONSTRAINTS ALL DEFERRED | IMMEDIATE} - nothing: no constraint of this server is deferrable, and
+   *   PostgreSQL accepts the statement without effect on non-deferrable constraints.</li>
+   * </ul>
+   * Returns null when the command is none of these.
+   */
+  static PostgresSessionSettings.Assignment parseKeywordSetCommand(final String query) {
+    if (!query.regionMatches(true, 0, "SET ", 0, 4))
+      return null;
+    final Matcher m = SET_KEYWORD_FORM.matcher(query.substring(4).trim());
+    if (!m.matches())
+      return null;
+
+    final boolean local = "LOCAL".equalsIgnoreCase(m.group(1));
+    final String keyword = m.group(2).replaceAll("\\s+", " ").toUpperCase(Locale.ENGLISH);
+    final String rest = m.group(3).trim();
+    return switch (keyword) {
+      case "SESSION AUTHORIZATION" -> new PostgresSessionSettings.Assignment("session_authorization", keywordSetValue(query, rest), local);
+      case "ROLE" -> new PostgresSessionSettings.Assignment("role", keywordSetValue(query, rest), local);
+      case "NAMES" -> new PostgresSessionSettings.Assignment("client_encoding", keywordSetValue(query, rest), local);
+      case "SCHEMA" -> new PostgresSessionSettings.Assignment("search_path", keywordSetValue(query, rest), local);
+      case "TRANSACTION" -> {
+        if (rest.regionMatches(true, 0, "SNAPSHOT", 0, 8))
+          throw new PostgresSessionSettings.SettingException("SET TRANSACTION SNAPSHOT is not supported by this server",
+              PostgresSessionSettings.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        yield transactionModes(query, rest, "transaction_isolation");
+      }
+      case "SESSION CHARACTERISTICS AS TRANSACTION" -> transactionModes(query, rest, "default_transaction_isolation");
+      case "CONSTRAINTS" -> {
+        final Matcher mode = SET_CONSTRAINTS_MODE.matcher(rest);
+        if (!mode.matches())
+          throw syntaxError(query);
+        final String constraints = mode.group(1).trim();
+        if (!"ALL".equalsIgnoreCase(constraints))
+          // THIS SERVER HAS NO NAMED CONSTRAINTS FOR A SET CONSTRAINTS TO NAME, SO THE FIRST NAME IS UNDEFINED
+          throw new PostgresSessionSettings.SettingException(
+              "constraint \"" + constraints.split("\\s*,\\s*")[0] + "\" does not exist", "42704"); // undefined_object
+        yield PostgresSessionSettings.Assignment.NO_OP;
+      }
+      default -> null;
+    };
+  }
+
+  /**
+   * The value of a keyword {@code SET} form: quotes stripped, and {@code DEFAULT} as the null reset value. {@code NONE}
+   * (of {@code SET ROLE NONE}) comes back as {@code none}, which is what {@code role} is reset to.
+   */
+  private static String keywordSetValue(final String query, final String rawValue) {
+    if (rawValue.startsWith("'") || rawValue.startsWith("\"")) {
+      final char quote = rawValue.charAt(0);
+      if (rawValue.length() < 2 || rawValue.charAt(rawValue.length() - 1) != quote)
+        throw syntaxError(query);
+      return rawValue.substring(1, rawValue.length() - 1);
     }
-    sessionSettings.apply(assignment);
+    if ("DEFAULT".equalsIgnoreCase(rawValue))
+      return null;
+    if ("NONE".equalsIgnoreCase(rawValue))
+      return "none";
+    return rawValue;
+  }
+
+  /**
+   * The transaction modes of a {@code SET TRANSACTION} / {@code SET SESSION CHARACTERISTICS AS TRANSACTION}: the
+   * isolation level becomes an assignment of {@code isolationParameter}, which {@link PostgresSessionSettings} accepts
+   * only for the level the transactions really run at; {@code READ WRITE} and {@code [NOT] DEFERRABLE} change nothing
+   * here ({@code DEFERRABLE} only matters to a SERIALIZABLE READ ONLY transaction), and {@code READ ONLY} is refused.
+   */
+  private static PostgresSessionSettings.Assignment transactionModes(final String query, final String modes,
+      final String isolationParameter) {
+    final String[] tokens = TRANSACTION_MODE_SEPARATOR.split(modes.toUpperCase(Locale.ENGLISH));
+    String isolation = null;
+    int i = 0;
+    while (i < tokens.length) {
+      final String token = tokens[i++];
+      switch (token) {
+      case "ISOLATION" -> {
+        if (i >= tokens.length || !"LEVEL".equals(tokens[i++]) || i >= tokens.length)
+          throw syntaxError(query);
+        final String first = tokens[i++];
+        if ("SERIALIZABLE".equals(first))
+          isolation = "serializable";
+        else {
+          if (i >= tokens.length)
+            throw syntaxError(query);
+          final String second = tokens[i++];
+          if ("REPEATABLE".equals(first) && "READ".equals(second))
+            isolation = "repeatable read";
+          else if ("READ".equals(first) && ("COMMITTED".equals(second) || "UNCOMMITTED".equals(second)))
+            isolation = "read " + second.toLowerCase(Locale.ENGLISH);
+          else
+            throw syntaxError(query);
+        }
+      }
+      case "READ" -> {
+        if (i >= tokens.length)
+          throw syntaxError(query);
+        final String access = tokens[i++];
+        if ("ONLY".equals(access))
+          throw new PostgresSessionSettings.SettingException(PostgresSessionSettings.READ_ONLY_NOT_SUPPORTED,
+              PostgresSessionSettings.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        if (!"WRITE".equals(access))
+          throw syntaxError(query);
+      }
+      case "NOT" -> {
+        if (i >= tokens.length || !"DEFERRABLE".equals(tokens[i++]))
+          throw syntaxError(query);
+      }
+      case "DEFERRABLE" -> {
+      }
+      default -> throw syntaxError(query);
+      }
+    }
+    return isolation != null ? new PostgresSessionSettings.Assignment(isolationParameter, isolation, false) : PostgresSessionSettings.Assignment.NO_OP;
+  }
+
+  private static PostgresSessionSettings.SettingException syntaxError(final String query) {
+    return new PostgresSessionSettings.SettingException("syntax error in \"" + query + "\"", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
   }
 
   /**
@@ -3314,7 +3473,18 @@ public class PostgresNetworkExecutor extends Thread {
     final String name = rawName.trim();
     if (TIME_ZONE_NAME.matcher(name).matches())
       return "timezone";
+    // SHOW/RESET SESSION AUTHORIZATION name session_authorization, as SET SESSION AUTHORIZATION does (issue #8392)
+    if (SESSION_AUTHORIZATION_NAME.matcher(name).matches())
+      return "session_authorization";
     return name.toLowerCase(Locale.ENGLISH);
+  }
+
+  /**
+   * The isolation level of the open transaction, else the level the next one will run at.
+   */
+  private Database.TRANSACTION_ISOLATION_LEVEL currentIsolationLevel() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    return tx != null && tx.isActive() ? tx.getIsolationLevel() : database.getTransactionIsolationLevel();
   }
 
   private String getShowConfigValue(final String varName) {
@@ -3346,6 +3516,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
       sessionSettings.setSuperuser(ServerSecurityUser.ROOT_USER.equals(dbUser.getName()));
+      sessionSettings.setSessionUser(dbUser.getName());
+      sessionSettings.setIsolationLevels(this::currentIsolationLevel, database::getTransactionIsolationLevel);
 
       database.setAutoTransaction(true);
 

@@ -874,8 +874,9 @@ class LSMVectorIndexRebuildTest extends TestHelper {
           assertThat(settled.get("mutationsSinceRebuild"))
               .as("Mutation counter should be reset after inactivity rebuild")
               .isEqualTo(0L);
-          assertThat(settled.get("deltaVectorsCount"))
-              .as("Delta buffer should be empty after inactivity rebuild")
+          // Nodes the rebuild left unreachable are re-queued on purpose and are not pending (issues #7190, #8200)
+          assertThat(PendingDeltaVectors.of(settled))
+              .as("Delta buffer should hold nothing pending after inactivity rebuild")
               .isEqualTo(0L);
         });
   }

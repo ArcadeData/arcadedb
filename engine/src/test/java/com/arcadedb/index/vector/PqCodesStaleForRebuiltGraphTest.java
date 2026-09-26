@@ -118,7 +118,8 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
           index.findNeighborsFromVector(randomUnitVector(random), 10);
-          assertThat(index.getStats().get("deltaVectorsCount")).isZero();
+          // Nodes the rebuild left unreachable are re-queued on purpose and are not pending (issues #7190, #8200)
+          assertThat(PendingDeltaVectors.of(index)).isZero();
           assertThat(index.getStats().get("graphNodeCount")).isGreaterThan(staleCount);
         });
 
@@ -174,7 +175,7 @@ class PqCodesStaleForRebuiltGraphTest extends TestHelper {
     Awaitility.await("the initial synchronous build settles the buffer")
         .atMost(SETTLE_TIMEOUT)
         .pollInterval(Duration.ofMillis(50))
-        .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount")).isZero());
+        .untilAsserted(() -> assertThat(PendingDeltaVectors.of(index)).isZero());
   }
 
   private void insertVectors(final Random random, final int count) {
