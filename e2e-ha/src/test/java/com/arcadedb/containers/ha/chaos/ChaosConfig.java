@@ -19,6 +19,8 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -37,7 +39,7 @@ import java.util.regex.Pattern;
 public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps, int writers,
                           Map<String, Integer> faultWeights, Duration holdMin, Duration holdMax, Duration calmMin,
                           Duration calmMax, Duration convergenceTimeout, Duration electionTimeout,
-                          Duration availabilityGrace, String nodeHeap, String serverOpts) {
+                          Duration availabilityGrace, String nodeHeap, String serverOpts, String logConfig) {
 
   private static final long    MIN_NODE_HEAP_BYTES = 256L << 20;
   private static final Pattern HEAP_SIZE           = Pattern.compile("(\\d+)([mMgG])");
@@ -73,6 +75,9 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
           throw new IllegalArgumentException(
               "chaos.serverOpts accepts space-separated -D<property>=<value> or -XX:<flag> options without quotes or spaces"
                   + " inside a value, got '" + option + "'");
+    logConfig = logConfig == null ? "" : logConfig.trim();
+    if (!logConfig.isEmpty() && !Files.isRegularFile(Path.of(logConfig)))
+      throw new IllegalArgumentException("chaos.logConfig must name a logging properties file, got '" + logConfig + "'");
   }
 
   public static ChaosConfig fromProperties(final Properties properties) {
@@ -92,7 +97,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         duration(properties, "chaos.electionTimeout", "PT60S"),
         duration(properties, "chaos.availabilityGrace", "PT20S"),
         properties.getProperty("chaos.nodeHeap", "1G").trim(),
-        properties.getProperty("chaos.serverOpts", ""));
+        properties.getProperty("chaos.serverOpts", ""),
+        properties.getProperty("chaos.logConfig", ""));
   }
 
   /**
@@ -138,7 +144,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         + " -Dchaos.calmMin=" + calmMin
         + " -Dchaos.calmMax=" + calmMax
         + " -Dchaos.nodeHeap=" + nodeHeap
-        + (serverOpts.isEmpty() ? "" : " '-Dchaos.serverOpts=" + serverOpts + "'");
+        + (serverOpts.isEmpty() ? "" : " '-Dchaos.serverOpts=" + serverOpts + "'")
+        + (logConfig.isEmpty() ? "" : " '-Dchaos.logConfig=" + logConfig + "'");
   }
 
   /** Heap of each ArcadeDB node in bytes; the container limit is twice this, for direct memory and page cache. */
