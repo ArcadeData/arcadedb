@@ -50,6 +50,13 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
+    // LANGUAGE is optional in the grammar but not in the statement: without it there is no way to build the function,
+    // and the body used to be dereferenced into a NullPointerException
+    if (language == null)
+      throw new CommandSQLParsingException(
+          "DEFINE FUNCTION " + libraryName.getStringValue() + "." + functionName.getStringValue()
+              + " requires a LANGUAGE (sql, js or opencypher)");
+
     // Only built here, so an unknown language is reported as a parse error. It is registered by the schema, and
     // only once the function has been accepted into it.
     final FunctionLibraryDefinition newLibrary;
@@ -59,8 +66,18 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       } catch (final IllegalArgumentException e) {
         throw new CommandSQLParsingException(e.getMessage());
       }
-    } else
+    } else {
       newLibrary = null;
+      // BEFORE THE FUNCTION IS BUILT: A FUNCTION OF ANOTHER LANGUAGE CAN NEVER JOIN THIS LIBRARY (ISSUE #8423).
+      // LocalSchema.defineFunction checks it again under the schema's own lock; checking here reports it as a parse
+      // error before a polyglot function is compiled.
+      try {
+        FunctionLibraryFactory.checkLibraryLanguage(database.getSchema().getFunctionLibrary(libraryName.getStringValue()),
+            language.getStringValue());
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException(e.getMessage());
+      }
+    }
 
     final String[] parameterArray;
     if (parameters != null) {

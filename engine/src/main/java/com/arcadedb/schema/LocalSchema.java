@@ -3946,6 +3946,11 @@ public class LocalSchema implements Schema {
       if (existing != null) {
         if (newLibrary != null)
           throw new IllegalArgumentException("Function library '" + libraryName + "' already registered");
+        // A library holds functions of its own language only (issue #8423): checked here, under the schema's lock, so
+        // a library dropped and recreated in another language since the caller looked is refused too
+        final String functionLanguage = FunctionLibraryFactory.languageOf(function);
+        if (functionLanguage != null)
+          FunctionLibraryFactory.checkLibraryLanguage(existing, functionLanguage);
         existing.registerFunction(function);
       } else {
         if (newLibrary == null)

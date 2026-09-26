@@ -19,7 +19,10 @@
 package com.arcadedb.query.polyglot;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityUser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.EnvironmentAccess;
@@ -72,12 +75,24 @@ public class GraalPolyglotEngine implements AutoCloseable {
    * {@code ClassLoader.loadClass()} and {@code Method/Constructor/Field} reflective invocation - while leaving normal host
    * method calls on bound objects untouched. Explicit {@code Java.type(...)} lookups remain governed by
    * {@code allowHostClassLookup}/{@code allowedPackages}.
+   * <p>
+   * It also denies the objects that hold the live, node-local security state of the request (issue #8420):
+   * {@code database.getContext()} is public API and hands out the thread's {@link DatabaseContext.DatabaseContextTL},
+   * whose {@code getCurrentUser()} returns the real user and whose {@code setCurrentUser()} replaces it, and the user
+   * types have public mutators of their cached permissions ({@code addGroup()}, {@code updateDatabaseConfiguration()},
+   * ...). A script could change the effective permissions of the request it runs in, on one node only, with nothing
+   * persisted or replicated. Denied as whole types rather than method by method, so any other path that returns one of
+   * these objects to a script ends at the same wall, and at no cost to the Java callers that authorize every request
+   * through them: a {@link HostAccess} only governs what a guest language can reach.
    */
   private static final HostAccess SANDBOXED_HOST_ACCESS = HostAccess.newBuilder(HostAccess.ALL)//
       .denyAccess(Class.class)//
       .denyAccess(ClassLoader.class)//
       .denyAccess(java.lang.reflect.AccessibleObject.class)//
       .denyAccess(java.lang.reflect.Member.class)//
+      .denyAccess(DatabaseContext.DatabaseContextTL.class)//
+      .denyAccess(SecurityDatabaseUser.class)//
+      .denyAccess(SecurityUser.class)//
       .build();
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,

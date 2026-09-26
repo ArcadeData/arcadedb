@@ -1718,8 +1718,9 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
     Awaitility.await("the inactivity rebuild drains the delta buffer")
         .atMost(DELTA_BUFFER_DRAIN_TIMEOUT)
         .pollInterval(Duration.ofMillis(200))
-        .untilAsserted(() -> assertThat(index.getStats().get("deltaVectorsCount"))
-            .as("Delta buffer should be empty after inactivity rebuild")
+        // Nodes the rebuild left unreachable are re-queued on purpose and never drain by waiting (issues #7190, #8200)
+        .untilAsserted(() -> assertThat(PendingDeltaVectors.of(index))
+            .as("Delta buffer should hold nothing pending after inactivity rebuild")
             .isEqualTo(0L));
   }
 

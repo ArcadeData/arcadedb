@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -41,11 +43,21 @@ class Word2VecImporterIT {
 
       final Database db = databaseFactory.create();
       try {
-        db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
+        final Result report;
+        try (final ResultSet rs = db.command("sql", "import database file://src/test/resources/importer-word2vec.txt "  //
             + "with distanceFunction = cosine, m = 16, ef = 128, efConstruction = 128, " //
             + "vertexType = Word, edgeType = Proximity, vectorProperty = vector, idProperty = name" //
-        );
+        )) {
+          report = rs.next();
+        }
         assertThat(db.countType("Word", true)).isEqualTo(10);
+
+        // ISSUE #8174: THE REPORT USED TO CARRY NO STATISTICS AT ALL. THE WORD2VEC "<count> <dimensions>" HEADER LINE
+        // IS READ AND SKIPPED, SO parsedRecords = createdVertices + skippedRecords
+        assertThat(report.<String>getProperty("result")).isEqualTo("OK");
+        assertThat(report.<Number>getProperty("createdVertices").longValue()).isEqualTo(10L);
+        assertThat(report.<Number>getProperty("parsedRecords").longValue()).isEqualTo(11L);
+        assertThat(report.<Number>getProperty("skippedRecords").longValue()).isEqualTo(1L);
       } finally {
         db.drop();
         TestHelper.checkActiveDatabases();

@@ -52,13 +52,22 @@ class GloVeImporterIT {
 
     final Database db = databaseFactory.create();
     try {
-      db.command("sql", """
+      final Result report;
+      try (final ResultSet importRs = db.command("sql", """
           import database file://src/test/resources/importer-glove.txt
           with distanceFunction = cosine, m = 16, beamWidth = 100,
           vertexType = Word, vectorProperty = vector, idProperty = name"""
-      );
+      )) {
+        report = importRs.next();
+      }
 
       assertThat(db.countType("Word", true)).isEqualTo(10);
+
+      // ISSUE #8174: THE REPORT USED TO CARRY NO STATISTICS AT ALL
+      assertThat(report.<String>getProperty("result")).isEqualTo("OK");
+      assertThat(report.<Number>getProperty("createdVertices").longValue()).isEqualTo(10L);
+      assertThat(report.<Number>getProperty("parsedRecords").longValue()).isEqualTo(10L);
+      assertThat(report.hasProperty("skippedRecords")).isFalse();
 
       // Verify LSMVector index was created
       final var index = db.getSchema().getIndexByName("Word[vector]");
