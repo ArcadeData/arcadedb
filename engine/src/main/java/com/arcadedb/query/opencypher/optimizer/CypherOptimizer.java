@@ -22,14 +22,21 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
@@ -61,10 +68,15 @@ import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -275,12 +287,176 @@ public class CypherOptimizer {
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
 
+    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422)
+    final PhysicalOperator indexOrdered = components.size() <= 1 && isolatedNodes.isEmpty() ?
+        orderByIndex(logicalPlan, rootOperator, anchorOperator) : null;
+    if (indexOrdered != null)
+      rootOperator = indexOrdered;
+
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 11. Build physical plan with complete operator tree
-    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality, indexOrdered != null);
+  }
+
+  /** The key types whose index order is the order Cypher sorts their values in. */
+  private static final Set<Type> INDEX_ORDERED_KEY_TYPES = EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
+      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
+      Type.DATETIME_MICROS, Type.DATETIME_NANOS);
+
+  /**
+   * Makes the anchor produce the rows in the order the statement's ORDER BY asks for, when an index holds that order,
+   * so the plan leaves the sort out and the LIMIT stops the scan after its first rows instead of after the whole range
+   * (issue #8422). Two anchors qualify:
+   * <ul>
+   *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
+   *   direction, and a null key never matches the range predicate the scan stands for;</li>
+   *   <li>a scan of a whole label, with no predicate at all, and an index on the single ORDER BY item, ascending: the
+   *   index entries in order and then the vertices with no key, which is where a null sorts. Taken only here, where the
+   *   first rows of the index are the answer: with a filter, the index order could read the whole label one random
+   *   access at a time to find the few rows a sort of the label would have found.</li>
+   * </ul>
+   * Only under a LIMIT: without one the whole range is read anyway, and the adaptive range scan of #8333 reads it faster
+   * out of index order and sorts it.
+   *
+   * @return the root operator, replaced when the anchor had to be, or null when the statement keeps its sort
+   */
+  private PhysicalOperator orderByIndex(final LogicalPlan logicalPlan, final PhysicalOperator rootOperator,
+      final PhysicalOperator anchorOperator) {
+    final String variable;
+    final String label;
+    if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      variable = rangeScan.getVariable();
+      label = rangeScan.getLabel();
+    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator
+        && labelScan.getWhereFilter() == null) {
+      variable = labelScan.getVariable();
+      label = labelScan.getLabel();
+    } else
+      return null;
+
+    if (!rowsKeepTheMatchOrder() || !preservesInputOrder(rootOperator, anchorOperator))
+      return null;
+
+    final List<String> orderedProperties = new ArrayList<>();
+    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties);
+    if (ascending == null)
+      return null;
+
+    if (!(database.getSchema().getType(label) instanceof VertexType type))
+      return null;
+    for (final String property : orderedProperties) {
+      final Property schemaProperty = type.getPolymorphicPropertyIfExists(property);
+      if (schemaProperty == null || !INDEX_ORDERED_KEY_TYPES.contains(schemaProperty.getType()))
+        return null;
+    }
+
+    if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      final List<String> indexProperties = rangeScan.getIndexProperties();
+      if (orderedProperties.size() > indexProperties.size()
+          || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
+          || !rangeScan.getPropertyName().equals(indexProperties.getFirst()))
+        return null;
+      rangeScan.setIndexOrder(ascending, false);
+      return rootOperator;
+    }
+
+    // A whole label: nothing may filter it, the index must hold every non-null key, and the null keys it leaves out
+    // come last, so only ascending
+    if (!ascending || orderedProperties.size() != 1 || !logicalPlan.getWhereFilters().isEmpty()
+        || statement.getWhereClause() != null || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
+      return null;
+    for (final MatchClause matchClause : statement.getMatchClauses())
+      if (matchClause.hasWhereClause())
+        return null;
+    final String property = orderedProperties.getFirst();
+    final TypeIndex index = type.getPolymorphicIndexByProperties(property);
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+      return null;
+    final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
+        index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
+    scan.setIndexOrder(true, true);
+    return scan;
+  }
+
+  /**
+   * Whether the rows reach the ORDER BY in the order the MATCH produced them: a single statement of MATCH clauses and a
+   * RETURN that neither aggregates nor is fed by a WITH, UNWIND or a clause that writes (a SET could rewrite the very
+   * key the rows are ordered by), under a LIMIT.
+   */
+  private boolean rowsKeepTheMatchOrder() {
+    if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty())
+      return false;
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.hasAggregations())
+      return false;
+    final List<WithClause> withClauses = statement.getWithClauses();
+    if (withClauses != null && !withClauses.isEmpty())
+      return false;
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return false;
+    for (final ClauseEntry entry : clauses) {
+      if (entry.getType() == ClauseEntry.ClauseType.RETURN)
+        continue;
+      if (entry.getType() != ClauseEntry.ClauseType.MATCH || entry.<MatchClause>getTypedClause().isOptional())
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether every operator from the root down to the anchor hands its rows on in the order it received them: a filter
+   * drops rows, and an expansion emits all the rows of one input row before reading the next.
+   */
+  private static boolean preservesInputOrder(PhysicalOperator operator, final PhysicalOperator anchorOperator) {
+    while (operator != anchorOperator) {
+      if (!(operator instanceof FilterOperator || operator instanceof ExpandAll || operator instanceof ExpandInto
+          || operator instanceof VarLengthExpand))
+        return false;
+      operator = operator.getChild();
+    }
+    return true;
+  }
+
+  /**
+   * Collects the properties of the variable the ORDER BY items sort on, directly ({@code ORDER BY n.id}) or through
+   * the RETURN column that projects one ({@code RETURN n.id AS id ORDER BY id}).
+   *
+   * @return the direction all the items share, or null when an item is not a property of the variable, or the items
+   * mix directions
+   */
+  private Boolean orderedPropertiesOf(final String variable, final List<String> properties) {
+    final List<ReturnClause.ReturnItem> returnItems = statement.getReturnClause().getReturnItems();
+    for (final ReturnClause.ReturnItem item : returnItems)
+      // A column named like the variable hides it from the ORDER BY: n.id would read a property of that column
+      if (!item.isStar() && variable.equals(item.getOutputName())
+          && !(item.getExpression() instanceof VariableExpression v && variable.equals(v.getVariableName())))
+        return null;
+
+    Boolean ascending = null;
+    for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+      if (ascending != null && ascending != item.isAscending())
+        return null;
+      ascending = item.isAscending();
+
+      Expression expression = item.getExpressionAST();
+      if (expression instanceof VariableExpression column) {
+        expression = null;
+        for (final ReturnClause.ReturnItem returnItem : returnItems)
+          if (!returnItem.isStar() && column.getVariableName().equals(returnItem.getOutputName())) {
+            expression = returnItem.getExpression();
+            break;
+          }
+      }
+      if (!(expression instanceof PropertyAccessExpression access) || !variable.equals(access.getVariableName()))
+        return null;
+      properties.add(access.getPropertyName());
+    }
+    return ascending;
   }
 
   /**
@@ -639,8 +815,8 @@ public class CypherOptimizer {
    * which callers rely on; one with a WITH is left alone, whatever its shape, since a WITH can hand the rows on in
    * their order under a LIMIT. Shared by every rewrite that changes the order the MATCH produces its rows in.
    * <p>
-   * Relies on the Cypher plan always sorting for an ORDER BY (an OrderByStep, never elided because the MATCH already
-   * produced its rows sorted): a future sort elision must not treat an adaptive scan as sorted.
+   * An ORDER BY answered from the index order instead ({@link #orderByIndex}) turns the adaptive serving off again:
+   * the plan leaves the sort out only for a scan that produces its rows in key order.
    */
   public static boolean rowOrderIsInvisible(final CypherStatement statement) {
     if (statement == null || statement.getReturnClause() == null)
