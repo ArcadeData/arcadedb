@@ -210,11 +210,14 @@ exceed the minority. With one fault active at a time this mostly constrains the 
 | `chaos.convergenceTimeout` | 2 min | |
 | `chaos.electionTimeout` | 60 s | |
 | `chaos.availabilityGrace` | `PT20S` | Election grace before ACKED progress is required during a fault. |
+| `chaos.nodeHeap` | `1G` | Heap of each node (`-Xms`/`-Xmx`); the container limit is twice this. At least `256M`. |
+| `chaos.serverOpts` | none | Space-separated `-D<property>=<value>` / `-XX:<flag>` options appended to every node's JVM. |
+| `chaos.logConfig` | none | A logging properties file copied over every node's `config/arcadedb-log.properties`. `src/test/resources/chaos/ratis-debug-log.properties` traces the leader's Ratis log appenders and the snapshot-install handshake. |
 
 The hold of a fault that expects writes to stay available is at least `chaos.availabilityGrace` + 25 s, whatever
 `chaos.holdMin` says (section 3).
 
-Nodes in the chaos run use `-Xms1G -Xmx1G` (1 GB heap) and a 2 GB container limit.
+Nodes in the chaos run use `-Xms1G -Xmx1G` (1 GB heap) and a 2 GB container limit by default (`chaos.nodeHeap`).
 
 Local run:
 

@@ -42,6 +42,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -99,6 +100,11 @@ class HaChaosIT extends ContainersTestTemplate {
           // ARCADEDB_OPTS_MEMORY follows JAVA_OPTS on the server's command line, so chaos.serverOpts override defaults
           ("-Xms" + config.nodeHeap() + " -Xmx" + config.nodeHeap() + " " + config.serverOpts()).trim(),
           2 * config.nodeHeapBytes()));
+    // server.sh passes its own -Djava.util.logging.config.file after every user option, so a different logging
+    // configuration has to replace the file itself
+    if (!config.logConfig().isEmpty())
+      for (final GenericContainer<?> node : nodes)
+        node.withCopyFileToContainer(MountableFile.forHostPath(config.logConfig()), "/home/arcadedb/config/arcadedb-log.properties");
 
     final List<ServerWrapper> servers = startCluster();
     final int leader = waitForRaftLeader(servers, 120);
