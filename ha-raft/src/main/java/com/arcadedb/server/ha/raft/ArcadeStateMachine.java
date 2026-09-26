@@ -2085,23 +2085,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
       //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
       //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
-      final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+      final long computedSnapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
       final TermIndex leaderSnapshotTermIndex = reconcileResult.leaderSnapshotTermIndex();
       if (leaderSnapshotTermIndex == null)
         LogManager.instance().log(this, Level.WARNING,
             "Leader %s reported no snapshot marker (a build that predates issue #8360); registering the approximate "
                 + "term of the next log entry for install index %d. A term change exactly at that boundary would stall "
                 + "this follower until the leader compacts past it; upgrading the leader closes the window (issue #8374).",
-            leaderId, snapshotIndex);
-      else if (!leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
-        // Harmless: the leader sends no AppendEntries.previous for an index that is neither its marker nor in its log.
+            leaderId, computedSnapshotIndex);
+      else if (leaderSnapshotTermIndex.getIndex() < computedSnapshotIndex)
+        // Unexpected: Ratis purges only up to its snapshot, so the notifying leader's marker is at least S-1. A leader
+        // change between the notification and the marker read could produce it; the approximation is kept
+        // (issues #8360, #8449).
         LogManager.instance().log(this, Level.FINE,
-            "Leader-reported snapshot boundary %s does not match the computed install index %d; registering the "
+            "Leader-reported snapshot boundary %s is older than the computed install index %d; registering the "
                 + "approximate term of the next log entry (issue #8360).",
-            leaderSnapshotTermIndex, snapshotIndex);
-      final long snapshotTerm = resolveInstalledSnapshotTerm(snapshotIndex, firstTermIndexInLog.getTerm(),
-          leaderSnapshotTermIndex);
-      final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
+            leaderSnapshotTermIndex, computedSnapshotIndex);
+      else if (leaderSnapshotTermIndex.getIndex() > computedSnapshotIndex)
+        // Segment-granularity purging left the leader's log start at or before its marker: computedSnapshotIndex is
+        // neither in the leader's log nor its marker, so LogAppender.getPrevious would answer null and the leader
+        // would re-notify this install forever. Registering the log start itself, which is in the log, lets it
+        // resume (issue #8449).
+        LogManager.instance().log(this, Level.INFO,
+            "Leader snapshot marker %s is past its log start %s; registering the log start as the install boundary "
+                + "so the leader can resume replication (issue #8449).",
+            leaderSnapshotTermIndex, firstTermIndexInLog);
+      final TermIndex installedTermIndex = resolveInstalledSnapshotBoundary(computedSnapshotIndex,
+          firstTermIndexInLog.getTerm(), leaderSnapshotTermIndex);
+      final long snapshotIndex = installedTermIndex.getIndex();
+      final long snapshotTerm = installedTermIndex.getTerm();
 
       // Issue #8353: the entries this install skips may include the removal and the re-add of THIS node, which then
       // never reaches the runtime-join detector as a configuration change, so its previous membership's security
@@ -2238,9 +2250,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code leaderSnapshotTermIndex} is the leader's own answer, read over the bootstrap-state RPC
    * ({@link #getLatestSnapshotTermIndex()} on the leader). The reconciler fails the install when it cannot ask, so
    * {@code null} here means only a leader build that predates the field. It is trusted only when its index matches
-   * {@code snapshotIndex}. A mismatch needs no correction: {@code LogAppender.getPrevious} returns the leader's marker
-   * only for the marker's own index, and for an index that is neither that nor in its log it returns {@code null},
-   * so the leader sends no {@code previous} and the term registered here is never compared.
+   * {@code snapshotIndex}. A mismatch is not harmless: {@code LogAppender.getPrevious} then returns {@code null},
+   * which makes the leader re-notify the install instead of sending entries. That is an INDEX problem, handled by
+   * {@link #resolveInstalledSnapshotBoundary} before this method is consulted (issue #8449).
    * <p>
    * Package-private and static so the decision is unit-testable without a live Raft cluster.
    */
@@ -2254,6 +2266,43 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** The one rule for trusting the leader's marker, shared by the decision and the fallback WARNING. */
   static boolean leaderSnapshotMatches(final long snapshotIndex, final TermIndex leaderSnapshotTermIndex) {
     return leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() == snapshotIndex;
+  }
+
+  /**
+   * Picks the {@link TermIndex} to REGISTER for a leader-driven snapshot install - the boundary, not just the term
+   * (issue #8449).
+   * <p>
+   * {@code computedSnapshotIndex} is {@code firstTermIndexInLog - 1}, where {@code firstTermIndexInLog} is the
+   * leader's log start S with the term its log holds there ({@code LogAppender.shouldNotifyToInstallSnapshot}).
+   * After the install the follower's next index is the registered index + 1, and the leader resumes replication only
+   * if {@code LogAppender.getPrevious(next)} is non-null. That method reads the leader's LOG first, and falls back to
+   * the leader's latest snapshot marker only when the marker ends exactly at {@code next - 1}.
+   * <p>
+   * Registering S-1 is therefore right only when the leader's marker M is S-1 itself. Ratis purges whole log
+   * segments, so the log start routinely stays BEFORE the marker (S &lt;= M): S-1 is then neither in the log nor the
+   * marker, {@code getPrevious(S)} is {@code null}, and {@code shouldInstallSnapshot} keeps answering {@code true} -
+   * the leader re-notifies, the follower answers {@code ALREADY_INSTALLED}, forever. In that case this method
+   * registers S itself, with its log term: S is in the leader's log, so {@code getPrevious(S + 1)} returns exactly
+   * {@code firstTermIndexInLog} and the follower's log-matching check (an exact {@code equals()}) passes. The
+   * marker's own TermIndex is NOT used for an index inside the log: {@code getPrevious} would answer with the log
+   * term, and a marker term can differ from it ({@code takeSnapshot} pairs the applied index with the applied term,
+   * which a configuration entry can advance on its own).
+   * <p>
+   * The follower's data covers S: M was fetched before the database copy on every
+   * {@code DatabaseReconciler.reconcileDatabasesFromLeader} path, the copy is the leader's live state, and
+   * S &lt;= M. Entries S+1..M are replayed on top of the copy, as S..M already were before this change.
+   * <p>
+   * When M is S-1, or older, or unknown, S-1 is kept with the term {@link #resolveInstalledSnapshotTerm} picks
+   * (issues #8360, #8374).
+   * <p>
+   * Package-private and static so the decision is unit-testable without a live Raft cluster.
+   */
+  static TermIndex resolveInstalledSnapshotBoundary(final long computedSnapshotIndex, final long fallbackTerm,
+      final TermIndex leaderSnapshotTermIndex) {
+    if (leaderSnapshotTermIndex != null && leaderSnapshotTermIndex.getIndex() > computedSnapshotIndex)
+      return TermIndex.valueOf(fallbackTerm, computedSnapshotIndex + 1);
+    return TermIndex.valueOf(resolveInstalledSnapshotTerm(computedSnapshotIndex, fallbackTerm, leaderSnapshotTermIndex),
+        computedSnapshotIndex);
   }
 
   public long getElectionCount() {
