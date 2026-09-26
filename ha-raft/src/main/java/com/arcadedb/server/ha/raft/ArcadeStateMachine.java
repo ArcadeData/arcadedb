@@ -43,6 +43,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ReplicatedSecurityConfigPersistenceException;
@@ -351,6 +352,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * executor carries.
    */
   private volatile DeferredDatabaseDeleter deferredDatabaseDeleter = new DeferredDatabaseDeleter();
+
+  /** The drops this node's own verb is waiting on (issue #8035); see {@link #applyDropDatabaseEntry}. */
+  private volatile LocalDropVerbs localDropVerbs = new LocalDropVerbs();
 
   /**
    * Per-database bootstrap baseline committed via {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY}.
@@ -5063,15 +5067,66 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
 
-    // Idempotent on replay: if the database is already gone, nothing to do beyond evicting any
-    // persisted baseline. applyBootstrapFingerprintEntry records a baseline by name even when the
-    // database is not present locally (the late-joiner path), so a node can hold a persisted baseline
-    // for a database it never had locally; evict it here so it does not linger in the file for the
-    // node lifetime. This branch never calls drop(), so the eviction cannot precede a failed drop.
+    // Checked before the maintenance slot below, so replaying the entry of a database that is already gone never
+    // waits on anything.
     if (!server.existsDatabase(databaseName)) {
-      evictBootstrapBaseline(databaseName);
-      clearDroppedDatabaseQuarantine(databaseName);
-      HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
+      retireAbsentDatabase(databaseName);
+      return;
+    }
+
+    // This node's per-database maintenance slot, as DROP, before the database is closed and its directory renamed
+    // away (issue #8035). A drop is issued on the leader, whose verb takes DROP there (#7641), but it is APPLIED on
+    // every peer, and without this the apply on the others took nothing: a backup, export or import running on a
+    // follower - the scheduled backup runs on every node by default, and none of those verbs is leader-forwarded -
+    // had the instance it was working through closed and its directory deleted underneath it. Operation.CLOSE was
+    // enrolled for exactly that reason (#7469); the replicated drop is the same close, and worse.
+    //
+    // On the node whose own verb submitted this entry the slot is already held, on the request thread that is
+    // waiting for this very apply, and the reservation is not reentrant: taking it here would wait on itself.
+    // LocalDropVerbs says whether that is the case, and holds the verb's registration across the drop so a verb
+    // whose wait timed out cannot release its slot in the middle of it. Only trusted while the slot is actually
+    // held by an exclusive operation: a registration without one takes the slot like any other peer.
+    final BackupCoordinator coordinator = server.getBackupCoordinator();
+    if (coordinator != null
+        && (coordinator.isInProgress(databaseName, BackupCoordinator.Operation.DROP)
+        || coordinator.isInProgress(databaseName, BackupCoordinator.Operation.RESTORE))
+        && localDropVerbs.runUnderLocalVerb(databaseName, () -> dropHoldingMaintenanceSlot(databaseName)))
+      return;
+
+    // Bounded, and proceeding when the bound expires, for the reason SnapshotInstaller.install gives for the
+    // replicated restore: this applies a committed Raft entry, and a peer that declined it would diverge from the
+    // cluster. The wait is the same knob, "how long a committed destructive entry waits for local maintenance".
+    // A null coordinator is not a production state; the unit tests that drive this method hand it a bare server.
+    final BackupCoordinator.Operation refusedBy = coordinator == null ? null
+        : coordinator.begin(databaseName, BackupCoordinator.Operation.DROP,
+            server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS));
+    final boolean slotHeld = coordinator != null && refusedBy == null;
+    if (refusedBy != null)
+      LogManager.instance().log(this, Level.WARNING,
+          "Dropping database '%s' on this node while %s of it is still running: the drop applies a committed Raft "
+              + "entry and cannot be declined, so it proceeds and that operation will fail or produce an incomplete "
+              + "result. Raise '%s' to give it longer to finish", null, databaseName, refusedBy.phrase(),
+          GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
+
+    try {
+      dropHoldingMaintenanceSlot(databaseName);
+    } finally {
+      // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
+      // reservation the operation still in flight is holding.
+      if (slotHeld)
+        coordinator.end(databaseName, BackupCoordinator.Operation.DROP);
+    }
+  }
+
+  /**
+   * The drop itself, with this node's maintenance slot already held (or deliberately given up on) by
+   * {@link #applyDropDatabaseEntry}.
+   */
+  private void dropHoldingMaintenanceSlot(final String databaseName) {
+    // Re-checked: the database can have been deregistered while the apply was waiting for the slot, and
+    // getDatabase below would otherwise reopen it from disk only to drop it.
+    if (!server.existsDatabase(databaseName)) {
+      retireAbsentDatabase(databaseName);
       return;
     }
 
@@ -5110,6 +5165,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Idempotent on replay: if the database is already gone, nothing to do beyond evicting any persisted baseline.
+   * applyBootstrapFingerprintEntry records a baseline by name even when the database is not present locally (the
+   * late-joiner path), so a node can hold a persisted baseline for a database it never had locally; evict it here so
+   * it does not linger in the file for the node lifetime. This branch never calls drop(), so the eviction cannot
+   * precede a failed drop.
+   */
+  private void retireAbsentDatabase(final String databaseName) {
+    evictBootstrapBaseline(databaseName);
+    clearDroppedDatabaseQuarantine(databaseName);
+    HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
+  }
+
+  /**
    * Retires the quarantine bookkeeping of a database a DROP entry has just removed: the per-database read floor
    * (issue #6760) and the diverged marker that goes with it.
    * <p>
@@ -5136,6 +5204,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         "Database '%s' was quarantined when it was dropped: retiring its read floor and diverged marker, "
             + "since a dropped database has no resync left to wait for (issue #6760)", databaseName);
     clearDivergedDatabase(databaseName);
+  }
+
+  /**
+   * Shares the owning {@link RaftHAServer}'s registry of local drop verbs, which outlives this state machine across a
+   * Ratis restart. Left at its own empty registry by the unit tests that build a state machine without one.
+   */
+  void setLocalDropVerbs(final LocalDropVerbs localDropVerbs) {
+    this.localDropVerbs = localDropVerbs;
   }
 
   // @VisibleForTesting

@@ -183,6 +183,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * (issue #8329). Assigned in the constructor before the first state machine is built and handed this instance.
    */
   private final    RuntimeJoinDetector     runtimeJoinDetector;
+  /**
+   * The drops this node's own verb is waiting on (issue #8035). Held here rather than by the state machine so a
+   * Ratis restart that rebuilds the state machine mid-drop does not lose the registration.
+   */
+  private final    LocalDropVerbs          localDropVerbs          = new LocalDropVerbs();
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
   /**
@@ -1796,6 +1801,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     sm.setServer(arcadeServer);
     sm.setRaftHAServer(this);
     sm.setRuntimeJoinDetector(runtimeJoinDetector);
+    sm.setLocalDropVerbs(localDropVerbs);
     return sm;
   }
 
@@ -2288,6 +2294,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /** The drops this node's own {@code drop database} verb is waiting on; see {@link LocalDropVerbs}. */
+  LocalDropVerbs getLocalDropVerbs() {
+    return localDropVerbs;
   }
 
   public ClusterMonitor getClusterMonitor() {
