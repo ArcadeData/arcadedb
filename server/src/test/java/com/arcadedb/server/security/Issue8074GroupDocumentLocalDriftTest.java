@@ -210,7 +210,14 @@ class Issue8074GroupDocumentLocalDriftTest {
   // Fixtures
   // ===========================================================================================
 
-  /** Installs node A's current group document on both nodes as a replicated entry: the cluster's baseline. */
+  /**
+   * Installs node A's current group document on both nodes as a replicated entry: the cluster's baseline.
+   * <p>
+   * It is also what starts each node's {@code server-groups.json} watcher, which {@link #hotReload} relies on: the
+   * fixture never calls {@code startService()}, and {@link SecurityGroupFileRepository#applyReplicated} schedules
+   * the watcher before it writes the file (issue #7545), as does the lazy {@code load()} behind
+   * {@code getGroupsJsonPayload()}.
+   */
   private void seedBothNodes() {
     cluster.submit(nodeA.getGroupsJsonPayload(), null);
     assertThat(nodeA.groupsFingerprint()).isEqualTo(nodeB.groupsFingerprint());
