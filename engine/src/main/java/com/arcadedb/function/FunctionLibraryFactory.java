@@ -78,6 +78,19 @@ public class FunctionLibraryFactory {
               + "' library, and a library holds functions of one language only");
   }
 
+  /**
+   * The canonical language of a user-defined function, as {@link #createFunction} builds it, or {@code null} for any
+   * other kind of function (e.g. a Java method registered programmatically).
+   */
+  public static String languageOf(final FunctionDefinition function) {
+    return switch (function) {
+      case JavascriptFunctionDefinition ignored -> "js";
+      case SQLFunctionDefinition ignored -> "sql";
+      case CypherFunctionDefinition ignored -> "opencypher";
+      case null, default -> null;
+    };
+  }
+
   private static String languageOrFail(final String language) {
     final String canonical = canonicalLanguage(language);
     if (canonical == null)

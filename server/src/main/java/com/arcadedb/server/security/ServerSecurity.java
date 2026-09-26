@@ -172,6 +172,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   private final        Object                             permissionsPublishLock     = new Object();
 
+  /**
+   * The security manager every database of this server is opened with, and therefore what host code reaches through
+   * {@code database.getSecurity()} (issue #8405). See {@link #getDatabaseSecurityManager()}.
+   */
+  private final        SecurityManager                    databaseSecurityManager    = new DatabaseSecurityManager(this);
+
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
@@ -199,6 +205,27 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       LogManager.instance().log(this, Level.SEVERE, "Security algorithm '%s' not available (error=%s)", e, algorithm);
       throw new ServerSecurityException("Security algorithm '" + algorithm + "' not available", e);
     }
+  }
+
+  /**
+   * The {@link SecurityManager} to hand to the databases this server opens, in place of this instance (issue #8405).
+   * <p>
+   * A database exposes its security manager through {@code database.getSecurity()}, and host code gets the real
+   * {@code database} object: a JavaScript trigger or a {@code LANGUAGE js} function runs in a GraalVM context bound
+   * with {@code HostAccess.ALL} minus reflection, which resolves members against the RUNTIME class, and a Java trigger
+   * can simply cast. Handing out this instance let host code call any public mutator here - the cluster-wide ones,
+   * which the {@link SecurityManager} entry points refuse off the leader since #8370, and the node-local ones
+   * ({@link #createUser(JSONObject)}, {@link #updateUser}, {@link #dropUserLocally}, {@link #saveGroup},
+   * {@link #deleteGroup}), which change this node's security files with no replication at all.
+   * <p>
+   * The returned object is a non-public class that implements {@link SecurityManager} and nothing else, delegating
+   * every method to this instance, so the interface keeps its behaviour (the openCypher admin commands and host code
+   * calling {@code createUser}/{@code dropUser}/{@code setUserPassword} are unaffected) while the rest of this class
+   * is out of reach. Server code that needs the full API holds the {@link ServerSecurity} from
+   * {@link ArcadeDBServer#getSecurity()}, never from a database.
+   */
+  public SecurityManager getDatabaseSecurityManager() {
+    return databaseSecurityManager;
   }
 
   @Override
@@ -704,7 +731,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       return null;
     final Map<String, Object> info = new HashMap<>();
     info.put("name", user.getName());
-    info.put("databases", user.getAuthorizedDatabases());
+    // Read-only: the set is the user's live authorization state, and this map reaches host code through
+    // database.getSecurity() (issue #8405).
+    info.put("databases", Collections.unmodifiableSet(user.getAuthorizedDatabases()));
     return info;
   }
 
@@ -1377,6 +1406,56 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         .toString();
   }
 
+  /**
+   * The compare-and-set precondition a cluster-wide group change carries: the fingerprint of the last group document
+   * the CLUSTER installed on this node, not of the document in force here (issue #8074).
+   * <p>
+   * The two differ whenever the group document has changed node-locally since the last replicated entry, and two
+   * supported paths do exactly that without going through the replicated log: the v1 to v2 migration
+   * {@link SecurityGroupFileRepository} runs when it loads a v1 file - at restart, or when its watcher re-reads a
+   * v1 document an older node replicated - and the hot reload of a hand-edited {@code server-groups.json}. Every
+   * node judges an entry against the fingerprint IT recorded at install ({@link #isSuperseded}, issue #7693), so a
+   * precondition built from the drifted live document matched no node: every node refused the entry, the retry
+   * rebuilt it from the same document, and group administration from that node failed until another node happened
+   * to change a group. After the migration every node drifts the same way, so it failed from every node at once.
+   * The API-token document had the same defect through expiry (issue #7601).
+   * <p>
+   * What the precondition must say is "I have applied every group entry up to this one", and the recorded
+   * fingerprint says precisely that: a node that missed an entry still holds an older one, so the lost-update
+   * protection of issue #7509 is unchanged - that node is refused and retries once it has caught up. What changes
+   * is only that local drift no longer counts as having missed an entry.
+   * <p>
+   * <b>The consequence, which is deliberate:</b> the payload is still built from the document in force here, so
+   * the local difference travels with this change to every node. For the migration that is the point - the cluster
+   * moves to the migrated document together, in one entry. For a hot reload it publishes the operator's local edit,
+   * which is what every whole-document group entry has done since issue #7373 (a change from ANOTHER node likewise
+   * installs over this node's edit). It is logged, so it is never silent.
+   * <p>
+   * <b>Read order.</b> The caller reads {@code installed} BEFORE {@code current}. The apply publishes the document
+   * first and records its fingerprint second, so a recorded fingerprint seen here implies its document is already
+   * published: {@code current} is then that document or a newer one. A newer one only makes the precondition older
+   * than the payload's base, which every node refuses and the loop retries. The opposite order could pair an OLDER
+   * document with a NEWER fingerprint, and that entry would be accepted and revert the change in between.
+   * <p>
+   * With nothing recorded - this node has never installed a replicated group document - there is no cluster view to
+   * name, and the live fingerprint is sent as before; a peer with nothing recorded installs regardless.
+   */
+  private String groupsPrecondition(final String installed, final JSONObject current) {
+    final String live = SecurityDocumentFingerprint.of(groupsJsonOf(current));
+    if (installed == null)
+      return live;
+
+    if (!installed.equals(live))
+      LogManager.instance().log(this, Level.WARNING,
+          "This node's group document differs from the last one the cluster installed (installed fingerprint %s, "
+              + "in force here %s): it was changed locally - by a reload of '%s', by the v1 to v2 migration, or by the "
+              + "default document that replaces an unreadable file. This "
+              + "group change is submitted as the whole document in force here, so that local difference now "
+              + "reaches every node of the cluster (issue #8074)",
+          installed, live, SecurityGroupFileRepository.FILE_NAME);
+    return installed;
+  }
+
   /** The compare-and-set fingerprint of the group document currently in force (issue #7509). */
   public String groupsFingerprint() {
     return SecurityDocumentFingerprint.of(getGroupsJsonPayload());
@@ -1533,10 +1612,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     for (int attempt = 1; ; attempt++) {
       final boolean applied;
       synchronized (this) {
-        // ONE read of the repository's current document, for both halves.
+        // The installed fingerprint BEFORE the document, then ONE read of the document for the payload: see
+        // groupsPrecondition() for why that order is what keeps the pair safe against a concurrent apply.
+        final String installed = replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.GROUPS);
         final JSONObject current = groupRepository.getGroups();
         applied = ha.replicateSecurityGroups(groupsDocumentWith(current, database, name, groupConfig).toString(),
-            SecurityDocumentFingerprint.of(groupsJsonOf(current)));
+            groupsPrecondition(installed, current));
       }
       if (applied)
         return;
@@ -1557,13 +1638,14 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     for (int attempt = 1; ; attempt++) {
       final boolean applied;
       synchronized (this) {
+        // Same order as saveGroupClusterWide(): the installed fingerprint first, then the document.
+        final String installed = replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.GROUPS);
         final JSONObject current = groupRepository.getGroups();
         final JSONObject root = groupsDocumentWith(current, database, name, null);
         if (root == null)
           return false;
 
-        applied = ha.replicateSecurityGroups(root.toString(),
-            SecurityDocumentFingerprint.of(groupsJsonOf(current)));
+        applied = ha.replicateSecurityGroups(root.toString(), groupsPrecondition(installed, current));
       }
       if (applied)
         return true;
@@ -2206,5 +2288,69 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         merged.put(groupName, value);
     }
     return merged;
+  }
+
+  /**
+   * The restricted view returned by {@link #getDatabaseSecurityManager()}. Private and final on purpose: GraalVM
+   * exposes only the public methods of the public types it implements, which is {@link SecurityManager}, and the
+   * delegate field is private, so with host reflection disabled a script has no way from here back to the
+   * {@link ServerSecurity} instance. Every method must stay a pure delegation, with no policy of its own: the checks
+   * (leader-only, cluster-wide replication, session revocation) live in the delegate so that every caller gets them.
+   */
+  private static final class DatabaseSecurityManager implements SecurityManager {
+    private final ServerSecurity delegate;
+
+    private DatabaseSecurityManager(final ServerSecurity delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void updateSchema(final DatabaseInternal database) {
+      delegate.updateSchema(database);
+    }
+
+    /**
+     * Read-only: {@link ServerSecurity#getUsers()} is the live key set of the user map, and removing from it would
+     * drop a user from this node's memory with nothing persisted and nothing replicated.
+     */
+    @Override
+    public Set<String> getUsers() {
+      return Collections.unmodifiableSet(delegate.getUsers());
+    }
+
+    @Override
+    public boolean existsUser(final String name) {
+      return delegate.existsUser(name);
+    }
+
+    @Override
+    public Map<String, Object> getUserInfo(final String name) {
+      return delegate.getUserInfo(name);
+    }
+
+    @Override
+    public void createUser(final String name, final String password) {
+      delegate.createUser(name, password);
+    }
+
+    @Override
+    public boolean dropUser(final String name) {
+      return delegate.dropUser(name);
+    }
+
+    @Override
+    public void setUserPassword(final String name, final String password) {
+      delegate.setUserPassword(name, password);
+    }
+
+    @Override
+    public String encodePassword(final String password) {
+      return delegate.encodePassword(password);
+    }
+
+    @Override
+    public String toString() {
+      return "DatabaseSecurityManager";
+    }
   }
 }

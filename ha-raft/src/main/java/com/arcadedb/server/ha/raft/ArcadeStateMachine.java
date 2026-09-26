@@ -2082,16 +2082,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
       //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
       final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
       final TermIndex leaderSnapshotTermIndex = reconcileResult.leaderSnapshotTermIndex();
-      if (leaderSnapshotTermIndex != null && !leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
+      if (leaderSnapshotTermIndex == null)
         LogManager.instance().log(this, Level.WARNING,
-            "Leader-reported snapshot boundary %s does not match the computed install index %d; falling back to "
-                + "the approximate term of the next log entry (issue #8360). This is expected only on a race with "
-                + "the leader's own compaction or against an older leader build; if it persists, the follower "
-                + "risks the same stuck-at-stale-term symptom this fallback existed to avoid.",
+            "Leader %s reported no snapshot marker (a build that predates issue #8360); registering the approximate "
+                + "term of the next log entry for install index %d. A term change exactly at that boundary would stall "
+                + "this follower until the leader compacts past it; upgrading the leader closes the window (issue #8374).",
+            leaderId, snapshotIndex);
+      else if (!leaderSnapshotMatches(snapshotIndex, leaderSnapshotTermIndex))
+        // Harmless: the leader sends no AppendEntries.previous for an index that is neither its marker nor in its log.
+        LogManager.instance().log(this, Level.FINE,
+            "Leader-reported snapshot boundary %s does not match the computed install index %d; registering the "
+                + "approximate term of the next log entry (issue #8360).",
             leaderSnapshotTermIndex, snapshotIndex);
       final long snapshotTerm = resolveInstalledSnapshotTerm(snapshotIndex, firstTermIndexInLog.getTerm(),
           leaderSnapshotTermIndex);
       final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
+
+      // Issue #8353: the entries this install skips may include the removal and the re-add of THIS node, which then
+      // never reaches the runtime-join detector as a configuration change, so its previous membership's security
+      // installs would keep counting toward readiness. Every install is a join boundary on an armed node instead.
+      // BEFORE the snapshot marker and the applied index: a restart must not find the marker without the boundary,
+      // and a catch-up match read concurrently must be judged against the boundary, not against the old join.
+      runtimeJoinDetector.onSnapshotInstalledFromLeader(snapshotIndex);
 
       // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
       // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
@@ -2214,18 +2226,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code ServerState.containsTermIndex} - which answers the {@code AppendEntries} log-matching check the LEADER
    * runs for every subsequent replication attempt starting right after this boundary - accepts only an EXACT
    * {@code equals()} match. A wrong term therefore does not degrade gracefully: every future {@code AppendEntries}
-   * whose {@code previous} is this boundary is rejected forever, the leader cannot walk further back (that is
-   * exactly why it drove a snapshot install here in the first place), and it can only re-notify another install -
-   * which recomputes the identical wrong term and reproduces the same stuck boundary index on every reformat.
+   * whose {@code previous} is this boundary is rejected, the leader cannot walk further back (that is exactly why
+   * it drove a snapshot install here in the first place), and its re-notification at the same
+   * {@code firstAvailableLogIndex} is answered {@code ALREADY_INSTALLED} by Ratis without calling this state machine
+   * again. The wrong term stays until the leader compacts past the boundary (issue #8374).
    * <p>
-   * {@code leaderSnapshotTermIndex} is the leader's own answer, fetched over the same bootstrap-state RPC this
-   * install already makes for database reconciliation ({@link #getLatestSnapshotTermIndex()} on the leader). It is
-   * trusted only when its index matches {@code snapshotIndex}: {@code firstAvailableLogIndex} the leader hands
-   * Ratis is always exactly one past the leader's own last-taken snapshot index (a Raft log purge always stops at
-   * its snapshot boundary), so the indices coincide on every clean read; a mismatch means a race (the leader's own
-   * compaction advanced between answering Ratis and answering this query) or an older leader build that has not
-   * yet started reporting this field, and falls back to the approximation rather than trusting a term for an index
-   * it was not actually reported against.
+   * {@code leaderSnapshotTermIndex} is the leader's own answer, read over the bootstrap-state RPC
+   * ({@link #getLatestSnapshotTermIndex()} on the leader). The reconciler fails the install when it cannot ask, so
+   * {@code null} here means only a leader build that predates the field. It is trusted only when its index matches
+   * {@code snapshotIndex}. A mismatch needs no correction: {@code LogAppender.getPrevious} returns the leader's marker
+   * only for the marker's own index, and for an index that is neither that nor in its log it returns {@code null},
+   * so the leader sends no {@code previous} and the term registered here is never compared.
    * <p>
    * Package-private and static so the decision is unit-testable without a live Raft cluster.
    */

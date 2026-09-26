@@ -97,6 +97,22 @@ public final class LeaderDatabaseQuery {
    */
   public static BootstrapState fetch(final String httpAddr, final String httpsAddr, final String clusterToken,
       final long timeoutMs, final ArcadeDBServer server) throws IOException, InterruptedException {
+    return send(httpAddr, httpsAddr, clusterToken, timeoutMs, server, "{}");
+  }
+
+  /**
+   * Asks a peer for its latest Raft snapshot {@link TermIndex} only (issue #8374), with {@code markerOnly} set so the
+   * peer skips fingerprinting every database. The returned {@link BootstrapState#databases()} is empty from a peer
+   * that honours the flag; a peer that predates it ignores the flag and answers in full, which is still correct.
+   */
+  public static BootstrapState fetchSnapshotMarker(final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server) throws IOException, InterruptedException {
+    return send(httpAddr, httpsAddr, clusterToken, timeoutMs, server,
+        new JSONObject().put(PostBootstrapStateHandler.MARKER_ONLY, true).toString());
+  }
+
+  private static BootstrapState send(final String httpAddr, final String httpsAddr, final String clusterToken,
+      final long timeoutMs, final ArcadeDBServer server, final String body) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Endpoint endpoint = chooseEndpoint(httpAddr, httpsAddr, useSSL);
@@ -111,7 +127,7 @@ public final class LeaderDatabaseQuery {
         .uri(URI.create(endpoint.url()))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString("{}"));
+        .POST(HttpRequest.BodyPublishers.ofString(body));
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
