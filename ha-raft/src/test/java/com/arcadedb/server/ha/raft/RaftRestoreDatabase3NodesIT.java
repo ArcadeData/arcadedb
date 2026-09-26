@@ -160,7 +160,7 @@ class RaftRestoreDatabase3NodesIT extends BaseRaftHATest {
    */
   private void postServerCommand(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/server")).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(
@@ -181,7 +181,7 @@ class RaftRestoreDatabase3NodesIT extends BaseRaftHATest {
    */
   private void commandOnDatabase(final int serverIndex, final String dbName, final String sql) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + dbName).toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/command/" + dbName)).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(

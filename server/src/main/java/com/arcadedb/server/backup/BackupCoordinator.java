@@ -132,9 +132,11 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * How many callers of {@link #begin(String, Operation, long)} are currently waiting for a {@link Operation#RESTORE}
    * on a database, indexed by database name. A value is never zero or less - the entry is removed instead.
    * <p>
-   * Only {@code RESTORE} ever calls that overload (the HA snapshot install, applying a committed Raft entry), and
-   * {@link Operation#RESTORE} already conflicts with everything, so this is only ever consulted to decide whether a
-   * DIFFERENT kind of new reservation should queue behind it - see the guard in {@link #begin(String, Operation)}.
+   * Two callers use that overload, both applying a committed Raft entry: the HA snapshot install as {@code RESTORE}
+   * and the replicated drop-database apply as {@code DROP} (issue #8035). Only a waiting {@code RESTORE} is registered
+   * here, and {@link Operation#RESTORE} already conflicts with everything, so this is only ever consulted to decide
+   * whether a DIFFERENT kind of new reservation should queue behind it - see the guard in
+   * {@link #begin(String, Operation)}. A waiting {@code DROP} gets no such priority yet (issue #8452).
    * <p>
    * This is what closes issue #7646: {@link Operation#EXPORT} is the one kind {@link Operation#conflictsWith}
    * admits without limit, so a steady stream of exports arriving after a restore started waiting could keep the
@@ -215,9 +217,9 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * <p>
    * Every other caller may simply be refused: a scheduled backup is covered again on the next tick, and a restore or
    * an import is an operator command that can be retried. An HA snapshot install cannot - it applies a committed
-   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). So it needs a
-   * third answer between taking the slot and giving up: wait for whatever is in the way, and take the slot the
-   * moment it lets go.
+   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). Nor can the apply
+   * of a replicated drop database, for the same reason (issue #8035). So they need a third answer between taking the
+   * slot and giving up: wait for whatever is in the way, and take the slot the moment it lets go.
    * <p>
    * The wait is bounded because the caller's own operation is: a timeout expiring means the caller proceeds without
    * the slot, loudly, which is the same outcome it had before this existed. Bounding it is also what keeps a caller
@@ -239,9 +241,10 @@ public class BackupCoordinator implements MaintenanceCoordinator {
     // REGISTERED BEFORE THE FIRST WAIT, NOT AFTER: A RESERVATION ARRIVING IN THE WINDOW BETWEEN THE INITIAL
     // begin() ABOVE AND THIS LINE STILL GETS ADMITTED, BUT EVERY ONE AFTER IT IS REFUSED BY THE GUARD IN
     // begin(String, Operation) - SO THE OPERATIONS ALREADY RUNNING (OR THIS ONE STRAGGLER) ARE THE LAST ONES THIS
-    // CALLER HAS TO WAIT OUT (issue #7646). A NO-OP FOR ANY OPERATION OTHER THAN RESTORE: ONLY RESTORE CALLS THIS
-    // OVERLOAD, BUT THE GUARD IT REGISTERS FOR ONLY EVER EXEMPTS RESTORE ITSELF, SO REGISTERING A DIFFERENT KIND
-    // HERE WOULD MERELY COST A MAP ENTRY NO CALLER EVER CONSULTS.
+    // CALLER HAS TO WAIT OUT (issue #7646). A NO-OP FOR ANY OPERATION OTHER THAN RESTORE: THE REPLICATED DROP APPLY
+    // ALSO CALLS THIS OVERLOAD AS DROP (issue #8035), BUT THE GUARD REGISTERED HERE ONLY EVER EXEMPTS RESTORE ITSELF,
+    // SO REGISTERING DROP WOULD MAKE ITS OWN RE-CHECK REFUSE ITSELF. GIVING A WAITING DROP THE SAME PRIORITY IS
+    // issue #8452.
     final boolean waitingAsRestore = operation == Operation.RESTORE;
     if (waitingAsRestore)
       restoreStartedWaiting(databaseName);

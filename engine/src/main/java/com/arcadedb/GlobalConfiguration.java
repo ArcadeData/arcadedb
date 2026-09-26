@@ -2294,7 +2294,7 @@ public enum GlobalConfiguration {
       Long.class, 5000L),
 
   HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS("arcadedb.ha.snapshotInstallBackupWaitMs", SCOPE.SERVER,
-      "Milliseconds a snapshot install waits for a backup or an import of the same database, already running on this node, to finish before it replaces the database files anyway. An install applies a committed Raft entry, so the wait has to be bounded: when it expires the install proceeds and logs a warning. 0 refuses to wait at all.",
+      "Milliseconds a snapshot install, or the apply of a replicated drop database, waits for a backup, an export or an import of the same database, already running on this node, to finish before it replaces or drops the database files anyway. Both apply a committed Raft entry, so the wait has to be bounded: when it expires the operation proceeds and logs a warning. 0 refuses to wait at all.",
       Long.class, 60_000L),
 
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
