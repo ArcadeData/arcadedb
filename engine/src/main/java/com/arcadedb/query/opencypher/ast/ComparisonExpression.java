@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -258,9 +259,9 @@ public class ComparisonExpression implements BooleanExpression {
       };
     }
 
-    // String comparison (strings only compare with strings)
+    // String comparison (strings only compare with strings), by code point, as the index orders them (issue #8422)
     if (left instanceof String && right instanceof String) {
-      final int comparison = ((String) left).compareTo((String) right);
+      final int comparison = BinaryComparator.compareStrings((String) left, (String) right);
       return switch (operator) {
         case EQUALS -> comparison == 0;
         case NOT_EQUALS -> comparison != 0;

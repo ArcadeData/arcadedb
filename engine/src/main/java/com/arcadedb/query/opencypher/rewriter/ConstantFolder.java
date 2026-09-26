@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.rewriter;
 
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.serializer.BinaryComparator;
 
 /**
  * Folds constant expressions into literal values at rewrite time.
@@ -153,7 +154,7 @@ public class ConstantFolder extends ExpressionRewriter {
 
     // String comparison
     if (left instanceof String && right instanceof String) {
-      final int cmp = ((String) left).compareTo((String) right);
+      final int cmp = BinaryComparator.compareStrings((String) left, (String) right);
       return switch (op) {
         case EQUALS -> cmp == 0;
         case NOT_EQUALS -> cmp != 0;

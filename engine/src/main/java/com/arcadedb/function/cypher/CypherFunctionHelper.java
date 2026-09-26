@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -342,7 +343,7 @@ public final class CypherFunctionHelper {
     if (a instanceof Number && b instanceof Number)
       return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
     if (a instanceof String && b instanceof String)
-      return ((String) a).compareTo((String) b);
+      return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
       return Boolean.compare((Boolean) a, (Boolean) b);
     if (a instanceof List && b instanceof List) {
