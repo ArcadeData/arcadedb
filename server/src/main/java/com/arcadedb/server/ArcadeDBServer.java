@@ -1320,15 +1320,26 @@ public class ArcadeDBServer {
       throw new IllegalArgumentException("Database name '" + databaseName + "' resolves outside the database directory");
   }
 
+  /**
+   * Registers a database the caller opened itself, and returns the handle the server serves it through.
+   * <p>
+   * The instance goes through the same step as every database the server opens or creates (issue #8281): on a node
+   * with high availability active a {@link LocalDatabase} is wrapped for replication, and while the HA plugin is
+   * still expected it refuses writes until {@link #rewrapDatabases()} wraps it. Write through the returned
+   * {@link ServerDatabase}: on an HA node a write made through the caller's own {@link LocalDatabase} reference commits
+   * on this node only. Like {@link #createDatabase}, this does not create the database on the other nodes.
+   */
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
     // Serialise with getDatabase/createDatabase/rewrapDatabases on databasesLock so a concurrent open-from-disk
     // cannot interleave with this registration and end up with two DatabaseInternal instances over the same directory.
     final ServerDatabase serverDatabase;
     synchronized (databasesLock) {
-      serverDatabase = new ServerDatabase(this, database);
-      final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
-      if (existing != null)
+      // Checked before wrapping, so a refused registration leaves the caller's instance as it was given: wrapForHA()
+      // can put a write refusal on it.
+      if (databases.containsKey(databaseName))
         throw new IllegalArgumentException("Database '" + databaseName + "' already registered");
+      serverDatabase = new ServerDatabase(this, wrapForHA(database));
+      databases.put(databaseName, serverDatabase);
     }
 
     notifyPlugins(databaseName, true);
@@ -1662,22 +1673,16 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.create();
           }
         } else {
-          final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
-          if (!activeDatabases.isEmpty()) {
-            embDatabase = null;
-            for (Database existentDatabase : activeDatabases) {
-              if (existentDatabase.getDatabasePath().equals(path)) {
-                // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP
-                embDatabase = (DatabaseInternal) existentDatabase;
-                break;
-              }
-            }
-
-            if (embDatabase == null)
-              // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
-              embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
-
-          } else
+          // REUSE THE OPEN DATABASE. THIS TYPICALLY HAPPENS WHEN A SERVER PLUGIN OPENS THE DATABASE AT STARTUP.
+          // Looked up by the registry's own normalized path rather than by comparing path strings, and reused only
+          // while it is OPEN (issue #8316): an instance whose close is still unwinding - or failed half way - is
+          // still registered, and wrapping it here would put a closed database in the server registry in place of
+          // the files on disk. The open below then either opens the directory or refuses it as still in use.
+          final Database activeDatabase = DatabaseFactory.getActiveDatabaseInstance(path);
+          if (activeDatabase != null && activeDatabase.isOpen())
+            embDatabase = (DatabaseInternal) activeDatabase;
+          else
+            // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 

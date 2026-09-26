@@ -20,10 +20,11 @@ package com.arcadedb.server.ha.raft;
 
 /**
  * Pure state machine that turns a sequence of (appliedIndex, committedIndex, now) observations on a
- * follower into a concise resync narrative. The signal is the local <i>apply backlog</i>
- * ({@code committedIndex - appliedIndex}): entries the follower has received/committed but not yet
- * applied to its state machine. This is what a follower can observe locally - it is NOT the distance
- * from the leader's commit index, which a follower cannot read directly. The backlog spikes as a
+ * follower into a concise resync narrative. The signal is the <i>apply backlog</i>
+ * ({@code committedIndex - appliedIndex}): committed entries the follower has not yet applied to its state
+ * machine. The caller passes the larger of the follower's own commit index and the one its leader last
+ * reported (issue #8321), so a follower whose replication channel is wedged - its own commit index clamped to
+ * the entries it received - still shows the entries it is missing. The backlog spikes as a
  * restarting follower streams entries in faster than it applies them, which is the catch-up signal.
  * Emits one STARTED line when the backlog reaches {@code catchupLagThreshold} (a genuine post-restart
  * catch-up, not the handful-of-entries steady-state backlog under write load), throttled PROGRESS lines
@@ -63,10 +64,10 @@ public final class FollowerResyncProgressTracker {
     if (appliedIndex < 0 || committedIndex < 0)
       return Tick.NONE; // transient read failure: do not change state
 
-    // Apply backlog: entries this follower has committed (received) but not yet applied to its state
-    // machine. This is what is observable locally; it is NOT the distance from the leader's commit
-    // index, which a follower cannot read directly. The backlog spikes as a restarting follower streams
-    // entries in faster than it applies them, which is the catch-up signal we narrate.
+    // Apply backlog: committed entries this follower has not yet applied to its state machine, measured
+    // against the leader's commit index when the caller learned a larger one (issue #8321). The backlog
+    // spikes as a restarting follower streams entries in faster than it applies them, which is the
+    // catch-up signal we narrate.
     final long backlog = committedIndex - appliedIndex;
 
     if (!active) {

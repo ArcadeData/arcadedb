@@ -577,17 +577,21 @@ public class PluginApiSpec implements OpenApiContributor {
             + "restart"));
     schema.addProperty("localCommitIndex", SpecBuilders.integer(
         "Last Raft index this node knows to be committed. -1 under the same condition"));
+    // Issue #8321: on a follower the lag is measured against 'leaderCommitIndex' when that is the larger figure, so a
+    // follower whose replication channel is wedged - its own commit index clamped to what it received - no longer
+    // reads 0 here.
     schema.addProperty("localReplicationLag", SpecBuilders.integer(
-        "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex'. -1 rather than a "
-            + "fabricated difference whenever either side is unknown"));
+        "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex', where on a follower "
+            + "'localCommitIndex' is replaced by 'leaderCommitIndex' when the leader reported a larger one. -1 rather "
+            + "than a fabricated difference whenever either side is unknown"));
     // Issue #8289: this node stuck at a stale term after a snapshot install applies everything it could
-    // locally commit, so 'localReplicationLag' above reads 0 and this node looks caught up, yet it keeps
+    // locally commit, so 'localReplicationLag' above can read 0 and this node looks caught up, yet it keeps
     // rejecting the leader's current-term entries and does not count toward the Raft quorum. Debounced
     // (seen on two consecutive health-monitor ticks) so a normal leader change is not reported as one.
     schema.addProperty("localStuckAtStaleTerm", SpecBuilders.bool(
         "True when this node recognizes a leader at a newer term but keeps rejecting its current-term entries "
             + "although it has applied everything it could locally commit. It does not count toward quorum while "
-            + "this is true, even though 'localReplicationLag' reads 0. See the 'follower-stuck-at-stale-term' "
+            + "this is true, even though 'localReplicationLag' can read 0. See the 'follower-stuck-at-stale-term' "
             + "alert for the operator-facing explanation"));
     // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
     // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.

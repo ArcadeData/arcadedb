@@ -289,6 +289,9 @@ class Issue8341ZeroProgressCatchUpTest {
     when(server.getLeaderId()).thenReturn(RaftPeerId.valueOf("leader"));
     when(server.getCurrentTerm()).thenReturn(currentTerm);
     when(server.getCommitIndex()).thenReturn(commitIndex);
+    // The lag check reads the commit index through this (issue #8321); no leader figure is learned on this mock.
+    setField(server, "leaderReportedCommitIndex", -1L);
+    when(server.getFollowerCommitIndex()).thenCallRealMethod();
     when(server.getLastAppliedIndex()).thenReturn(appliedIndex);
     return server;
   }
