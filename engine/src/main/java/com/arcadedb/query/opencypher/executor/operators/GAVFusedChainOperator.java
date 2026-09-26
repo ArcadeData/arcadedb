@@ -37,9 +37,11 @@ import com.arcadedb.query.QueryEngineManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
@@ -56,6 +58,11 @@ import java.util.concurrent.Future;
  * <p>
  * Memory: O(max_fanout) per source vertex for the traversal stack.
  * GC pressure: near-zero (only int[] arrays reused from CSR slices).
+ * <p>
+ * Cypher binds a relationship at most once per MATCH clause. The hops that could collide are walked one adjacency
+ * slice per edge type and orientation, so every entry of their stack names one relationship, and a candidate is refused
+ * when an earlier hop of its clause stands on the same one (issue #8394). An undirected hop meets a self-loop in both
+ * lists of its vertex and takes it once.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,6 +94,16 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   private String[] groupKeyVariables;
   private String countOutputName;
   private String[] groupKeyOutputNames;
+
+  // Relationship uniqueness (#8394): per hop, whether its relationship may collide with another one of its clause,
+  // and the earlier hops (indices into the chain) whose relationship it must not take again. Null when no hop collides.
+  private boolean[] hopTracked;
+  private int[][]   hopConflictsWith;
+
+  // The hops this chain replaced, in traversal order: a source the view does not map (a vertex created after the build
+  // of a stale view still in use) is expanded through a fresh copy of them, which walks its edge records, rather than
+  // dropped. Never executed themselves, so a cached plan shares no state between executions.
+  private List<GAVExpandAll> unfusedHops;
 
   public GAVFusedChainOperator(final PhysicalOperator child,
       final GraphTraversalProvider provider,
@@ -132,6 +149,20 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     this.countOutputName = countOutputName;
   }
 
+  /**
+   * Makes the chain enforce relationship uniqueness: hop {@code i} is walked per edge type and orientation when
+   * {@code hopTracked[i]}, and refuses a relationship the hops listed in {@code hopConflictsWith[i]} stand on.
+   */
+  public void setEdgeTracking(final boolean[] hopTracked, final int[][] hopConflictsWith) {
+    this.hopTracked = hopTracked;
+    this.hopConflictsWith = hopConflictsWith;
+  }
+
+  /** The hops this chain replaced, in traversal order, used for the sources the view does not map. */
+  public void setUnfusedHops(final List<GAVExpandAll> unfusedHops) {
+    this.unfusedHops = unfusedHops;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Built once on the calling thread and handed to the workers: reading the deadline from the shared context
@@ -147,11 +178,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // Pre-acquire NeighborViews for zero-allocation traversal (one per hop, shared across all vertices)
     final NeighborView[] hopViews = new NeighborView[chainLength];
     for (int i = 0; i < chainLength; i++)
-      hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
+      if (hopTracked == null || !hopTracked[i])
+        hopViews[i] = provider.getNeighborView(hopDirections[i], hopEdgeTypes[i]);
+    final TrackedTypes trackedTypes = hopTracked != null ? resolveTrackedTypes(db) : null;
 
     // Collect all source nodeIds into a primitive int[] for parallel partitioning (zero boxing)
     int[] sourceNodeIdsBuf = new int[1024];
     int sourceCount = 0;
+    List<Result> unmappedSources = null;
     while (inputResults.hasNext()) {
       guard.check();
       final Result inputResult = inputResults.next();
@@ -167,9 +201,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         if (sourceCount == sourceNodeIdsBuf.length)
           sourceNodeIdsBuf = Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
         sourceNodeIdsBuf[sourceCount++] = nodeId;
+      } else if (unfusedHops != null) {
+        if (unmappedSources == null)
+          unmappedSources = new ArrayList<>();
+        unmappedSources.add(inputResult);
       }
     }
     inputResults.close();
+    final List<Result> unmappedRows = unmappedSources != null ? expandUnmappedSources(unmappedSources, context) : null;
 
     final int[] sourceNodeIds = sourceNodeIdsBuf;
     final int totalSources = sourceCount; // effectively final for lambda capture
@@ -180,7 +219,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     // If fused aggregation is enabled, use the parallel aggregating path
     if (groupKeyVariables != null)
       return executeWithFusedAggregation(sourceNodeIds, totalSources, parallelism, chunkSize,
-          hopViews, chainLength, db, context, guard);
+          hopViews, trackedTypes, chainLength, db, context, guard, unmappedRows);
 
     // Parallel DFS: each thread processes a chunk of source vertices with its own stack
     @SuppressWarnings("unchecked")
@@ -190,7 +229,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     if (totalSources < 8192) {
       // Below threshold: single-threaded
       threadResults[0] = new ArrayList<>();
-      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, outputNames, db, context, guard,
+      traverseChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, outputNames, db, context, guard,
           threadResults[0]);
       threadCount = 1;
     } else {
@@ -206,7 +245,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         threadResults[t] = new ArrayList<>();
         final int threadIdx = t;
         futures[t] = executor.submit(() ->
-            traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, guard,
+            traverseChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, outputNames, db, context, guard,
                 threadResults[threadIdx]));
         launched++;
       }
@@ -224,6 +263,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int t = 0; t < threadCount; t++)
       if (threadResults[t] != null)
         merged.addAll(threadResults[t]);
+    if (unmappedRows != null)
+      merged.addAll(unmappedRows);
 
     final Iterator<Result> mergedIter = merged.iterator();
     return new ResultSet() {
@@ -250,8 +291,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
    * Thread-local maps are merged after all threads complete.
    */
   private ResultSet executeWithFusedAggregation(final int[] sourceNodeIds, final int totalSources,
-      final int parallelism, final int chunkSize, final NeighborView[] hopViews,
-      final int chainLength, final Database db, final CommandContext context, final WorkGuard guard) {
+      final int parallelism, final int chunkSize, final NeighborView[] hopViews, final TrackedTypes trackedTypes,
+      final int chainLength, final Database db, final CommandContext context, final WorkGuard guard,
+      final List<Result> unmappedRows) {
 
     // Resolve which nodeId slot each group key variable maps to:
     // sourceVariable = slot 0, hopTargetVariables[i] = slot i+1
@@ -275,7 +317,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     if (totalSources < 8192) {
       // Single-threaded
       threadMaps[0] = new LongLongHashMap();
-      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, chainLength, groupKeySlots, db, context, guard, threadMaps[0]);
+      aggregateChunk(sourceNodeIds, 0, totalSources, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
+          threadMaps[0]);
     } else {
       // Parallel using shared query worker pool
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
@@ -289,7 +332,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         threadMaps[t] = new LongLongHashMap();
         final int threadIdx = t;
         futures[t] = executor.submit(() ->
-            aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, guard,
+            aggregateChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, groupKeySlots, db, context, guard,
                 threadMaps[threadIdx]));
         launched++;
       }
@@ -304,6 +347,45 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     for (int t = 1; t < numThreads; t++)
       if (threadMaps[t] != null)
         merged.mergeFrom(threadMaps[t]);
+
+    // The paths of the sources the view does not map: counted into the same groups when every key is a view node, into
+    // groups of their own, keyed by the records, otherwise
+    Map<List<RID>, Object[]> recordGroups = null;
+    if (unmappedRows != null)
+      for (final Result row : unmappedRows) {
+        boolean mapped = true;
+        final Object[] keys = new Object[groupKeyVariables.length];
+        final int[] nodeIds = new int[groupKeyVariables.length];
+        for (int g = 0; g < groupKeyVariables.length; g++) {
+          keys[g] = row.getProperty(groupKeyVariables[g]);
+          nodeIds[g] = keys[g] instanceof GAVVertex gav ? gav.getNodeId() :
+              keys[g] instanceof Vertex v ? provider.getNodeId(v.getIdentity()) : -1;
+          if (nodeIds[g] < 0)
+            mapped = false;
+        }
+        if (mapped) {
+          // Packed exactly as the DFS packs its keys
+          long packedKey = 0;
+          if (nodeIds.length == 2)
+            packedKey = ((long) nodeIds[0] << 32) | (nodeIds[1] & 0xFFFFFFFFL);
+          else if (nodeIds.length == 1)
+            packedKey = nodeIds[0];
+          merged.increment(packedKey);
+          continue;
+        }
+        final List<RID> recordKey = new ArrayList<>(keys.length);
+        for (final Object key : keys)
+          recordKey.add(key instanceof Vertex v ? v.getIdentity() : null);
+        if (recordGroups == null)
+          recordGroups = new HashMap<>();
+        final Object[] group = recordGroups.computeIfAbsent(recordKey, k -> {
+          final Object[] entry = new Object[keys.length + 1];
+          System.arraycopy(keys, 0, entry, 0, keys.length);
+          entry[keys.length] = 0L;
+          return entry;
+        });
+        group[keys.length] = (Long) group[keys.length] + 1;
+      }
 
     // Build output results — one per group (only ~50K allocations, not 740K)
     final List<Result> results = new ArrayList<>(merged.size());
@@ -321,6 +403,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       result.setProperty(countOutputName, count);
       results.add(result);
     });
+    if (recordGroups != null)
+      for (final Object[] group : recordGroups.values()) {
+        final ResultInternal result = new ResultInternal();
+        for (int g = 0; g < groupKeyOutputNames.length; g++)
+          result.setProperty(groupKeyOutputNames[g], group[g]);
+        result.setProperty(countOutputName, group[groupKeyOutputNames.length]);
+        results.add(result);
+      }
 
     final Iterator<Result> iter = results.iterator();
     return new ResultSet() {
@@ -331,31 +421,110 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
   }
 
   /**
+   * Expands the sources the view does not map through a fresh copy of the hops this chain replaced, which walk their
+   * edge records, and applies the filter pushed into the chain. The copies enforce relationship uniqueness with the
+   * same labels the fused walk compares (issue #8394).
+   */
+  private List<Result> expandUnmappedSources(final List<Result> sources, final CommandContext context) {
+    PhysicalOperator chain = new RowsOperator(sources);
+    for (final GAVExpandAll hop : unfusedHops) {
+      final GAVExpandAll copy = new GAVExpandAll(chain, hop.getProvider(), hop.getSourceVariable(),
+          hop.getTargetVariable(), hop.getDirection(), hop.getEdgeTypes(), hop.getEstimatedCost(),
+          hop.getEstimatedCardinality());
+      copy.setTargetLabel(hop.getTargetLabel());
+      // Deferred target loading is left off on purpose: it only saves record loads on the fused path, and these rows
+      // are the few sources the view does not map, whose targets are GAVVertex proxies loaded lazily anyway
+      if (hop.getEdgeTrackingVar() != null)
+        copy.setEdgeTracking(hop.getEdgeTrackingVar(), hop.getSameClausePrecedingRelVars());
+      chain = copy;
+    }
+    final List<Result> rows = new ArrayList<>();
+    try (final ResultSet expanded = chain.execute(context, -1)) {
+      while (expanded.hasNext()) {
+        final Result row = expanded.next();
+        if (pushedFilter == null || Boolean.TRUE.equals(pushedFilter.evaluate(row, context)))
+          rows.add(row);
+      }
+    }
+    return rows;
+  }
+
+  /**
    * Aggregating DFS for a chunk of sources. Pure int operations — zero object allocation
    * during traversal. Counts are accumulated in the thread-local map.
    */
   private void aggregateChunk(final int[] sourceNodeIds, final int start, final int end,
-      final NeighborView[] hopViews, final int chainLength, final int[] groupKeySlots,
+      final NeighborView[] hopViews, final TrackedTypes trackedTypes, final int chainLength, final int[] groupKeySlots,
       final Database db, final CommandContext context, final WorkGuard guard, final LongLongHashMap counts) {
 
+    // Pre-allocate reusable filter objects ONCE per thread (zero per-path allocation)
+    final Object[] filterValues;
+    final GAVResult filterResult;
+    if (pushedFilter != null) {
+      final String[] filterNames = buildOutputNames();
+      filterValues = new Object[filterNames.length];
+      filterResult = new GAVResult(filterNames, filterValues);
+    } else {
+      filterValues = null;
+      filterResult = null;
+    }
+
+    walkChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard, stackNodeId -> {
+      // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
+      if (filterResult != null) {
+        int slot = 0;
+        if (materializeVariable[0])
+          filterValues[slot++] = makeReference(stackNodeId[0], db);
+        for (int i = 0; i < hopTargetVariables.length; i++)
+          if (hopTargetVariables[i] != null && materializeVariable[i + 1])
+            filterValues[slot++] = makeReference(stackNodeId[i + 1], db);
+        if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context)))
+          return;
+      }
+
+      // Pack grouping key nodeIds into a single long (supports up to 2 int keys)
+      long packedKey = 0;
+      if (groupKeySlots.length == 2)
+        packedKey = ((long) stackNodeId[groupKeySlots[0]] << 32) | (stackNodeId[groupKeySlots[1]] & 0xFFFFFFFFL);
+      else if (groupKeySlots.length == 1)
+        packedKey = stackNodeId[groupKeySlots[0]];
+
+      // Increment count — zero boxing, zero allocation (primitive long → long)
+      counts.increment(packedKey);
+    });
+  }
+
+  /**
+   * Traverses a chunk of source vertices through the multi-hop chain.
+   * Each call has its own DFS stack — safe for parallel execution with no shared mutable state.
+   */
+  private void traverseChunk(final int[] sourceNodeIds, final int start, final int end,
+      final NeighborView[] hopViews, final TrackedTypes trackedTypes, final int chainLength, final String[] outputNames,
+      final Database db, final CommandContext context, final WorkGuard guard, final List<Result> output) {
+    walkChunk(sourceNodeIds, start, end, hopViews, trackedTypes, chainLength, guard,
+        stackNodeId -> emitResult(stackNodeId, outputNames, db, context, output));
+  }
+
+  /** Receives every complete path: {@code stackNodeId[0]} is the source, {@code stackNodeId[i + 1]} the target of hop i. */
+  @FunctionalInterface
+  private interface PathVisitor {
+    void visit(int[] stackNodeId);
+  }
+
+  /**
+   * The DFS both the row-producing and the aggregating paths run. Each call has its own stack, so chunks can be walked
+   * in parallel with no shared mutable state.
+   */
+  private void walkChunk(final int[] sourceNodeIds, final int start, final int end, final NeighborView[] hopViews,
+      final TrackedTypes trackedTypes, final int chainLength, final WorkGuard guard, final PathVisitor visitor) {
+    // Per-thread DFS stack (allocated once, reused across all sources in this chunk)
     final int[] stackNodeId = new int[chainLength + 1];
     final int[] stackCursor = new int[chainLength];
     final int[] stackEnd = new int[chainLength];
     final int[][] fallbackNeighbors = new int[chainLength][];
-
-    // Pre-allocate reusable filter objects ONCE per thread (zero per-path allocation)
-    final String[] filterNames;
-    final Object[] filterValues;
-    final GAVResult filterResult;
-    if (pushedFilter != null) {
-      filterNames = buildOutputNames();
-      filterValues = new Object[filterNames.length];
-      filterResult = new GAVResult(filterNames, filterValues);
-    } else {
-      filterNames = null;
-      filterValues = null;
-      filterResult = null;
-    }
+    // Undirected untracked hops: how many entries equal to the hop's own vertex were met, to take each self-loop once
+    final int[] selfLoopEntries = new int[chainLength];
+    final TrackedAdjacency tracked = trackedTypes != null ? new TrackedAdjacency(trackedTypes, chainLength) : null;
 
     // One supernode's DFS can dwarf the whole chunk, so the per-source check alone would leave the abort
     // latency proportional to the largest fan-out. The counter climbs across sources on purpose: throttling
@@ -366,7 +535,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       guard.check();
       final int sourceNodeId = sourceNodeIds[s];
       stackNodeId[0] = sourceNodeId;
-      initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
+      initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, 0, sourceNodeId);
       int depth = 0;
 
       while (depth >= 0) {
@@ -378,97 +547,31 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           continue;
         }
 
+        final int cursor = stackCursor[depth];
+        final boolean trackedHop = tracked != null && hopTracked[depth];
         final int neighborId;
-        final NeighborView view = hopViews[depth];
-        if (view != null)
-          neighborId = view.neighbors()[stackCursor[depth]];
-        else
-          neighborId = fallbackNeighbors[depth][stackCursor[depth]];
+        if (trackedHop)
+          neighborId = tracked.neighbors[depth][cursor];
+        else {
+          final NeighborView view = hopViews[depth];
+          if (view != null)
+            neighborId = view.neighbors()[cursor];
+          else
+            neighborId = fallbackNeighbors[depth][cursor];
+        }
 
-        if (hopTargetBucketIds[depth] != null) {
-          final RID rid = provider.getRID(neighborId);
-          if (rid == null || !matchesBuckets(rid.getBucketId(), hopTargetBucketIds[depth])) {
+        if (trackedHop) {
+          // A relationship an earlier hop of the clause stands on cannot be bound again
+          if (tracked.conflicts(depth, cursor, stackNodeId, stackCursor)) {
             stackCursor[depth]++;
             continue;
           }
-        }
-
-        stackNodeId[depth + 1] = neighborId;
-
-        if (depth == chainLength - 1) {
-          // Evaluate pushed filter using reusable GAVResult — only nodeId updated per path
-          if (filterResult != null) {
-            int slot = 0;
-            if (materializeVariable[0])
-              filterValues[slot++] = makeReference(stackNodeId[0], db);
-            for (int i = 0; i < hopTargetVariables.length; i++)
-              if (hopTargetVariables[i] != null && materializeVariable[i + 1])
-                filterValues[slot++] = makeReference(stackNodeId[i + 1], db);
-            if (!Boolean.TRUE.equals(pushedFilter.evaluate(filterResult, context))) {
-              stackCursor[depth]++;
-              continue;
-            }
-          }
-
-          // Pack grouping key nodeIds into a single long (supports up to 2 int keys)
-          long packedKey = 0;
-          if (groupKeySlots.length == 2)
-            packedKey = ((long) stackNodeId[groupKeySlots[0]] << 32) | (stackNodeId[groupKeySlots[1]] & 0xFFFFFFFFL);
-          else if (groupKeySlots.length == 1)
-            packedKey = stackNodeId[groupKeySlots[0]];
-
-          // Increment count — zero boxing, zero allocation (primitive long → long)
-          counts.increment(packedKey);
-
+        } else if (hopDirections[depth] == Vertex.DIRECTION.BOTH && neighborId == stackNodeId[depth]
+            && (selfLoopEntries[depth]++ & 1) == 1) {
+          // A self-loop sits in both lists an undirected hop merges: every second entry is the same relationship
           stackCursor[depth]++;
-        } else {
-          depth++;
-          initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, depth, neighborId);
-        }
-      }
-    }
-  }
-
-  /**
-   * Traverses a chunk of source vertices through the multi-hop chain.
-   * Each call has its own DFS stack — safe for parallel execution with no shared mutable state.
-   */
-  private void traverseChunk(final int[] sourceNodeIds, final int start, final int end,
-      final NeighborView[] hopViews, final int chainLength, final String[] outputNames,
-      final Database db, final CommandContext context, final WorkGuard guard, final List<Result> output) {
-
-    // Per-thread DFS stack (allocated once, reused across all sources in this chunk)
-    final int[] stackNodeId = new int[chainLength + 1];
-    final int[] stackCursor = new int[chainLength];
-    final int[] stackEnd = new int[chainLength];
-    final int[][] fallbackNeighbors = new int[chainLength][];
-
-    // See aggregateChunk: the counter climbs across sources so that one supernode's DFS cannot outrun the
-    // deadline between two per-source checks (issue #6266).
-    int steps = 0;
-
-    for (int s = start; s < end; s++) {
-      guard.check();
-      final int sourceNodeId = sourceNodeIds[s];
-      stackNodeId[0] = sourceNodeId;
-      initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, 0, sourceNodeId);
-      int depth = 0;
-
-      while (depth >= 0) {
-        guard.checkPeriodically(++steps);
-        if (stackCursor[depth] >= stackEnd[depth]) {
-          depth--;
-          if (depth >= 0)
-            stackCursor[depth]++;
           continue;
         }
-
-        final int neighborId;
-        final NeighborView view = hopViews[depth];
-        if (view != null)
-          neighborId = view.neighbors()[stackCursor[depth]];
-        else
-          neighborId = fallbackNeighbors[depth][stackCursor[depth]];
 
         // Target label filter
         if (hopTargetBucketIds[depth] != null) {
@@ -482,19 +585,24 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         stackNodeId[depth + 1] = neighborId;
 
         if (depth == chainLength - 1) {
-          // Emit result
-          emitResult(stackNodeId, outputNames, db, context, output);
+          visitor.visit(stackNodeId);
           stackCursor[depth]++;
         } else {
           depth++;
-          initHop(hopViews, fallbackNeighbors, stackCursor, stackEnd, depth, neighborId);
+          initHop(hopViews, fallbackNeighbors, tracked, stackCursor, stackEnd, selfLoopEntries, depth, neighborId);
         }
       }
     }
   }
 
-  private void initHop(final NeighborView[] hopViews, final int[][] fallbackNeighbors,
-      final int[] stackCursor, final int[] stackEnd, final int depth, final int nodeId) {
+  private void initHop(final NeighborView[] hopViews, final int[][] fallbackNeighbors, final TrackedAdjacency tracked,
+      final int[] stackCursor, final int[] stackEnd, final int[] selfLoopEntries, final int depth, final int nodeId) {
+    stackCursor[depth] = 0;
+    selfLoopEntries[depth] = 0;
+    if (tracked != null && hopTracked[depth]) {
+      stackEnd[depth] = tracked.fill(depth, nodeId);
+      return;
+    }
     final NeighborView view = hopViews[depth];
     if (view != null) {
       stackCursor[depth] = view.offset(nodeId);
@@ -502,8 +610,189 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     } else {
       final int[] nbrs = provider.getNeighborIds(nodeId, hopDirections[depth], hopEdgeTypes[depth]);
       fallbackNeighbors[depth] = nbrs;
-      stackCursor[depth] = 0;
       stackEnd[depth] = nbrs.length;
+    }
+  }
+
+  /**
+   * The edge types the tracked hops walk, numbered: see {@link GAVEdgeRef#trackedEdgeTypes}. {@code views} holds, per
+   * type and orientation ({@code typeId * 2 + 1} for outgoing), the provider's zero-copy slice view, or null where the
+   * provider has none (pending changes, a type without a slice): the walk then asks for the neighbour ids.
+   */
+  private record TrackedTypes(String[] names, int[][] hopTypeIds, NeighborView[] views) {
+  }
+
+  private TrackedTypes resolveTrackedTypes(final Database database) {
+    final Map<String, Integer> ids = new HashMap<>();
+    final List<String> names = new ArrayList<>();
+    final int[][] hopTypeIds = new int[hopDirections.length][];
+    for (int i = 0; i < hopDirections.length; i++) {
+      if (!hopTracked[i])
+        continue;
+      final String[] types = GAVEdgeRef.trackedEdgeTypes(database, hopEdgeTypes[i]);
+      hopTypeIds[i] = new int[types.length];
+      for (int t = 0; t < types.length; t++) {
+        final String type = types[t];
+        hopTypeIds[i][t] = ids.computeIfAbsent(type, k -> {
+          names.add(k);
+          return names.size() - 1;
+        });
+      }
+    }
+    final NeighborView[] views = new NeighborView[names.size() * 2];
+    for (int t = 0; t < names.size(); t++) {
+      views[t * 2] = provider.getNeighborView(Vertex.DIRECTION.IN, names.get(t));
+      views[t * 2 + 1] = provider.getNeighborView(Vertex.DIRECTION.OUT, names.get(t));
+    }
+    return new TrackedTypes(names.toArray(new String[0]), hopTypeIds, views);
+  }
+
+  /**
+   * The adjacency of the tracked hops on the DFS stack, one entry per relationship. Each entry carries its edge type
+   * and whether the hop's vertex is the relationship's source, which together with the two vertices name the
+   * relationship up to its parallel twins; the rank among those is taken only when two hops meet on the same ones.
+   * Per-thread, reused across every source of a chunk.
+   */
+  private final class TrackedAdjacency {
+    private final TrackedTypes types;
+    private final int[][]      neighbors;
+    // (type id << 1) | 1 when the hop's vertex is the relationship's source
+    private final int[][]      meta;
+    // Whether every (type, orientation) segment loaded for the hop is sorted, which bounds a rank by its run
+    private final boolean[]    sorted;
+    // The rank of the entry an earlier hop stands on, kept while it stands there: every later candidate with the same
+    // endpoints compares against it, and it does not change until that hop's cursor moves
+    private final int[]        rankedIndex;
+    private final int[]        rankedValue;
+
+    private TrackedAdjacency(final TrackedTypes types, final int chainLength) {
+      this.types = types;
+      this.neighbors = new int[chainLength][];
+      this.meta = new int[chainLength][];
+      this.sorted = new boolean[chainLength];
+      this.rankedIndex = new int[chainLength];
+      this.rankedValue = new int[chainLength];
+      for (int i = 0; i < chainLength; i++)
+        if (hopTracked[i]) {
+          neighbors[i] = new int[16];
+          meta[i] = new int[16];
+        }
+    }
+
+    /** Loads the relationships of {@code nodeId} for hop {@code depth} and returns how many there are. */
+    private int fill(final int depth, final int nodeId) {
+      int size = 0;
+      sorted[depth] = true;
+      rankedIndex[depth] = -1;
+      final Vertex.DIRECTION direction = hopDirections[depth];
+      for (final int typeId : types.hopTypeIds()[depth]) {
+        final String type = types.names()[typeId];
+        if (direction != Vertex.DIRECTION.IN)
+          size = appendSlice(depth, size, nodeId, typeId, Vertex.DIRECTION.OUT, type, -1);
+        // Undirected: a self-loop is in the outgoing list already
+        if (direction != Vertex.DIRECTION.OUT)
+          size = appendSlice(depth, size, nodeId, typeId, Vertex.DIRECTION.IN, type,
+              direction == Vertex.DIRECTION.BOTH ? nodeId : -1);
+      }
+      return size;
+    }
+
+    /**
+     * Appends one (type, orientation) slice of {@code nodeId}: read in place from the provider's slice view when it
+     * has one, as the untracked hops do, so a tracked hop allocates nothing per vertex; from its neighbour ids otherwise.
+     */
+    private int appendSlice(final int depth, final int size, final int nodeId, final int typeId,
+        final Vertex.DIRECTION orientation, final String type, final int skip) {
+      final int entryMeta = orientation == Vertex.DIRECTION.OUT ? (typeId << 1) | 1 : typeId << 1;
+      final NeighborView view = types.views()[orientation == Vertex.DIRECTION.OUT ? typeId * 2 + 1 : typeId * 2];
+      if (view != null && nodeId < view.nodeCount())
+        return append(depth, size, view.neighbors(), view.offset(nodeId), view.offsetEnd(nodeId), entryMeta, skip);
+      final int[] slice = provider.getNeighborIds(nodeId, orientation, type);
+      return slice == null ? size : append(depth, size, slice, 0, slice.length, entryMeta, skip);
+    }
+
+    private int append(final int depth, int size, final int[] source, final int from, final int to,
+        final int entryMeta, final int skip) {
+      final int length = to - from;
+      if (length <= 0)
+        return size;
+      if (size + length > neighbors[depth].length) {
+        final int capacity = Math.max(neighbors[depth].length * 2, size + length);
+        neighbors[depth] = Arrays.copyOf(neighbors[depth], capacity);
+        meta[depth] = Arrays.copyOf(meta[depth], capacity);
+      }
+      final int[] n = neighbors[depth];
+      final int[] m = meta[depth];
+      int previous = Integer.MIN_VALUE;
+      for (int i = from; i < to; i++) {
+        final int neighbor = source[i];
+        // Checked in the same pass: a provider does not promise sorted slices (see GAVEdgeRef.isSorted)
+        if (neighbor < previous)
+          sorted[depth] = false;
+        previous = neighbor;
+        if (neighbor == skip)
+          continue;
+        n[size] = neighbor;
+        m[size] = entryMeta;
+        ++size;
+      }
+      return size;
+    }
+
+    /** True when an earlier hop of the clause stands on the relationship entry {@code index} of hop {@code depth} names. */
+    private boolean conflicts(final int depth, final int index, final int[] stackNodeId, final int[] stackCursor) {
+      final int[] against = hopConflictsWith[depth];
+      if (against == null || against.length == 0)
+        return false;
+      final int entryMeta = meta[depth][index];
+      final int vertex = stackNodeId[depth];
+      final int neighbor = neighbors[depth][index];
+      final int out = (entryMeta & 1) != 0 ? vertex : neighbor;
+      final int in = (entryMeta & 1) != 0 ? neighbor : vertex;
+      int rank = -1;
+      for (final int j : against) {
+        final int jIndex = stackCursor[j];
+        final int jMeta = meta[j][jIndex];
+        if ((jMeta >>> 1) != (entryMeta >>> 1))
+          continue;
+        final int jVertex = stackNodeId[j];
+        final int jNeighbor = neighbors[j][jIndex];
+        final int jOut = (jMeta & 1) != 0 ? jVertex : jNeighbor;
+        final int jIn = (jMeta & 1) != 0 ? jNeighbor : jVertex;
+        if (jOut != out || jIn != in)
+          continue;
+        if (rank < 0)
+          rank = rank(depth, index);
+        if (rankedIndex[j] != jIndex) {
+          rankedValue[j] = rank(j, jIndex);
+          rankedIndex[j] = jIndex;
+        }
+        if (rankedValue[j] == rank)
+          return true;
+      }
+      return false;
+    }
+
+    /**
+     * The rank of entry {@code index} among the equal entries (same neighbour, type and orientation) before it. Each
+     * (type, orientation) segment is appended whole, so in sorted segments those entries are the run ending at
+     * {@code index}.
+     */
+    private int rank(final int depth, final int index) {
+      final int[] n = neighbors[depth];
+      final int[] m = meta[depth];
+      final int neighbor = n[index];
+      final int entryMeta = m[index];
+      int rank = 0;
+      if (sorted[depth]) {
+        for (int i = index - 1; i >= 0 && n[i] == neighbor && m[i] == entryMeta; i--)
+          ++rank;
+        return rank;
+      }
+      for (int i = 0; i < index; i++)
+        if (n[i] == neighbor && m[i] == entryMeta)
+          ++rank;
+      return rank;
     }
   }
 
@@ -585,6 +874,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     }
     sb.append(" [provider=").append(provider.getName());
     sb.append(", hops=").append(hopDirections.length);
+    if (hopTracked != null)
+      sb.append(", unique relationships");
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

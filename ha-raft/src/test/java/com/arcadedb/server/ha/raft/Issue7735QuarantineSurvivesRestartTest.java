@@ -36,7 +36,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -91,7 +91,7 @@ class Issue7735QuarantineSurvivesRestartTest {
     quarantineSurvives(tempDir, DivergenceCause.APPLY_ERROR);
   }
 
-  /** {@code markDatabasesNotAtSnapshotIndex}'s incomplete install (issue #6760). */
+  /** {@code settleDivergedStateAfterInstall}'s incomplete install (issue #6760). */
   @Test
   void anIncompleteSnapshotInstallQuarantineIsStillRecordedAfterARestart(@TempDir final Path tempDir)
       throws Exception {
@@ -349,8 +349,7 @@ class Issue7735QuarantineSurvivesRestartTest {
   void aBatchQuarantineIsWrittenOnceAndRestoresEveryDatabase(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine before = newStateMachine(tempDir);
     try {
-      assertThat(before.quarantineDatabases(List.of(DB_A, DB_B), DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE))
-          .containsExactlyInAnyOrder(DB_A, DB_B);
+      before.settleDivergedStateAfterInstall(Set.of(DB_A, DB_B), 100L);
     } finally {
       before.close();
     }
@@ -361,30 +360,12 @@ class Issue7735QuarantineSurvivesRestartTest {
 
     final ArcadeStateMachine after = newStateMachine(tempDir);
     try {
-      assertThat(after.getLocalResyncState().divergedDatabases()).containsExactly(DB_B, DB_A);
+      assertThat(after.getLocalResyncState().divergedDatabases()).containsExactlyInAnyOrder(DB_A, DB_B);
       assertThat(after.getLocalResyncState().divergenceCauses())
           .containsEntry(DB_A, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE)
           .containsEntry(DB_B, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
     } finally {
       after.close();
-    }
-  }
-
-  /** The batch reports only what it newly quarantined, so first-cause-wins survives it. */
-  @Test
-  void aBatchReportsOnlyTheDatabasesItNewlyQuarantined(@TempDir final Path tempDir) throws Exception {
-    final ArcadeStateMachine sm = newStateMachine(tempDir);
-    try {
-      sm.markStateDiverged(DB_A, DivergenceCause.WAL_VERSION_GAP);
-
-      assertThat(sm.quarantineDatabases(List.of(DB_A, DB_B), DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE))
-          .containsExactly(DB_B);
-      assertThat(sm.getLocalResyncState().divergenceCauses())
-          .as("the earlier cause stands")
-          .containsEntry(DB_A, DivergenceCause.WAL_VERSION_GAP)
-          .containsEntry(DB_B, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
-    } finally {
-      sm.close();
     }
   }
 

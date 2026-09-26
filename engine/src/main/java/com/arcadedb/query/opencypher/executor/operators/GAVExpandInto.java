@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -48,9 +49,10 @@ import java.util.Set;
  * joining it - the CSR holds one adjacency entry per edge, so the equal range around the search hit
  * gives that multiplicity without materialising anything (issue #5663).
  * <p>
- * Selected when both source and target are bound, no edge object is needed - neither captured by the
- * query nor required to enforce relationship uniqueness against another hop of the same MATCH clause,
- * which adjacency ids cannot answer - and a matching {@link GraphTraversalProvider} is available.
+ * Selected when both source and target are bound, no edge object is needed and a matching
+ * {@link GraphTraversalProvider} is available. A hop whose relationship may collide with another one of its MATCH
+ * clause counts the pair's relationships per edge type and orientation instead, and binds a {@link GAVEdgeRef} for
+ * each one it emits, skipping those the preceding hops of the clause already bound (issue #8394).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -60,6 +62,9 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
   private final String targetVariable;
   private final Direction direction;
   private final String[] edgeTypes;
+  // Relationship uniqueness (#8394): see GAVExpandAll. Null when the hop cannot collide.
+  private String edgeTrackingVar;
+  private Set<String> sameClausePrecedingRelVars;
 
   public GAVExpandInto(final PhysicalOperator child, final GraphTraversalProvider provider,
                       final String sourceVariable, final String targetVariable,
@@ -73,6 +78,15 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
     this.edgeTypes = edgeTypes;
   }
 
+  /**
+   * Makes this hop bind a {@link GAVEdgeRef} under {@code edgeTrackingVar} and refuse the relationships already bound
+   * under {@code sameClausePrecedingRelVars}.
+   */
+  public void setEdgeTracking(final String edgeTrackingVar, final Set<String> sameClausePrecedingRelVars) {
+    this.edgeTrackingVar = edgeTrackingVar;
+    this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -84,6 +98,9 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // Resolved once per execution, not per row: an untyped hop reads every edge type of the schema
+      private final String[] trackedTypes = edgeTrackingVar != null ?
+          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
 
       @Override
       public boolean hasNext() {
@@ -115,6 +132,11 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
           if (sourceVertex == null || targetVertex == null)
             continue;
 
+          if (edgeTrackingVar != null) {
+            expandTracked(inputResult, sourceVertex, targetVertex);
+            continue;
+          }
+
           // CSR multiplicity lookup: O(log(degree)) binary search plus the equal range
           final int srcId = provider.getNodeId(sourceVertex.getIdentity());
           final int tgtId = provider.getNodeId(targetVertex.getIdentity());
@@ -145,20 +167,77 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       }
 
       /**
+       * The tracked expansion: one row per relationship joining the pair that no preceding hop of the clause bound,
+       * each carrying its label. The relationships are counted per edge type and orientation, since a label names
+       * both, and labelled by their rank {@code 0..m-1} among the {@code m} parallel ones.
+       */
+      private void expandTracked(final Result inputResult, final Vertex sourceVertex, final Vertex targetVertex) {
+        final GAVEdgeRef[] bound = GAVEdgeRef.collect(inputResult, sameClausePrecedingRelVars);
+        final RID source = sourceVertex.getIdentity();
+        final RID target = targetVertex.getIdentity();
+        final int srcId = provider.getNodeId(source);
+        final int tgtId = provider.getNodeId(target);
+        for (final String type : trackedTypes) {
+          if (direction != Direction.IN)
+            emitTracked(inputResult, bound, type, source, target, srcId, tgtId, Vertex.DIRECTION.OUT, sourceVertex, targetVertex);
+          // Undirected: a self-loop is one relationship, already counted in the outgoing orientation
+          if (direction != Direction.OUT && !(direction == Direction.BOTH && source.equals(target)))
+            emitTracked(inputResult, bound, type, target, source, srcId, tgtId, Vertex.DIRECTION.IN, sourceVertex, targetVertex);
+        }
+      }
+
+      private void emitTracked(final Result inputResult, final GAVEdgeRef[] bound, final String type, final RID out,
+          final RID in, final int srcId, final int tgtId, final Vertex.DIRECTION orientation, final Vertex sourceVertex,
+          final Vertex targetVertex) {
+        long parallel = srcId < 0 || tgtId < 0 ? -1 : provider.countEdgesBetween(srcId, tgtId, orientation, type);
+        if (parallel < 0)
+          parallel = countTypedOLTP(sourceVertex, targetVertex, orientation, type);
+        for (int occurrence = 0; occurrence < parallel; occurrence++) {
+          if (GAVEdgeRef.conflicts(bound, type, out, in, occurrence))
+            continue;
+          final ResultInternal result = new ResultInternal();
+          for (final String prop : inputResult.getPropertyNames())
+            result.setProperty(prop, inputResult.getProperty(prop));
+          result.setProperty(edgeTrackingVar, GAVEdgeRef.ranked(type, out, in, occurrence));
+          buffer.add(result);
+        }
+      }
+
+      /**
+       * OLTP fallback of the tracked expansion: the relationships of exactly {@code type} joining the pair one way. A
+       * ghost edge is reported and skipped, as {@link #countConnectingOLTP} does.
+       */
+      private long countTypedOLTP(final Vertex source, final Vertex target, final Vertex.DIRECTION orientation,
+          final String type) {
+        final Iterator<Edge> edges = candidateEdges(source, target, orientation, type);
+        long count = 0;
+        while (edges.hasNext()) {
+          try {
+            final Edge edge = edges.next();
+            if (!edge.getTypeName().equals(type))
+              continue;
+            final RID other = orientation == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+            if (other.equals(target.getIdentity()))
+              ++count;
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
+          }
+        }
+        return count;
+      }
+
+      /**
        * OLTP fallback: counts the relationships joining the pair by iterating edges, for when one or
        * both vertices are not present in the GAV mapping (created after the last build), or when the
        * view cannot state the multiplicity exactly.
        * <p>
        * It counts every connecting edge without checking any against the relationship variables an
-       * earlier hop of the same MATCH clause bound - which is correct only because
-       * {@code CypherOptimizer.createExpandIntoOperator} selects this operator solely for a hop that
-       * has no such variable to check against and no edge to track. That gate is what makes the
-       * question moot here; widen it and this count has to start asking it, which it cannot do,
-       * because the operator never binds the edges it counts.
+       * earlier hop of the same MATCH clause bound - which is correct only because this path serves a hop
+       * that cannot collide with any; a hop that can takes {@link #expandTracked} instead.
        */
       private long countConnectingOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection);
+        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection, edgeTypes);
         if (arcadeDirection == Vertex.DIRECTION.BOTH)
           // both adjacency lists are walked, and a self-loop sits in each of them
           edges = SelfLoops.deduplicatingEdges(edges);
@@ -195,11 +274,12 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
        * it goes unnoticed here. This is a connectivity probe, not a ghost scanner - CHECK DATABASE is
        * what sweeps a whole edge list.
        */
-      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
+      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection,
+          final String... types) {
         if (source instanceof VertexInternal internalSource)
           return ((DatabaseInternal) source.getDatabase()).getGraphEngine()
-              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
-        return source.getEdges(arcadeDirection, edgeTypes).iterator();
+              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), types);
+        return source.getEdges(arcadeDirection, types).iterator();
       }
 
       @Override
@@ -227,6 +307,8 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
     sb.append(direction == Direction.OUT ? ">" : direction == Direction.IN ? "<" : "");
     sb.append("(").append(targetVariable).append(")");
     sb.append(" [provider=").append(provider.getName());
+    if (edgeTrackingVar != null)
+      sb.append(", unique relationships");
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

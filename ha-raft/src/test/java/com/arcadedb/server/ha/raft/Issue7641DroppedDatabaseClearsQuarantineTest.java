@@ -56,7 +56,7 @@ class Issue7641DroppedDatabaseClearsQuarantineTest {
   /**
    * Drives the already-absent branch of {@code applyDropDatabaseEntry}: it is the one that needs no live database,
    * and it retires the same bookkeeping the branch that actually deletes does. The floor is seeded the way
-   * {@code markDatabasesNotAtSnapshotIndex} publishes it.
+   * {@code settleDivergedStateAfterInstall} publishes it.
    */
   @Test
   void droppingAQuarantinedDatabaseRetiresItsReadFloorAndDivergedMarker() throws Exception {

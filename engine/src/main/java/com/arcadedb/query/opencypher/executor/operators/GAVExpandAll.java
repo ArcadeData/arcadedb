@@ -35,10 +35,13 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * CSR-backed expand operator that uses a {@link GraphTraversalProvider} for O(1) neighbor lookups
@@ -49,6 +52,10 @@ import java.util.NoSuchElementException;
  *   <li>A ready {@link GraphTraversalProvider} covers the required edge types</li>
  *   <li>The edge variable is not captured (CSR doesn't store edge objects)</li>
  * </ul>
+ * <p>
+ * A hop whose relationship may collide with another one of its MATCH clause walks one adjacency slice per edge type and
+ * orientation and binds a {@link GAVEdgeRef} for the relationship it took, so that neither it nor a later hop of the
+ * clause binds that relationship again (issue #8394).
  * <p>
  * Performance: neighbor lookup is a direct array slice (CSR) vs O(degree) linked list scan (OLTP).
  * Target vertices are loaded by RID, which is a direct page access.
@@ -63,6 +70,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
   private final String[] edgeTypes;
   private String targetLabel;
   private boolean deferTargetLoad;
+  // Relationship uniqueness (#8394): where this hop binds the label of the relationship it walked, and the variables
+  // under which the preceding hops of the same MATCH clause bound theirs. Null when the hop cannot collide.
+  private String edgeTrackingVar;
+  private Set<String> sameClausePrecedingRelVars;
 
   public GAVExpandAll(final PhysicalOperator child, final GraphTraversalProvider provider,
                      final String sourceVariable, final String targetVariable,
@@ -93,6 +104,23 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
     this.deferTargetLoad = deferTargetLoad;
   }
 
+  /**
+   * Makes this hop bind a {@link GAVEdgeRef} under {@code edgeTrackingVar} and refuse the relationships already bound
+   * under {@code sameClausePrecedingRelVars}.
+   */
+  public void setEdgeTracking(final String edgeTrackingVar, final Set<String> sameClausePrecedingRelVars) {
+    this.edgeTrackingVar = edgeTrackingVar;
+    this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
+  }
+
+  public String getEdgeTrackingVar() {
+    return edgeTrackingVar;
+  }
+
+  public Set<String> getSameClausePrecedingRelVars() {
+    return sameClausePrecedingRelVars;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -109,6 +137,21 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // Tracked mode (#8394): the current source's adjacency, one slice per (edge type, orientation)
+      private final String[] trackedTypes = edgeTrackingVar != null ?
+          GAVEdgeRef.trackedEdgeTypes(context.getDatabase(), edgeTypes) : null;
+      private GAVEdgeRef[] boundRefs;
+      private int sourceNodeId;
+      private RID sourceRID;
+      private int[][] slices;
+      private String[] sliceTypes;
+      private boolean[] sliceOutgoing;
+      private boolean[] sliceSorted;
+      private int sliceCount;
+      private int sliceIdx;
+      private int entryIdx;
+      // Parallel relationships met so far in the current fallback walk, per (type, out, in)
+      private Map<GAVEdgeRef, int[]> fallbackWalked;
 
       @Override
       public boolean hasNext() {
@@ -130,6 +173,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private void fetchMore(final int n) {
         buffer.clear();
         bufferIndex = 0;
+        if (trackedTypes != null) {
+          fetchMoreTracked(n);
+          return;
+        }
 
         while (buffer.size() < n) {
           guard.check();
@@ -228,21 +275,172 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         }
       }
 
+      /**
+       * The tracked expansion: walks the source's adjacency one (edge type, orientation) slice at a time, so every
+       * entry names one relationship whose label can be compared with the ones the row already binds.
+       */
+      private void fetchMoreTracked(final int n) {
+        while (buffer.size() < n) {
+          guard.check();
+          if (oltpFallbackEdges != null) {
+            if (oltpFallbackEdges.hasNext())
+              walkFallbackEdge(oltpFallbackEdges.next());
+            else
+              oltpFallbackEdges = null;
+            continue;
+          }
+
+          if (sliceIdx >= sliceCount) {
+            if (!inputResults.hasNext()) {
+              finished = true;
+              break;
+            }
+            nextTrackedInput(inputResults.next());
+            continue;
+          }
+
+          final int[] slice = slices[sliceIdx];
+          if (entryIdx >= slice.length) {
+            ++sliceIdx;
+            entryIdx = 0;
+            continue;
+          }
+
+          final int index = entryIdx++;
+          final int targetNodeId = slice[index];
+          final boolean outgoing = sliceOutgoing[sliceIdx];
+          // Undirected: a self-loop sits in both lists of its vertex, and the outgoing one already yielded it
+          if (!outgoing && direction == Direction.BOTH && targetNodeId == sourceNodeId)
+            continue;
+
+          final RID targetRID = provider.getRID(targetNodeId);
+          if (targetRID == null)
+            continue; // stale node ID — vertex deleted since last CSR build
+
+          final String type = sliceTypes[sliceIdx];
+          final RID out = outgoing ? sourceRID : targetRID;
+          final RID in = outgoing ? targetRID : sourceRID;
+          final boolean sorted = sliceSorted[sliceIdx];
+          if (GAVEdgeRef.conflicts(boundRefs, type, out, in, slice, index, sorted))
+            continue;
+
+          emitNeighbor(targetNodeId, targetRID, GAVEdgeRef.inSlice(type, out, in, slice, index, sorted));
+        }
+      }
+
+      private void nextTrackedInput(final Result input) {
+        currentInputResult = input;
+        sliceCount = 0;
+        sliceIdx = 0;
+        entryIdx = 0;
+
+        final Object sourceObj = input.getProperty(sourceVariable);
+        final int nodeId;
+        if (sourceObj instanceof GAVVertex gavVertex)
+          nodeId = gavVertex.getNodeId();
+        else if (sourceObj instanceof Vertex vertex)
+          nodeId = provider.getNodeId(vertex.getIdentity());
+        else
+          return;
+
+        boundRefs = GAVEdgeRef.collect(input, sameClausePrecedingRelVars);
+
+        if (nodeId < 0) {
+          // Vertex not in GAV mapping (created after last build) — fall back to OLTP
+          if (sourceObj instanceof Vertex vertex) {
+            final Iterator<Edge> edges = vertex.getEdges(direction.toArcadeDirection(), edgeTypes).iterator();
+            oltpFallbackEdges = direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(edges) : edges;
+            fallbackWalked = null;
+          }
+          return;
+        }
+
+        sourceNodeId = nodeId;
+        sourceRID = ((Vertex) sourceObj).getIdentity();
+        final int perType = direction == Direction.BOTH ? 2 : 1;
+        if (slices == null || slices.length < trackedTypes.length * perType) {
+          slices = new int[trackedTypes.length * perType][];
+          sliceTypes = new String[slices.length];
+          sliceOutgoing = new boolean[slices.length];
+          sliceSorted = new boolean[slices.length];
+        }
+        for (final String type : trackedTypes) {
+          if (direction != Direction.IN)
+            addSlice(type, true, provider.getNeighborIds(nodeId, Vertex.DIRECTION.OUT, type));
+          if (direction != Direction.OUT)
+            addSlice(type, false, provider.getNeighborIds(nodeId, Vertex.DIRECTION.IN, type));
+        }
+      }
+
+      private void addSlice(final String type, final boolean outgoing, final int[] neighbors) {
+        if (neighbors == null || neighbors.length == 0)
+          return;
+        slices[sliceCount] = neighbors;
+        sliceTypes[sliceCount] = type;
+        sliceOutgoing[sliceCount] = outgoing;
+        sliceSorted[sliceCount] = GAVEdgeRef.isSorted(neighbors);
+        ++sliceCount;
+      }
+
+      /**
+       * A source the view does not map is expanded on its edge records. The relationship is still bound as a label,
+       * ranked among the parallel ones this walk has met so far, since every other hop of the clause binds labels.
+       */
+      private void walkFallbackEdge(final Edge edge) {
+        final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
+        final String type = edge.getTypeName();
+        final RID out = edge.getOut();
+        final RID in = edge.getIn();
+        if (fallbackWalked == null)
+          fallbackWalked = new HashMap<>();
+        // Keyed by a rank-0 label: its hash and its equality then cover the endpoints only
+        final int occurrence = fallbackWalked.computeIfAbsent(GAVEdgeRef.ranked(type, out, in, 0), k -> new int[1])[0]++;
+        final GAVEdgeRef ref = GAVEdgeRef.ranked(type, out, in, occurrence);
+        if (GAVEdgeRef.conflicts(boundRefs, type, out, in, occurrence))
+          return;
+
+        final Vertex targetVertex;
+        try {
+          targetVertex = getTargetVertex(edge, sourceVertex);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+          return;
+        }
+        if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+          return;
+        addResult(targetVertex, ref);
+      }
+
+      private void emitNeighbor(final int targetNodeId, final RID targetRID, final GAVEdgeRef ref) {
+        final GAVVertex targetVertex = new GAVVertex(targetRID, targetNodeId, provider, context.getDatabase());
+        if (targetLabel != null) {
+          if (deferTargetLoad) {
+            // Polymorphic, as the full-load path: a label matches its sub-types too (#8377)
+            final DocumentType targetType = context.getDatabase().getSchema().getTypeByBucketId(targetRID.getBucketId());
+            if (targetType == null || !targetType.instanceOf(targetLabel))
+              return;
+          } else if (!targetVertex.getType().instanceOf(targetLabel))
+            return;
+        }
+        addResult(targetVertex, ref);
+      }
+
       private void addResultWithTarget(final Vertex targetVertex) {
+        addResult(targetVertex, null);
+      }
+
+      private void addResultWithReference(final GAVVertex ref) {
+        addResult(ref, null);
+      }
+
+      private void addResult(final Vertex targetVertex, final GAVEdgeRef edgeRef) {
         final ResultInternal result = new ResultInternal();
         for (final String prop : currentInputResult.getPropertyNames())
           result.setProperty(prop, currentInputResult.getProperty(prop));
         if (targetVariable != null)
           result.setProperty(targetVariable, targetVertex);
-        buffer.add(result);
-      }
-
-      private void addResultWithReference(final GAVVertex ref) {
-        final ResultInternal result = new ResultInternal();
-        for (final String prop : currentInputResult.getPropertyNames())
-          result.setProperty(prop, currentInputResult.getProperty(prop));
-        if (targetVariable != null)
-          result.setProperty(targetVariable, ref);
+        if (edgeRef != null)
+          result.setProperty(edgeTrackingVar, edgeRef);
         buffer.add(result);
       }
 
@@ -285,6 +483,8 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       sb.append(":").append(targetLabel);
     sb.append(")");
     sb.append(" [provider=").append(provider.getName());
+    if (edgeTrackingVar != null)
+      sb.append(", unique relationships");
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

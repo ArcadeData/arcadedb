@@ -80,8 +80,8 @@ class Issue8378GAVBuildRacesCommitsTest extends TestHelper {
 
   @Test
   void synchronousBlockingBuildKeepsEveryCommitThatRacedItsScan() {
-    // build() runs the scan on the caller's thread holding the view's monitor for all of it: the commits that race it
-    // must neither block on that monitor nor be applied blindly on top of the CSR it publishes
+    // build() runs the scan on the caller's thread: the commits that race it must neither wait for it nor be applied
+    // blindly on top of the CSR it publishes
     final GraphAnalyticalView view = raceBuild(() -> builder(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).build());
     assertThat(view.isReady()).isTrue();
     assertDegreesMatchTheRecords(view);
