@@ -6344,11 +6344,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The single writer of a quarantine: records {@code dbName} as diverged under {@code cause} and durably
    * persists the quarantine, returning {@code true} only for the call that established it (issue #7735).
    * <p>
-   * Every path that quarantines a database goes through here - the WAL version gap in
+   * Every path that quarantines a single database goes through here - the WAL version gap in
    * {@link #applyReplicatedTransaction}, the apply error and the undecodable entry in
-   * {@link #handleUnexpectedApplyError}, and the incomplete snapshot install in
-   * {@code settleDivergedStateAfterInstall} through {@link #markStateDiverged(String, DivergenceCause)} - so
-   * there is one place the durability can be missing from rather than four.
+   * {@link #handleUnexpectedApplyError} - so there is one place the durability can be missing from rather than three.
+   * The only other writer is {@code settleDivergedStateAfterInstall}, which a snapshot install needs to REPLACE the
+   * whole diverged state (quarantines, read floors and applied positions) in one write rather than add to it, which is
+   * why it cannot be a loop over this method: both hold {@link #appliedIndexFileLock} across their mutation and write
+   * the same file through {@link #persistAppliedIndexFile()}.
    * <p>
    * Written under {@link #appliedIndexFileLock}, the same lock {@link #ensureAppliedIndexLoaded()} and the
    * applied-index writers take, so the mark and the applied position it qualifies land in one atomic rename.
@@ -6379,42 +6381,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "writable and has free space (issue #7735)",
             dbName, cause, getAppliedIndexFile());
       return true;
-    }
-  }
-
-  /**
-   * {@link #quarantineDatabase} for a whole batch, in ONE file write (code review on PR #8146).
-   * <p>
-   * Same lock, same load-before-mutate, same first-cause-wins semantics; the only difference is that the file is
-   * rewritten once for the set rather than once per member. Used by the snapshot-install path, which learns
-   * about every database it gave up on at the same moment.
-   * <p>
-   * Deliberately does NOT drive a resync per database the way {@link #handleUnexpectedApplyError} does: its one
-   * caller publishes a read floor beside each mark and leaves recovery to
-   * {@link #retryUnfilledSnapshotGap()}, which is what #6760 chose.
-   *
-   * @return the databases this call newly quarantined, empty when every one of them already was
-   */
-  // @VisibleForTesting
-  Set<String> quarantineDatabases(final Collection<String> dbNames, final DivergenceCause cause) {
-    if (dbNames == null || dbNames.isEmpty())
-      return Set.of();
-    synchronized (appliedIndexFileLock) {
-      ensureAppliedIndexLoaded();
-      final Set<String> added = new HashSet<>();
-      for (final String dbName : dbNames)
-        if (dbName != null && !dbName.isEmpty() && divergedDatabases.putIfAbsent(dbName, cause) == null)
-          added.add(dbName);
-      if (added.isEmpty())
-        return Set.of();
-      if (!persistAppliedIndexFile() && !closed)
-        LogManager.instance().log(this, Level.WARNING,
-            "Database(s) %s are quarantined (%s) but the quarantine could NOT be written to %s: a restart before "
-                + "this is fixed comes back without it. The log is not checkpointed while a database is "
-                + "quarantined, so the skipped entries stay replayable, but check that the .raft directory is "
-                + "writable and has free space (issue #7735)",
-            added, cause, getAppliedIndexFile());
-      return added;
     }
   }
 

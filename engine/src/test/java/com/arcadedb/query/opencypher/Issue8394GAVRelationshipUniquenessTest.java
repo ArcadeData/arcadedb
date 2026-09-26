@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -258,6 +259,24 @@ class Issue8394GAVRelationshipUniquenessTest extends TestHelper {
       assertThat(plan(query)).as(query).contains("unique relationships");
       assertThat(answer(query)).as(query).isEqualTo(expected.get(query));
     }
+  }
+
+  @Test
+  void aClauseSplitAcrossTwoViewsWalksTheRecords() {
+    // Occurrences numbered in two views, built at different times, need not agree on a pair's parallel relationships
+    final String query = "MATCH (a:P)-[:K]->(b:P)-[:K|L]->(c:P) RETURN count(*) AS n";
+    final List<String> expected = answer(query);
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gav8394k VERTEX TYPES (P) EDGE TYPES (K) PROPERTIES (id)");
+    createView("VERTEX TYPES (P) EDGE TYPES (L) PROPERTIES (id)");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gav8394kl VERTEX TYPES (P) EDGE TYPES (K, L) PROPERTIES (id)");
+    for (final String name : List.of("gav8394k", "gav8394kl")) {
+      final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, name);
+      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    }
+    final String plan = plan(query);
+    if (plan.contains("provider=gav8394k]") || plan.contains("provider=gav8394k,"))
+      assertThat(plan).as("the clause spans two views").doesNotContain("unique relationships");
+    assertThat(answer(query)).isEqualTo(expected);
   }
 
   @Test

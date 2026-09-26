@@ -391,6 +391,12 @@ public class CypherOptimizer {
           eligible = false;
           break;
         }
+        // One view for the whole clause: occurrences numbered in two views, built at different times, need not agree
+        // on how many parallel relationships a pair has
+        if (!clauseProviders.isEmpty() && clauseProviders.values().iterator().next() != provider) {
+          eligible = false;
+          break;
+        }
         clauseProviders.put(rel, provider);
       }
       if (eligible)

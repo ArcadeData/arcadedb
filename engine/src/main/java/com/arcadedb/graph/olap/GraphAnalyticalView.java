@@ -475,7 +475,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           // The listeners were armed before the scan: with no CSR to keep up to date they would only tax every commit
           if (snapshot == null)
             unregisterChangeListeners();
-        } else if (readyLatch != latch)
+        } else if (readyLatch != latch && !shutDown)
+          // Not once shut down: a build dispatched on the view since then is not the one this call was superseded by
           newer = readyLatch;
         this.notifyAll();
       }
