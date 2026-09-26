@@ -96,10 +96,6 @@ class Issue8420HostCodeSecurityStateTest extends TestHelper {
     }
   }
 
-  private void assertDenied(final String script) {
-    assertDenied(script, Map.of());
-  }
-
   private void assertDenied(final String script, final Map<String, Object> parameters) {
     assertThatThrownBy(() -> database.command("js", script, parameters))
         .isInstanceOf(CommandExecutionException.class)
