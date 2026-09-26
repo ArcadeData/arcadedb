@@ -48,6 +48,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.function.FunctionLibraryFactory;
+import com.arcadedb.function.polyglot.PolyglotFunctionDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -3913,6 +3914,61 @@ public class LocalSchema implements Schema {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     functionLibraries.remove(name);
     return this;
+  }
+
+  /**
+   * Adds a user-defined function to the library {@code libraryName}: the schema change behind {@code DEFINE FUNCTION}.
+   * When the schema has no such library yet, {@code newLibrary} is registered under that name - AFTER the function was
+   * accepted into it, so a definition the library rejects (a polyglot body that does not compile) leaves no empty
+   * library behind to be persisted. If a library of that name appeared since the caller looked (a concurrent
+   * {@code DEFINE FUNCTION} on the same new name, possibly in another language), the definition is refused rather than
+   * merged into a library the caller did not build.
+   * <p>
+   * Runs inside a schema recording session (issue #8404), so the change is persisted to {@code schema.json} and,
+   * under HA, proposed to the followers as a {@code SCHEMA_ENTRY} like any other DDL. A bare
+   * {@link #saveConfiguration()} did the former and not the latter, and the function existed on one node only.
+   *
+   * @param libraryName name of the library that receives the function
+   * @param newLibrary  library to register under {@code libraryName} if the schema has none, or {@code null} when the
+   *                    library already exists
+   * @param function    the function to add
+   */
+  public void defineFunction(final String libraryName, final FunctionLibraryDefinition newLibrary,
+      final FunctionDefinition function) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    // A polyglot function is host code a later SELECT can invoke, so defining one takes security-admin on top of
+    // UPDATE_SCHEMA - the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g), held here as well so a direct
+    // call to this public method is no way around it.
+    if (function instanceof PolyglotFunctionDefinition)
+      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+    recordFileChanges(() -> {
+      final FunctionLibraryDefinition existing = functionLibraries.get(libraryName);
+      if (existing != null) {
+        if (newLibrary != null)
+          throw new IllegalArgumentException("Function library '" + libraryName + "' already registered");
+        existing.registerFunction(function);
+      } else {
+        if (newLibrary == null)
+          throw new IllegalArgumentException("Function library '" + libraryName + "' not defined");
+        newLibrary.registerFunction(function);
+        functionLibraries.put(libraryName, newLibrary);
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Removes a user-defined function from its library: the schema change behind {@code DELETE FUNCTION}. Runs inside a
+   * schema recording session for the reason {@link #defineFunction} does (issue #8404).
+   *
+   * @throws IllegalArgumentException if the library is not defined
+   */
+  public void deleteFunction(final String libraryName, final String functionName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    recordFileChanges(() -> {
+      getFunctionLibrary(libraryName).unregisterFunction(functionName);
+      return null;
+    });
   }
 
   @Override

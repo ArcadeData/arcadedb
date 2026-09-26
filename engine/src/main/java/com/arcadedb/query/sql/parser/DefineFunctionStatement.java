@@ -35,10 +35,9 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     // Registering a function is a schema mutation and must always require UPDATE_SCHEMA, regardless of whether the
-    // target library already exists. The create-library branch below routes through Schema.registerFunctionLibrary
-    // (UPDATE_SCHEMA-guarded), but adding a function to an already-existing library calls fLib.registerFunction
-    // directly, which is unguarded - so without this check a plain-database-access identity could inject a function
-    // into any pre-existing library (sibling of the GHSA-vv82-qvpf-rjwv / GHSA-8vr5-263f-x5r3 function-authz gaps).
+    // target library already exists (sibling of the GHSA-vv82-qvpf-rjwv / GHSA-8vr5-263f-x5r3 function-authz gaps).
+    // LocalSchema.defineFunction below checks it again; checking here too refuses the caller before a polyglot library
+    // or function is built.
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Defining a function in a scripting language (polyglot, e.g. JavaScript) is arbitrary host code
@@ -46,19 +45,22 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     // with schema (or lesser) access could DEFINE FUNCTION ... LANGUAGE js and then invoke it via SELECT,
     // bypassing the polyglot scripting gate that GHSA-48qw introduced (GHSA-vwjc-v7x7-cm6g). SQL/Cypher
     // user functions are declarative, not host code, so the UPDATE_SCHEMA check above is sufficient for them.
+    // This is the early check only: LocalSchema.defineFunction holds the same gate on the function's type
+    // (PolyglotFunctionDefinition), and that one is authoritative if a language is ever added here but not above.
     if (language != null && "js".equalsIgnoreCase(language.getStringValue()))
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
-    final FunctionLibraryDefinition fLib;
+    // Only built here, so an unknown language is reported as a parse error. It is registered by the schema, and
+    // only once the function has been accepted into it.
+    final FunctionLibraryDefinition newLibrary;
     if (!database.getSchema().hasFunctionLibrary(libraryName.getStringValue())) {
       try {
-        fLib = FunctionLibraryFactory.createLibrary(database, libraryName.getStringValue(), language.getStringValue());
+        newLibrary = FunctionLibraryFactory.createLibrary(database, libraryName.getStringValue(), language.getStringValue());
       } catch (final IllegalArgumentException e) {
         throw new CommandSQLParsingException(e.getMessage());
       }
-      database.getSchema().registerFunctionLibrary(fLib);
     } else
-      fLib = database.getSchema().getFunctionLibrary(libraryName.getStringValue());
+      newLibrary = null;
 
     final String[] parameterArray;
     if (parameters != null) {
@@ -77,11 +79,10 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       throw new CommandSQLParsingException(e.getMessage());
     }
 
-    fLib.registerFunction(f);
-
-    // Persist the definition so it survives a restart (issue #5121). Only reached after a successful (validated)
-    // registration, so a broken definition is never written to the schema.
-    ((LocalSchema) database.getSchema()).saveConfiguration();
+    // Registered through the schema, which persists the definition so it survives a restart (issue #5121) and, under
+    // HA, replicates it to every node (issue #8404). A definition the library rejects is neither persisted nor
+    // replicated.
+    ((LocalSchema) database.getSchema()).defineFunction(libraryName.getStringValue(), newLibrary, f);
 
     return new InternalResultSet().add(
         new ResultInternal(context.getDatabase()).setProperty("operation", "create function").setProperty("libraryName", libraryName.getStringValue())

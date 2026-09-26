@@ -114,11 +114,11 @@ class Issue8370SecurityManagerUserMutationsLeaderOnlyIT extends BaseRaftHATest {
     final String user = "issue8370hostcode";
     final String define = "DEFINE FUNCTION lib8370.mint \"database.getSecurity().createUser('" + user + "', '" + PASSWORD
         + "'); return 1;\" LANGUAGE js";
-    // Defined on each node's embedded instance: DEFINE FUNCTION is not replicated by the Raft layer (it persists the
-    // schema outside recordFileChanges), which is issue #8404. What is under test is what the body does once it
-    // runs on a follower, however it got there.
-    getServer(leader).getDatabase(getDatabaseName()).getEmbedded().command("sql", define);
-    getServer(follower).getDatabase(getDatabaseName()).getEmbedded().command("sql", define);
+    // Defined once, on the leader: DEFINE FUNCTION replicates like any other DDL since issue #8404.
+    getServer(leader).getDatabase(getDatabaseName()).command("sql", define);
+    await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).untilAsserted(() ->
+        assertThat(getServer(follower).getDatabase(getDatabaseName()).getSchema().hasFunctionLibrary("lib8370"))
+            .as("the function must reach the follower").isTrue());
 
     assertThatThrownBy(() -> {
       try (final ResultSet rs = getServer(follower).getDatabase(getDatabaseName())
