@@ -25,6 +25,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,13 +45,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * had already moved past them, so nothing re-applied them, and nothing logged anything. A type created in that
  * window existed on every other node and never on this one - the #7259 {@code BoltFollowerWrite} divergence.
  * <p>
- * Each test pauses the install after the snapshot is staged, commits a new type and records on the leader, gives the
- * follower's apply thread the chance to apply them, releases the install and then asserts the follower has them.
+ * Each test pauses the install after the snapshot is staged, commits a new type and records on the leader, waits for
+ * the follower's apply thread to reach them (before the fix it applied them to the copy about to be discarded; with it,
+ * it waits on the install lock), releases the install, checks that the swap really happened, and then asserts the
+ * follower has them.
  */
 class RaftSnapshotInstallConcurrentApplyIT extends BaseRaftHATest {
 
-  /** How long the paused install gives the follower's apply thread to reach the leader's index. Expected to time out once fixed. */
-  private static final long APPLY_WINDOW_MS = 5_000;
+  /** A hang detector for the wait on the follower's apply thread, not a latency bound. */
+  private static final long APPLY_WAIT_SECONDS = 60;
 
   @Override
   protected int getServerCount() {
@@ -67,6 +71,8 @@ class RaftSnapshotInstallConcurrentApplyIT extends BaseRaftHATest {
   @AfterEach
   void clearSeam() {
     SnapshotInstaller.snapshotStagedForTesting = null;
+    SnapshotInstaller.swapProgressForTesting = null;
+    ArcadeStateMachine.applyWaitsForInstallForTesting = null;
   }
 
   @Test
@@ -122,6 +128,21 @@ class RaftSnapshotInstallConcurrentApplyIT extends BaseRaftHATest {
       }
     };
 
+    // The apply thread reaching the held install lock: proof the late entries arrived while the install was running,
+    // not after it had already released (CodeRabbit on PR #8456).
+    final CountDownLatch applyWaited = new CountDownLatch(1);
+    ArcadeStateMachine.applyWaitsForInstallForTesting = name -> {
+      if (dbName.equals(name))
+        applyWaited.countDown();
+    };
+    // triggerSnapshotDownload logs a failed install rather than throwing it, so success is read off the swap itself:
+    // a copy that was never replaced would receive the late entries normally and pass every data assertion below.
+    final Set<String> swapPhases = ConcurrentHashMap.newKeySet();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if (point.indexOf(':') < 0)
+        swapPhases.add(point);
+    };
+
     final AtomicReference<Throwable> installFailure = new AtomicReference<>();
     final Thread installer = new Thread(() -> {
       try {
@@ -142,15 +163,11 @@ class RaftSnapshotInstallConcurrentApplyIT extends BaseRaftHATest {
           leaderDb.newVertex(lateType).set("index", i).save();
       });
 
-      // Give the follower's apply thread the window it had before the fix: it applied these entries to the copy the
-      // swap was about to discard. With the fix it waits for the install, so this wait is expected to run out.
-      final RaftHAServer leaderHA = getRaftPlugin(leaderIndex).getRaftHAServer();
-      final RaftHAServer followerHA = getRaftPlugin(followerIndex).getRaftHAServer();
-      final long target = leaderHA.getStateMachine().getLastAppliedTermIndex().getIndex();
-      final long deadline = System.currentTimeMillis() + APPLY_WINDOW_MS;
-      while (followerHA.getStateMachine().getLastAppliedTermIndex().getIndex() < target
-          && System.currentTimeMillis() < deadline)
-        Thread.sleep(50);
+      // Before the fix the follower's apply thread applied these entries here, to the copy the swap was about to
+      // discard. With it, the apply thread reaches the install lock and waits.
+      assertThat(applyWaited.await(APPLY_WAIT_SECONDS, TimeUnit.SECONDS))
+          .as("the follower must reach the late entries while the install still holds the database's install lock")
+          .isTrue();
     } finally {
       release.countDown();
       installer.join(120_000);
@@ -160,6 +177,8 @@ class RaftSnapshotInstallConcurrentApplyIT extends BaseRaftHATest {
     assertThat(installFailure.get()).as("the install must succeed").isNull();
     assertThat(installerHeldGate.get()).as("the install must hold the database's install lock across the download").isTrue();
     assertThat(followerMachine.isHoldingInstallApplyGate()).as("a thread running no install holds no install lock").isFalse();
+    assertThat(swapPhases).as("the staged snapshot must have been swapped in, not rolled back")
+        .contains("INSTALLED").doesNotContain("ROLLING_BACK", "RESTORING");
 
     assertClusterConsistency();
 

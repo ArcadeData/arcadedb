@@ -440,6 +440,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, ReentrantLock> installApplyGates = new ConcurrentHashMap<>();
 
   /**
+   * Test-only hook called with the database name when the apply thread finds that database's install lock held and
+   * is about to wait on it (issue #7958). {@code null} in production (one reference read per contended apply).
+   */
+  static volatile Consumer<String> applyWaitsForInstallForTesting = null;
+
+  /**
    * Databases whose copy the committed bootstrap baseline ordered replaced, whose replacement has failed at least
    * once, and which nothing has replaced since (issue #8367). Each name owns exactly one holder in
    * {@link #bootstrapInstallsInFlight}, handed over by {@link #installFromLeaderForBootstrapWithRetry} when the first
@@ -705,6 +711,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
     reconciler.setServer(server);
+    // The Ratis-initiated installs go through the same #7958 install lock as every other install.
+    reconciler.setInstallGate(this::runUnderInstallGate);
   }
 
   /** The database reconciliation collaborator, used by {@code GetClusterHandler} and {@code ClusterAlerts}. */
@@ -4186,6 +4194,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "Applying entry %d for database '%s' waits for the snapshot install replacing this node's copy of it: the "
               + "copy the install replaces must not receive entries its replacement does not carry", index, dbName);
+      final Consumer<String> waiting = applyWaitsForInstallForTesting;
+      if (waiting != null)
+        waiting.accept(dbName);
       gate.lock();
     }
     return gate;
@@ -4227,6 +4238,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final Supplier<String> leaderHttpsAddr, final String clusterToken) throws IOException {
     // Read once: the field is volatile, and the path and the install must be about the same server.
     final ArcadeDBServer localServer = this.server;
+    runUnderInstallGate(dbName, () -> SnapshotInstaller.install(dbName,
+        SnapshotInstaller.resolveDatabasePath(localServer, dbName), leaderHttpAddr, leaderHttpsAddr, clusterToken,
+        localServer));
+  }
+
+  /**
+   * Runs {@code install} holding {@code dbName}'s install lock, as {@link #installLeaderCopy} describes. Also the
+   * {@link DatabaseReconciler.InstallGate} of the Ratis-initiated installs: Ratis pauses the state machine only after
+   * {@link #notifyInstallSnapshotFromLeader} has completed, so the apply thread can still be applying the entries
+   * below the snapshot while the reconciler replaces the copy they target.
+   */
+  void runUnderInstallGate(final String dbName, final DatabaseReconciler.InstallAction install) throws IOException {
     // The pre-install Raft log purge (issue #7037) asks Ratis for a snapshot, which the apply thread serves - and the
     // apply thread may be about to wait on the lock taken below. Purged here, before the lock, so it is not left
     // timing out against it; the install's own attempt then stands down (isHoldingInstallApplyGate()).
@@ -4236,8 +4259,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final ReentrantLock gate = installApplyGate(dbName);
     gate.lock();
     try {
-      SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(localServer, dbName), leaderHttpAddr,
-          leaderHttpsAddr, clusterToken, localServer);
+      install.run();
     } finally {
       gate.unlock();
     }
