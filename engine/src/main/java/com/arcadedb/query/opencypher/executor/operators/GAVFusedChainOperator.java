@@ -432,6 +432,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           hop.getTargetVariable(), hop.getDirection(), hop.getEdgeTypes(), hop.getEstimatedCost(),
           hop.getEstimatedCardinality());
       copy.setTargetLabel(hop.getTargetLabel());
+      // Deferred target loading is left off on purpose: it only saves record loads on the fused path, and these rows
+      // are the few sources the view does not map, whose targets are GAVVertex proxies loaded lazily anyway
       if (hop.getEdgeTrackingVar() != null)
         copy.setEdgeTracking(hop.getEdgeTrackingVar(), hop.getSameClausePrecedingRelVars());
       chain = copy;
