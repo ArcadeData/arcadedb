@@ -578,3 +578,11 @@ notes.txt
 /server/profiler
 /server/chats
 config/ai.json
+
+
+# '**/log' above is for the server's runtime output directory, and it also matches com/arcadedb/log/,
+# which is a package. Tracked files are unaffected, so the rule only bites a file ADDED to it later,
+# and silently. The directory is re-included first: git does not descend into an excluded one, so a
+# negation for a path inside it would never be read.
+!**/src/*/java/com/arcadedb/log/
+!**/src/*/java/com/arcadedb/log/**

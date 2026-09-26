@@ -199,7 +199,11 @@ class Issue7163DatabaseScopeCallbackTest {
     assertThat(notReached).as("SCOPE.JVM: process-wide, so an overlay is not a channel for them")
         .containsExactlyInAnyOrder(GlobalConfiguration.DUMP_CONFIG_AT_STARTUP.getKey(),
             GlobalConfiguration.DUMP_METRICS_EVERY.getKey(), GlobalConfiguration.PROFILE.getKey(),
-            GlobalConfiguration.LOG_IMPL.getKey());
+            GlobalConfiguration.LOG_IMPL.getKey(),
+            // Where logs go is process-wide, like how they are written. A database's overlay, ALTER
+            // DATABASE or SET SERVER SETTING must not be able to redirect the whole server's logs to
+            // a collector of its choosing, so these are SCOPE.JVM and belong on this side of the list.
+            GlobalConfiguration.LOG_OTLP_ENABLED.getKey(), GlobalConfiguration.LOG_OTLP_ENDPOINT.getKey());
   }
 
   /**

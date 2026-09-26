@@ -162,6 +162,23 @@ public enum GlobalConfiguration {
     return impl;
   }),
 
+  LOG_OTLP_ENABLED("arcadedb.log.otlp.enabled", SCOPE.JVM,
+      "Export every log record over OTLP, in addition to writing it through the configured logger (requires the optional logs plugin on the classpath). Independent of 'arcadedb.log.impl': exporting does not replace local logging",
+      Boolean.class, false, value -> {
+    // THE LOGGER IS BUILT FROM SYSTEM PROPERTIES, BECAUSE IT EXISTS BEFORE THIS CLASS DOES. KEEP THE TWO IN STEP,
+    // THEN REBUILD SO A CHANGE APPLIES AT RUNTIME AS 'arcadedb.log.impl' DOES
+    final boolean enabled = value != null && Boolean.parseBoolean(value.toString());
+    applyToLogger(LogManager.LOG_EXPORT_PROPERTY, Boolean.toString(enabled), "false");
+    return enabled;
+  }),
+
+  LOG_OTLP_ENDPOINT("arcadedb.log.otlp.endpoint", SCOPE.JVM, "OTLP log export endpoint", String.class,
+      "http://localhost:4317", value -> {
+    final String endpoint = value == null ? "" : value.toString().trim();
+    applyToLogger(LogManager.LOG_EXPORT_ENDPOINT_PROPERTY, endpoint, LogManager.LOG_EXPORT_ENDPOINT_DEFAULT);
+    return endpoint;
+  }),
+
   MAX_PAGE_RAM("arcadedb.maxPageRAM", SCOPE.DATABASE, "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, // 4GB
       new Callable<>() {
         @Override
@@ -3051,6 +3068,38 @@ public enum GlobalConfiguration {
    * fields of a JVM-wide enum singleton, so a mutable one is a way to widen or empty a setting's allow-list for the
    * rest of the process - which is exactly the enforcement {@link #coerceFromAdminCommand(Object)} centralises.
    */
+  /**
+   * Carries a log setting over to the system property the logger is built from, and rebuilds it - but
+   * only when the value actually changed.
+   *
+   * <p>The guard is the point, not an optimisation. Rebuilding installs a <em>new</em> logger, which
+   * throws away whatever {@link LogManager#setLogger(Logger)} had put there - and that method is
+   * public API an embedding application uses, and what the tests capturing output rely on. Without
+   * the guard every {@link #readConfiguration()} would silently replace it, because these settings
+   * are applied on every pass whether or not anyone touched them.
+   *
+   * <p>Null-checked for the same reason {@code LOG_IMPL} checks it: this can run re-entrantly from the
+   * log manager's own static initialiser, which reads the system properties directly and needs no help.
+   *
+   * <p>An unset property means the setting is at its default, so writing the default back is also a
+   * no-op. Comparing against null instead would make the first write rebuild even when it changed
+   * nothing, which is exactly the case a configuration pass produces for a setting nobody touched.
+   *
+   * @param property     the system property the logger reads
+   * @param value        the value just configured
+   * @param defaultValue what the absence of the property means
+   */
+  private static void applyToLogger(final String property, final String value, final String defaultValue) {
+    if (value.equals(System.getProperty(property, defaultValue)))
+      return;
+
+    System.setProperty(property, value);
+
+    final LogManager logManager = LogManager.instance();
+    if (logManager != null)
+      logManager.setLogger(LogManager.createLogger(LOG_IMPL.getValueAsString()));
+  }
+
   private static Set<Object> integerRangeAsStrings(final int fromInclusive, final int toInclusive) {
     final Set<Object> set = new HashSet<>();
     for (int i = fromInclusive; i <= toInclusive; i++)
