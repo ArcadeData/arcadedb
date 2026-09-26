@@ -4473,6 +4473,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * This leader's own Raft log start index ({@code RaftLog.getStartIndex()}), or {@code -1} when it is not
+   * currently a leader or the division cannot be read (same degrade-to-unknown reasoning as
+   * {@link #getCommitIndex()}, issue #5271).
+   * <p>
+   * Fed to {@link ClusterMonitor#updateReplicaMatchIndex(String, long, long, long, long)} so it can tell a
+   * follower whose {@code nextIndex} has fallen at or below this leader's own compacted log start - the
+   * condition under which {@code LogAppender.shouldInstallSnapshot} keeps re-notifying the follower instead of
+   * replicating - from an ordinary lag (issue #8457).
+   */
+  public long getRaftLogStartIndex() {
+    if (raftServer == null)
+      return -1;
+    try {
+      return raftServer.getDivision(raftGroup.getGroupId()).getRaftLog().getStartIndex();
+    } catch (final Exception e) {
+      return -1;
+    }
+  }
+
   public long getCurrentTerm() {
     if (raftServer == null)
       return -1;
