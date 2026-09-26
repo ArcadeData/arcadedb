@@ -52,27 +52,47 @@ public final class GAVEdgeRef {
   private final RID    out;
   private final RID    in;
   // Lazily ranked labels read the rank off the adjacency slice: the entries equal to slice[index] that precede it
-  private final int[]  slice;
-  private final int    index;
-  private       int    occurrence;
+  private final int[]   slice;
+  private final int     index;
+  private final boolean sorted;
+  private       int     occurrence;
 
-  private GAVEdgeRef(final String type, final RID out, final RID in, final int[] slice, final int index, final int occurrence) {
+  private GAVEdgeRef(final String type, final RID out, final RID in, final int[] slice, final int index,
+      final boolean sorted, final int occurrence) {
     this.type = type;
     this.out = out;
     this.in = in;
     this.slice = slice;
     this.index = index;
+    this.sorted = sorted;
     this.occurrence = occurrence;
   }
 
-  /** A label whose occurrence is the rank of {@code slice[index]} among the equal entries before it, taken on demand. */
-  public static GAVEdgeRef inSlice(final String type, final RID out, final RID in, final int[] slice, final int index) {
-    return new GAVEdgeRef(type, out, in, slice, index, -1);
+  /**
+   * A label whose occurrence is the rank of {@code slice[index]} among the equal entries before it, taken on demand.
+   *
+   * @param sorted whether the slice is sorted (see {@link #isSorted}), which lets the rank scan the run of equal entries
+   *               only
+   */
+  public static GAVEdgeRef inSlice(final String type, final RID out, final RID in, final int[] slice, final int index,
+      final boolean sorted) {
+    return new GAVEdgeRef(type, out, in, slice, index, sorted, -1);
   }
 
   /** A label whose occurrence is already known. */
   public static GAVEdgeRef ranked(final String type, final RID out, final RID in, final int occurrence) {
-    return new GAVEdgeRef(type, out, in, null, -1, occurrence);
+    return new GAVEdgeRef(type, out, in, null, -1, false, occurrence);
+  }
+
+  /**
+   * Whether an adjacency slice is sorted. A Graph Analytical View always hands out sorted per-type slices, overlay
+   * included, but the provider SPI does not promise it: checked once per slice, in the walk that reads it anyway.
+   */
+  public static boolean isSorted(final int[] slice) {
+    for (int i = 1; i < slice.length; i++)
+      if (slice[i] < slice[i - 1])
+        return false;
+    return true;
   }
 
   /**
@@ -90,10 +110,19 @@ public final class GAVEdgeRef {
     return names.toArray(new String[0]);
   }
 
-  /** Ranks {@code slice[index]} among the equal entries of the slice that precede it. */
-  public static int rankInSlice(final int[] slice, final int index) {
+  /**
+   * Ranks {@code slice[index]} among the equal entries of the slice that precede it. In a sorted slice they form one
+   * contiguous run ending at {@code index}, so only that run is read: the cost is the number of parallel relationships,
+   * not the degree of the vertex.
+   */
+  public static int rankInSlice(final int[] slice, final int index, final boolean sorted) {
     final int value = slice[index];
     int rank = 0;
+    if (sorted) {
+      for (int i = index - 1; i >= 0 && slice[i] == value; i--)
+        ++rank;
+      return rank;
+    }
     for (int i = 0; i < index; i++)
       if (slice[i] == value)
         ++rank;
@@ -124,14 +153,14 @@ public final class GAVEdgeRef {
 
   /** True when one of {@code bound} is the relationship {@code slice[index]} labels. The rank is taken only on a match. */
   public static boolean conflicts(final GAVEdgeRef[] bound, final String type, final RID out, final RID in,
-      final int[] slice, final int index) {
+      final int[] slice, final int index, final boolean sorted) {
     if (bound == null)
       return false;
     int rank = -1;
     for (final GAVEdgeRef ref : bound)
       if (ref.sameEndpoints(type, out, in)) {
         if (rank < 0)
-          rank = rankInSlice(slice, index);
+          rank = rankInSlice(slice, index, sorted);
         if (ref.occurrence() == rank)
           return true;
       }
@@ -153,7 +182,7 @@ public final class GAVEdgeRef {
     int o = occurrence;
     if (o < 0) {
       // Idempotent: a concurrent reader computes the same value
-      o = rankInSlice(slice, index);
+      o = rankInSlice(slice, index, sorted);
       occurrence = o;
     }
     return o;

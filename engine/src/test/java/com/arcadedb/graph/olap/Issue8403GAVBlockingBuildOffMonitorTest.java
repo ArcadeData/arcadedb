@@ -28,10 +28,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8403: a blocking {@link GraphAnalyticalView#build()} (REBUILD GRAPH ANALYTICAL VIEW) scanned holding the view's
@@ -149,6 +151,26 @@ class Issue8403GAVBlockingBuildOffMonitorTest extends TestHelper {
     assertThat(view.getStatus()).isEqualTo(GraphAnalyticalView.Status.READY);
     assertThat(view.getBuildError()).isNull();
     view.drop();
+  }
+
+  @Test
+  void aBlockingRebuildOutlivedByAShutdownFailsInsteadOfReportingSuccess() throws Exception {
+    // shutdown() stops waiting for the scan and proceeds: the rebuild must not report a success nothing was published for
+    final GraphAnalyticalView view = syncView();
+    view.setShutdownAwaitMsForTest(50);
+    final CountDownLatch scanReached = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    view.setBeforeBuildScanForTest(pause(scanReached, release, new AtomicBoolean()));
+    final CompletableFuture<Void> rebuild = CompletableFuture.runAsync(view::build);
+    try {
+      assertThat(scanReached.await(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+      view.drop();
+    } finally {
+      release.countDown();
+    }
+    assertThatThrownBy(() -> rebuild.get(HANG_SECONDS, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
+        .cause().hasMessageContaining("was shut down while it was being built");
+    assertThat(view.hasChangeListeners()).as("a shut-down view keeps no listener").isFalse();
   }
 
   @Test

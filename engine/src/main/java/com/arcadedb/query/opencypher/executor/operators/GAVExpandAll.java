@@ -35,9 +35,11 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
@@ -144,10 +146,12 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       private int[][] slices;
       private String[] sliceTypes;
       private boolean[] sliceOutgoing;
+      private boolean[] sliceSorted;
       private int sliceCount;
       private int sliceIdx;
       private int entryIdx;
-      private List<GAVEdgeRef> fallbackWalked;
+      // Parallel relationships met so far in the current fallback walk, per (type, out, in)
+      private Map<GAVEdgeRef, int[]> fallbackWalked;
 
       @Override
       public boolean hasNext() {
@@ -316,10 +320,11 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           final String type = sliceTypes[sliceIdx];
           final RID out = outgoing ? sourceRID : targetRID;
           final RID in = outgoing ? targetRID : sourceRID;
-          if (GAVEdgeRef.conflicts(boundRefs, type, out, in, slice, index))
+          final boolean sorted = sliceSorted[sliceIdx];
+          if (GAVEdgeRef.conflicts(boundRefs, type, out, in, slice, index, sorted))
             continue;
 
-          emitNeighbor(targetNodeId, targetRID, GAVEdgeRef.inSlice(type, out, in, slice, index));
+          emitNeighbor(targetNodeId, targetRID, GAVEdgeRef.inSlice(type, out, in, slice, index, sorted));
         }
       }
 
@@ -357,6 +362,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
           slices = new int[trackedTypes.length * perType][];
           sliceTypes = new String[slices.length];
           sliceOutgoing = new boolean[slices.length];
+          sliceSorted = new boolean[slices.length];
         }
         for (final String type : trackedTypes) {
           if (direction != Direction.IN)
@@ -372,6 +378,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         slices[sliceCount] = neighbors;
         sliceTypes[sliceCount] = type;
         sliceOutgoing[sliceCount] = outgoing;
+        sliceSorted[sliceCount] = GAVEdgeRef.isSorted(neighbors);
         ++sliceCount;
       }
 
@@ -385,13 +392,10 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
         final RID out = edge.getOut();
         final RID in = edge.getIn();
         if (fallbackWalked == null)
-          fallbackWalked = new ArrayList<>();
-        int occurrence = 0;
-        for (final GAVEdgeRef walked : fallbackWalked)
-          if (walked.sameEndpoints(type, out, in))
-            ++occurrence;
+          fallbackWalked = new HashMap<>();
+        // Keyed by a rank-0 label: its hash and its equality then cover the endpoints only
+        final int occurrence = fallbackWalked.computeIfAbsent(GAVEdgeRef.ranked(type, out, in, 0), k -> new int[1])[0]++;
         final GAVEdgeRef ref = GAVEdgeRef.ranked(type, out, in, occurrence);
-        fallbackWalked.add(ref);
         if (GAVEdgeRef.conflicts(boundRefs, type, out, in, occurrence))
           return;
 

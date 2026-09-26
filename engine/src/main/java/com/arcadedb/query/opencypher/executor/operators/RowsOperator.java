@@ -19,10 +19,10 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -42,22 +42,7 @@ public class RowsOperator extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
-    final Iterator<Result> iterator = rows.iterator();
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return iterator.hasNext();
-      }
-
-      @Override
-      public Result next() {
-        return iterator.next();
-      }
-
-      @Override
-      public void close() {
-      }
-    };
+    return new IteratorResultSet(rows.iterator());
   }
 
   @Override
