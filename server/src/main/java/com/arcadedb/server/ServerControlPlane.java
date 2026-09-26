@@ -123,6 +123,14 @@ public class ServerControlPlane {
    * window: a node that converges and later opens a fresh window has a fresh decision to report.
    */
   private volatile boolean securityConvergenceGiveUpLogged   = false;
+  /**
+   * The highest {@link HAServerPlugin#getRuntimeJoinIndex()} an armed reading of this gate has seen, {@code -1}
+   * before any (issue #8414). The window is per join, not per process: when a re-add moves the join index forward
+   * the window and the give-up flag are cleared exactly as convergence clears them, so the new join is held for a
+   * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
+   * index - a Raft server that is not readable this tick - never restarts the bound.
+   */
+  private volatile long    securityConvergenceJoinIndex      = -1L;
 
   public ServerControlPlane(final ArcadeDBServer server) {
     this.server = server;
@@ -483,6 +491,12 @@ public class ServerControlPlane {
    * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, and when it expires the node reports READY with a
    * single SEVERE line naming the documents - the explicit, logged decision, rather than a silent deadlock or a
    * silent pass. {@code 0} still disables the gate entirely.
+   * <p>
+   * <b>The bound is per join (issue #8414).</b> The window is cleared by convergence and by the join index moving
+   * forward ({@link HAServerPlugin#getRuntimeJoinIndex()}): a re-add, or a snapshot install that moves the join
+   * boundary (issue #8353), is a new join with a window and a give-up decision of its own. Nothing else clears it,
+   * and a disarmed reading does not even look at it, so a Raft server that is briefly unreadable cannot restart
+   * the bound.
    */
   private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
     final long window = server.getConfiguration()
@@ -491,17 +505,24 @@ public class ServerControlPlane {
       return null;
 
     final List<String> unconverged;
-    final boolean joinedAtRuntime;
+    final long joinIndex;
     try {
-      joinedAtRuntime = ha.hasJoinedClusterAtRuntime();
+      // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
+      // fault (issue #7819). Not gated, and decided BEFORE anything is read or reset (issue #8414, #8388): a node
+      // that reads false here because its Raft state was unreadable this tick - RaftHAPlugin answers false while
+      // raftHAServer is null - keeps the deadline it already opened. Deciding the convergence reset first would
+      // let such a reading clear it on a re-added node, whose fingerprints from its previous membership make the
+      // disarmed union empty.
+      if (!ha.hasJoinedClusterAtRuntime())
+        return null;
+
       final ServerSecurity security = server.getSecurity();
       final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
       // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
       // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
       // the document must also have been installed after the change that (last) added it.
-      unconverged = joinedAtRuntime ?
-          unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin()) :
-          neverInstalled;
+      unconverged = unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin());
+      joinIndex = ha.getRuntimeJoinIndex();
     } catch (final Exception e) {
       // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
@@ -510,22 +531,24 @@ public class ServerControlPlane {
       return null;
     }
 
+    // A later join is a fresh window (issue #8414, #8382): a node whose first window expired unconverged and that
+    // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
+    // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
+    // counts, so a reading that reports none cannot restart the bound.
+    if (joinIndex > securityConvergenceJoinIndex) {
+      securityConvergenceJoinIndex = joinIndex;
+      securityConvergenceWindowOpenedAt = 0L;
+      securityConvergenceGiveUpLogged = false;
+    }
+
     if (unconverged.isEmpty()) {
-      // Converged: forget the window, which is the only condition that may reset it. A disarmed reading must
-      // NOT, and that is not a detail - hasJoinedClusterAtRuntime() answers false whenever the Raft server is
-      // not readable this tick (RaftHAPlugin returns it literally while raftHAServer is null), so resetting on
-      // it would restart the bound on every such blip and a node whose HA layer is flapping would never reach
-      // the give-up branch at all. The bound has to be a bound.
+      // Converged on an armed reading: forget the window. A disarmed reading never gets here (see above), and that
+      // is not a detail - resetting on it would restart the bound on every blip of the Raft server, and a node
+      // whose HA layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;
       return null;
     }
-
-    // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
-    // fault (issue #7819). Not gated, and the window is left exactly as it was: a node that reads false here
-    // because its Raft state was unreadable keeps the deadline it already opened.
-    if (!joinedAtRuntime)
-      return null;
 
     final long now = System.currentTimeMillis();
     if (securityConvergenceWindowOpenedAt == 0L)

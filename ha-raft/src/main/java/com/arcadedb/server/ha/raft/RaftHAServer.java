@@ -2279,6 +2279,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * The log index of the configuration that (last) added this node, or the join boundary a snapshot install moved
+   * it to; {@code -1} when none is known (issue #8414). See {@link RuntimeJoinDetector#joinIndex()}.
+   */
+  public long getRuntimeJoinIndex() {
+    return runtimeJoinDetector.joinIndex();
+  }
+
+  /**
    * Records that the leader found this node's security documents, read at {@code appliedIndex}, equal to its own
    * (issue #8346). See {@link RuntimeJoinDetector#onSecurityDocumentsMatchedLeader(long)}.
    */
