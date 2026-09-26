@@ -2808,6 +2808,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   static volatile Runnable TEST_CLOSE_HOOK = null;
 
+  /**
+   * Test-only hook (issue #8316): when set, invoked inside the write-locked teardown right after the instance is
+   * marked closed, so a test can make a close fail at the point where it already reports itself closed.
+   */
+  static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
+
   private void closeInternal(final boolean drop) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
@@ -2936,6 +2942,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
+    try {
+      closeUnderWriteLock(drop);
+    } finally {
+      // In a finally, and on the flag rather than on how the teardown ended (issue #8316): a close that marked this
+      // instance closed and then threw used to skip everything below, leaving a CLOSED instance in the factory's
+      // active-instance registry. The next open of the path was refused as "already in use", and the server's
+      // lookup reused the dead instance instead of opening the files. An instance that is still open - the teardown
+      // failed before marking it closed - keeps its registration and its PageManager reference, which is what it
+      // still holds.
+      if (!open)
+        unregisterClosedInstance();
+    }
+  }
+
+  private void closeUnderWriteLock(final boolean drop) {
     executeInWriteLock(() -> {
       if (!open)
         return null;
@@ -2975,6 +2996,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       open = false;
 
+      final Runnable afterMarkedClosedHook = TEST_AFTER_MARKED_CLOSED_HOOK;
+      if (afterMarkedClosedHook != null)
+        afterMarkedClosedHook.run();
+
       // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
       // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge them
       // so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
@@ -3011,8 +3036,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 '%s'""", e, name);
       }
 
-      for (QueryEngine e : reusableQueryEngines.values())
-        e.close();
+      // One engine that fails to close must not skip the rest of the teardown below: the files, the WAL and the lock
+      // file would stay held by an instance that already reports itself closed (issue #8316).
+      for (final QueryEngine e : reusableQueryEngines.values()) {
+        try {
+          e.close();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error on closing query engine '%s' during closing operation "
+              + "for database '%s'", t, e.getLanguage(), name);
+        }
+      }
 
       // Whether the WAL was ACTUALLY preserved: either this close's flush wait gave up, or the
       // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
@@ -3067,6 +3100,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       return null;
     });
+  }
+
+  private void unregisterClosedInstance() {
+    // A no-op after a teardown that completed (its own finally already did it), and the only unregistration a teardown
+    // that threw part way gets (issue #8316): a closed instance left in the JVM-wide profiler fails every stats read.
+    Profiler.INSTANCE.unregisterDatabase(this);
 
     // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
     // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second

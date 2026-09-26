@@ -79,6 +79,14 @@ public final class LeaderForwardContext {
   public static final String FORWARDED_LEADER_ID_HEADER = "X-ArcadeDB-Forwarded-Leader-Id";
 
   /**
+   * Request header carrying the {@code arcadedb.command.timeout} budget, in milliseconds, the forwarding node resolved
+   * for the command and waits for (issue #8313). The receiving node enforces it in place of its own database setting,
+   * so the two sides of a forward agree on the budget. Honoured under the same cluster-token gate as the headers
+   * above: from a client it would let a request lift the budget its database imposes.
+   */
+  public static final String FORWARDED_COMMAND_TIMEOUT_HEADER = "X-ArcadeDB-Command-Timeout";
+
+  /**
    * Why a request that arrived already forwarded to the leader landed on a node that is not the leader
    * (issue #7603). The one-hop refusal used to answer both causes the same way - HTTP 400 blaming
    * {@code arcadedb.ha.serverList} - which told every client not to retry a routine election.

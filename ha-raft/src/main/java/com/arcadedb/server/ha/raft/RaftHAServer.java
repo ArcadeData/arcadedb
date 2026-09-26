@@ -1398,7 +1398,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       lastLagCheckAppliedIndex = -1; // already known to be resyncing: re-baseline when normal checks resume
       return false;
     }
-    final long commit = getCommitIndex();
+    // Against the leader's commit index when this follower has learned a larger one (issue #8321): a follower whose
+    // inbound replication channel is wedged has its own commit index clamped to what it received, reads a lag of 0,
+    // and this recovery never armed on it.
+    final long commit = getFollowerCommitIndex();
     final long applied = getLastAppliedIndex();
     // The catch-up flag exempts the follower only while the catch-up is actually applying (issue #8341). The flag is
     // cleared only by an apply that reaches the commit index, so a catch-up that stops applying kept it set, and
@@ -1507,7 +1510,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (sm == null || sm.isSnapshotDownloadPending())
       return; // the snapshot path logs its own bookends
     final long applied = getLastAppliedIndex();
-    final long commit = getCommitIndex();
+    // The leader's commit index when it is ahead of the local one, as for isFollowerLaggingBeyond (issue #8321).
+    final long commit = getFollowerCommitIndex();
     final FollowerResyncProgressTracker.Tick tick = tracker.onTick(applied, commit, System.currentTimeMillis());
     if (tick.event() != FollowerResyncProgressTracker.Event.NONE)
       LogManager.instance().log(this, Level.INFO, tick.message());
@@ -3523,6 +3527,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   long getLeaderReportedCommitIndex() {
     return leaderReportedCommitIndex;
+  }
+
+  /**
+   * The commit index a FOLLOWER measures its own lag against (issue #8321): the larger of its own commit index and the
+   * one its leader last reported. Ratis clamps a follower's commit index to the entries it holds, so on a follower
+   * whose inbound replication channel is wedged the local figure stops where the channel stopped and the lag computed
+   * from it reads 0; the leader's figure, learned over the health monitor's follower-to-leader probe, does not. Every
+   * figure that probe keeps is a commit index a leader really reported, so the result never over-states the lag.
+   * <p>
+   * The local commit index, unchanged, on the leader - whose own figure is the cluster's - and whenever the local
+   * figure cannot be read ({@code -1}), so a reader that treats a negative index as "unknown" still sees it as such.
+   */
+  long getFollowerCommitIndex() {
+    return followerCommitIndex(getCommitIndex(), isLeader() ? -1L : leaderReportedCommitIndex);
+  }
+
+  /** Pure form of {@link #getFollowerCommitIndex()}. Package-private for testing. */
+  static long followerCommitIndex(final long localCommitIndex, final long leaderReportedCommitIndex) {
+    if (localCommitIndex < 0)
+      return localCommitIndex;
+    return Math.max(localCommitIndex, leaderReportedCommitIndex);
   }
 
   /**

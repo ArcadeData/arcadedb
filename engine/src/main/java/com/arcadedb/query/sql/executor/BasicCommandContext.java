@@ -287,10 +287,10 @@ public class BasicCommandContext implements CommandContext {
     if (commandTimeout == UNRESOLVED) {
       if (parent != null)
         commandTimeout = parent.getCommandTimeout();
-      else {
-        final DatabaseInternal db = getDatabase();
-        commandTimeout = db == null ? 0L : db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-      }
+      else
+        // The budget a peer forwarded this request with takes the place of this node's own setting, so the node that
+        // forwarded it and this one enforce the same number (issue #8313).
+        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase());
     }
     return commandTimeout;
   }

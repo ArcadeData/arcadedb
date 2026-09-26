@@ -83,6 +83,7 @@ import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -1188,7 +1189,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // see issue #4039), where the local page cache lags behind the asynchronous state
       // machine apply and produces inconsistent IDs across the cluster.
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, null, args, configuration);
+        return forwardCommandToLeaderViaRaft(language, query, null, args);
       // Read-only command executed locally on this follower: honor the read-consistency header
       // exactly like query() does. /api/v1/command can carry read-only statements (a SELECT), and
       // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
@@ -1229,7 +1230,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, args, null, configuration);
+        return forwardCommandToLeaderViaRaft(language, query, args, null);
       // Read-only command executed locally on this follower: honor the read-consistency header.
       applyReadConsistencyForReadOnlyCommand(analyzed);
       // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).
@@ -3676,7 +3677,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link ResultSet} so the caller sees results transparently.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
-      final Map<String, Object> mapArgs, final Object[] positionalArgs, final ContextConfiguration configuration) {
+      final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final RaftHAServer raft = requireRaftServer();
 
     // This request is already the result of a peer redirecting it to what it believed was the leader, and it
@@ -3848,7 +3849,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // leader's own TimeoutException naming arcadedb.command.timeout could never reach the client. The headroom
     // is the leader's quorum wait (arcadedb.ha.quorumTimeout) plus this dial's connect budget, which bounds the
     // round trip on the same order of magnitude, so the leader always gets to answer first.
-    final long configuredCommandTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+    //
+    // The budget is the one this command would run under here - this database's arcadedb.command.timeout - resolved by
+    // the same rule every command context applies, and it travels with the forward so the leader enforces that number
+    // rather than whatever its own configuration holds (issue #8313). It used to be read from the configuration the
+    // caller passed to command(), which no command context reads and which the convenience overloads fill with the
+    // SERVER configuration: the two sides agreed only when all of those happened to hold the same number.
+    final long configuredCommandTimeout = CommandTimeoutOverride.effectiveTimeout(proxied);
     final long resolvedTimeoutMs;
     if (configuredCommandTimeout > 0)
       resolvedTimeoutMs = commandTimeoutWithHeadroom(configuredCommandTimeout,
@@ -3882,6 +3889,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // flight from an address that names the wrong node (issue #7603). Same gate as the marker.
       if (intendedLeaderId != null)
         builder.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeaderId);
+      // The budget the deadline above is sized from, so the leader aborts the command when this node would expect it
+      // to (issue #8313). Not sent when unbounded: the leader then applies its own setting, and this node still waits
+      // for arcadedb.ha.proxyCommandTimeout. Same gate as the marker: the leader honours it under the token only.
+      if (configuredCommandTimeout > 0)
+        builder.header(LeaderForwardContext.FORWARDED_COMMAND_TIMEOUT_HEADER, Long.toString(configuredCommandTimeout));
     }
 
     String proxiedUser = proxied.getCurrentUserName();
