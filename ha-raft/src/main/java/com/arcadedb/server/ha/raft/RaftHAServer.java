@@ -1739,7 +1739,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (!isRaftStorageUnderPressure())
       return;
     final ArcadeStateMachine sm = stateMachine;
-    if (sm == null || sm.isApplyThread() || sm.getLifeCycleState() != LifeCycle.State.RUNNING) {
+    // An install holding the #7958 install lock can have the apply thread - the one that serves this request - waiting
+    // on it; the install purged before taking the lock (ArcadeStateMachine.installLeaderCopy).
+    if (sm == null || sm.isApplyThread() || sm.isHoldingInstallApplyGate()
+        || sm.getLifeCycleState() != LifeCycle.State.RUNNING) {
       LogManager.instance().log(this, Level.FINE,
           "Skipping the Raft log purge before installing '%s': the state machine cannot serve a snapshot request now",
           databaseName);
