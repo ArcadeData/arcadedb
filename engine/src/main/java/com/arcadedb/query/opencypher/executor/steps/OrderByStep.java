@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -346,6 +347,11 @@ public class OrderByStep extends AbstractExecutionStep {
             // Different temporal types — fall through to type rank
           }
         }
+
+        // Strings sort by code point, the order an index holds them in, which lets a plan read them from one in place of
+        // this sort (issue #8422)
+        if (v1 instanceof String s1 && v2 instanceof String s2)
+          return BinaryComparator.compareStrings(s1, s2);
 
         // Same-type Comparable comparison
         if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {

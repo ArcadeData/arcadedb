@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -204,7 +205,7 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
 
       // String comparison
       final String leftStr = left.toString();
-      final int comparison = leftStr.compareTo(right);
+      final int comparison = BinaryComparator.compareStrings(leftStr, right);
 
       return switch (operator) {
         case ">" -> comparison > 0;
