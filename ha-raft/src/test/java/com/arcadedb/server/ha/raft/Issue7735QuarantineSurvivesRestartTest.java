@@ -91,7 +91,7 @@ class Issue7735QuarantineSurvivesRestartTest {
     quarantineSurvives(tempDir, DivergenceCause.APPLY_ERROR);
   }
 
-  /** {@code markDatabasesNotAtSnapshotIndex}'s incomplete install (issue #6760). */
+  /** {@code settleDivergedStateAfterInstall}'s incomplete install (issue #6760). */
   @Test
   void anIncompleteSnapshotInstallQuarantineIsStillRecordedAfterARestart(@TempDir final Path tempDir)
       throws Exception {

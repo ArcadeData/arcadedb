@@ -52,7 +52,7 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
     try {
       before.writePersistedAppliedIndex(40L, STALE);
       before.writePersistedAppliedIndex(90L, HEALTHY);
-      before.markDatabasesNotAtSnapshotIndex(Set.of(STALE), 100L);
+      before.settleDivergedStateAfterInstall(Set.of(STALE), 100L);
       assertThat(before.getDatabaseAppliedFloor(STALE)).isEqualTo(40L);
     } finally {
       before.close();
@@ -74,7 +74,7 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
     final ArcadeStateMachine sm = newStateMachine(tempDir);
     try {
       sm.writePersistedAppliedIndex(40L, STALE);
-      sm.markDatabasesNotAtSnapshotIndex(Set.of(STALE), 100L);
+      sm.settleDivergedStateAfterInstall(Set.of(STALE), 100L);
     } finally {
       sm.close();
     }
@@ -86,13 +86,24 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
   }
 
   @Test
-  void aDatabaseAlreadyQuarantinedStillGetsItsFloorWritten(@TempDir final Path tempDir) throws IOException {
-    // The quarantine write is skipped when nothing new is quarantined: the floor must not be skipped with it
+  void anInstallSettlesEveryDatabaseInOneWrite(@TempDir final Path tempDir) throws IOException {
+    // Before the install: one database quarantined by a WAL gap, one behind an earlier incomplete install
     final ArcadeStateMachine before = newStateMachine(tempDir);
     try {
       before.writePersistedAppliedIndex(40L, STALE);
+      before.writePersistedAppliedIndex(50L, HEALTHY);
       before.markStateDiverged(STALE, DivergenceCause.WAL_VERSION_GAP);
-      before.markDatabasesNotAtSnapshotIndex(Set.of(STALE), 100L);
+      before.settleDivergedStateAfterInstall(Set.of(HEALTHY), 60L);
+
+      // The install refreshes HEALTHY and gives up on STALE: the file must hold exactly that final state, written by
+      // one update rather than a cleared file first
+      before.settleDivergedStateAfterInstall(Set.of(STALE), 100L);
+      final JSONObject persisted = new JSONObject(Files.readString(appliedIndexFile(tempDir)));
+      assertThat(persisted.getJSONObject("quarantine").keySet()).containsExactly(STALE);
+      assertThat(persisted.getJSONObject("quarantine").getString(STALE, null))
+          .as("the install is the newest verdict on the database").isEqualTo(DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE.name());
+      assertThat(persisted.getJSONObject("floors").keySet()).containsExactly(STALE);
+      assertThat(persisted.getJSONObject("floors").getLong(STALE, -1)).isEqualTo(40L);
     } finally {
       before.close();
     }
@@ -100,9 +111,26 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
     final ArcadeStateMachine after = newStateMachine(tempDir);
     try {
       assertThat(after.getDatabaseAppliedFloor(STALE)).isEqualTo(40L);
-      assertThat(after.getLocalResyncState().divergenceCauses()).containsEntry(STALE, DivergenceCause.WAL_VERSION_GAP);
+      assertThat(after.getDatabaseAppliedFloor(HEALTHY)).isEqualTo(-1L);
+      assertThat(after.isDatabaseDiverged(HEALTHY)).isFalse();
     } finally {
       after.close();
+    }
+  }
+
+  @Test
+  void anInstallThatRefreshedEverythingLeavesNothingBehind(@TempDir final Path tempDir) throws IOException {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    try {
+      sm.writePersistedAppliedIndex(40L, STALE);
+      sm.markStateDiverged(STALE, DivergenceCause.WAL_VERSION_GAP);
+      sm.settleDivergedStateAfterInstall(Set.of(), 100L);
+      assertThat(sm.isDatabaseDiverged(STALE)).isFalse();
+      final JSONObject persisted = new JSONObject(Files.readString(appliedIndexFile(tempDir)));
+      assertThat(persisted.has("quarantine")).isFalse();
+      assertThat(persisted.has("floors")).isFalse();
+    } finally {
+      sm.close();
     }
   }
 
@@ -112,7 +140,7 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
     try {
       before.writePersistedAppliedIndex(40L, STALE);
       before.writePersistedAppliedIndex(50L, HEALTHY);
-      before.markDatabasesNotAtSnapshotIndex(Set.of(STALE, HEALTHY), 100L);
+      before.settleDivergedStateAfterInstall(Set.of(STALE, HEALTHY), 100L);
       before.clearDivergedDatabase(STALE);
     } finally {
       before.close();
@@ -132,7 +160,7 @@ class Issue8137StaleReadFloorSurvivesRestartTest {
     final ArcadeStateMachine before = newStateMachine(tempDir);
     try {
       before.writePersistedAppliedIndex(40L, STALE);
-      before.markDatabasesNotAtSnapshotIndex(Set.of(STALE), 100L);
+      before.settleDivergedStateAfterInstall(Set.of(STALE), 100L);
       before.clearDivergedState();
     } finally {
       before.close();
