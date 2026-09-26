@@ -647,11 +647,14 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private final int[][]      neighbors;
     // (type id << 1) | 1 when the hop's vertex is the relationship's source
     private final int[][]      meta;
+    // Whether every (type, orientation) segment loaded for the hop is sorted, which bounds a rank by its run
+    private final boolean[]    sorted;
 
     private TrackedAdjacency(final TrackedTypes types, final int chainLength) {
       this.types = types;
       this.neighbors = new int[chainLength][];
       this.meta = new int[chainLength][];
+      this.sorted = new boolean[chainLength];
       for (int i = 0; i < chainLength; i++)
         if (hopTracked[i]) {
           neighbors[i] = new int[16];
@@ -662,6 +665,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     /** Loads the relationships of {@code nodeId} for hop {@code depth} and returns how many there are. */
     private int fill(final int depth, final int nodeId) {
       int size = 0;
+      sorted[depth] = true;
       final Vertex.DIRECTION direction = hopDirections[depth];
       for (final int typeId : types.hopTypeIds()[depth]) {
         final String type = types.names()[typeId];
@@ -678,6 +682,8 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private int append(final int depth, int size, final int[] slice, final int entryMeta, final int skip) {
       if (slice == null || slice.length == 0)
         return size;
+      if (!GAVEdgeRef.isSorted(slice))
+        sorted[depth] = false;
       if (size + slice.length > neighbors[depth].length) {
         final int capacity = Math.max(neighbors[depth].length * 2, size + slice.length);
         neighbors[depth] = Arrays.copyOf(neighbors[depth], capacity);
@@ -725,13 +731,22 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
       return false;
     }
 
-    /** The rank of entry {@code index} among the equal entries (same neighbour, type and orientation) before it. */
+    /**
+     * The rank of entry {@code index} among the equal entries (same neighbour, type and orientation) before it. Each
+     * (type, orientation) segment is appended whole, so in sorted segments those entries are the run ending at
+     * {@code index}.
+     */
     private int rank(final int depth, final int index) {
       final int[] n = neighbors[depth];
       final int[] m = meta[depth];
       final int neighbor = n[index];
       final int entryMeta = m[index];
       int rank = 0;
+      if (sorted[depth]) {
+        for (int i = index - 1; i >= 0 && n[i] == neighbor && m[i] == entryMeta; i--)
+          ++rank;
+        return rank;
+      }
       for (int i = 0; i < index; i++)
         if (n[i] == neighbor && m[i] == entryMeta)
           ++rank;

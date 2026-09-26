@@ -314,6 +314,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private BuildWatch             baseWatch;
   // Test-only: see setBeforeBuildScanForTest()
   private volatile Runnable      beforeBuildScanForTest;
+  // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
+  private volatile long          shutdownAwaitMs    = SHUTDOWN_AWAIT_MS;
 
   // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
   // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
@@ -426,6 +428,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final long durationMs = System.currentTimeMillis() - buildStart;
 
       boolean committed = false;
+      boolean shutDownMeanwhile = false;
       CountDownLatch newer = null;
       synchronized (this) {
         if (myGeneration == generation) {
@@ -436,9 +439,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         } else {
           closeBuildWatch(watch);
           // Superseded by a build dispatched while this one scanned: that one publishes, and this call reports its
-          // outcome (see adoptNewerOutcome()). None when shut down meanwhile
+          // outcome (see adoptNewerOutcome()). None when shutdown() superseded it: the view is gone, which the caller
+          // must hear rather than a success nothing was published for
           if (readyLatch != latch)
             newer = readyLatch;
+          else
+            shutDownMeanwhile = true;
           LogManager.instance().log(this, Level.FINE,
               "GraphAnalyticalView '%s': build result discarded (superseded by a newer build/restore)", name);
         }
@@ -447,6 +453,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         invalidateGraphStatisticsCache();
       else if (newer != null)
         adoptNewerOutcome(newer);
+      else if (shutDownMeanwhile)
+        throw new DatabaseOperationException("GraphAnalyticalView '" + name + "' was shut down while it was being built");
     } catch (final RuntimeException | Error e) {
       // An Error too: a watch left open would keep the view BUILDING and buffer every later commit until it overflowed
       CountDownLatch newer = null;
@@ -793,7 +801,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private void shutdown(final boolean persistCsr) {
-    awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
+    awaitInFlightTasks(shutdownAwaitMs);
     synchronized (this) {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
       // view that is gone (issue #8403)
@@ -3293,6 +3301,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /** Test-only hook: run by a full build right before its scan starts, outside this instance's monitor. */
   void setBeforeBuildScanForTest(final Runnable hook) {
     this.beforeBuildScanForTest = hook;
+  }
+
+  /** Test-only hook: bounds how long {@link #shutdown()} waits for in-flight builds before it proceeds. */
+  void setShutdownAwaitMsForTest(final long millis) {
+    this.shutdownAwaitMs = millis;
   }
 
   /** Test-only hook: exposes {@link #deferredRestoreInFlight} so a test can poll for the dispatch. */
