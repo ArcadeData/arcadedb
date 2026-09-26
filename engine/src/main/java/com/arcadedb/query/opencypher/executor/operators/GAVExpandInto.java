@@ -203,23 +203,25 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         }
       }
 
-      /** OLTP fallback of the tracked expansion: the relationships of exactly {@code type} joining the pair one way. */
+      /**
+       * OLTP fallback of the tracked expansion: the relationships of exactly {@code type} joining the pair one way. A
+       * ghost edge is reported and skipped, as {@link #countConnectingOLTP} does.
+       */
       private long countTypedOLTP(final Vertex source, final Vertex target, final Vertex.DIRECTION orientation,
           final String type) {
-        final Iterator<Edge> edges;
-        if (source instanceof VertexInternal internalSource)
-          edges = ((DatabaseInternal) source.getDatabase()).getGraphEngine()
-              .getEdgesConnectedTo(internalSource, orientation, target.getIdentity(), type);
-        else
-          edges = source.getEdges(orientation, type).iterator();
+        final Iterator<Edge> edges = candidateEdges(source, target, orientation, type);
         long count = 0;
         while (edges.hasNext()) {
-          final Edge edge = edges.next();
-          if (!edge.getTypeName().equals(type))
-            continue;
-          final RID other = orientation == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-          if (other.equals(target.getIdentity()))
-            ++count;
+          try {
+            final Edge edge = edges.next();
+            if (!edge.getTypeName().equals(type))
+              continue;
+            final RID other = orientation == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+            if (other.equals(target.getIdentity()))
+              ++count;
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
+          }
         }
         return count;
       }
@@ -235,7 +237,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
        */
       private long countConnectingOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection);
+        Iterator<Edge> edges = candidateEdges(source, target, arcadeDirection, edgeTypes);
         if (arcadeDirection == Vertex.DIRECTION.BOTH)
           // both adjacency lists are walked, and a self-loop sits in each of them
           edges = SelfLoops.deduplicatingEdges(edges);
@@ -272,11 +274,12 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
        * it goes unnoticed here. This is a connectivity probe, not a ghost scanner - CHECK DATABASE is
        * what sweeps a whole edge list.
        */
-      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection) {
+      private Iterator<Edge> candidateEdges(final Vertex source, final Vertex target, final Vertex.DIRECTION arcadeDirection,
+          final String... types) {
         if (source instanceof VertexInternal internalSource)
           return ((DatabaseInternal) source.getDatabase()).getGraphEngine()
-              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
-        return source.getEdges(arcadeDirection, edgeTypes).iterator();
+              .getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), types);
+        return source.getEdges(arcadeDirection, types).iterator();
       }
 
       @Override
