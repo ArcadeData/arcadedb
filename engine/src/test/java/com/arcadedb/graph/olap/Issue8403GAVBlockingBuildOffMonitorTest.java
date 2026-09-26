@@ -31,6 +31,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -175,6 +176,41 @@ class Issue8403GAVBlockingBuildOffMonitorTest extends TestHelper {
     assertThat(CompletableFuture.supplyAsync(() -> view.awaitReady(HANG_SECONDS, TimeUnit.SECONDS))
         .get(HANG_SECONDS / 2, TimeUnit.SECONDS)).isFalse();
     assertThat(view.hasChangeListeners()).as("a shut-down view keeps no listener").isFalse();
+  }
+
+  @Test
+  void aRebuildWhoseSupersedingRebuildIsCutShortByAShutdownFailsToo() throws Exception {
+    // A is superseded by B, and B by the shutdown: A adopts B's outcome, which is that nothing was published
+    final GraphAnalyticalView view = syncView();
+    view.setShutdownAwaitMsForTest(50);
+    final CountDownLatch firstReached = new CountDownLatch(1);
+    final CountDownLatch secondReached = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicInteger scans = new AtomicInteger();
+    view.setBeforeBuildScanForTest(() -> {
+      final int scan = scans.incrementAndGet();
+      if (scan > 2)
+        return;
+      (scan == 1 ? firstReached : secondReached).countDown();
+      try {
+        release.await(HANG_SECONDS, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    final CompletableFuture<Void> first = CompletableFuture.runAsync(view::build);
+    final CompletableFuture<Void> second;
+    try {
+      assertThat(firstReached.await(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+      second = CompletableFuture.runAsync(view::build);
+      assertThat(secondReached.await(HANG_SECONDS, TimeUnit.SECONDS)).isTrue();
+      view.drop();
+    } finally {
+      release.countDown();
+    }
+    for (final CompletableFuture<Void> rebuild : List.of(first, second))
+      assertThatThrownBy(() -> rebuild.get(HANG_SECONDS, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
+          .cause().hasMessageContaining("was shut down while it was being built");
   }
 
   @Test

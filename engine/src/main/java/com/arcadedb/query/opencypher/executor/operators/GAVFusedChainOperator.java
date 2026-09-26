@@ -651,12 +651,18 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private final int[][]      meta;
     // Whether every (type, orientation) segment loaded for the hop is sorted, which bounds a rank by its run
     private final boolean[]    sorted;
+    // The rank of the entry an earlier hop stands on, kept while it stands there: every later candidate with the same
+    // endpoints compares against it, and it does not change until that hop's cursor moves
+    private final int[]        rankedIndex;
+    private final int[]        rankedValue;
 
     private TrackedAdjacency(final TrackedTypes types, final int chainLength) {
       this.types = types;
       this.neighbors = new int[chainLength][];
       this.meta = new int[chainLength][];
       this.sorted = new boolean[chainLength];
+      this.rankedIndex = new int[chainLength];
+      this.rankedValue = new int[chainLength];
       for (int i = 0; i < chainLength; i++)
         if (hopTracked[i]) {
           neighbors[i] = new int[16];
@@ -668,6 +674,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
     private int fill(final int depth, final int nodeId) {
       int size = 0;
       sorted[depth] = true;
+      rankedIndex[depth] = -1;
       final Vertex.DIRECTION direction = hopDirections[depth];
       for (final int typeId : types.hopTypeIds()[depth]) {
         final String type = types.names()[typeId];
@@ -727,7 +734,11 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
           continue;
         if (rank < 0)
           rank = rank(depth, index);
-        if (rank(j, jIndex) == rank)
+        if (rankedIndex[j] != jIndex) {
+          rankedValue[j] = rank(j, jIndex);
+          rankedIndex[j] = jIndex;
+        }
+        if (rankedValue[j] == rank)
           return true;
       }
       return false;
