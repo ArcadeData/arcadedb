@@ -108,7 +108,7 @@ class Issue1062Test extends TestHelper {
 
   @Test
   void equalsOperatorWithFullTextIndex() {
-    // Test the workaround mentioned in issue comment: using = instead of CONTAINSTEXT
+    // The #1062 workaround (= instead of CONTAINSTEXT) is gone since #8435: = is exact, CONTAINSTEXT is the token search
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
