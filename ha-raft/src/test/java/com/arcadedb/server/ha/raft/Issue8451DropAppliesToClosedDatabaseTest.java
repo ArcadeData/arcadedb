@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.UncheckedIOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -166,8 +167,13 @@ class Issue8451DropAppliesToClosedDatabaseTest {
     final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databasesDir);
     Files.setPosixFilePermissions(databasesDir, Set.of());
     try {
-      assertThatThrownBy(() -> applyDrop(sm, DB_NAME)).isInstanceOf(ReplicationException.class)
+      assertThatThrownBy(() -> applyDrop(sm, DB_NAME)).isInstanceOf(UncheckedIOException.class)
           .hasMessageContaining(DB_NAME);
+      // Through the retry wrapper the apply thread uses: the failure must quarantine the database, which is what keeps
+      // takeSnapshot() from checkpointing past the drop - a ReplicationException would be rethrown past that arm.
+      assertThatThrownBy(() -> sm.applyWithRetry(42L, DB_NAME, () -> applyDrop(sm, DB_NAME)))
+          .isInstanceOf(ReplicationException.class);
+      assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the failed drop must quarantine the database").isTrue();
     } finally {
       Files.setPosixFilePermissions(databasesDir, original);
     }

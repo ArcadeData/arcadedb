@@ -79,6 +79,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -5382,7 +5383,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * I/O error) fails the apply instead: reading it as absent would retire the database's bookkeeping and advance the
    * applied index past the drop while its files are still there, to be reopened once the filesystem recovers.
    *
-   * @throws ReplicationException when the filesystem cannot say whether the directory exists
+   * @throws UncheckedIOException when the filesystem cannot say whether the directory exists
    */
   private Path closedDatabaseDirectory(final String databaseName) {
     try {
@@ -5401,8 +5402,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final NoSuchFileException e) {
       return null;
     } catch (final IOException e) {
-      throw new ReplicationException(
-          "Cannot tell whether database '" + databaseName + "' still has files at '" + directory + "' to drop: " + e, e);
+      // Deliberately NOT a ReplicationException: applyWithRetry rethrows that one unchanged, so the database would be
+      // neither quarantined nor resynced, and the next entry to apply would checkpoint straight past this drop. A plain
+      // runtime exception takes the handleUnexpectedApplyError path: quarantine, targeted resync, and no snapshot while
+      // the quarantine holds, so the entry stays replayable.
+      throw new UncheckedIOException(
+          "Cannot tell whether database '" + databaseName + "' still has files at '" + directory + "' to drop", e);
     }
     return attributes.isDirectory() ? directory : null;
   }
