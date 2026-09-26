@@ -130,7 +130,8 @@ public class ServerControlPlane {
    * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
    * index - a Raft server that is not readable this tick - never restarts the bound. On an unarmed node held after
    * a snapshot install (issue #8432) it is that install's index instead: both are log positions that only move
-   * forward, and a later one of either is a fresh window.
+   * forward, and a later one of either is a fresh window. One reading reports one or the other, never both: the
+   * hold is consulted only while the node is unarmed, and arming is one-way.
    */
   private volatile long    securityConvergenceJoinIndex      = -1L;
 
@@ -565,8 +566,9 @@ public class ServerControlPlane {
 
     if (unconverged.isEmpty()) {
       // Converged on an armed reading, or on an unarmed one that reports an install (issue #8432): forget the
-      // window. A disarmed reading without an install never gets here (see above), and that is not a detail - resetting on it would restart the bound on every blip of the Raft server, and a node
-      // whose HA layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
+      // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
+      // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
+      // flapping would never reach the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;
       return null;
