@@ -316,6 +316,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private volatile Runnable      beforeBuildScanForTest;
   // SHUTDOWN_AWAIT_MS, shortened only by setShutdownAwaitMsForTest()
   private volatile long          shutdownAwaitMs    = SHUTDOWN_AWAIT_MS;
+  // Raised by shutdown(): a build() that learns the outcome of the build that superseded it must not report success
+  // when that one was cut short by the shutdown and published nothing (issue #8403)
+  private volatile boolean       shutDown;
 
   // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
   // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
@@ -505,6 +508,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       throw new DatabaseOperationException(
           "Interrupted while waiting for the rebuild of GraphAnalyticalView '" + name + "' that superseded this one", e);
     }
+    // The chain can end in a shutdown: the last build published nothing, and neither did the ones it superseded
+    if (failure == null && shutDown)
+      throw new DatabaseOperationException("GraphAnalyticalView '" + name + "' was shut down while it was being built");
     if (failure instanceof RuntimeException runtime)
       throw runtime;
     if (failure instanceof Error error)
@@ -810,6 +816,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // A build or compaction still scanning past the wait above must not publish, and re-arm the listeners, on a
       // view that is gone (issue #8403). Nor may the view keep saying BUILDING: that build will never publish it
       ++generation;
+      shutDown = true;
       if (status == Status.BUILDING)
         status = snapshot != null ? Status.STALE : Status.NOT_BUILT;
       // Runs the persist-to-disk write (when eligible) while holding this instance's monitor: any concurrent
