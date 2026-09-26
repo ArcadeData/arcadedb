@@ -4511,6 +4511,13 @@ public class SelectExecutionPlanner {
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
 
+      // A FULL_TEXT index answers a key by analyzer tokens OR-ed together, not by value: handing it `name = 'x'` (or
+      // IN, CONTAINS, IS NULL...) and dropping the condition from the residual filter returned every row sharing a
+      // single token with 'x'. On a plain property only CONTAINSTEXT may reach it, through
+      // buildIndexSearchDescriptorForFulltext (issue #8435). A BY ITEM property keeps its item-lookup behaviour.
+      if (index.getType() == FULL_TEXT && !isIndexByItem(index, baseFieldName))
+        break;
+
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
       final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
