@@ -39,8 +39,15 @@ import java.util.Set;
  * The label is {@code (type, out, in, occurrence)}, where {@code occurrence} ranks this relationship among the parallel
  * ones of the same type and orientation in the adjacency list it was read from. Every list a hop can walk holds the
  * {@code m} parallel relationships of a pair as exactly {@code m} entries - the out-list of {@code out}, the in-list of
- * {@code in} - so each walk hands out the occurrences {@code 0..m-1}, and two hops conflict exactly when they label the
- * same one. The rank costs a scan of the list, so it is taken only when another label already has the same endpoints.
+ * {@code in} - so each walk hands out the occurrences {@code 0..m-1}, and two hops conflict exactly when they carry the
+ * same number. The rank costs a scan of the list, so it is taken only when another label already has the same endpoints.
+ * <p>
+ * <b>An occurrence is not the identity of a physical edge.</b> The out-list and the in-list are sorted independently,
+ * so the k-th parallel entry of one need not be the same edge as the k-th of the other. It does not have to be: each
+ * list numbers the {@code m} relationships bijectively, and N hops accepting pairwise distinct numbers yield exactly
+ * {@code m!/(m-N)!} rows, the count of assignments of distinct edges, however the two numberings align. That holds only
+ * because nothing observes which edge a label stands for: a hop that exposes its relationship, or filters on its
+ * properties, must bind the edge record instead, which is why only anonymous relationships are tracked this way.
  * <p>
  * Labels compare only with labels. The planner puts a MATCH clause on labels only when every relationship of the clause
  * that could collide with another one is walked through a view; otherwise all of them bind edge records.
