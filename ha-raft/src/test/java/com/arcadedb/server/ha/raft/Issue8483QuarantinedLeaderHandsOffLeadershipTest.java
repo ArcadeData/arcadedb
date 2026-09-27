@@ -263,17 +263,36 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
   @Test
   void aSingleNodeClusterHasNoPeerToHandLeadershipTo() {
     final RaftPeerId self = RaftPeerId.valueOf("self");
-    final RaftPeer selfPeer = RaftPeer.newBuilder().setId(self).setAddress("localhost:1").build();
-    final RaftPeer other = RaftPeer.newBuilder().setId("other").setAddress("localhost:2").build();
 
-    assertThat(RaftHAServer.hasAnotherPeer(List.of(selfPeer), self)).isFalse();
-    assertThat(RaftHAServer.hasAnotherPeer(List.of(), self)).isFalse();
-    assertThat(RaftHAServer.hasAnotherPeer(List.of(selfPeer, other), self)).isTrue();
+    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0)), self, null)).isFalse();
+    assertThat(RaftHAServer.hasHandoffTarget(List.of(), self, null)).isFalse();
+    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, null)).isTrue();
+  }
+
+  /**
+   * A peer that is present but not eligible is no target either (code review on PR #8531): handing off to a lagging
+   * follower falls back to a Ratis step-down that re-elects this node, an election for nothing.
+   */
+  @Test
+  void aLaggingPeerIsNoHandoffTarget() {
+    final RaftPeerId self = RaftPeerId.valueOf("self");
+    final ClusterMonitor monitor = new ClusterMonitor(10L);
+    monitor.updateLeaderCommitIndex(10_000L);
+    monitor.updateReplicaMatchIndex("other", 0L, 0L); // lag 10000 > threshold 10
+
+    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isFalse();
+
+    monitor.updateReplicaMatchIndex("other", 10_000L, 0L); // caught up
+    assertThat(RaftHAServer.hasHandoffTarget(List.of(peer("self", 0), peer("other", 0)), self, monitor)).isTrue();
   }
 
   // ---------------------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------------------
+
+  private static RaftPeer peer(final String id, final int priority) {
+    return RaftPeer.newBuilder().setId(RaftPeerId.valueOf(id)).setAddress(id + ":2434").setPriority(priority).build();
+  }
 
   private static RaftHAServer raftMock(final boolean leader) {
     final RaftHAServer raft = mock(RaftHAServer.class);

@@ -969,8 +969,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code retryUnfilledSnapshotGap} tick drives the targeted resync from it.
    * <p>
    * The peers and their order are the ones a manual step-down uses ({@link #transferLeadership(long)}). A node with no
-   * other peer in the configuration does not attempt it, because a Ratis step-down would only re-elect this node; it
-   * logs the operator action instead. Attempted at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS} (see
+   * eligible peer ({@link #hasHandoffTarget}) does not attempt it, because a Ratis step-down would only re-elect this
+   * node; it logs the operator action instead, and hands off on the first tick a peer becomes eligible. Attempted at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS} (see
    * {@link #decideQuarantineHandoff} for when the window is taken), and run on
    * {@link #channelRecoveryExecutor} because the transfer blocks for seconds and the callers are the apply thread
    * and the HealthMonitor tick.
@@ -990,12 +990,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // Leadership may have moved while this sat in the queue, and a transfer sent through a follower's client is
         // routed to the real leader, which would then step down for a reason that is not its own (issue #7134).
         final boolean leader = !shutdownRequested && isLeader();
-        switch (decideQuarantineHandoff(leader, leader && hasAnotherPeer(getLivePeers(), localPeerId),
+        switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor),
             lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
         case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
-            "This leader holds %s, which it cannot resync from itself, and there is no other peer to hand leadership "
-                + "to (issue #8483). Restore the database from a backup, or add a peer so that leadership can move and "
-                + "this node can resync from it.", reason);
+            "This leader holds %s, which it cannot resync from itself, and no peer is eligible to take over leadership "
+                + "(none other is configured, or every other one is lagging or a priority-0 replica) (issue #8483). The "
+                + "handoff is retried as soon as a peer is eligible. With no other peer, restore the database from a "
+                + "backup or add a peer so that leadership can move and this node can resync from it.", reason);
         case TRANSFER -> transferLeadershipToResync(reason);
         default -> {
           // NOT_LEADER, NO_PEER (reported within the window already) or COOLDOWN: nothing to do
@@ -1076,12 +1077,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
-  /** Whether {@code livePeers} holds a peer other than {@code localPeerId}. Package-private for unit tests. */
-  static boolean hasAnotherPeer(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId) {
-    for (final RaftPeer peer : livePeers)
-      if (!peer.getId().equals(localPeerId))
-        return true;
-    return false;
+  /**
+   * Whether a peer is eligible to take leadership over, by the rules a manual step-down uses
+   * ({@link #selectStepDownTargets}: not this node, not lagging, not a priority-0 replica while real voters exist).
+   * Asked before the handoff rather than left to {@link #transferLeadership(long)}, whose no-target fallback would
+   * otherwise put a cluster with no eligible peer through a step-down that re-elects this node (code review on PR
+   * #8531), exactly what {@link #escalateWedgedPeerChannel} refuses to do for the same reason. Package-private for
+   * unit tests.
+   */
+  static boolean hasHandoffTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor) {
+    return !selectStepDownTargets(livePeers, localPeerId, clusterMonitor).isEmpty();
   }
 
   /**
