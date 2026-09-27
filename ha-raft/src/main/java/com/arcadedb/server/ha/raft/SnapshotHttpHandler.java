@@ -105,6 +105,9 @@ public class SnapshotHttpHandler implements HttpHandler {
   private final int       maxConcurrentSnapshots;
   private final Semaphore concurrencySemaphore;
 
+  // Test seam (issue #8468): runs after the first quarantine check has passed and before the image is captured.
+  static volatile Runnable afterQuarantineCheckForTesting;
+
   /** Bounds the misconfiguration warning in {@link #sanitizedMaxConcurrent} to once per JVM. */
   private static final AtomicBoolean WARNED_MISCONFIGURED_LIMIT = new AtomicBoolean();
 
@@ -301,6 +304,25 @@ public class SnapshotHttpHandler implements HttpHandler {
         return;
       }
 
+      // Read BEFORE the quarantine check below and before the capture further down (issue #8454): every entry up to
+      // it is in the copy, provided the copy is not a quarantined one (issue #8468).
+      final long appliedIndex = servedAppliedIndex(server);
+
+      // A quarantine skips a committed entry of this database and lets every later entry advance the applied index
+      // past it, so the index above would overstate what this copy holds and the installing follower's #8454 check
+      // would pass it. Refused before any response header, so the follower reads a clean 503 and retries (issue
+      // #8468). Checked AFTER the index read: the apply thread records a quarantine (quarantineDatabase, inside
+      // applyWithRetry) before it advances the applied index past the entry it skips, so an index read here that
+      // already covers that entry comes with a visible quarantine.
+      final DivergenceCause quarantine = servedDatabaseQuarantine(server, databaseName);
+      if (quarantine != null) {
+        refuseQuarantined(exchange, databaseName, quarantine);
+        return;
+      }
+      final Runnable afterCheckHook = afterQuarantineCheckForTesting;
+      if (afterCheckHook != null)
+        afterCheckHook.run();
+
       LogManager.instance().log(this, Level.INFO, "Serving database snapshot for '%s'...", databaseName);
 
       final DatabaseInternal db = server.getDatabase(databaseName);
@@ -339,9 +361,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
       // requires it and rejects a download truncated at a ZIP-entry boundary.
       exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
-      // Read BEFORE the capture below, so every entry up to it is in the copy (issue #8454): the follower refuses a
-      // copy behind the entries it already applied to the one it is replacing.
-      final long appliedIndex = servedAppliedIndex(server);
+      // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454).
       if (appliedIndex != Long.MIN_VALUE)
         exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
       exchange.startBlocking();
@@ -352,8 +372,18 @@ public class SnapshotHttpHandler implements HttpHandler {
       // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
       // PR #7474).
       try (pause) {
-        streamThroughPointInTimeImage(db, databaseName, pause,
-            (image, heldPause) -> serveSnapshotZip(exchange, db, databaseName, image, heldPause));
+        streamThroughPointInTimeImage(db, databaseName, pause, (image, heldPause) -> {
+          // CHECKED AGAIN NOW THAT THE IMAGE IS CAPTURED (code review on PR #8484). A quarantine the apply thread
+          // recorded between the check above and the capture skipped an entry past the reported index, and on an
+          // APPLY_ERROR quarantine later entries can still land in the copy: the follower would then replay the
+          // skipped entry onto pages that are already newer and lose it. Nothing has been written yet, so this is
+          // still a clean 503.
+          final DivergenceCause late = servedDatabaseQuarantine(server, databaseName);
+          if (late != null)
+            refuseQuarantined(exchange, databaseName, late);
+          else
+            serveSnapshotZip(exchange, db, databaseName, image, heldPause);
+        });
       } finally {
         dbSuspendLock.unlock();
       }
@@ -363,17 +393,57 @@ public class SnapshotHttpHandler implements HttpHandler {
   }
 
   /**
+   * Answers 503 for a database this node has quarantined (issue #8468). Also called after the image is captured, once
+   * the zip headers are set but before a byte is written, so it replaces them.
+   */
+  private void refuseQuarantined(final HttpServerExchange exchange, final String databaseName,
+      final DivergenceCause cause) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Snapshot of '%s' refused: the database is quarantined on this node (%s), so its copy is short of a committed "
+            + "entry. If this node is the leader, transfer leadership to a healthy node to let followers install it "
+            + "(issue #8468)",
+        databaseName, cause.getDescription());
+    if (exchange.isResponseStarted())
+      // Unreachable while nothing has been written. If it ever is reached, the failure is QUIET, not loud: inside the
+      // streamer this throw is logged and swallowed by streamThroughPointInTimeImage's executeIgnoringExceptions (or
+      // suspendFlushAndExecute's on the fallback). The follower still rejects the copy, because the response then
+      // ends without the completeness manifest (#4831)
+      throw new IllegalStateException("Snapshot of '" + databaseName + "' refused after its response started");
+    exchange.setStatusCode(503);
+    exchange.getResponseHeaders().remove(Headers.CONTENT_DISPOSITION);
+    exchange.getResponseHeaders().remove(new HttpString(SnapshotManager.MANIFEST_HEADER));
+    exchange.getResponseHeaders().remove(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER));
+    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+    exchange.getResponseSender().send(new JSONObject()
+        .put("error", "Database '" + databaseName + "' is quarantined on this node and cannot be served as a snapshot")
+        .put("cause", cause.name()).toString());
+  }
+
+  /**
    * The Raft applied index of the node serving the snapshot (issue #8454), or {@link Long#MIN_VALUE} when it runs no
    * Raft state machine and there is nothing to report. {@code -1} is a real answer - nothing applied yet - and is sent.
    */
   static long servedAppliedIndex(final ArcadeDBServer server) {
+    final ArcadeStateMachine stateMachine = servingStateMachine(server);
+    return stateMachine != null ? stateMachine.appliedIndexForServedSnapshot() : Long.MIN_VALUE;
+  }
+
+  /**
+   * Why the node serving the snapshot has quarantined {@code databaseName}, or {@code null} when it has not or runs no
+   * Raft state machine (issue #8468). A quarantined copy is short of a committed entry that {@link #servedAppliedIndex}
+   * already counts, so it must not be served as the authoritative one.
+   */
+  static DivergenceCause servedDatabaseQuarantine(final ArcadeDBServer server, final String databaseName) {
+    final ArcadeStateMachine stateMachine = servingStateMachine(server);
+    return stateMachine != null ? stateMachine.quarantineCause(databaseName) : null;
+  }
+
+  private static ArcadeStateMachine servingStateMachine(final ArcadeDBServer server) {
     if (server != null && server.getHA() instanceof RaftHAPlugin plugin) {
       final RaftHAServer raft = plugin.getRaftHAServer();
-      final ArcadeStateMachine stateMachine = raft != null ? raft.getStateMachine() : null;
-      if (stateMachine != null)
-        return stateMachine.appliedIndexForServedSnapshot();
+      return raft != null ? raft.getStateMachine() : null;
     }
-    return Long.MIN_VALUE;
+    return null;
   }
 
   /**
