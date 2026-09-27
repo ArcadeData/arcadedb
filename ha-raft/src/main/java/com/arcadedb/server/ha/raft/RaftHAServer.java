@@ -22,6 +22,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerDatabase;
@@ -679,6 +680,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The HTTP work is done on a short-lived daemon thread so the lag-monitor thread is never blocked
    * on network I/O. Authenticated with the inter-node cluster token (the same trust mechanism used
    * for snapshot transfer), never with operator credentials.
+   * <p>
+   * The order carries the leader's view at decision time ({@link StalledResyncOrder}: term, the follower's
+   * {@code matchIndex}, the leader's commit index) and is re-checked twice before anything is dropped (issue #8490):
+   * here, before each database is requested, against this leader's live view ({@link #staleStalledResyncOrderReason}),
+   * and on the follower, against its own term and applied index, by {@link PostResyncDatabaseHandler}.
    */
   void forceResyncStalledReplica(final String peerId) {
     if (peerId == null || !isLeader())
@@ -687,6 +693,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
     if (targetId.equals(localPeerId))
       return; // never resync the leader itself
+
+    // Captured on the lag-monitor thread, in the same tick that decided the resync, so the order describes exactly
+    // the state the decision was made on.
+    final StalledResyncOrder order = new StalledResyncOrder(getCurrentTerm(), clusterMonitor.getReplicaMatchIndex(peerId),
+        clusterMonitor.getLeaderCommitIndex());
+    final long stallGeneration = clusterMonitor.getStallGeneration(peerId);
 
     // Through the guard, like every other unattended dial of a resolved peer address (issue #6221). This one
     // carries the most destructive payload of them all - "drop your copy of every database and download it
@@ -730,10 +742,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           return;
         if (ArcadeDBServer.isReservedDatabaseName(dbName))
           continue;
+        // Issue #8490: the task may run long after the decision (queued behind another, or behind the previous
+        // database's snapshot download), and each database is one more copy the follower drops. Re-check that the
+        // stall the order was based on is still current before sending it.
+        final String stale = staleStalledResyncOrderReason(isLeader(), getCurrentTerm(), clusterMonitor, peerId,
+            stallGeneration, order);
+        if (stale != null) {
+          LogManager.instance().log(this, Level.INFO,
+              "Not forcing a resync of database '%s' on replica '%s': %s", dbName, peerId, stale);
+          return;
+        }
         try {
-          requestRemoteResync(address, dbName, clusterToken, useHttps);
+          requestRemoteResync(address, dbName, clusterToken, useHttps, order);
           LogManager.instance().log(this, Level.INFO,
               "Requested resync of database '%s' on stalled replica '%s' (%s)", dbName, peerId, address);
+        } catch (final StalledResyncDeclinedException e) {
+          // The follower checked the order against its own state and found it stale: nothing was dropped. Keep
+          // going: the follower judges each database by its own trusted applied index, which a per-database read
+          // floor can hold lower than the others', so one refusal does not answer for the rest.
+          LogManager.instance().log(this, Level.INFO,
+              "Replica '%s' declined the forced resync of database '%s': %s", peerId, dbName, e.getMessage());
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Failed to request resync of database '%s' on stalled replica '%s' (%s): %s",
@@ -1159,12 +1187,40 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Why a leader-driven resync order must not be sent any more, or {@code null} when it still stands (issue #8490):
+   * this node lost leadership, the term moved on, or the stall it was decided on is over - the replica recovered,
+   * went unreachable, or its {@code matchIndex} moved. Static and fed its inputs so it is testable without Ratis.
+   */
+  static String staleStalledResyncOrderReason(final boolean leader, final long currentTerm, final ClusterMonitor monitor,
+      final String peerId, final long stallGeneration, final StalledResyncOrder order) {
+    if (!leader)
+      return "this node is no longer the leader";
+    if (currentTerm != order.leaderTerm())
+      return "the order was decided in term " + order.leaderTerm() + " and the term is now " + currentTerm;
+    if (!monitor.isStalledResyncStillWarranted(peerId, stallGeneration, order.observedMatchIndex()))
+      return "the stall it was decided on is over (the replica recovered, progressed or is unreachable, or a new "
+          + "stall began)";
+    return null;
+  }
+
+  /**
    * Sends {@code POST /api/v1/cluster/resync/{database}} to a follower, authenticated with the
    * cluster token. When {@code https} is true the connection uses the cluster SSL context (the same
    * one used for snapshot transfer). Visible for testing. Throws on a non-2xx response.
    */
   void requestRemoteResync(final String followerAddr, final String databaseName, final String clusterToken,
       final boolean https) throws IOException {
+    requestRemoteResync(followerAddr, databaseName, clusterToken, https, null);
+  }
+
+  /**
+   * Same as {@link #requestRemoteResync(String, String, String, boolean)}, carrying the leader's {@code order}
+   * (issue #8490) for the follower to check before it drops anything; {@code null} sends an unconditional request,
+   * the same as an operator's. Throws {@link StalledResyncDeclinedException} when the follower refuses the order
+   * as stale ({@code 409}).
+   */
+  void requestRemoteResync(final String followerAddr, final String databaseName, final String clusterToken,
+      final boolean https, final StalledResyncOrder order) throws IOException {
     final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/"
         + URLEncoder.encode(databaseName, StandardCharsets.UTF_8);
     final HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
@@ -1186,9 +1242,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         conn.setRequestProperty("X-ArcadeDB-Forwarded-User", FORWARDED_ROOT_USER);
       }
       try (final OutputStream os = conn.getOutputStream()) {
-        os.write("{}".getBytes(StandardCharsets.UTF_8));
+        os.write((order != null ? order.toJSON().toString() : "{}").getBytes(StandardCharsets.UTF_8));
       }
       final int code = conn.getResponseCode();
+      if (order != null && code == PostResyncDatabaseHandler.STALE_ORDER_STATUS)
+        throw new StalledResyncDeclinedException(readErrorMessage(conn));
       if (code < 200 || code >= 300) {
         drainErrorStream(conn);
         throw new IOException("resync endpoint returned HTTP " + code);
@@ -1208,6 +1266,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         err.readAllBytes();
     } catch (final IOException ignored) {
       // best-effort cleanup
+    }
+  }
+
+  /**
+   * The {@code error} field of a JSON error response, read to at most {@code 4 KiB} and then drained so the socket
+   * can be reused; the raw text when it is not JSON, or a placeholder when there is no body.
+   */
+  private static String readErrorMessage(final HttpURLConnection conn) {
+    try (final var err = conn.getErrorStream()) {
+      if (err == null)
+        return "no reason given";
+      final String body = new String(err.readNBytes(4096), StandardCharsets.UTF_8);
+      err.readAllBytes();
+      try {
+        return new JSONObject(body).getString("error", body);
+      } catch (final Exception notJson) {
+        return body;
+      }
+    } catch (final IOException e) {
+      return "no reason given (" + e.getMessage() + ")";
     }
   }
 

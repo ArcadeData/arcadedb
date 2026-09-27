@@ -299,14 +299,18 @@ public class PluginApiSpec implements OpenApiContributor {
         """
             Discards this server's copy of one database and installs a fresh snapshot from the \
             leader. Refuses to run on the leader itself. Answers 503 when no leader is currently \
-            reachable. """ + RAFT_REQUIRED);
+            reachable. The body is ignored for an operator's resync. The leader's automatic resync of a \
+            stalled replica sends its view at decision time instead (leaderTerm, observedMatchIndex, \
+            leaderCommitIndex), and the server answers 409, keeping its copy, when that view no longer \
+            holds: it is already in a later term, has applied up to the leader's commit index, or has \
+            progressed past the observed matchIndex. """ + RAFT_REQUIRED);
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     // No 404: unlike the verify handler, this handler never checks existsDatabase() - an unknown or
     // invalid name simply fails inside resyncDatabaseFromLeader, which is caught locally and reported
     // as 500.
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Database resynced", "ClusterActionResponse"),
-        "400", "401", "403", "500", "503"));
+        "400", "401", "403", "409", "500", "503"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
