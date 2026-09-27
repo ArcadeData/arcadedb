@@ -21,6 +21,8 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.BootstrapFingerprint;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
@@ -33,6 +35,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
@@ -76,11 +79,14 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -5261,8 +5267,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     pageVersions.clear(databaseName);
 
     // Checked before the maintenance slot below, so replaying the entry of a database that is already gone never
-    // waits on anything.
-    if (!server.existsDatabase(databaseName)) {
+    // waits on anything. "Gone" is the registry AND the disk (issue #8451): `close database` deregisters a database
+    // and leaves its files in place, it is not leader-forwarded, and the next request on this node would reopen that
+    // directory - so a closed database still has something to drop.
+    if (!server.existsDatabase(databaseName) && closedDatabaseDirectory(databaseName) == null) {
       retireAbsentDatabase(databaseName);
       return;
     }
@@ -5316,30 +5324,41 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link #applyDropDatabaseEntry}.
    */
   private void dropHoldingMaintenanceSlot(final String databaseName) {
-    // Re-checked: the database can have been deregistered while the apply was waiting for the slot, and
-    // getDatabase below would otherwise reopen it from disk only to drop it.
-    if (!server.existsDatabase(databaseName)) {
-      retireAbsentDatabase(databaseName);
-      return;
-    }
-
     // Only the rename below runs on the apply thread: the recursive delete costs one unlink per file and is
     // unbounded in the size of the database, and this loop is sequential and shared by every database
     // multiplexed on the state machine. Close, deregister and rename hold the databases lock as one unit -
     // mirroring the snapshot installer's swap - so no concurrent open can reopen the directory in between.
     final Path staged;
+    final boolean absent;
     synchronized (server.getDatabasesLock()) {
-      // Resolved inside the lock: getDatabase reopens a database that is registered-but-closed, so resolving
-      // it outside would let another holder of this lock deregister it between the lookup and the close, and
-      // this thread would reopen the directory from disk only to close it again.
-      final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
-      final Path databaseDirectory = Path.of(embedded.getDatabasePath());
-      embedded.closeForDrop();
-      server.removeDatabase(databaseName);
+      final Path databaseDirectory;
+      if (server.existsDatabase(databaseName)) {
+        // Resolved inside the lock: getDatabase reopens a database that is registered-but-closed, so resolving
+        // it outside would let another holder of this lock deregister it between the lookup and the close, and
+        // this thread would reopen the directory from disk only to close it again.
+        final DatabaseInternal embedded = ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded();
+        databaseDirectory = Path.of(embedded.getDatabasePath());
+        embedded.closeForDrop();
+        server.removeDatabase(databaseName);
+      } else {
+        // Deregistered, either before this entry arrived or while the apply waited for the slot: a `close
+        // database` leaves the files on disk, and getDatabase would reopen them on the next request (issue
+        // #8451). Deleted from the configured directory WITHOUT opening it - opening only to drop would replay
+        // its WAL and take its file locks for nothing.
+        databaseDirectory = closedDatabaseDirectory(databaseName);
+        if (databaseDirectory != null)
+          closeUnregisteredInstance(databaseDirectory);
+      }
       // stageForDeletion falls back to deleting inline when the rename is impossible, and that fallback
       // belongs inside the lock even though it is slow: the directory still carries its live name, so
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
-      staged = deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
+      staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
+      absent = databaseDirectory == null;
+    }
+    if (absent) {
+      // Neither registered nor on disk any more: the removal this entry asks for already happened elsewhere.
+      retireAbsentDatabase(databaseName);
+      return;
     }
     // Queued outside the lock: a saturated deletion queue runs the delete on this thread, and that must not
     // extend to holding the databases lock for the length of a recursive delete.
@@ -5368,6 +5387,67 @@ public class ArcadeStateMachine extends BaseStateMachine {
     evictBootstrapBaseline(databaseName);
     clearDroppedDatabaseQuarantine(databaseName);
     HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
+  }
+
+  /**
+   * The on-disk directory of a database that is NOT in the server registry, or {@code null} when there is none
+   * (issue #8451). It is the directory {@code ArcadeDBServer.getDatabase} would load the name from, so it is exactly
+   * what a later request on this node would reopen.
+   * <p>
+   * The name arrives in a committed log entry rather than in a request this node validated, and what is found here is
+   * deleted, so a name the server would refuse to open - one that resolves outside the databases directory - is
+   * reported as having no directory rather than trusted.
+   * <p>
+   * Only a path that is confirmed missing counts as "no directory". A stat that fails for any other reason (permission,
+   * I/O error) fails the apply instead: reading it as absent would retire the database's bookkeeping and advance the
+   * applied index past the drop while its files are still there, to be reopened once the filesystem recovers.
+   *
+   * @throws UncheckedIOException when the filesystem cannot say whether the directory exists
+   */
+  private Path closedDatabaseDirectory(final String databaseName) {
+    try {
+      server.checkDatabaseNameIsValid(databaseName);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Drop-database entry names '%s', which is not a valid database name on this node: nothing on disk is "
+              + "removed for it (%s)", databaseName, e.getMessage());
+      return null;
+    }
+    final Path directory = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName);
+    final BasicFileAttributes attributes;
+    try {
+      attributes = Files.readAttributes(directory, BasicFileAttributes.class);
+    } catch (final NoSuchFileException e) {
+      return null;
+    } catch (final IOException e) {
+      // Deliberately NOT a ReplicationException: applyWithRetry rethrows that one unchanged, so the database would be
+      // neither quarantined nor resynced, and the next entry to apply would checkpoint straight past this drop. A plain
+      // runtime exception takes the handleUnexpectedApplyError path: quarantine, targeted resync, and no snapshot while
+      // the quarantine holds, so the entry stays replayable.
+      throw new UncheckedIOException(
+          "Cannot tell whether database '" + databaseName + "' still has files at '" + directory + "' to drop", e);
+    }
+    return attributes.isDirectory() ? directory : null;
+  }
+
+  /**
+   * Closes an instance of {@code databaseDirectory} that is still open in this JVM although the server no longer
+   * registers it - a close that failed half way, or an embedded open outside the server - so its files are not
+   * renamed from under open file handles. A no-op in the ordinary case, where {@code close database} closed it.
+   */
+  private static void closeUnregisteredInstance(final Path databaseDirectory) {
+    final Database active = DatabaseFactory.getActiveDatabaseInstance(databaseDirectory.toString());
+    if (active == null || !active.isOpen())
+      return;
+    try {
+      ((DatabaseInternal) active).getEmbedded().closeForDrop();
+    } catch (final DatabaseIsClosedException e) {
+      // Its holder is not serialized by the databases lock - it is not registered - so it can close it between the
+      // isOpen() above and closeForDrop(). Closed is exactly what this method wanted; anything else still fails.
+      if (active.isOpen())
+        throw e;
+    }
   }
 
   /**
