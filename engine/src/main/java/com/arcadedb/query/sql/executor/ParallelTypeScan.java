@@ -76,26 +76,6 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ParallelTypeScan {
-  /**
-   * The pages {@code [fromPage, toPage)} of the bucket {@code template} scans, or the whole of it with -1/-1. A
-   * template that is not a bucket step is always one unit, run as it is.
-   */
-  record Unit(AbstractExecutionStep template, int fromPage, int toPage) {
-    boolean isWholeTemplate() {
-      return fromPage < 0;
-    }
-  }
-
-  /** Consumes, in a worker, the rows of the units that worker scans. */
-  @FunctionalInterface
-  interface PartialSink<P> {
-    /**
-     * @param position where the row is in the sequential scan: its unit in the high 32 bits, its ordinal in the unit
-     *                 in the low 32, so positions compare as the sequential scan orders the rows
-     */
-    void accept(P partial, Result row, long position, CommandContext workerContext);
-  }
-
   // How many rows a producer fetches under one database read-lock acquisition before releasing it to hand them over.
   // Small enough to keep DDL/close waits bounded, large enough to amortize the uncontended read lock to noise; and
   // batches, not single rows (#8265): one hand-off per batch instead of one per row.
@@ -105,6 +85,8 @@ final class ParallelTypeScan {
   // Units per worker a large type is cut in: more than one, so a worker that drew a slow range does not leave the
   // others idle at the end, not so many that the per-unit set-up shows.
   private static final int UNITS_PER_WORKER   = 4;
+  // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
+  private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
   private final DatabaseInternal     database;
   private final String               typeName;
@@ -139,6 +121,26 @@ final class ParallelTypeScan {
   /** Binds this thread to the database as the caller: a worker reads with the caller's permissions, never with none. */
   private void initWorkerThread() {
     DatabaseContext.INSTANCE.init(database).setCurrentUser(user);
+  }
+
+  /**
+   * The pages {@code [fromPage, toPage)} of the bucket {@code template} scans, or the whole of it with -1/-1. A
+   * template that is not a bucket step is always one unit, run as it is.
+   */
+  record Unit(AbstractExecutionStep template, int fromPage, int toPage) {
+    boolean isWholeTemplate() {
+      return fromPage < 0;
+    }
+  }
+
+  /** Consumes, in a worker, the rows of the units that worker scans. */
+  @FunctionalInterface
+  interface PartialSink<P> {
+    /**
+     * @param position where the row is in the sequential scan: its unit in the high 32 bits, its ordinal in the unit
+     *                 in the low 32, so positions compare as the sequential scan orders the rows
+     */
+    void accept(P partial, Result row, long position, CommandContext workerContext);
   }
 
   /**
@@ -193,7 +195,8 @@ final class ParallelTypeScan {
     final List<Unit> units = new ArrayList<>();
     for (int i = 0; i < bucketSteps.size(); i++) {
       final AbstractExecutionStep template = (AbstractExecutionStep) bucketSteps.get(i);
-      if (pages[i] < 2 * pagesPerUnit) {
+      // pages / 2, NOT 2 * pagesPerUnit: THE LATTER OVERFLOWS WHEN THE SPLIT IS DISABLED (Long.MAX_VALUE)
+      if (pages[i] / 2 < pagesPerUnit) {
         units.add(new Unit(template, -1, -1));
         continue;
       }
@@ -326,8 +329,6 @@ final class ParallelTypeScan {
     final LinkedBlockingQueue<List<Result>> queue = new LinkedBlockingQueue<>(UNIT_QUEUE_BATCHES);
   }
 
-  // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
-  private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
   /**
    * Returns the next page of at most {@code nRecords} rows, in the sequential scan's order, starting the workers on

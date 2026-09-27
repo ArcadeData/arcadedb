@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.parser.SuffixIdentifier;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -444,7 +445,9 @@ public final class CorrelatedSubQueryCache {
         return member.execute(getVariable(name), context);
 
       final Object value = outer.getVariable(name);
-      if (value instanceof CommandContext)
+      // A CONTEXT IS NOT A VALUE, AND AN ITERATOR IS CONSUMED BY READING IT: RE-EVALUATING THE MEMBER TO BUILD A KEY WOULD
+      // EXHAUST IT BEFORE THE SUBQUERY GETS TO READ IT. BOTH ARE KEYED ON THE VARIABLE ITSELF, AS BEFORE
+      if (value instanceof CommandContext || value instanceof Iterator)
         return member.execute(getVariable(name), context);
 
       tracker.reads.add(new Dependency(Access.VARIABLE_MEMBER, name, member.getMemberName(), member));
