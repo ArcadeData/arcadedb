@@ -253,7 +253,7 @@ class BootstrapElection {
 
   /**
    * Holds this node's own copies of {@code dbNames} for the pass {@code passId} it is running (issue #8409), with no
-   * deadline of its own beyond the state machine's ceiling.
+   * deadline at all - see {@link ArcadeStateMachine#holdOwnBootstrapPass}.
    * <p>
    * A follower's hold needs a deadline because a leader that dies mid-pass sends it no conclusion. This hold is taken
    * by the pass itself, on its own thread, and every way out of {@link #runIfEligible} settles it: the conclusion in
@@ -264,7 +264,7 @@ class BootstrapElection {
   private void holdOwnCopies(final String passId, final Collection<String> dbNames) {
     final ArcadeStateMachine stateMachine = haServer.getStateMachine();
     if (stateMachine != null)
-      stateMachine.announceBootstrapPass(passId, dbNames, Long.MAX_VALUE);
+      stateMachine.holdOwnBootstrapPass(passId, dbNames);
   }
 
   /**

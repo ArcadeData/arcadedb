@@ -408,6 +408,27 @@ class Issue8368BootstrapPassWindowTest {
     assertThat(heldAfterTheOldDeadline[0]).isTrue();
   }
 
+  /**
+   * Review of PR #8477: the leader's self-hold has no deadline at all, not even the one-hour ceiling a follower's
+   * announce is capped at, and its pass still settles it.
+   */
+  @Test
+  void theLeadersSelfHoldHasNoDeadlineAndItsConclusionReleasesIt() {
+    final ArcadeStateMachine sm = stateMachine();
+    sm.holdOwnBootstrapPass("pass-1", List.of(DB_NAME));
+    receiveAnnounce(sm, "pass-other", "other-db");
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isTrue();
+
+    // A bounded announce from the same pass (the transfer) replaces it with a deadline again: zero lapses at once.
+    PostBootstrapStateHandler.applyPassMarker(
+        new JSONObject(BootstrapElection.announcePassBody("pass-1", List.of(DB_NAME))), sm, 0L);
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+
+    sm.holdOwnBootstrapPass("pass-2", List.of(DB_NAME));
+    sm.concludeBootstrapPass(null, List.of());
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+  }
+
   /** Issue #8409: a pass that fails while collecting releases the hold it took at its start. */
   @Test
   void aPassThatFailsWhileCollectingReleasesTheLeadersHold() {
