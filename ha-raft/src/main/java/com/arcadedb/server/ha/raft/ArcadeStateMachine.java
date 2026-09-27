@@ -6389,6 +6389,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * whole verdict rather than one address so the encrypted endpoint reaching the installer is the guarded one
    * too (issue #6221). The caller has already established that it may be pulled from
    * ({@link #resolveSnapshotSource}) and holds {@link #snapshotDownloadLock}.
+   * <p>
+   * "Present" is the registry AND the disk (issue #8464). {@code close database} deregisters a database and leaves its
+   * files in place, it is not leader-forwarded, and the next request on this node reopens that directory - so a resync
+   * that walked only the registry left the closed copy at its pre-resync state and still recorded the whole gap as
+   * applied. The closed ones are listed from the databases directory AFTER the registered ones are reinstalled, so a
+   * database closed while this loop runs is caught by the listing rather than missed by both. The install reopens a
+   * closed database, which is the only state in which this node can vouch for its content.
+   * <p>
+   * A closed database that cannot be installed does NOT fail the resync of the others, unlike a registered one. The
+   * leader answers only for the databases IT has open, so a database closed on the leader too - an ordinary
+   * maintenance close, run on every node - would otherwise fail every full resync of this node for good, with every
+   * other database left behind with it. It is quarantined instead, with a read floor at its own applied position,
+   * which is what a leader-driven install does with a database it gave up on (issue #6760): the node stays out of the
+   * ready set while it holds a copy it knows nothing about, and {@link #retryUnfilledSnapshotGap()} re-drives a
+   * targeted resync of it.
    */
   private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
@@ -6405,40 +6420,73 @@ public class ArcadeStateMachine extends BaseStateMachine {
         resynced++;
       }
     }
+
+    final Set<String> notInstalled = new HashSet<>();
+    for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
+      try {
+        installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Snapshot resync could not reinstall database '%s', which is closed on this node but still on disk and "
+                + "would be reopened by the next request that names it: keeping it quarantined until a targeted "
+                + "resync succeeds. If the leader does not hold '%s' open, open it there or remove this node's copy "
+                + "(issue #8464)", e, dbName, dbName);
+        notInstalled.add(dbName);
+        continue;
+      }
+      LogManager.instance().log(this, Level.INFO,
+          "Snapshot resync reinstalled database '%s', which was closed on this node: it is open again (issue #8464)",
+          dbName);
+      settleBootstrapReplacement(dbName);
+      resynced++;
+    }
+
     LogManager.instance().log(this, Level.INFO,
         "Snapshot resync completed: reinstalled %d database(s) from the leader; diverged state cleared", resynced);
-    clearDivergedState();
-    // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
-    // had kept (issue #6124).
-    clearAllBootstrapUnreconciled();
+    if (notInstalled.isEmpty()) {
+      clearDivergedState();
+      // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
+      // had kept (issue #6124).
+      clearAllBootstrapUnreconciled();
+    } else {
+      // Every database but these carries the leader's copy now: clear the rest, and quarantine these with their own
+      // honest floors in the same durable write (issues #6760, #8137).
+      final var snapshotInfo = storage.getLatestSnapshot();
+      settleDivergedStateAfterInstall(notInstalled, snapshotInfo != null ? snapshotInfo.getIndex() : -1L);
+      for (final String dbName : getBootstrapUnreconciledDatabases())
+        if (!notInstalled.contains(dbName))
+          clearBootstrapUnreconciled(dbName);
+    }
     // The databases now carry the leader's state, so a read floor published by a stale marker in
     // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
     // without it the very same gap is re-detected on the next restart and the node re-downloads
     // forever. Then wake the waiters this resync unblocked (issue #6111).
-    resolveStaleSnapshotFloorAfterResync(resynced);
+    resolveStaleSnapshotFloorAfterResync(resynced, notInstalled);
   }
 
   /**
    * Completes a successful full resync with respect to the stale-snapshot read floor (issue #6111):
-   * persists the marker index as the applied position of every present database - the resync brought
-   * them all to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect the
-   * same gap on the next restart - then clears the floor and wakes the waiters it was holding back.
-   * No-op when no floor was outstanding.
+   * persists the marker index as the applied position of every present database except {@code notInstalled} - the
+   * resync brought the others to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect
+   * the same gap on the next restart - then clears the floor and wakes the waiters it was holding back. Each database
+   * in {@code notInstalled} is already quarantined with its own read floor (issue #8464), so the node-wide floor is
+   * no longer what protects it. No-op when no floor was outstanding.
    * <p>
    * {@code resynced} is logged rather than gated on: zero is legitimate for a node with no databases
-   * open (nothing can be stale), and it matches what {@code notifyInstallSnapshotFromLeader} already
-   * records over the same {@code getDatabaseNames()} set. It is worth seeing in the log, because a
+   * on disk (nothing can be stale). It is worth seeing in the log, because a
    * floor resolved after reinstalling zero databases is the shape an unexpectedly-empty registry would
    * take.
    */
-  private void resolveStaleSnapshotFloorAfterResync(final int resynced) {
+  private void resolveStaleSnapshotFloorAfterResync(final int resynced, final Set<String> notInstalled) {
     if (staleSnapshotAppliedFloor.get() < 0)
       return;
     LogManager.instance().log(this, Level.INFO,
         "Stale-snapshot read floor resolved after reinstalling %d database(s); reads are unclamped again", resynced);
     final var snapshotInfo = storage.getLatestSnapshot();
     if (snapshotInfo != null && snapshotInfo.getIndex() > readPersistedAppliedIndex()) {
-      writePersistedAppliedIndexForAllDatabases(snapshotInfo.getIndex());
+      // A database the resync could not reinstall is not at the marker index (issue #8464): recording it there would
+      // make the next restart skip the replay that is the only other thing able to catch it up.
+      writePersistedAppliedIndexForAllDatabases(snapshotInfo.getIndex(), notInstalled);
       // Accumulate rather than set: this runs on the lifecycleExecutor while the Ratis apply thread may
       // already have replayed past the marker, and the counter must never regress under it.
       lastAppliedIndex.accumulateAndGet(snapshotInfo.getIndex(), Math::max);
@@ -6710,8 +6758,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
             final String leaderHttpsAddr = source.httpsAddress();
             final String clusterToken = raftHA.getClusterToken();
             // install() keeps the database open during the download and rolls back on failure, so a
-            // targeted resync never leaves it closed.
-            if (server.existsDatabase(dbName)) {
+            // targeted resync never leaves it closed. A database closed on this node is reinstalled too (issue
+            // #8464): its directory is still here and the next request reopens it, so skipping it left the
+            // quarantine standing over a copy nothing would ever repair. A database with no copy at all is left
+            // alone, as before - there is nothing on this node to serve stale.
+            if (isDatabasePresentLocally(dbName)) {
               installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
               LogManager.instance().log(this, Level.INFO,
                   "Targeted snapshot resync of quarantined database '%s' completed", dbName);
