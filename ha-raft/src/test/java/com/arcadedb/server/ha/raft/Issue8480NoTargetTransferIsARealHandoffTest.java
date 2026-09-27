@@ -260,6 +260,63 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     assertThat(attempts[0]).as("no second transfer against the leader just elected").isEqualTo(1);
   }
 
+  /**
+   * The same race seen one candidate later: the first transfer's call failed while this node still read as leader,
+   * and the win only shows as the second candidate's not-the-leader refusal. That is the step-down succeeding.
+   */
+  @Test
+  void stepDownEndsWhenTheWinOnlyShowsAtTheNextCandidate() {
+    final int[] attempts = new int[1];
+    final boolean[] leader = { true };
+    final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      @Override
+      public boolean isLeader() {
+        return leader[0];
+      }
+
+      @Override
+      public RaftPeerId getLeaderId() {
+        return leader[0] ? getLocalPeerId() : B;
+      }
+
+      @Override
+      public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+        if (++attempts[0] == 1)
+          throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": client-1 is already CLOSED");
+        // ...by now the first target has won
+        leader[0] = false;
+        throw new NotTheLeaderRefusalException("Refusing to transfer leadership to " + targetPeerId, B);
+      }
+    };
+
+    assertThatCode(server::stepDown).doesNotThrowAnyException();
+    assertThat(attempts[0]).isEqualTo(2);
+  }
+
+  /**
+   * The bare step-down's RPC and its confirmation share ONE budget: the confirmation gets what the RPC left of it,
+   * not a fresh {@code timeoutMs} on top. Counted in leader-view polls rather than elapsed time: with the RPC
+   * taking the whole budget, only the grace is left (a few polls at 50 ms), where a fresh budget would poll ~8
+   * times. A stall can only reduce the count, so it cannot turn this red.
+   */
+  @Test
+  void theBareStepDownConfirmationGetsOnlyWhatTheRpcLeftOfTheBudget() throws Exception {
+    everyPeerLags();
+    final RaftClientReply ok = reply(true);
+    when(admin.transferLeadership(isNull(), anyLong())).thenAnswer(invocation -> {
+      Thread.sleep(400);
+      return ok;
+    });
+    final AtomicInteger polls = new AtomicInteger();
+    when(raft.getLeaderId()).thenAnswer(invocation -> {
+      polls.incrementAndGet();
+      return null;
+    });
+
+    assertThat(manager().transferLeadership(400)).isFalse();
+    assertThat(polls.get()).as("leader-view polls after the RPC used the whole budget").isLessThanOrEqualTo(4);
+  }
+
   /** And when leadership was lost with no other leader settling, stepDown() refuses instead of trying more peers. */
   @Test
   void stepDownRefusesWhenLeadershipWasLostWithoutAHandoff() {

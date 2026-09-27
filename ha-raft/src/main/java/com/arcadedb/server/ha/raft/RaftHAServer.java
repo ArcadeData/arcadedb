@@ -4180,15 +4180,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
 
+    boolean attempted = false;
     for (final RaftPeer peer : candidates) {
       try {
         transferLeadership(peer.getId().toString(), 10_000);
         return;
       } catch (final NotTheLeaderRefusalException notLeader) {
-        // Leadership moved between the guard above and this attempt. Propagate the refusal so callers stop
-        // retrying a step-down that is already moot, and the HTTP handler reports 409 (issue #7134).
+        // Leadership moved between the guard above and this attempt. When an earlier candidate's transfer was
+        // already sent, that transfer may be what moved it - its call failed, yet the target won (#8487) - so a
+        // settled handoff is the step-down succeeding, not a refusal (issue #8480). Otherwise propagate the refusal
+        // so callers stop retrying a step-down that is already moot, and the HTTP handler reports 409 (issue #7134).
+        if (attempted && leadershipMovedAway())
+          return;
         throw notLeader;
       } catch (final Exception e) {
+        attempted = true;
         // The call failed, but the target may have won anyway: the leader change closes the client under the RPC
         // (#8487). Moving on would start a second election against the leader just elected, so settle it here, the
         // way transferLeadership(long) does (issue #8480).

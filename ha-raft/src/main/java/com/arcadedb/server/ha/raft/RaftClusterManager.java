@@ -353,6 +353,8 @@ class RaftClusterManager {
       return false;
 
     final RaftPeerId selfId = raftHAServer.getLocalPeerId();
+    // One budget for the RPC and the confirmation together: the confirmation gets what the RPC left of it.
+    final long deadline = System.currentTimeMillis() + timeoutMs;
     try {
       final RaftClientReply reply = client.admin().transferLeadership(null, timeoutMs);
       if (!reply.isSuccess())
@@ -364,7 +366,7 @@ class RaftClusterManager {
       // in-flight RPC fails with "is closed". Confirm an actual, settled handoff instead (issue #4809).
       LogManager.instance().log(this, Level.INFO, "No-target leadership transfer request: %s", e.getMessage());
     }
-    return confirmLeadershipMovedAway(selfId, Math.max(timeoutMs, leaderConfirmGraceMs));
+    return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
   }
 
   private static final long LEADER_CONFIRM_TIMEOUT_MS = 3_000;
