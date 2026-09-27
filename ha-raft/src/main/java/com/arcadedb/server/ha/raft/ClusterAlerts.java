@@ -873,8 +873,8 @@ public class ClusterAlerts {
         .put("id", "leader-replacing-database")
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "The leader is replacing database(s) with the leader's copy and cannot serve them")
-        .put("message", "This node was elected leader while it was replacing " + replacing.size() + " database(s) "
-            + "with the leader's snapshot (an operator or automatic resync). A leader cannot download a copy from "
+        .put("message", "This node is the leader and is replacing " + replacing.size() + " database(s) with the "
+            + "leader's snapshot (an operator or automatic resync that was running when it was elected). A leader cannot download a copy from "
             + "itself, and it refuses every request on a database whose copy is being replaced, so every write to "
             + "those databases fails although the Raft majority is healthy.")
         .put("recommendation", "The health monitor hands leadership to a peer that holds the data (arcadedb.ha."

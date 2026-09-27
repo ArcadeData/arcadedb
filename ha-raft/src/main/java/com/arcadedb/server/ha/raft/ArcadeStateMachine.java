@@ -4473,6 +4473,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final long previous = lastReplacingLeaderHandOffMs.get();
     if (previous != 0 && now - previous < REPLACING_LEADER_HAND_OFF_INTERVAL_MS)
       return false;
+    // Single attempt, no retry loop: a lost CAS means a concurrent caller (the health tick, or a direct call) has just
+    // claimed the slot and is running the hand-off itself.
     if (!lastReplacingLeaderHandOffMs.compareAndSet(previous, now))
       return false;
 
