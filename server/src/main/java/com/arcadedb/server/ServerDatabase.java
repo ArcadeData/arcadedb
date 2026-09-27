@@ -204,6 +204,34 @@ public class ServerDatabase implements DatabaseInternal {
     return current().isReplicated();
   }
 
+  /**
+   * Delegated like {@link #isReplicated()}, which it is read together with. Inheriting the interface default
+   * ({@code true}) made every handle on a follower answer "replicated, and the leader", so engine code handed a server
+   * handle - a graph analytical view built through the embedded API on {@code server.getDatabase()}, for one - that
+   * keeps work leader-only by asking {@code isReplicated() && !isLeader()} ran it on a follower anyway. The HA hooks
+   * below were likewise inherited as their standalone no-op defaults.
+   */
+  @Override
+  public boolean isLeader() {
+    return current().isLeader();
+  }
+
+  @Override
+  public boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
+    return current().runWithCompactionReplication(compaction);
+  }
+
+  @Override
+  public void recordTimeSeriesSealedChange(final String typeName, final int shardIndex, final String sealedFileName,
+      final byte[] sealedBytes) {
+    current().recordTimeSeriesSealedChange(typeName, shardIndex, sealedFileName, sealedBytes);
+  }
+
+  @Override
+  public void countRecordsRead(final long count) {
+    current().countRecordsRead(count);
+  }
+
   @Override
   public Map<String, Object> alignToReplicas() {
     throw new UnsupportedOperationException("Align Database not supported");

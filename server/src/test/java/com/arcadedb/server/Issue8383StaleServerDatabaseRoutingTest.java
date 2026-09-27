@@ -226,6 +226,31 @@ class Issue8383StaleServerDatabaseRoutingTest extends TestHelper {
   }
 
   @Test
+  void theHAHooksReachTheWrapperInsteadOfTheirStandaloneDefaults() throws Exception {
+    // Not a staleness case: ServerDatabase did not override these at all, so even a handle built around the current
+    // wrapper answered isLeader() == true on a follower while delegating isReplicated().
+    final Map<String, AtomicInteger> calls = new ConcurrentHashMap<>();
+    final ServerDatabase freshHandle = new ServerDatabase(null, installWrapper(calls));
+
+    assertThat(freshHandle.isLeader()).isTrue();
+    assertThat(freshHandle.runWithCompactionReplication(() -> true)).isTrue();
+    freshHandle.recordTimeSeriesSealedChange("t", 0, "f", new byte[0]);
+    freshHandle.countRecordsRead(1);
+
+    assertThat(count(calls, "isLeader")).isEqualTo(1);
+    assertThat(count(calls, "runWithCompactionReplication")).isEqualTo(1);
+    assertThat(count(calls, "recordTimeSeriesSealedChange")).isEqualTo(1);
+    assertThat(count(calls, "countRecordsRead")).isEqualTo(1);
+
+    // And a stale handle follows the current wrapper for them too.
+    final ServerDatabase staleHandle = new ServerDatabase(null, local());
+    final Map<String, AtomicInteger> newCalls = new ConcurrentHashMap<>();
+    installWrapper(newCalls);
+    staleHandle.isLeader();
+    assertThat(count(newCalls, "isLeader")).isEqualTo(1);
+  }
+
+  @Test
   void aHandleOnAnUnwrappedDatabaseRunsLocally() {
     final ServerDatabase handle = new ServerDatabase(null, local());
 
