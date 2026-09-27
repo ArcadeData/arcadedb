@@ -30,7 +30,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Issue #8492: what a small transaction's commit costs per page it touched. Three things used to cost in proportion to
@@ -122,9 +121,9 @@ class Issue8492CommitPathTest extends BucketPageLayoutTestSupport {
     assertThat(shared.useAsImmutable().getContent().array()).isSameAs(page.getContent().array());
     assertThat(shared.useAsImmutable().readInt(0)).isEqualTo(42);
 
-    assumeTrue(assertionsEnabled(), "the write refusal is an assertion");
-    assertThatThrownBy(() -> page.writeInt(0, 7)).isInstanceOf(AssertionError.class);
-    assertThatThrownBy(page::updateMetadata).isInstanceOf(AssertionError.class);
+    // REFUSED IN EVERY JVM, NOT ONLY UNDER ASSERTIONS: THE ALTERNATIVE IS SILENTLY CHANGING A PAGE OTHERS ARE READING
+    assertThatThrownBy(() -> page.writeInt(0, 7)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(page::updateMetadata).isInstanceOf(IllegalStateException.class);
   }
 
   /**
@@ -163,11 +162,5 @@ class Issue8492CommitPathTest extends BucketPageLayoutTestSupport {
 
   private static String value(final int i) {
     return "record-" + i + "-" + "x".repeat(200);
-  }
-
-  private static boolean assertionsEnabled() {
-    boolean enabled = false;
-    assert enabled = true;
-    return enabled;
   }
 }

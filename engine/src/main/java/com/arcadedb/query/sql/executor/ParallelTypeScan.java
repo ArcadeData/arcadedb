@@ -561,16 +561,28 @@ final class ParallelTypeScan {
 
     final List<P> partials = new ArrayList<>(workers);
     try {
-      for (final Future<P> f : partialFutures) {
-        while (true) {
-          try {
-            partials.add(f.get(50, TimeUnit.MILLISECONDS));
-            break;
-          } catch (final TimeoutException e) {
-            onWait.run();
-          }
+      // WAITS ON ALL THE WORKERS AT ONCE, NOT IN SUBMISSION ORDER: A FAILED WORKER STOPS THE OTHERS AS SOON AS IT FAILS
+      while (true) {
+        boolean allDone = true;
+        Future<P> pending = null;
+        for (final Future<P> f : partialFutures)
+          if (!f.isDone()) {
+            allDone = false;
+            if (pending == null)
+              pending = f;
+          } else if (!f.isCancelled())
+            // THROWS NOW IF THIS WORKER FAILED
+            f.get();
+        if (allDone)
+          break;
+        try {
+          pending.get(50, TimeUnit.MILLISECONDS);
+        } catch (final TimeoutException e) {
+          onWait.run();
         }
       }
+      for (final Future<P> f : partialFutures)
+        partials.add(f.get());
       return partials;
 
     } catch (final InterruptedException e) {
@@ -592,8 +604,10 @@ final class ParallelTypeScan {
 
   /**
    * Runs independent CPU-bound tasks - the merge of partial aggregations - on the producer pool when
-   * {@code inParallel}, otherwise on the caller, and returns once all are done. The tasks never block, so running them
-   * on the pool keeps its progress guarantee.
+   * {@code inParallel}, otherwise on the caller, and returns once all are done. The producer pool rather than one of
+   * its own: the merge runs right after this query's producers have finished, so it takes the threads they released,
+   * and it never blocks, so it keeps the pool's progress guarantee (#4948). A dedicated pool would only add threads
+   * competing for the same cores.
    */
   void run(final List<Runnable> tasks, final boolean inParallel) {
     if (!inParallel || tasks.size() < 2) {

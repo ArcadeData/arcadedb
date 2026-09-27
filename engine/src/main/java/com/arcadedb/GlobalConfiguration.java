@@ -860,7 +860,9 @@ public enum GlobalConfiguration {
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
-      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling.""",
+      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling. A GROUP BY \
+      aggregated in the workers of a parallel scan checks the limit per worker while it scans and on the merged groups at the \
+      end, so its peak can reach the limit times the number of workers.""",
       Long.class, 500_000L, null, value -> {
         // Auto-scale the default with the JVM max heap: roughly one element every 2KB, never below the historical 500000 floor.
         final long maxHeap = Runtime.getRuntime().maxMemory();

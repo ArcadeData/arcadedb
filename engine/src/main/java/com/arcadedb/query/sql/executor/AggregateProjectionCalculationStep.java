@@ -392,6 +392,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         partitions[i] = new HashMap<>();
     }
 
+    // THE GROUP LIMIT IS CHECKED ON THIS WORKER'S GROUPS HERE AND ON THE MERGED ONES AT THE END: AN EXACT GLOBAL COUNT
+    // WHILE SCANNING WOULD NEED A KEY SET SHARED BY EVERY WORKER, SO THE PEAK CAN REACH THE LIMIT TIMES THE WORKERS
+    // (DOCUMENTED ON QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP)
     void accept(final Result row, final long position, final CommandContext context) {
       final Result next = preProjection != null ? preProjection.calculateSingle(context, row) : row;
       final GroupByKey key = groupKey(workerGroupBy, next, context);
