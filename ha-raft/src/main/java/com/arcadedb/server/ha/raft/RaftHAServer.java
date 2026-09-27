@@ -4156,6 +4156,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return clusterManager.stepDownWithoutTarget(timeoutMs);
   }
 
+  /** Whether leadership settled on another peer within the confirmation grace; a seam for {@link #stepDown()}. */
+  boolean leadershipMovedAway() {
+    return clusterManager.leadershipMovedAway();
+  }
+
   /**
    * Steps this leader down by transferring leadership to the best eligible peer.
    * <p>
@@ -4184,6 +4189,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // retrying a step-down that is already moot, and the HTTP handler reports 409 (issue #7134).
         throw notLeader;
       } catch (final Exception e) {
+        // The call failed, but the target may have won anyway: the leader change closes the client under the RPC
+        // (#8487). Moving on would start a second election against the leader just elected, so settle it here, the
+        // way transferLeadership(long) does (issue #8480).
+        if (!isLeader()) {
+          if (leadershipMovedAway())
+            return;
+          throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+        }
         LogManager.instance().log(this, Level.SEVERE,
             "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
       }

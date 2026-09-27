@@ -18,8 +18,12 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
 import org.apache.ratis.protocol.RaftClientReply;
@@ -33,6 +37,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -79,7 +85,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     final RaftClientReply ok = reply(true);
     when(admin.transferLeadership(eq(B), anyLong())).thenReturn(ok);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(10_000)).isTrue();
+    assertThat(manager().transferLeadership(10_000)).isTrue();
 
     verify(admin).transferLeadership(eq(B), anyLong());
     verify(admin, never()).transferLeadership(isNull(), anyLong());
@@ -94,7 +100,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(admin.transferLeadership(eq(C), anyLong())).thenReturn(ok);
     when(raft.getLeaderId()).thenReturn(SELF);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(10_000)).isTrue();
+    assertThat(manager().transferLeadership(10_000)).isTrue();
 
     verify(admin).transferLeadership(eq(B), anyLong());
     verify(admin).transferLeadership(eq(C), anyLong());
@@ -111,7 +117,8 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(raft.isLeader()).thenReturn(true, false);
     when(raft.getLeaderId()).thenReturn(null);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(10_000)).isFalse();
+    // A short budget: the "did another leader settle?" check waits out the caller's remaining budget.
+    assertThat(manager().transferLeadership(200)).isFalse();
 
     verify(admin, never()).transferLeadership(eq(B), anyLong());
     verify(admin, never()).transferLeadership(eq(C), anyLong());
@@ -131,7 +138,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     // isLeaderNow(B) right after the failure has not seen B yet; the settle check then does
     when(raft.getLeaderId()).thenReturn(null, B);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(10_000)).isTrue();
+    assertThat(manager().transferLeadership(10_000)).isTrue();
 
     verify(admin, never()).transferLeadership(eq(C), anyLong());
     verify(admin, never()).transferLeadership(isNull(), anyLong());
@@ -148,7 +155,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
     when(raft.getLeaderId()).thenReturn(null);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(100)).isFalse();
+    assertThat(manager().transferLeadership(100)).isFalse();
 
     verify(admin).transferLeadership(isNull(), anyLong());
     verify(admin, never()).transferLeadership(eq(B), anyLong());
@@ -162,7 +169,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
     when(raft.getLeaderId()).thenReturn(null, null, SELF);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(100)).isFalse();
+    assertThat(manager().transferLeadership(100)).isFalse();
   }
 
   /** Control: the fallback still reports a real handoff once a different leader is in place. */
@@ -173,7 +180,7 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(admin.transferLeadership(isNull(), anyLong())).thenReturn(ok);
     when(raft.getLeaderId()).thenReturn(null, null, C);
 
-    assertThat(new RaftClusterManager(raft).transferLeadership(10_000)).isTrue();
+    assertThat(manager().transferLeadership(10_000)).isTrue();
   }
 
   /**
@@ -220,6 +227,84 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
       return B;
     }, SELF.toString(), 10_000, 1)).isTrue();
     assertThat(probes.get()).isEqualTo(1);
+  }
+
+  /**
+   * stepDown() has its own candidate loop over the same targeted transfer, and meets the same race: a transfer that
+   * won although its call failed must end the step-down, not move on to start a second election.
+   */
+  @Test
+  void stepDownEndsOnATransferThatWonDespiteAFailedCall() {
+    final int[] attempts = new int[1];
+    final boolean[] leader = { true };
+    final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      @Override
+      public boolean isLeader() {
+        return leader[0];
+      }
+
+      @Override
+      public RaftPeerId getLeaderId() {
+        return leader[0] ? getLocalPeerId() : B;
+      }
+
+      @Override
+      public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+        attempts[0]++;
+        leader[0] = false; // the target won...
+        throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": client-1 is already CLOSED");
+      }
+    };
+
+    assertThatCode(server::stepDown).as("the step-down happened: it must not be reported as a failure").doesNotThrowAnyException();
+    assertThat(attempts[0]).as("no second transfer against the leader just elected").isEqualTo(1);
+  }
+
+  /** And when leadership was lost with no other leader settling, stepDown() refuses instead of trying more peers. */
+  @Test
+  void stepDownRefusesWhenLeadershipWasLostWithoutAHandoff() {
+    final int[] attempts = new int[1];
+    final boolean[] leader = { true };
+    final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      @Override
+      public boolean isLeader() {
+        return leader[0];
+      }
+
+      @Override
+      boolean leadershipMovedAway() {
+        return false;
+      }
+
+      @Override
+      public void transferLeadership(final String targetPeerId, final long timeoutMs) {
+        attempts[0]++;
+        leader[0] = false;
+        throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": timeout");
+      }
+    };
+
+    assertThatThrownBy(server::stepDown).isInstanceOf(NotTheLeaderRefusalException.class);
+    assertThat(attempts[0]).isEqualTo(1);
+  }
+
+  private RaftClusterManager manager() {
+    final RaftClusterManager manager = new RaftClusterManager(raft);
+    // The "no other leader appeared" outcomes wait out this grace; the real 3 s would only slow the class down.
+    manager.leaderConfirmGraceMs = 100;
+    return manager;
+  }
+
+  private static ArcadeDBServer detachedServer() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    return server;
+  }
+
+  private static ContextConfiguration threeNodeConfig() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
+    return config;
   }
 
   private void everyPeerLags() {

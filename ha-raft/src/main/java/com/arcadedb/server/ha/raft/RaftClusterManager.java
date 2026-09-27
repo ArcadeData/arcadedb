@@ -315,12 +315,12 @@ class RaftClusterManager {
         // transfer whose reply was lost, rather than a flat false.
         LogManager.instance().log(this, Level.INFO,
             "This node (%s) stopped being the leader while transferring leadership to %s", selfId, candidate.getId());
-        return confirmLeadershipMovedAway(selfId, LEADER_CONFIRM_TIMEOUT_MS);
+        return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
       } catch (final Exception e) {
         // The same race: the candidate may have won although the call reported failure. Trying the next one would
         // then only be refused, or worse, start a second election against the leader just elected.
         if (!raftHAServer.isLeader())
-          return confirmLeadershipMovedAway(selfId, LEADER_CONFIRM_TIMEOUT_MS);
+          return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
         LogManager.instance().log(this, Level.WARNING, "Leadership transfer to %s failed, trying the next candidate: %s",
             candidate.getId(), e.getMessage());
       }
@@ -343,7 +343,7 @@ class RaftClusterManager {
    * with the default {@code arcadedb.ha.electionTimeoutMin/Max}, and that election frequently re-elects the same
    * node. So the reply proves nothing: success is reported only once a DIFFERENT peer is seen as the leader, whatever
    * Ratis answered, and the wait for it is the caller's remaining budget (never less than
-   * {@link #LEADER_CONFIRM_TIMEOUT_MS}, the grace #4809 gave a transfer that raced its own client's close).
+   * {@link #leaderConfirmGraceMs}, the grace #4809 gave a transfer that raced its own client's close).
    *
    * @return true only when leadership settled on a peer other than this one
    */
@@ -364,10 +364,32 @@ class RaftClusterManager {
       // in-flight RPC fails with "is closed". Confirm an actual, settled handoff instead (issue #4809).
       LogManager.instance().log(this, Level.INFO, "No-target leadership transfer request: %s", e.getMessage());
     }
-    return confirmLeadershipMovedAway(selfId, Math.max(timeoutMs, LEADER_CONFIRM_TIMEOUT_MS));
+    return confirmLeadershipMovedAway(selfId, Math.max(timeoutMs, leaderConfirmGraceMs));
   }
 
   private static final long LEADER_CONFIRM_TIMEOUT_MS = 3_000;
+
+  /**
+   * The shortest wait for a different leader to settle before a handoff is declared not to have happened:
+   * {@link #LEADER_CONFIRM_TIMEOUT_MS}, the grace #4809 gave a transfer that raced its own client's close.
+   * Package-private and mutable only so unit tests can exercise the "no other leader appeared" outcome without
+   * sleeping through the real grace.
+   */
+  long leaderConfirmGraceMs = LEADER_CONFIRM_TIMEOUT_MS;
+
+  /** What is left of the caller's budget, never less than {@link #leaderConfirmGraceMs}. */
+  private long confirmWindow(final long deadline) {
+    return Math.max(deadline - System.currentTimeMillis(), leaderConfirmGraceMs);
+  }
+
+  /**
+   * Whether leadership settled on a peer other than this one within the confirmation grace. For
+   * {@link RaftHAServer#stepDown()}'s own candidate loop, which meets the same race as
+   * {@link #transferLeadership(long)}: a targeted transfer whose call failed although the target won (#8487).
+   */
+  boolean leadershipMovedAway() {
+    return confirmLeadershipMovedAway(raftHAServer.getLocalPeerId(), leaderConfirmGraceMs);
+  }
   private static final long LEADER_CONFIRM_POLL_MS     = 50;
 
   /**
