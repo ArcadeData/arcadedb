@@ -343,7 +343,7 @@ public interface HAServerPlugin extends ServerPlugin {
   /**
    * The log index of this node's latest leader-driven snapshot install while it had not joined at runtime, or
    * {@code -1} when none is known (issue #8432) - including one a previous run left unconfirmed (issue #8465). It is
-   * both what arms the hold of
+   * both what opens the hold of
    * {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} and the key of its window: a later install opens a
    * fresh one, the way a later join does on an armed node (issue #8414). Only moves forward.
    *

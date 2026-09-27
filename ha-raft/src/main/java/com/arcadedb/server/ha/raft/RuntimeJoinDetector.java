@@ -264,7 +264,6 @@ public final class RuntimeJoinDetector {
           holdMarker.getAbsolutePath());
   }
 
-
   /**
    * Called for every configuration this node applies. Never throws and never blocks beyond this instance's own
    * monitor: it runs on a Ratis callback thread, and the two Ratis call sites (the apply loop and a
