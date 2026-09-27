@@ -317,6 +317,19 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     assertThat(polls.get()).as("leader-view polls after the RPC used the whole budget").isLessThanOrEqualTo(4);
   }
 
+  /**
+   * The bare step-down re-checks leadership itself: stepDown() reaches it after its candidates failed, and a no-target
+   * request sent through a follower's client would be routed to the real leader and step IT down.
+   */
+  @Test
+  void theBareStepDownIsNeverSentFromANodeThatIsNoLongerTheLeader() throws Exception {
+    when(raft.isLeader()).thenReturn(false);
+
+    assertThat(manager().stepDownWithoutTarget(10_000)).isFalse();
+
+    verify(admin, never()).transferLeadership(isNull(), anyLong());
+  }
+
   /** And when leadership was lost with no other leader settling, stepDown() refuses instead of trying more peers. */
   @Test
   void stepDownRefusesWhenLeadershipWasLostWithoutAHandoff() {

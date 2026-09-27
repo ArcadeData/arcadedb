@@ -353,6 +353,11 @@ class RaftClusterManager {
       return false;
 
     final RaftPeerId selfId = raftHAServer.getLocalPeerId();
+    // Re-checked here, not only by the callers: stepDown() reaches this after its candidates failed, and leadership
+    // may have moved meanwhile. A no-target request sent through a FOLLOWER's client is routed to the real leader,
+    // which would then step down although nobody asked it to (the #7134 hazard).
+    if (!raftHAServer.isLeader())
+      return false;
     // One budget for the RPC and the confirmation together: the confirmation gets what the RPC left of it.
     final long deadline = System.currentTimeMillis() + timeoutMs;
     try {

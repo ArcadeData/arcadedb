@@ -82,9 +82,10 @@ public class PostTransferLeaderHandler extends AbstractServerHttpHandler {
 
       // Transfer to any peer: the best eligible follower, by the ranking stepDown() uses (issue #8480). A false
       // from here is deliberately NOT folded into the 409 above, even though leadership may have moved in between:
-      // false means the transfer could not confirm a handoff to a concrete different peer, which during an election in flight is "the transfer did
-      // not happen", not "you dialled the wrong node" - there is no settled leader to name. #4809 exists
-      // precisely because "we stopped being the leader" is not evidence of a controlled handoff.
+      // false means the transfer could not confirm a handoff to a concrete different peer, which during an
+      // election in flight is "the transfer did not happen", not "you dialled the wrong node" - there is no
+      // settled leader to name. #4809 exists precisely because "we stopped being the leader" is not evidence of
+      // a controlled handoff.
       final boolean success = raftHAServer.transferLeadership(timeoutMs);
       if (success)
         return new ExecutionResponse(200, new JSONObject().put("result", "Leadership transferred")
