@@ -400,11 +400,14 @@ public class SnapshotHttpHandler implements HttpHandler {
       final DivergenceCause cause) {
     LogManager.instance().log(this, Level.WARNING,
         "Snapshot of '%s' refused: the database is quarantined on this node (%s), so its copy is short of a committed "
-            + "entry. Transfer leadership to a healthy node to let followers install it (issue #8468)",
+            + "entry. If this node is the leader, transfer leadership to a healthy node to let followers install it "
+            + "(issue #8468)",
         databaseName, cause.getDescription());
     if (exchange.isResponseStarted())
-      // Unreachable while nothing has been written; dropping the transfer leaves the follower without a manifest
-      // (#4831), so it still rejects the copy
+      // Unreachable while nothing has been written. If it ever is reached, the failure is QUIET, not loud: inside the
+      // streamer this throw is logged and swallowed by streamThroughPointInTimeImage's executeIgnoringExceptions (or
+      // suspendFlushAndExecute's on the fallback). The follower still rejects the copy, because the response then
+      // ends without the completeness manifest (#4831)
       throw new IllegalStateException("Snapshot of '" + databaseName + "' refused after its response started");
     exchange.setStatusCode(503);
     exchange.getResponseHeaders().remove(Headers.CONTENT_DISPOSITION);
