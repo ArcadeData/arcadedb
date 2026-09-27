@@ -521,17 +521,19 @@ public class PluginApiSpec implements OpenApiContributor {
     peer.addProperty("replicationRttP99Ms", SpecBuilders.integer(
         "99th percentile replication round-trip time. Absent when no sample exists."));
     peer.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
-        "Optional wire-format sections this peer can decode, as last observed by the leader (issue #7219). "
-            + "Absent on a follower, which does not poll, and on the leader for a peer it has not reached: an "
-            + "absent array means 'not known', which the leader treats exactly like 'cannot decode'."));
+        "Optional wire-format sections this peer can decode, as last observed by the answering node (issue "
+            + "#7219). Every node polls its peers since issue #7549, so a follower answers for every peer too. Absent "
+            + "for a peer the answering node has no fresh answer from: an absent array means 'not known', which the "
+            + "leader treats exactly like 'cannot decode'."));
     peer.addProperty("version", SpecBuilders.string(
-        "Server version this peer reported alongside its capabilities. Absent when the leader has no fresh "
-            + "answer from it."));
+        "Server version this peer reported alongside its capabilities. Absent when the answering node has no "
+            + "fresh answer from it."));
     peer.addProperty("capabilitiesUnknownReason", SpecBuilders.string("""
-        Why 'capabilities' is absent for this peer, when the leader knows why. An absent capabilities array \
-        otherwise reads the same whether the peer runs a build that predates the capability route or was never \
-        asked because its address identifies no single peer, and the two have nothing alike as remedies \
-        (issue #7256). Written by the leader only."""));
+        Why 'capabilities' is absent for this peer, when the answering node knows why. An absent capabilities \
+        array otherwise reads the same whether the peer runs a build that predates the capability route or was \
+        never asked because its address identifies no single peer, and the two have nothing alike as remedies \
+        (issue #7256). Written by any node since issue #7549; absent while the answering node has not finished \
+        its first probe round."""));
     // Only these three are written for every peer; every other member above is conditional on a health sample,
     // on a resolvable endpoint, or on this node being the leader (issue #7578).
     peer.setRequired(List.of("id", "address", "role"));

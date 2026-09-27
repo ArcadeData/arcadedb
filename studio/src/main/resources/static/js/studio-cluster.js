@@ -109,20 +109,26 @@ var CLUSTER_SECURITY_CAPABILITIES = [
 /**
  * Whether every peer in the cluster status payload advertises `capability`.
  *
- * Returns { capability, determinable, ready, missing: [{ id, reason }] }.
+ * Returns { capability, determinable, ready, missing: [{ id, reason }], unjudged: [id] }.
  *
- * `determinable` is the field that stops this being a lie on a follower. Only the LEADER probes its peers, so a
- * follower's payload carries a `capabilities` array for itself and for nobody else - an absent field there means
- * "this node did not ask", not "that peer cannot decode it". Reporting that as "not ready" would put a red banner
- * on every follower of a perfectly healthy cluster, so an indeterminable answer is reported as ready and says so.
+ * Every node probes its peers since issue #7549, so the answer is read off the rows themselves and not off the
+ * role of the node Studio happens to be served from (issue #8055). A row that carries `capabilities` or a
+ * `capabilitiesUnknownReason` is an answer, whoever wrote it. A row that carries NEITHER is a peer this node has
+ * no answer for yet - its first probe round has not finished. On the leader that is still a refusal, because the
+ * leader's own gate refuses for any peer that has not proved it can decode the entry, so the row is reported. On
+ * any other node it is not evidence of anything: the peer is listed in `unjudged` and left out of `missing`, so a
+ * follower that has just started does not put a red banner on a healthy cluster.
+ *
+ * `determinable` says every peer could be judged; `ready` says no judged peer is missing the capability. A peer
+ * this node did judge is reported even while another one is still unjudged.
  */
 function clusterCapabilityReadiness(data, capability) {
-  var readiness = { capability: capability, determinable: false, ready: true, missing: [] };
+  var readiness = { capability: capability, determinable: false, ready: true, missing: [], unjudged: [] };
 
   var peers = data && data.peers ? data.peers : [];
-  if (peers.length === 0 || data.isLeader !== true) return readiness;
+  if (peers.length === 0) return readiness;
 
-  readiness.determinable = true;
+  var isLeader = data.isLeader === true;
   for (var i = 0; i < peers.length; i++) {
     var peer = peers[i];
     // Kept even though renderClusterData() now filters the list: the Security page calls this with its OWN
@@ -131,6 +137,11 @@ function clusterCapabilityReadiness(data, capability) {
     if (peer == null || typeof peer !== "object") continue;
     var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
     if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
+
+    if (advertised === null && !peer.capabilitiesUnknownReason && !isLeader) {
+      readiness.unjudged.push(peer.id);
+      continue;
+    }
 
     readiness.missing.push({
       id: peer.id,
@@ -142,6 +153,7 @@ function clusterCapabilityReadiness(data, capability) {
     });
   }
 
+  readiness.determinable = readiness.unjudged.length === 0;
   readiness.ready = readiness.missing.length === 0;
   return readiness;
 }
@@ -155,7 +167,7 @@ function clusterSecurityCapabilityGaps(data) {
   for (var i = 0; i < CLUSTER_SECURITY_CAPABILITIES.length; i++) {
     var entry = CLUSTER_SECURITY_CAPABILITIES[i];
     var readiness = clusterCapabilityReadiness(data, entry.capability);
-    if (readiness.determinable && !readiness.ready) {
+    if (!readiness.ready) {
       readiness.what = entry.what;
       gaps.push(readiness);
     }
@@ -212,10 +224,10 @@ function renderClusterCapabilityReadiness(data) {
 /**
  * The capabilities line on a node card: what this peer advertises, or why nothing is known about it.
  *
- * Rendered only when there is something to say. A follower does not probe, so it can answer for itself alone;
- * printing "unknown" against every other peer there would read as a fault rather than as "this node does not ask".
+ * Every node probes its peers since issue #7549, so the line reads the same whichever node Studio is served from
+ * (issue #8055): a follower that could not reach a peer says so, with the reason its own probe recorded.
  */
-function peerCapabilitiesLine(peer, data) {
+function peerCapabilitiesLine(peer) {
   if (peer == null || typeof peer !== "object") return "";
   var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
 
@@ -238,9 +250,6 @@ function peerCapabilitiesLine(peer, data) {
       "</div>"
     );
   }
-
-  // Only the leader asks, so only the leader can report that it asked and got nothing back.
-  if (data.isLeader !== true) return "";
 
   var reason = peer.capabilitiesUnknownReason || "no answer to the capability probe yet";
   return (
@@ -741,7 +750,7 @@ function renderNodeCards(data) {
       + '</div>'
       + addressWarning
       + lagLine
-      + peerCapabilitiesLine(peer, data)
+      + peerCapabilitiesLine(peer)
       + '</div></div></div>';
 
     container.append(card);
