@@ -3850,7 +3850,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "at index " + entryIndex + " in a previous session (persistedAppliedIndex=" + appliedBefore
                 + ") but has no copy on this node now, and this node is the Raft leader, so there is nowhere to "
                 + "reinstall it from. Quarantining it and handing the leadership off so it is reinstalled from the next "
-                + "leader");
+                + "leader. If the leadership stays here, transfer it (POST /api/v1/cluster/leader) to a node that "
+                + "holds the database, then force the install here (POST /api/v1/cluster/resync/" + databaseName + ")");
         }
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
