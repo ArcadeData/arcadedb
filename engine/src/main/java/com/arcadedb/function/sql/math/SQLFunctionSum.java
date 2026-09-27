@@ -96,6 +96,16 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   }
 
   @Override
+  public boolean canMergePartials() {
+    return aggregateResults();
+  }
+
+  @Override
+  public void mergePartial(final SQLAggregatedFunction other) {
+    sum(((SQLFunctionSum) other).sum);
+  }
+
+  @Override
   public Object getResult() {
     return sum == null ? 0 : sum;
   }

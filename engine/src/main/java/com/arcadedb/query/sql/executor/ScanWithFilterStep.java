@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.BucketIterator;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.WhereClause;
@@ -47,6 +48,9 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
   private       long        totalFetched  = 0L;
   private       long        totalFiltered = 0L;
   private       boolean     warnedAboutSkippedRecords;
+  // #8523: the page range [fromPage, toPage) a parallel scan assigned to this step, or -1/-1 for the whole bucket
+  private       int         fromPage      = -1;
+  private       int         toPage        = -1;
 
   private Iterator<Record> iterator;
 
@@ -60,6 +64,20 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
     this.order = order;
   }
 
+  /** The page range of a parallel type scan's unit of work (issue #8523): see {@link FetchFromClusterExecutionStep#setPageRange}. */
+  public void setPageRange(final int fromPage, final int toPage) {
+    this.fromPage = fromPage;
+    this.toPage = toPage;
+  }
+
+  public int getBucketId() {
+    return bucketId;
+  }
+
+  public WhereClause getWhereClause() {
+    return whereClause;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
@@ -68,7 +86,9 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        if (FetchFromClusterExecutionStep.ORDER_DESC == order)
+        if (fromPage > -1)
+          iterator = ((LocalBucket) context.getDatabase().getSchema().getBucketById(bucketId)).iterator(fromPage, toPage);
+        else if (FetchFromClusterExecutionStep.ORDER_DESC == order)
           iterator = context.getDatabase().getSchema().getBucketById(bucketId).inverseIterator();
         else
           iterator = context.getDatabase().getSchema().getBucketById(bucketId).iterator();
