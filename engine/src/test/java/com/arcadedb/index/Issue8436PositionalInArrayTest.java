@@ -74,4 +74,20 @@ class Issue8436PositionalInArrayTest extends TestHelper {
         Map.of("ids", List.of("u1", "u2")));
     assertThat(uuids(rs)).containsExactly("u1", "u2");
   }
+
+  @Test
+  void positionalInQuestionMarkJavaArray() {
+    // The HTTP layer can deserialize a JSON array of strings into a plain Java
+    // String[]; the binding must expand it exactly like a List.
+    final ResultSet rs = database.query("sql", "select uuid from Chunk8436 where uuid IN ?",
+        new Object[] { new String[] { "u1", "u2" } });
+    assertThat(uuids(rs)).containsExactly("u1", "u2");
+  }
+
+  @Test
+  void positionalContainsAnyQuestionMarkJavaArray() {
+    final ResultSet rs = database.query("sql", "select uuid from Chunk8436 where uuid CONTAINSANY ?",
+        new Object[] { new String[] { "u1", "u2" } });
+    assertThat(uuids(rs)).containsExactly("u1", "u2");
+  }
 }
