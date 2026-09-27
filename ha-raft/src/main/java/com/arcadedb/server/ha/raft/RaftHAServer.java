@@ -353,6 +353,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private static final long                  QUARANTINE_HANDOFF_COOLDOWN_MS = 10 * 60_000L;
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
+  // Wall-clock of the last "no other peer to hand leadership to" report, throttled to the same window; 0 = none yet.
+  private final    AtomicLong                lastQuarantineNoPeerLogAtMs = new AtomicLong();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -968,7 +970,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * <p>
    * The peers and their order are the ones a manual step-down uses ({@link #transferLeadership(long)}). A node with no
    * other peer in the configuration does not attempt it, because a Ratis step-down would only re-elect this node; it
-   * logs the operator action instead. Admitted at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS}, and run on
+   * logs the operator action instead. Attempted at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS} (see
+   * {@link #decideQuarantineHandoff} for when the window is taken), and run on
    * {@link #channelRecoveryExecutor} because the transfer blocks for seconds and the callers are the apply thread
    * and the HealthMonitor tick.
    *
@@ -977,43 +980,86 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   void handOffLeadershipToResync(final String reason) {
     if (raftServer == null || shutdownRequested || !isLeader())
       return;
-    final long now = System.currentTimeMillis();
-    if (!admitQuarantineHandoff(lastQuarantineHandoffAtMs, now))
+    // A read-only look at the window, so a health tick inside it does not queue a task that would only be refused.
+    // The window itself is taken inside the task, once a transfer is actually about to be attempted.
+    if (withinQuarantineHandoffCooldown(lastQuarantineHandoffAtMs.get(), System.currentTimeMillis()))
       return;
     try {
       channelRecoveryExecutor.execute(() -> {
+        final long now = System.currentTimeMillis();
         // Leadership may have moved while this sat in the queue, and a transfer sent through a follower's client is
         // routed to the real leader, which would then step down for a reason that is not its own (issue #7134).
-        if (shutdownRequested || !isLeader())
-          return;
-        if (!hasAnotherPeer(getLivePeers(), localPeerId)) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "This leader holds %s, which it cannot resync from itself, and there is no other peer to hand leadership "
-                  + "to (issue #8483). Restore the database from a backup, or add a peer so the leadership can move and "
-                  + "this node resync from it.", reason);
-          return;
+        final boolean leader = !shutdownRequested && isLeader();
+        switch (decideQuarantineHandoff(leader, leader && hasAnotherPeer(getLivePeers(), localPeerId),
+            lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
+        case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
+            "This leader holds %s, which it cannot resync from itself, and there is no other peer to hand leadership "
+                + "to (issue #8483). Restore the database from a backup, or add a peer so that leadership can move and "
+                + "this node can resync from it.", reason);
+        case TRANSFER -> transferLeadershipToResync(reason);
+        default -> {
+          // NOT_LEADER, NO_PEER (reported within the window already) or COOLDOWN: nothing to do
         }
-        LogManager.instance().log(this, Level.WARNING,
-            "This leader holds %s, which it cannot resync from itself: handing leadership to a healthy peer so this "
-                + "node can resync from it (issue #8483)", reason);
-        try {
-          if (transferLeadership(ESCALATION_TRANSFER_TIMEOUT_MS))
-            return;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Leadership handoff to resync %s failed: %s", reason,
-              e.getMessage());
         }
-        if (isLeader())
-          LogManager.instance().log(this, Level.SEVERE,
-              "Could not hand leadership off to resync %s; retrying in %d minutes. Transfer it manually with "
-                  + "POST /api/v1/cluster/leader (issue #8483).", reason, QUARANTINE_HANDOFF_COOLDOWN_MS / 60_000L);
       });
     } catch (final RejectedExecutionException e) {
-      // Nothing ran, so give the slot back: the next health tick asks again instead of waiting out the window.
-      lastQuarantineHandoffAtMs.compareAndSet(now, 0L);
+      // Nothing was admitted yet, so the next health tick simply asks again.
       LogManager.instance().log(this, Level.WARNING,
           "Recovery queue is saturated; the leadership handoff to resync %s is retried on the next health tick", reason);
     }
+  }
+
+  private void transferLeadershipToResync(final String reason) {
+    LogManager.instance().log(this, Level.WARNING,
+        "This leader holds %s, which it cannot resync from itself: handing leadership to a healthy peer so this "
+            + "node can resync from it (issue #8483)", reason);
+    try {
+      if (transferLeadership(ESCALATION_TRANSFER_TIMEOUT_MS))
+        return;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Leadership handoff to resync %s failed: %s", reason,
+          e.getMessage());
+    }
+    if (isLeader())
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not hand leadership off to resync %s; retrying in %d minutes. Transfer it manually with "
+              + "POST /api/v1/cluster/leader (issue #8483).", reason, QUARANTINE_HANDOFF_COOLDOWN_MS / 60_000L);
+  }
+
+  /** What one queued quarantine handoff does (issue #8483). */
+  enum QuarantineHandoff {
+    /** This node no longer leads: nothing to hand off. */
+    NOT_LEADER,
+    /** No other peer to hand leadership to, and the operator was not told within the window: report it. */
+    NO_PEER_REPORT,
+    /** No other peer to hand leadership to, already reported within the window. */
+    NO_PEER,
+    /** A handoff was attempted within the window. */
+    COOLDOWN,
+    /** Attempt the transfer; the window is taken. */
+    TRANSFER
+  }
+
+  /**
+   * Decides what a queued quarantine handoff does, taking the cooldown window only when a transfer is actually about
+   * to be attempted (issue #8483) - the same ordering {@link #escalateWedgedPeerChannel} keeps, for the same reason:
+   * a handoff dropped because this node no longer leads, or because no other peer is configured yet, must not
+   * suppress the one that becomes possible when a peer joins moments later. The no-peer report has a window of its
+   * own, so a peer-less leader logs it once per window rather than on every health tick.
+   * <p>
+   * Package-private and static so the ordering can be unit-tested without a cluster.
+   */
+  static QuarantineHandoff decideQuarantineHandoff(final boolean leader, final boolean anotherPeer,
+      final AtomicLong lastHandoffAtMs, final AtomicLong lastNoPeerReportAtMs, final long now) {
+    if (!leader)
+      return QuarantineHandoff.NOT_LEADER;
+    if (!anotherPeer)
+      return admitQuarantineHandoff(lastNoPeerReportAtMs, now) ? QuarantineHandoff.NO_PEER_REPORT : QuarantineHandoff.NO_PEER;
+    return admitQuarantineHandoff(lastHandoffAtMs, now) ? QuarantineHandoff.TRANSFER : QuarantineHandoff.COOLDOWN;
+  }
+
+  private static boolean withinQuarantineHandoffCooldown(final long last, final long now) {
+    return last != 0L && now - last < QUARANTINE_HANDOFF_COOLDOWN_MS;
   }
 
   /**
@@ -1023,7 +1069,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static boolean admitQuarantineHandoff(final AtomicLong lastHandoffAtMs, final long now) {
     while (true) {
       final long last = lastHandoffAtMs.get();
-      if (last != 0L && now - last < QUARANTINE_HANDOFF_COOLDOWN_MS)
+      if (withinQuarantineHandoffCooldown(last, now))
         return false;
       if (lastHandoffAtMs.compareAndSet(last, now))
         return true;

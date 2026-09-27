@@ -220,6 +220,46 @@ class Issue8483QuarantinedLeaderHandsOffLeadershipTest {
     assertThat(last.get()).isEqualTo(now + 10 * 60_000L);
   }
 
+  /**
+   * The window is taken only when a transfer is about to be attempted (code review on PR #8531): a handoff dropped
+   * because no other peer is configured yet, or because this node no longer leads, must not suppress the one that
+   * becomes possible when a peer joins moments later.
+   */
+  @Test
+  void aHandoffWithNoPeerOrNoLeadershipLeavesTheWindowIntact() {
+    final AtomicLong lastHandoff = new AtomicLong();
+    final AtomicLong lastNoPeerReport = new AtomicLong();
+    final long t0 = 1_000_000L;
+
+    assertThat(RaftHAServer.decideQuarantineHandoff(false, true, lastHandoff, lastNoPeerReport, t0))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.NOT_LEADER);
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
+    assertThat(lastHandoff.get()).as("neither drop may take the handoff window").isZero();
+
+    // A peer joins 30 s later: the handoff goes ahead at once.
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 30_000L))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.TRANSFER);
+    // ...and the next tick is inside the window.
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, true, lastHandoff, lastNoPeerReport, t0 + 33_000L))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.COOLDOWN);
+  }
+
+  /** A peer-less leader reports the operator action once per window, not on every health tick. */
+  @Test
+  void theNoPeerReportIsThrottled() {
+    final AtomicLong lastHandoff = new AtomicLong();
+    final AtomicLong lastNoPeerReport = new AtomicLong();
+    final long t0 = 1_000_000L;
+
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 3_000L))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER);
+    assertThat(RaftHAServer.decideQuarantineHandoff(true, false, lastHandoff, lastNoPeerReport, t0 + 10 * 60_000L))
+        .isEqualTo(RaftHAServer.QuarantineHandoff.NO_PEER_REPORT);
+  }
+
   @Test
   void aSingleNodeClusterHasNoPeerToHandLeadershipTo() {
     final RaftPeerId self = RaftPeerId.valueOf("self");
