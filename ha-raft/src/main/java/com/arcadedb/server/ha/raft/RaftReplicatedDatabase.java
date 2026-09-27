@@ -354,10 +354,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // these entries they fell through to a plain, non-retryable TransactionException: the follower's retry loop
       // gave up on the first attempt and its HTTP client got a 500 for a conflict that a retry resolves. The page
       // conflict's (String) constructor parses its '[6965 ...]' header back, so the page and version survive the hop.
-      // The two QuorumNotReachedException subtypes are deliberately NOT here, although the leader answers them with
-      // 503 as well: MajorityCommittedAllFailedException means the entry IS committed and
-      // ReplicationDispatchedTimeoutException that it may yet be, so a retry could run the write twice. They keep the
-      // TransactionException fallback, which is non-retryable.
+      // #8481: neither of the two outcomes that follow a DISPATCHED entry is retryable, and neither is a
+      // NeedRetryException any more: MajorityCommittedAllFailedException means the entry IS committed (the leader answers
+      // it 409 "do not retry", as the TransactionCommittedRemotelyException it now is, and it is rebuilt as itself so this
+      // node answers its client the same), and ReplicationDispatchedTimeoutException that it may yet be. The latter keeps
+      // the TransactionException fallback, which is non-retryable too.
+      Map.entry(MajorityCommittedAllFailedException.class.getName(), MajorityCommittedAllFailedException::new),
       Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
       Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
       Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),

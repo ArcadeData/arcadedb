@@ -43,9 +43,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The same exact-name lookup dropped the other refusals the leader's group committer raises BEFORE the entry reaches
  * the Raft log - {@link ReplicationQueueFullException} and a plain {@link QuorumNotReachedException} - so they are
- * rebuilt too. The two {@link QuorumNotReachedException} subtypes that mean the entry did, or may have, reached the log
+ * rebuilt too. The two outcomes that mean the entry did, or may have, reached the log
  * ({@link MajorityCommittedAllFailedException}, {@link ReplicationDispatchedTimeoutException}) are deliberately NOT: a
- * retry of either can apply the write twice, so they stay non-retryable on the follower.
+ * retry of either can apply the write twice, so they stay non-retryable on the follower (and, since issue #8481, are no
+ * longer {@link QuorumNotReachedException} subtypes on the leader either).
  */
 class Issue8479ForwardedRetryableReconstructionTest {
 

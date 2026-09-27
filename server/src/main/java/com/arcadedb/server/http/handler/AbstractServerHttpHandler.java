@@ -985,8 +985,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TransactionCommittedRemotelyException committedRemotely = firstOf(e, cause,
             TransactionCommittedRemotelyException.class);
     if (committedRemotely != null) {
-      return new ErrorClassification(409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-              committedRemotely, null, ErrorLogKind.USER);
+      // A subtype is a committed outcome whose local apply did NOT fail - the HA leader's "ALL quorum missed after the
+      // MAJORITY committed", which it completes locally before reporting (issue #8481) - so it gets a label that does
+      // not claim otherwise. The exception field names the exact type either way.
+      final String label = committedRemotely.getClass() == TransactionCommittedRemotelyException.class ?
+              "Transaction committed cluster-wide but the local apply failed - do not retry" :
+              "Transaction committed cluster-wide - do not retry";
+      return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
 
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation

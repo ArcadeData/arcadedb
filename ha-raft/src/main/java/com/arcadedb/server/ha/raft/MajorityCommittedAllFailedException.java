@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 
 /**
@@ -30,8 +32,14 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
  * instead calls {@code commit2ndPhase()} to apply the local page writes. Without this,
  * the leader's database permanently diverges: {@code lastAppliedIndex} was advanced in
  * {@code applyTransaction()} but the database pages were never written.
+ *
+ * <p>The write is therefore durable cluster-wide and committed on this leader when the caller sees this exception, which
+ * is why it is a {@link TransactionCommittedRemotelyException} and NOT a {@link NeedRetryException} (issue #8481): every
+ * retry contract - {@code Database.transaction(block, joinTx, retries)}, the 503 the HTTP layer answers a retryable
+ * failure with, the Java remote client's resend of a 503 - would run the committed write a second time. As a committed
+ * remotely failure the HTTP layer answers it 409 "do not retry" instead.
  */
-public class MajorityCommittedAllFailedException extends QuorumNotReachedException {
+public class MajorityCommittedAllFailedException extends TransactionCommittedRemotelyException {
 
   public MajorityCommittedAllFailedException(final String message) {
     super(message);
