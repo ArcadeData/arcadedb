@@ -3978,9 +3978,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the HttpTimeoutException arm below.
       final HttpResponse<String> response = LeaderDial.sendBounded(dialClient, builder.build(),
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
-      if (response.statusCode() != 200)
-        throw reconstructLeaderException(response.statusCode(), response.body(),
+      if (response.statusCode() != 200) {
+        final RuntimeException refusal = reconstructLeaderException(response.statusCode(), response.body(),
             response.headers().firstValue("Retry-After").orElse(null));
+        // The node this write was sent to as the leader answered that it is not the leader and could name none. Until
+        // this node's own view stops naming it, a retry would go straight back to it and be refused the same way,
+        // hundreds of times a second for a caller that retries without back-off (issue #8480). Hold the refusal
+        // until the view moves, bounded by the same wait a leaderless forward gets, so the retry dials the new one.
+        if (refusedByTheLeaderItNamedNoOther(refusal, intendedLeaderId))
+          awaitLeaderViewMovedFrom(raft::getLeaderId, intendedLeaderId, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
+        throw refusal;
+      }
 
       final ResultSet resultSet = parseResultSetFromJson(response.body());
       // The answer to the client's own body, in the rendering it asked for (issue #8359): the handler sends it as it is.
@@ -4107,6 +4115,34 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       addr = leaderAddressProbe.get();
     }
     return addr;
+  }
+
+  /**
+   * Whether {@code refusal} is the node this write was forwarded to as the leader saying it is not the leader, without
+   * naming another one (issue #8480). That is the answer of a leader that stepped down while this node still names
+   * it: the only refusal worth holding back, since a retry would dial the very same node until this node's view
+   * moves. A refusal that names a leader is left alone, and so is one received without a stable intended leader.
+   */
+  static boolean refusedByTheLeaderItNamedNoOther(final RuntimeException refusal, final String intendedLeaderId) {
+    if (intendedLeaderId == null || !(refusal instanceof ServerIsNotTheLeaderException notTheLeader))
+      return false;
+    final String named = notTheLeader.getLeaderAddress();
+    return named == null || named.isBlank();
+  }
+
+  /**
+   * Waits until {@code leaderIdProbe} stops naming {@code refusingLeaderId} - a different leader, or none while an
+   * election runs - or {@code timeoutMs} elapses (issue #8480). Either outcome returns: the caller rethrows the
+   * refusal regardless, and its retry then waits for, or dials, whatever this node now believes.
+   *
+   * @return true when the view moved within the timeout
+   */
+  static boolean awaitLeaderViewMovedFrom(final Supplier<RaftPeerId> leaderIdProbe, final String refusingLeaderId,
+      final long timeoutMs, final long pollIntervalMs) {
+    return awaitLeaderAddress(() -> {
+      final RaftPeerId current = leaderIdProbe.get();
+      return current == null || !current.toString().equals(refusingLeaderId) ? "moved" : null;
+    }, timeoutMs, pollIntervalMs) != null;
   }
 
   /**

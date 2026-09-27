@@ -240,8 +240,10 @@ class Issue7127StepDownFailureTest {
       throw new ReplicationException("Transfer timed out: " + targetPeerId);
     }
 
+    // stepDown()'s fallback is the bare step-down, not the no-target transferLeadership(long): since issue #8480 that
+    // one tries the same explicit candidates first, which the step-down loop has just tried.
     @Override
-    public boolean transferLeadership(final long timeoutMs) {
+    boolean stepDownWithoutTarget(final long timeoutMs) {
       fallbackAttempts++;
       if (fallbackAttempts == successfulFallbackAttempt) {
         leader = false;
