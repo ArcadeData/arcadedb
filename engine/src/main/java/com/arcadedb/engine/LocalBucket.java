@@ -343,6 +343,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private long totalMaxOffset;
     private long totalChunks;
     private long orphanedChunks;
+    private long crossLinkedChunks;
     private long orphanedChunksReclaimed;
     private long danglingPlaceholderPointers;
     private long danglingPlaceholderPointersFixed;
@@ -1461,8 +1462,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // which is what the issue's "free them at the source" asks for without walking past a broken pointer.
               if (chainWalk.incomplete)
                 chunkReachabilityComplete = false;
-              else if (category != SlotCategory.DELETED)
-                chainWalk.chunks.forEach(reachableChunks::add);
+              else if (category != SlotCategory.DELETED) {
+                // A continuation chunk reached by a second head is CROSS-LINKED: two records share its bytes, both chains
+                // still parse, and the first update or delete of either frees the chunk under the other. Nothing else
+                // in this pass can see it - it is corruption that reads as healthy until it breaks. It is reported and
+                // never repaired: which of the two heads the bytes belong to is not something the page records.
+                final long crossLinked = markReachableChunks(reachableChunks, chainWalk.chunks);
+                if (crossLinked != -1L) {
+                  ++totals.totalErrors;
+                  ++totals.crossLinkedChunks;
+                  warning = ("multi-page record %s shares its continuation chunk #%d:%d with another record (cross-linked "
+                          + "chunk chain): one of the two records reads bytes that are not its own").formatted(rid, fileId,
+                          crossLinked);
+                }
+              }
 
             } catch (final Exception e) {
               ++totals.totalErrors;
@@ -1612,6 +1625,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     stats.put("totalChunks", totals.totalChunks);
     stats.put("orphanedChunks", totals.orphanedChunks);
     stats.put("orphanedChunksReclaimed", totals.orphanedChunksReclaimed);
+    stats.put("crossLinkedChunks", totals.crossLinkedChunks);
     stats.put("danglingPlaceholderPointers", totals.danglingPlaceholderPointers);
     stats.put("danglingPlaceholderPointersFixed", totals.danglingPlaceholderPointersFixed);
 
@@ -1785,6 +1799,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // Between two content heads, and a no-op on a run without FIX: the batch pages are 0 unless there are repairs.
       repairTx.commitBatchIfFull();
     }
+  }
+
+  /**
+   * Marks the continuation chunks of one head as reachable and returns the first one another head already reached
+   * (a cross-linked chunk), or {@code -1} when every chunk is this head's alone. Keeps marking past a cross-link so the
+   * orphan sweep still sees the whole chain as live.
+   */
+  private static long markReachableChunks(final LongHashSet reachableChunks, final LongHashSet headChunks) {
+    final long[] crossLinked = { -1L };
+    headChunks.forEach(chunk -> {
+      if (!reachableChunks.add(chunk) && crossLinked[0] == -1L)
+        crossLinked[0] = chunk;
+    });
+    return crossLinked[0];
   }
 
   /**
