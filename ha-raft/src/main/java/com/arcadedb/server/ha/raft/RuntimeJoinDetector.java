@@ -19,15 +19,15 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.logging.Level;
@@ -121,6 +121,24 @@ import java.util.logging.Level;
  * log, or the leader-confirmed match {@code SecurityCatchUp} asks for right after every install, read at an applied
  * index at or past the snapshot.
  * <p>
+ * <b>An unarmed node gets a hold of its own instead (issue #8432).</b> A STATICALLY configured member removed while
+ * down, re-added and caught up the same way is never armed at all - every configuration it ever observes names it -
+ * so the boundary above does nothing for it. Arming it would change the contract above for every lagging static
+ * member and write the runtime-join marker for each, so an install on an unarmed node only opens a hold: the
+ * documents must be confirmed after the install, by the same evidence, before
+ * {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} reports them converged. It reads only the installs,
+ * never the replicated fingerprints, so a cluster that has never replicated a security document is released by the
+ * leader-confirmed match like any other.
+ * <p>
+ * <b>The hold survives a restart in a marker of its own (issue #8465).</b> A static member that restarts between the
+ * install and the confirmation would otherwise come back unheld: its log starts at the registered snapshot marker,
+ * every configuration it replays names it, and nothing else records that its documents were never confirmed after
+ * the install. So, when constructed with a hold marker, the detector writes the install index and each document's
+ * confirmation index there while the hold is open, and deletes the file the moment the hold is released. It is NOT
+ * the runtime-join marker: a static member is still never armed (issue #7819), and a restart that reads the hold
+ * marker back restores the hold only. The once-per-start catch-up then releases it the same way the post-install one
+ * would have, since the applied index it reads is at least the registered snapshot index.
+ * <p>
  * Owned by {@link RaftHAServer} rather than by a state machine, so the answer survives the in-place Ratis restart
  * of {@code RaftHAServer.restartRatis}, which builds a new {@link ArcadeStateMachine}.
  *
@@ -163,6 +181,29 @@ public final class RuntimeJoinDetector {
   private          long    joinIndex          = NO_INDEX;
   /** Per document, the highest log index it was installed at; guarded by this instance's monitor. */
   private final    long[]  lastInstalledIndex = { NO_INDEX, NO_INDEX, NO_INDEX };
+  /**
+   * The index of the latest leader-driven snapshot install on an UNARMED node in this process, {@link #NO_INDEX}
+   * before one (issue #8432). Persisted in {@link #holdMarker} while the hold is open (issue #8465); guarded by this
+   * instance's monitor.
+   */
+  private          long    snapshotInstallIndex = NO_INDEX;
+  /**
+   * Per document, the highest index it was installed or confirmed at SINCE {@link #snapshotInstallIndex}, recorded
+   * separately from {@link #lastInstalledIndex} so the unarmed hold leaves what the armed gate reads untouched;
+   * guarded by this instance's monitor.
+   */
+  private final    long[]  installedSinceSnapshot = { NO_INDEX, NO_INDEX, NO_INDEX };
+
+  /** The marker keys of the unarmed hold (issue #8465): the install index and each document's confirmation index. */
+  private static final String   HOLD_INSTALL_INDEX_KEY = "snapshotInstallIndex";
+  private static final String[] CONFIRMED_KEYS         = { "confirmed.users", "confirmed.groups", "confirmed.apiTokens" };
+
+  /** Where the unarmed hold is persisted while it is open (issue #8465); {@code null} keeps it in memory only. */
+  private final File holdMarker;
+  /** Bumped under the monitor on every change of the unarmed hold; guarded by this instance's monitor. */
+  private       long holdStateVersion;
+  /** The {@link #holdStateVersion} last written or deleted; guarded by {@link #persistLock}. */
+  private       long holdPersistedVersion = 0L;
 
   /**
    * {@link #onConfiguration(RaftPeerId, Collection, Collection, long)} for a configuration whose log index is not
@@ -175,33 +216,51 @@ public final class RuntimeJoinDetector {
 
   /** A detector whose armed state lives only as long as this instance. */
   public RuntimeJoinDetector() {
-    this(null, false);
+    this(null, null, false);
+  }
+
+  /** A detector that persists its armed state in {@code marker} and keeps the unarmed hold in memory only. */
+  public RuntimeJoinDetector(final File marker, final boolean restore) {
+    this(marker, null, restore);
   }
 
   /**
    * A detector that persists its armed state in {@code marker} (issue #8329).
    *
-   * @param marker  the file written when this detector arms; {@code null} keeps the state in memory only
-   * @param restore {@code true} to start armed when {@code marker} already exists - the process restart of a node
-   *                that joined at runtime. {@code false} discards an existing marker instead: the owner is starting
-   *                from Raft state it does not keep across restarts, so nothing it recorded about a previous
-   *                membership still describes this node
+   * @param marker     the file written when this detector arms; {@code null} keeps the state in memory only
+   * @param holdMarker the file the unarmed snapshot-install hold is kept in while it is open (issue #8465);
+   *                   {@code null} keeps it in memory only
+   * @param restore    {@code true} to start armed when {@code marker} already exists - the process restart of a node
+   *                   that joined at runtime - and held when {@code holdMarker} does. {@code false} discards both
+   *                   instead: the owner is starting from Raft state it does not keep across restarts, so nothing
+   *                   it recorded about a previous membership still describes this node
    */
-  public RuntimeJoinDetector(final File marker, final boolean restore) {
+  public RuntimeJoinDetector(final File marker, final File holdMarker, final boolean restore) {
     this.marker = marker;
-    if (marker == null || !marker.exists())
-      return;
+    this.holdMarker = holdMarker;
+    if (marker != null && marker.exists()) {
+      if (restore) {
+        joinedAtRuntime = true;
+        restoreIndexes(marker);
+        LogManager.instance().log(this, Level.INFO,
+            "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the "
+                + "cluster security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
+            marker.getAbsolutePath());
+      } else if (!marker.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete the stale runtime-join marker %s",
+            marker.getAbsolutePath());
+    }
 
-    if (restore) {
-      joinedAtRuntime = true;
-      restoreIndexes(marker);
-      LogManager.instance().log(this, Level.INFO,
-          "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the cluster "
-              + "security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
-          marker.getAbsolutePath());
-    } else if (!marker.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete the stale runtime-join marker %s",
-          marker.getAbsolutePath());
+    if (holdMarker == null || !holdMarker.exists())
+      return;
+    // Restored only on a node that is not armed. An armed node is read by the armed gate, and a hold marker beside its
+    // join marker is what a crash between arming and deleting the hold marker leaves behind (issue #8465): nothing
+    // would delete it later, so it is dropped here.
+    if (restore && !joinedAtRuntime)
+      restoreHold(holdMarker);
+    else if (!holdMarker.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete the stale snapshot-install hold marker %s",
+          holdMarker.getAbsolutePath());
   }
 
   /**
@@ -256,6 +315,7 @@ public final class RuntimeJoinDetector {
     if (armedNow || rearmedNow) {
       armedPeer = self.toString();
       // Outside the monitor: the readiness probe reads it, and must not wait on a SYNC write.
+      // Also deletes the hold marker, once the armed state it hands over to is on disk (issue #8465).
       persist();
     }
     return armedNow || rearmedNow;
@@ -272,7 +332,12 @@ public final class RuntimeJoinDetector {
    */
   public void onSecurityDocumentInstalled(final int document, final long index) {
     final boolean changed;
+    boolean holdChanged = false;
     synchronized (this) {
+      if (index > installedSinceSnapshot[document]) {
+        installedSinceSnapshot[document] = index;
+        holdChanged = bumpHoldIfOpen();
+      }
       changed = index > lastInstalledIndex[document];
       if (changed) {
         lastInstalledIndex[document] = index;
@@ -282,6 +347,8 @@ public final class RuntimeJoinDetector {
     }
     if (changed && joinedAtRuntime)
       persist();
+    if (holdChanged)
+      persistHold();
   }
 
   /**
@@ -310,19 +377,29 @@ public final class RuntimeJoinDetector {
     if (appliedIndex < 0)
       return;
     final boolean changed;
+    boolean holdChanged = false;
     synchronized (this) {
       boolean any = false;
-      for (int i = 0; i < lastInstalledIndex.length; i++)
+      for (int i = 0; i < lastInstalledIndex.length; i++) {
+        if (appliedIndex > installedSinceSnapshot[i]) {
+          installedSinceSnapshot[i] = appliedIndex;
+          holdChanged = true;
+        }
         if (appliedIndex > lastInstalledIndex[i]) {
           lastInstalledIndex[i] = appliedIndex;
           any = true;
         }
+      }
       changed = any;
       if (changed && joinedAtRuntime)
         stateVersion++;
+      if (holdChanged)
+        holdChanged = bumpHoldIfOpen();
     }
     if (changed && joinedAtRuntime)
       persist();
+    if (holdChanged)
+      persistHold();
   }
 
   /**
@@ -348,19 +425,24 @@ public final class RuntimeJoinDetector {
    * snapshot, by the once-per-start catch-up, is at or below the boundary and does not count: the caller moves the
    * boundary before it advances the applied index.
    * <p>
-   * Only forward, like every other move of the join index, and a no-op on a node that did not join at runtime: the
-   * readiness gate is not armed there (issue #7819), and a snapshot install is no evidence of a runtime join.
-   * Persisted, so a restart right after the install stays held until the documents are confirmed.
+   * Only forward, like every other move of the join index. A node that did not join at runtime is not armed by it -
+   * a snapshot install is no evidence of a runtime join (issue #7819) - and writes no marker: it only opens the
+   * hold {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} reports (issue #8432), which the same match or a
+   * later seed releases. That hold is kept in the hold marker until it is released (issue #8465), and the boundary of
+   * an armed node in the runtime-join marker, so a restart right after the install stays held either way until the
+   * documents are confirmed.
    *
    * @param snapshotIndex the log index the install brought this node to; not positive records nothing
    *
-   * @return {@code true} when this changed what counts as converged
+   * @return {@code true} when this changed what counts as converged on an ARMED node; the unarmed hold of an
+   * unarmed one is not reported here
    */
   public boolean onSnapshotInstalledFromLeader(final long snapshotIndex) {
     if (snapshotIndex <= 0)
       return false;
     final long boundary = snapshotIndex - 1;
     boolean changed = false;
+    boolean heldUnarmed = false;
     synchronized (this) {
       if (joinedAtRuntime) {
         if (boundary > joinIndex) {
@@ -374,8 +456,22 @@ public final class RuntimeJoinDetector {
           }
         if (changed)
           stateVersion++;
+      } else if (snapshotIndex > snapshotInstallIndex) {
+        // Issue #8432: the same skipped range, on a node the configuration log never armed. Held without arming it,
+        // judged by installs recorded from here on, so the previous membership's installs cannot release it.
+        snapshotInstallIndex = snapshotIndex;
+        Arrays.fill(installedSinceSnapshot, NO_INDEX);
+        holdStateVersion++;
+        heldUnarmed = true;
       }
     }
+    if (heldUnarmed)
+      persistHold();
+    if (heldUnarmed)
+      LogManager.instance().log(this, Level.INFO,
+          "This peer caught up by a snapshot install to index %d, which skips every log entry up to it, including any "
+              + "security change made while it was away: readiness waits for the leader to confirm its security "
+              + "documents (arcadedb.ha.securityConvergenceReadinessTimeout)", snapshotIndex);
     if (changed) {
       LogManager.instance().log(this, Level.INFO,
           "Peer %s caught up by a snapshot install to index %d, which skips every log entry up to it, including any "
@@ -404,6 +500,149 @@ public final class RuntimeJoinDetector {
     return awaited;
   }
 
+  /**
+   * On a node that did NOT join at runtime, the security documents not installed from the log, nor confirmed by the
+   * leader, since the latest unconfirmed leader-driven snapshot install, in the order users, groups, API tokens
+   * (issue #8432). A document counts once it was installed or confirmed at an index at or past the snapshot index -
+   * the seed, a later change, or the match {@code SecurityCatchUp.afterSnapshotInstall} asks for, which is read at an
+   * applied index of at least the snapshot index. Empty on an armed node, whose gate is
+   * {@link #securityDocumentsNotInstalledSinceJoin()}, and on a node with no such install.
+   */
+  public List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    if (joinedAtRuntime)
+      return List.of();
+    synchronized (this) {
+      if (snapshotInstallIndex == NO_INDEX)
+        return List.of();
+      List<String> awaited = null;
+      for (int i = 0; i < DOCUMENT_NAMES.length; i++)
+        if (installedSinceSnapshot[i] < snapshotInstallIndex) {
+          if (awaited == null)
+            awaited = new ArrayList<>(DOCUMENT_NAMES.length);
+          awaited.add(DOCUMENT_NAMES[i]);
+        }
+      return awaited == null ? List.of() : awaited;
+    }
+  }
+
+  /**
+   * The index of the latest leader-driven snapshot install on this node while it was unarmed, restored from the hold
+   * marker when a previous run left it unconfirmed (issue #8465); {@code -1} when none (issue #8432). Only moves forward. The readiness gate opens a fresh window when it does.
+   */
+  synchronized long lastSnapshotInstallIndex() {
+    return snapshotInstallIndex;
+  }
+
+  /**
+   * Bumps {@link #holdStateVersion} when the unarmed hold is open, so the caller writes the hold marker; must be
+   * called under this instance's monitor.
+   *
+   * @return whether the hold marker has to be rewritten
+   */
+  private boolean bumpHoldIfOpen() {
+    if (holdMarker == null || joinedAtRuntime || snapshotInstallIndex == NO_INDEX)
+      return false;
+    holdStateVersion++;
+    return true;
+  }
+
+  /**
+   * Writes the unarmed hold to {@link #holdMarker} while it is open, and deletes the file once every document has been
+   * confirmed since the install (issue #8465). Same discipline as {@link #persist()}: a failure is logged, never
+   * thrown, the write is atomic, and a caller that lost the race to a newer state writes nothing. On an armed node it
+   * does nothing: {@link #persist()} deletes the marker once the armed state is on disk.
+   */
+  private void persistHold() {
+    if (holdMarker == null)
+      return;
+    synchronized (persistLock) {
+      final long version;
+      final long installIndex;
+      final long[] confirmed;
+      final boolean armed;
+      synchronized (this) {
+        version = holdStateVersion;
+        installIndex = snapshotInstallIndex;
+        confirmed = installedSinceSnapshot.clone();
+        armed = joinedAtRuntime;
+      }
+      if (version <= holdPersistedVersion)
+        return;
+
+      // An armed node is judged by the armed gate: persist() deletes this marker once the runtime-join marker that
+      // replaces it is on disk, so a failed write of that one never leaves a restart neither armed nor held.
+      if (armed)
+        return;
+      boolean released = true;
+      for (final long c : confirmed)
+        if (c < installIndex) {
+          released = false;
+          break;
+        }
+
+      try {
+        if (released) {
+          Files.deleteIfExists(holdMarker.toPath());
+        } else {
+          final StringBuilder content = new StringBuilder(128);
+          content.append(HOLD_INSTALL_INDEX_KEY).append('=').append(installIndex).append('\n');
+          for (int i = 0; i < CONFIRMED_KEYS.length; i++)
+            content.append(CONFIRMED_KEYS[i]).append('=').append(confirmed[i]).append('\n');
+          FileUtils.atomicWriteFile(holdMarker, content.toString());
+        }
+        holdPersistedVersion = version;
+      } catch (final IOException | RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not %s the snapshot-install hold marker %s: a restart before the leader confirms this peer's "
+                + "security documents will not hold readiness for them, or will hold it for documents already "
+                + "confirmed (%s)", released ? "delete" : "persist", holdMarker.getAbsolutePath(), e.toString());
+      }
+    }
+  }
+
+  /**
+   * Reads back the unarmed hold a previous run left open (issue #8465). A marker that does not parse restores no hold:
+   * the node then behaves as before issue #8465, with the once-per-start catch-up still converging its documents.
+   */
+  private void restoreHold(final File holdMarker) {
+    final List<String> lines;
+    try {
+      lines = Files.readAllLines(holdMarker.toPath(), StandardCharsets.UTF_8);
+    } catch (final IOException | RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not read the snapshot-install hold marker %s: readiness is not held for the security documents (%s)",
+          holdMarker.getAbsolutePath(), e.toString());
+      return;
+    }
+    long installIndex = NO_INDEX;
+    final long[] confirmed = { NO_INDEX, NO_INDEX, NO_INDEX };
+    for (final String line : lines) {
+      final int eq = line.indexOf('=');
+      if (eq <= 0)
+        continue;
+      final String key = line.substring(0, eq);
+      final String value = line.substring(eq + 1);
+      if (HOLD_INSTALL_INDEX_KEY.equals(key))
+        installIndex = parseIndex(value);
+      else
+        for (int i = 0; i < CONFIRMED_KEYS.length; i++)
+          if (CONFIRMED_KEYS[i].equals(key))
+            confirmed[i] = parseIndex(value);
+    }
+    if (installIndex <= 0)
+      return;
+    synchronized (this) {
+      snapshotInstallIndex = installIndex;
+      System.arraycopy(confirmed, 0, installedSinceSnapshot, 0, confirmed.length);
+    }
+    LogManager.instance().log(this, Level.INFO,
+        "This peer caught up by a snapshot install to index %d in an earlier run and its security documents were not "
+            + "confirmed by the leader since (%s): readiness waits for them "
+            + "(arcadedb.ha.securityConvergenceReadinessTimeout)", installIndex, holdMarker.getAbsolutePath());
+  }
+
+
+
   /** The names {@link #securityDocumentsNotInstalledSinceJoin()} reports, all of them. */
   public static List<String> allSecurityDocumentNames() {
     return List.of(DOCUMENT_NAMES);
@@ -423,10 +662,9 @@ public final class RuntimeJoinDetector {
    * thrown: this runs on a Ratis callback thread, and the in-memory state stays in place for the rest of the process
    * either way.
    * <p>
-   * The content goes to a temporary file written with {@code SYNC} and is then renamed over the marker, so a restart
-   * reads either the previous marker or the new one, never a torn one. The parent directory is not fsynced, so an OS
-   * crash in the instant after a write can lose it; the restart then reads the previous marker, or none, which is
-   * the behaviour before issue #8329.
+   * Written through {@link FileUtils#atomicWriteFile(File, String)}: a synced temporary file renamed over the marker,
+   * with the parent directory synced after the rename, so a restart - even after an OS crash - reads either the
+   * previous marker or the new one, never a torn one.
    */
   private void persist() {
     if (marker == null)
@@ -452,15 +690,11 @@ public final class RuntimeJoinDetector {
         content.append(INSTALLED_KEYS[i]).append('=').append(installed[i]).append('\n');
 
       try {
-        final File parent = marker.getAbsoluteFile().getParentFile();
-        if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
-          throw new IOException("cannot create directory " + parent);
-        final File temp = new File(marker.getAbsolutePath() + ".tmp");
-        Files.writeString(temp.toPath(), content, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, StandardOpenOption.SYNC);
-        Files.move(temp.toPath(), marker.toPath(), StandardCopyOption.REPLACE_EXISTING,
-            StandardCopyOption.ATOMIC_MOVE);
+        FileUtils.atomicWriteFile(marker, content.toString());
         persistedVersion = version;
+        // The armed state is on disk: an unarmed hold left from before the arm no longer describes this node.
+        if (holdMarker != null)
+          Files.deleteIfExists(holdMarker.toPath());
       } catch (final IOException | RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Could not persist the runtime-join marker %s: a restart after the Raft log is compacted past the entry "
