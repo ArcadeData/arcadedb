@@ -1506,6 +1506,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public void handOffLeadershipWhileReplacingDatabase() {
+    if (raftServer == null || shutdownRequested)
+      return;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm != null)
+      sm.handOffLeadershipWhileReplacingDatabase();
+  }
+
+  @Override
   public void reportResyncProgress() {
     final FollowerResyncProgressTracker tracker = resyncProgressTracker;
     if (tracker == null || raftServer == null || shutdownRequested || isLeader())

@@ -225,6 +225,11 @@ public class ClusterAlerts {
       // The other half of the #7519 bootstrap window, which the readiness body pointed at this document for and
       // this document did not carry (issue #8044).
       addBootstrapInstallAlert(nodeStatus.bootstrapInstalls(), visibleDatabases, alerts);
+      // A leader replacing one of its own databases (issue #8491): Raft reports it healthy, and it rejects every write
+      // to that database until leadership moves.
+      final RaftHAServer raftHA = stateMachine.getRaftHAServer();
+      addLeaderReplacingDatabaseAlert(raftHA != null && raftHA.isLeader(), stateMachine.getDatabasesBeingReplaced(),
+          visibleDatabases, alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
@@ -845,6 +850,40 @@ public class ClusterAlerts {
         .put("details", new JSONObject()
             .put("databases", namesArray(visible(installs, visibleDatabases)))
             .put("count", installs.size())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the leader-replacing-database alert iff this node
+   * is the leader and {@code replacing} is non-empty (issue #8491).
+   * <p>
+   * {@code critical}: every other signal reads healthy - there is a leader, its followers are at lag 0, the majority
+   * is intact - while every write to those databases is refused, because the leader is replacing its own copy and
+   * can neither download it from itself nor serve the database until it has one. The health monitor hands leadership
+   * to a peer on its own; this alert is what says why writes fail until it has.
+   * <p>
+   * Node-scoped like {@link #addBootstrapInstallAlert}: the alert fires on the raw count and only the NAMES are
+   * reduced to {@code visibleDatabases}.
+   */
+  static void addLeaderReplacingDatabaseAlert(final boolean isLeader, final List<String> replacing,
+      final Set<String> visibleDatabases, final JSONArray alerts) {
+    if (!isLeader || replacing == null || replacing.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "leader-replacing-database")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "The leader is replacing database(s) with the leader's copy and cannot serve them")
+        .put("message", "This node is the leader and is replacing " + replacing.size() + " database(s) with the "
+            + "leader's snapshot (an operator or automatic resync that was running when it was elected). A leader cannot download a copy from "
+            + "itself, and it refuses every request on a database whose copy is being replaced, so every write to "
+            + "those databases fails although the Raft majority is healthy.")
+        .put("recommendation", "The health monitor hands leadership to a peer that holds the data (arcadedb.ha."
+            + "healthCheckInterval must be above 0), and the install then completes from the new leader. If this "
+            + "alert does not clear, transfer leadership by hand (POST /api/v1/cluster/leader) to a node whose "
+            + "applied index covers the commit index.")
+        .put("details", new JSONObject()
+            .put("databases", namesArray(visible(replacing, visibleDatabases)))
+            .put("count", replacing.size())));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */

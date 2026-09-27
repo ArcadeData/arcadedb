@@ -450,6 +450,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final ConcurrentHashMap<String, InstallApplyGate> installApplyGates = new ConcurrentHashMap<>();
 
   /**
+   * Databases this node is replacing with the leader's copy right now (issue #8491), with the number of installs of
+   * each in flight. Registered by {@link #runUnderInstallGate} for the whole install, download included, and released
+   * in its {@code finally}.
+   * <p>
+   * Not the {@link #installApplyGates} locks: the apply thread takes those too, for every entry it applies, so a held
+   * gate does not mean an install is running.
+   * <p>
+   * What it is for: a node can be ELECTED while it is replacing a database (Raft compares logs only, and an operator
+   * or targeted resync leaves the log complete). A leader cannot install from itself, and every client request on
+   * that database is refused while its copy is being replaced (issue #8363), so the cluster rejects every write to it
+   * with a healthy majority. {@link #handOffLeadershipWhileReplacingDatabase()} reads this set to hand leadership to
+   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition.
+   */
+  private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
+
+  // Wall-clock of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 = none yet.
+  // Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an election
+  // on every health tick.
+  private final AtomicLong lastReplacingLeaderHandOffMs = new AtomicLong();
+
+  /** Minimum interval between two leadership hand-offs of a leader replacing a database (issue #8491). */
+  static final long REPLACING_LEADER_HAND_OFF_INTERVAL_MS = 10_000L;
+
+  /** Budget of one leadership hand-off of a leader replacing a database (issue #8491). */
+  static final long REPLACING_LEADER_HAND_OFF_TIMEOUT_MS = 10_000L;
+
+  /**
    * A database's install lock (issue #7958), which also remembers the highest Raft index the apply thread applied to
    * that database while holding it (issue #8454).
    * <p>
@@ -1887,6 +1914,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     if (newLeaderId.equals(raftHA.getLocalPeerId())) {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
+      // Issue #8491: named here, where the election that caused it is, rather than only at the hand-off the next
+      // health check runs (handOffLeadershipWhileReplacingDatabase), which is off this Ratis callback thread.
+      if (!databasesBeingReplaced.isEmpty())
+        LogManager.instance().log(this, Level.WARNING,
+            "This node was elected leader while it is replacing database(s) %s with the leader's copy; the next health "
+                + "check hands leadership to a peer that holds the data", getDatabasesBeingReplaced());
       raftHA.startLagMonitor();
       raftHA.printClusterConfiguration();
 
@@ -4371,25 +4404,120 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * below the snapshot while the reconciler replaces the copy they target.
    */
   void runUnderInstallGate(final String dbName, final DatabaseReconciler.InstallAction install) throws IOException {
-    // The pre-install Raft log purge (issue #7037) asks Ratis for a snapshot, which the apply thread serves - and the
-    // apply thread may be about to wait on the lock taken below. Purged here, before the lock, so it is not left
-    // timing out against it; the install's own attempt then stands down (isHoldingInstallApplyGate()).
-    final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA != null)
-      raftHA.compactRaftLogBeforeSnapshotInstall(dbName);
-    final InstallApplyGate gate = installApplyGate(dbName);
-    gate.lock();
+    // Registered for the whole install (issue #8491): from here until the finally below this node is replacing its copy
+    // and cannot serve the database, so it must not stay leader - see databasesBeingReplaced.
+    beginDatabaseReplacement(dbName);
     try {
-      // The lock excludes the entries this node would apply AFTER it asked for the leader's copy; it says nothing
-      // about the ones it applied BEFORE, which the copy has to carry because nothing will apply them again. The
-      // leader publishes an entry's pages on its own apply thread, so it can serve a copy that is still behind an
-      // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
-      // entry up to this floor went to the copy being replaced.
-      final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
-      SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+      // The pre-install Raft log purge (issue #7037) asks Ratis for a snapshot, which the apply thread serves - and the
+      // apply thread may be about to wait on the lock taken below. Purged here, before the lock, so it is not left
+      // timing out against it; the install's own attempt then stands down (isHoldingInstallApplyGate()).
+      final RaftHAServer raftHA = this.raftHAServer;
+      if (raftHA != null)
+        raftHA.compactRaftLogBeforeSnapshotInstall(dbName);
+      final InstallApplyGate gate = installApplyGate(dbName);
+      gate.lock();
+      try {
+        // The lock excludes the entries this node would apply AFTER it asked for the leader's copy; it says nothing
+        // about the ones it applied BEFORE, which the copy has to carry because nothing will apply them again. The
+        // leader publishes an entry's pages on its own apply thread, so it can serve a copy that is still behind an
+        // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
+        // entry up to this floor went to the copy being replaced.
+        final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
+        SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+      } finally {
+        gate.unlock();
+      }
     } finally {
-      gate.unlock();
+      endDatabaseReplacement(dbName);
     }
+  }
+
+  /** Registers one more install of {@code dbName} in flight on this node (issue #8491). */
+  private void beginDatabaseReplacement(final String dbName) {
+    databasesBeingReplaced.merge(dbName, 1, Integer::sum);
+  }
+
+  /** Releases one registration taken by {@link #beginDatabaseReplacement}. */
+  private void endDatabaseReplacement(final String dbName) {
+    databasesBeingReplaced.computeIfPresent(dbName, (name, count) -> count <= 1 ? null : count - 1);
+  }
+
+  /**
+   * The databases this node is replacing with the leader's copy right now (issue #8491), sorted. Allocation-free when
+   * there are none, which is every call on a healthy node: {@code ClusterAlerts} reads it on every status poll.
+   */
+  public List<String> getDatabasesBeingReplaced() {
+    if (databasesBeingReplaced.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(databasesBeingReplaced.keySet());
+    Collections.sort(names);
+    return names;
+  }
+
+  /**
+   * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
+   * copy (issue #8491). Driven by the {@link HealthMonitor} tick.
+   * <p>
+   * A node can be elected in the middle of such an install: an operator resync ({@link #resyncDatabaseFromLeader})
+   * or a targeted resync of a quarantined database leaves its Raft log complete, and Raft elects on the log alone.
+   * From then on the install has nowhere to download from - the leader address it resolves on each retry is its own,
+   * which the guard refuses - and every client request on the database is refused on this node while the copy is
+   * being replaced (issue #8363). The majority is healthy and the cluster rejects every write to that database.
+   * <p>
+   * Handing leadership to a peer fixes both at once: the peer holds the data and serves the writes, and the
+   * install's next download attempt resolves that peer as its source and completes. It is the targeted transfer
+   * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging.
+   * <p>
+   * No-op when nothing is being replaced (one map read), on a follower, and within
+   * {@link #REPLACING_LEADER_HAND_OFF_INTERVAL_MS} of the previous attempt, so a cluster where no peer can take over
+   * is not put through an election on every tick. Blocks the caller for up to
+   * {@link #REPLACING_LEADER_HAND_OFF_TIMEOUT_MS} while a hand-off runs.
+   *
+   * @return whether leadership moved to another node
+   */
+  public boolean handOffLeadershipWhileReplacingDatabase() {
+    if (databasesBeingReplaced.isEmpty())
+      return false;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || !raftHA.isLeader())
+      return false;
+
+    // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
+    // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
+    final List<String> replacing = getDatabasesBeingReplaced();
+    if (replacing.isEmpty())
+      return false;
+
+    final long now = System.currentTimeMillis();
+    final long previous = lastReplacingLeaderHandOffMs.get();
+    if (previous != 0 && now - previous < REPLACING_LEADER_HAND_OFF_INTERVAL_MS)
+      return false;
+    // Single attempt, no retry loop: a lost CAS means a concurrent caller (the health tick, or a direct call) has just
+    // claimed the slot and is running the hand-off itself.
+    if (!lastReplacingLeaderHandOffMs.compareAndSet(previous, now))
+      return false;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
+            + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
+            + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
+    final boolean moved;
+    try {
+      moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Leadership hand-off while replacing database(s) %s failed: %s. Retrying on a later health check", replacing,
+          e.getMessage());
+      return false;
+    }
+    if (moved)
+      LogManager.instance().log(this, Level.INFO,
+          "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying on a later "
+              + "health check; to move it by hand, run POST /api/v1/cluster/leader", replacing);
+    return moved;
   }
 
   /**
