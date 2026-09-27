@@ -226,6 +226,30 @@ class Issue8383StaleServerDatabaseRoutingTest extends TestHelper {
   }
 
   @Test
+  void aTransactionStraddlingAReWrapIsStillOneTransaction() {
+    // current() is resolved per call, so begin() goes through the wrapper installed then and commit() through the one
+    // installed since. Both delegate to the same embedded LocalDatabase, whose thread context holds the transaction.
+    final Map<String, AtomicInteger> oldCalls = new ConcurrentHashMap<>();
+    final ServerDatabase handle = new ServerDatabase(null, installWrapper(oldCalls));
+
+    handle.begin();
+    handle.newDocument(TYPE).set("name", "before-rewrap").save();
+
+    final Map<String, AtomicInteger> newCalls = new ConcurrentHashMap<>();
+    installWrapper(newCalls);
+
+    handle.newDocument(TYPE).set("name", "after-rewrap").save();
+    assertThat(handle.isTransactionActive()).as("the re-wrap must not lose the open transaction").isTrue();
+    handle.commit();
+
+    assertThat(count(oldCalls, "begin")).isEqualTo(1);
+    assertThat(count(oldCalls, "commit")).isZero();
+    assertThat(count(newCalls, "commit")).as("the commit goes through the wrapper installed last").isEqualTo(1);
+    assertThat(handle.isTransactionActive()).isFalse();
+    assertThat(database.countType(TYPE, true)).as("both writes committed together").isEqualTo(2L);
+  }
+
+  @Test
   void theHAHooksReachTheWrapperInsteadOfTheirStandaloneDefaults() throws Exception {
     // Not a staleness case: ServerDatabase did not override these at all, so even a handle built around the current
     // wrapper answered isLeader() == true on a follower while delegating isReplicated().
