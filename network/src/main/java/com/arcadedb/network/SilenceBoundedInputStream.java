@@ -42,7 +42,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * A read released by the timer fails with an {@link HttpTimeoutException} rather than with whatever the closed stream
  * reports ("closed", or an end of stream on some JDKs), so the caller can tell a stalled peer from one that finished
  * or dropped the connection. Arming and firing are settled by one compare-and-set, so a read that returns just as its
- * timer fires is either released or not, never both.
+ * timer fires is either released or not, never both. The one ambiguity left is a genuine end of stream that arrives in
+ * the same instant the timer closes the stream: it is reported as a timeout. That errs on the side of the caller, who
+ * sees a failure it can retry rather than a truncated answer passed off as a complete one.
  */
 public class SilenceBoundedInputStream extends FilterInputStream {
   /** Schedules one task; the returned {@link Runnable} cancels it and must tolerate running after it fired. */

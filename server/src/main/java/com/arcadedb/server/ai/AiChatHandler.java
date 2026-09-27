@@ -78,7 +78,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * How long the gateway has to answer a buffered chat request, body included. Enforced by
    * {@link BoundedHttpExchange#send} rather than by the request timeout alone, which on JDK 21-25 stops once the
    * response headers arrive (issue #8473).
-   * Mutable and package-private only so a test can shorten it.
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
    */
   static volatile long gatewayTimeoutMs = 120_000L;
 
@@ -90,7 +91,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * this server waits on the next event. A bound on silence, not on length: a conversation that keeps producing events
    * runs as long as it needs to. The request carries no timeout of its own, since on JDK 26+ that would cap the whole
    * stream (issue #8473).
-   * Mutable and package-private only so a test can shorten it.
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
    */
   static volatile long streamSilenceMs = 5 * 60_000L;
 

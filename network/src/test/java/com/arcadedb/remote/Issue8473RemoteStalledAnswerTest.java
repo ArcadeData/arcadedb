@@ -81,7 +81,7 @@ class Issue8473RemoteStalledAnswerTest {
   private static final String STALLED_BODY     =
       "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"res";
   private static final String STREAM_HEADERS   =
-      "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n";
+      "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
   private final List<AutoCloseable> toClose = new ArrayList<>();
 
@@ -334,6 +334,61 @@ class Issue8473RemoteStalledAnswerTest {
   }
 
   // ------------------------------------------------------------------------------------------------------------
+  // The open transaction still travels with the requests built without the request timeout
+  // ------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The streamed requests are built through the overload that leaves the request timeout off. The session header that
+   * binds a request to the caller's open transaction has to be added there too, or a streamed query or batch load after
+   * {@code begin()} silently runs outside the transaction (found in review of this fix).
+   */
+  @Test
+  void aStreamedQueryInsideATransactionCarriesTheSession() throws Exception {
+    final ScriptedServer server = server(out -> {
+      write(out, STREAM_HEADERS);
+      writeChunk(out, "{\"stats\":{}}\n");
+      write(out, "0\r\n\r\n");
+    });
+    final TestableDatabase db = database(server);
+    db.setSessionId("AS-8473");
+
+    callWithin(() -> {
+      try (final ResultSet rs = db.queryStream("sql", "select from V", Map.of())) {
+        while (rs.hasNext())
+          rs.next();
+      }
+      try (final ResultSet rs = db.commandStream("sql", "select from V", Map.of())) {
+        while (rs.hasNext())
+          rs.next();
+      }
+      return null;
+    }, server);
+
+    assertThat(server.requests).hasSize(2);
+    for (final String request : server.requests)
+      assertThat(request.toLowerCase()).contains(RemoteDatabase.ARCADEDB_SESSION_ID.toLowerCase() + ": as-8473");
+  }
+
+  @Test
+  void aBatchLoadInsideATransactionCarriesTheSession() throws Exception {
+    final ScriptedServer server = server(out -> {
+      write(out, STREAM_HEADERS);
+      writeChunk(out, "{\"summary\":{\"verticesCreated\":1}}\n");
+      write(out, "0\r\n\r\n");
+    });
+    final TestableDatabase db = database(server);
+    db.setSessionId("AS-8473");
+
+    callWithin(() -> db.sendBatch("{\"@type\":\"vertex\",\"@class\":\"V\"}\n", Map.of(), progress -> {
+    }), server);
+    callWithin(() -> db.sendBatch("{\"@type\":\"vertex\",\"@class\":\"V\"}\n", Map.of()), server);
+
+    assertThat(server.requests).hasSize(2);
+    for (final String request : server.requests)
+      assertThat(request.toLowerCase()).contains(RemoteDatabase.ARCADEDB_SESSION_ID.toLowerCase() + ": as-8473");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------
   // Fixtures
   // ------------------------------------------------------------------------------------------------------------
 
@@ -482,6 +537,7 @@ class Issue8473RemoteStalledAnswerTest {
     final         CountDownLatch  closedByClient = new CountDownLatch(1);
     final         int             port;
     private final ServerSocket    socket;
+    final         List<String>    requests       = new CopyOnWriteArrayList<>();
     private final List<Socket>    accepted       = new CopyOnWriteArrayList<>();
     private final Script          script;
 
@@ -515,7 +571,7 @@ class Issue8473RemoteStalledAnswerTest {
     private void serve(final Socket connection) {
       try {
         final InputStream in = connection.getInputStream();
-        readRequest(in);
+        requests.add(readRequest(in));
         script.answer(connection.getOutputStream());
         // Hold the connection until the client closes it.
         while (in.read() >= 0) {
@@ -529,13 +585,16 @@ class Issue8473RemoteStalledAnswerTest {
       }
     }
 
-    /** Reads the request line, the headers and a {@code Content-Length} body, so the answer follows the request. */
-    private static void readRequest(final InputStream in) throws IOException {
+    /**
+     * Reads the request line, the headers and a {@code Content-Length} body, so the answer follows the request, and
+     * returns the request line and the headers.
+     */
+    private static String readRequest(final InputStream in) throws IOException {
       final StringBuilder headers = new StringBuilder();
       while (!headers.toString().endsWith("\r\n\r\n")) {
         final int b = in.read();
         if (b < 0)
-          return;
+          return headers.toString();
         headers.append((char) b);
       }
       long length = 0;
@@ -544,7 +603,8 @@ class Issue8473RemoteStalledAnswerTest {
           length = Long.parseLong(line.substring("content-length:".length()).trim());
       for (long i = 0; i < length; i++)
         if (in.read() < 0)
-          return;
+          break;
+      return headers.toString();
     }
 
     @Override

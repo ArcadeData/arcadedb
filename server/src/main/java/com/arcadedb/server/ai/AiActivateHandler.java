@@ -52,7 +52,8 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
   /**
    * How long the gateway has to answer an activation, body included. Enforced by {@link BoundedHttpExchange#send}
    * rather than by the request timeout alone, which on JDK 21-25 stops once the response headers arrive (issue #8473).
-   * Mutable and package-private only so a test can shorten it.
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
    */
   static volatile long gatewayTimeoutMs = 15_000L;
 

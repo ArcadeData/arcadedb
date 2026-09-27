@@ -1410,8 +1410,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       setStickyTransactionServer(null);
   }
 
-  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
-    HttpRequest.Builder builder = super.createRequestBuilder(httpMethod, url);
+  /**
+   * Adds the transaction's session header. Overrides the three-argument form, which the two-argument one delegates to,
+   * so a request built without the request timeout - a streamed query or batch load (issue #8473) - still runs inside
+   * the caller's open transaction.
+   */
+  @Override
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url, final boolean withRequestTimeout) {
+    final HttpRequest.Builder builder = super.createRequestBuilder(httpMethod, url, withRequestTimeout);
 
     if (getSessionId() != null)
       builder.header(ARCADEDB_SESSION_ID, getSessionId());
