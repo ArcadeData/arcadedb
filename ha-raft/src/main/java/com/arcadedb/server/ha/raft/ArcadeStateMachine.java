@@ -496,8 +496,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, PendingBootstrapPass> bootstrapPassesPending = new ConcurrentHashMap<>();
 
-  /** The pass holding a database ({@code passId}) and when the hold lapses on its own ({@link System#nanoTime()}). */
-  private record PendingBootstrapPass(String passId, long deadlineNanos) {
+  /**
+   * The pass holding a database ({@code passId}) and when the hold lapses on its own ({@link System#nanoTime()}), or
+   * {@code unbounded} for the hold the leader running the pass takes on its own copies, which only its pass settles
+   * (issue #8409).
+   */
+  private record PendingBootstrapPass(String passId, long deadlineNanos, boolean unbounded) {
   }
 
   // Upper bound on a single hold, so a misconfigured bootstrap timeout cannot turn the deadline into "never" (and
@@ -4575,14 +4579,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * that budget of the pass starting and the hold ends at most {@code holdMs} after it.
    */
   void announceBootstrapPass(final String passId, final Collection<String> dbNames, final long holdMs) {
-    if (passId == null || dbNames == null || dbNames.isEmpty() || !hasNeverAppliedApplicationEntry())
-      return;
-    ensureBootstrapBaselinesLoaded();
     // A negative hold can only come from an overflowed configuration (2 x an absurd bootstrap timeout): fail towards
     // holding, which costs availability, rather than towards not holding, which is the bug this hold exists for.
     final long hold = holdMs < 0 ? MAX_BOOTSTRAP_PASS_HOLD_MS : Math.min(holdMs, MAX_BOOTSTRAP_PASS_HOLD_MS);
-    final PendingBootstrapPass pending = new PendingBootstrapPass(passId,
-        System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(hold));
+    hold(passId, dbNames,
+        new PendingBootstrapPass(passId, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(hold), false));
+  }
+
+  /**
+   * The leader running pass {@code passId} holds its own copies of {@code dbNames} while it decides (issue #8409), with
+   * NO deadline. The deadline of {@link #announceBootstrapPass} exists because a leader that dies mid-pass sends its
+   * followers no conclusion; this hold is taken and settled by the pass itself - {@code BootstrapElection.runIfEligible}
+   * concludes it on every exit, and replaces it with a bounded announce before a transfer - so a deadline, even the
+   * one-hour ceiling, could only lapse while the pass is still fingerprinting or collecting, and let a client reach a
+   * copy the pass may reject. It is in memory only, so a crash takes it with the process.
+   */
+  void holdOwnBootstrapPass(final String passId, final Collection<String> dbNames) {
+    hold(passId, dbNames, new PendingBootstrapPass(passId, 0L, true));
+  }
+
+  private void hold(final String passId, final Collection<String> dbNames, final PendingBootstrapPass pending) {
+    if (passId == null || dbNames == null || dbNames.isEmpty() || !hasNeverAppliedApplicationEntry())
+      return;
+    ensureBootstrapBaselinesLoaded();
     for (final String dbName : dbNames) {
       if (dbName == null || dbName.startsWith(".") || bootstrapBaselines.containsKey(dbName))
         continue;
@@ -4630,7 +4649,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final PendingBootstrapPass pending = bootstrapPassesPending.get(dbName);
     if (pending == null)
       return false;
-    if (System.nanoTime() - pending.deadlineNanos() < 0)
+    if (pending.unbounded() || System.nanoTime() - pending.deadlineNanos() < 0)
       return true;
     bootstrapPassesPending.remove(dbName, pending);
     return false;

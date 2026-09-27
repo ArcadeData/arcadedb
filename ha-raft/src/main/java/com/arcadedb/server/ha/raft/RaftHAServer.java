@@ -1774,7 +1774,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private RuntimeJoinDetector createRuntimeJoinDetector() {
     try {
-      return new RuntimeJoinDetector(runtimeJoinMarkerFile(getRaftStorageDir()), resolvePersistStorage(configuration));
+      final File raftStorageDir = getRaftStorageDir();
+      return new RuntimeJoinDetector(runtimeJoinMarkerFile(raftStorageDir), snapshotInstallHoldMarkerFile(raftStorageDir),
+          resolvePersistStorage(configuration));
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot resolve the runtime-join marker location, the runtime-join state of this peer will not survive a "
@@ -1791,6 +1793,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static File runtimeJoinMarkerFile(final File raftStorageDir) {
     return new File(raftStorageDir.getAbsoluteFile().getParentFile(), raftStorageDir.getName() + ".joined-at-runtime");
+  }
+
+  /**
+   * Where the snapshot-install hold of a node that did NOT join at runtime is kept while it is open (issue #8465): a
+   * sibling of the Raft storage directory for the same reason as {@link #runtimeJoinMarkerFile}, and a file of its own
+   * so reading it back never arms a static member (issue #7819).
+   */
+  static File snapshotInstallHoldMarkerFile(final File raftStorageDir) {
+    return new File(raftStorageDir.getAbsoluteFile().getParentFile(),
+        raftStorageDir.getName() + ".snapshot-install-hold");
   }
 
   /**
@@ -2296,6 +2308,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public long getRuntimeJoinIndex() {
     return runtimeJoinDetector.joinIndex();
+  }
+
+  /**
+   * On a node that did not join at runtime, the security documents not confirmed since its latest leader-driven
+   * snapshot install (issue #8432). See {@link RuntimeJoinDetector#securityDocumentsNotConfirmedSinceSnapshotInstall()}.
+   */
+  public List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    return runtimeJoinDetector.securityDocumentsNotConfirmedSinceSnapshotInstall();
+  }
+
+  /**
+   * The index of the latest leader-driven snapshot install on this node while unarmed, {@code -1} when none (issue
+   * #8432). See {@link RuntimeJoinDetector#lastSnapshotInstallIndex()}.
+   */
+  public long getLastSnapshotInstallIndex() {
+    return runtimeJoinDetector.lastSnapshotInstallIndex();
   }
 
   /**

@@ -664,6 +664,23 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return s != null ? s.getRuntimeJoinIndex() : -1L;
   }
 
+  /**
+   * Empty when the Raft server is not readable: unlike an armed node's documents, this hold is only ever opened by an
+   * install the server records, and a reading that cannot see one is no evidence of it (issue #8432).
+   */
+  @Override
+  public List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.securityDocumentsNotConfirmedSinceSnapshotInstall() : List.of();
+  }
+
+  /** {@code -1} when the Raft server is not readable, which the gate reads as "no install": nothing held or reset. */
+  @Override
+  public long getLastSnapshotInstallIndex() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getLastSnapshotInstallIndex() : -1L;
+  }
+
   @Override
   public String getCriticalHaltReason() {
     final RaftHAServer s = raftHAServer;

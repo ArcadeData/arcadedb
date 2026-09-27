@@ -34,9 +34,11 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -331,6 +333,142 @@ class Issue8368BootstrapPassWindowTest {
     doThrow(new IllegalStateException("transfer timed out")).when(ha).transferLeadership(anyString(), anyLong());
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.FAILED);
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+    assertThat(sm.bootstrapWindowReason()).isNull();
+  }
+
+  /**
+   * Issue #8409: the leader running the pass holds its own copy from the start of the collection, before it knows
+   * whether its copy is the baseline, on readiness and on the request path alike.
+   */
+  @Test
+  void aLeaderHoldsItsOwnCopyWhileItCollects() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    final boolean[] heldWhileCollecting = new boolean[1];
+    final String[] reasonWhileCollecting = new String[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      reasonWhileCollecting[0] = sm.bootstrapWindowReason();
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), Long.MAX_VALUE / 2))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
+    assertThat(heldWhileCollecting[0]).as("the defect: the leader served its own copy while it collected").isTrue();
+    assertThat(reasonWhileCollecting[0]).contains("deciding which copy of 1 database(s)");
+  }
+
+  /**
+   * Issue #8409, the common case: the leader IS the source. Its hold outlives the collection only for the databases
+   * it committed a baseline for, until that baseline is applied here - the same rule its followers follow.
+   */
+  @Test
+  void aLeaderThatIsTheSourceIsReleasedByItsOwnBaseline() throws Exception {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    when(ha.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
+    election.probeRetryBackoffMs = 0L;
+    final boolean[] heldWhileCollecting = new boolean[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      // The remote copy is older than this node's: this node is the source.
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), -1L))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.COMMITTED);
+    assertThat(heldWhileCollecting[0]).isTrue();
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).as("its baseline is committed but not yet applied here").isTrue();
+
+    assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(matchingBaseline(), 7L));
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+    assertThat(sm.bootstrapWindowReason()).isNull();
+  }
+
+  /**
+   * Review of PR #8477: the leader's own hold has no deadline while its pass runs - the pass itself concludes it - so a
+   * collection slower than twice {@code arcadedb.ha.bootstrapTimeoutMs} (here 1 s, a 2 s deadline) cannot let it lapse
+   * before a source is elected. The probe answers after 2.5 s.
+   */
+  @Test
+  @Tag("slow")
+  void theLeadersHoldCannotLapseWhileItsPassIsStillCollecting() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    final boolean[] heldAfterTheOldDeadline = new boolean[1];
+    doAnswer(invocation -> {
+      Thread.sleep(2_500L);
+      heldAfterTheOldDeadline[0] = sm.isBootstrapPassPending(DB_NAME);
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), Long.MAX_VALUE / 2))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    election.runIfEligible();
+    assertThat(heldAfterTheOldDeadline[0]).isTrue();
+  }
+
+  /**
+   * Review of PR #8477: the leader's self-hold has no deadline at all, not even the one-hour ceiling a follower's
+   * announce is capped at, and its pass still settles it.
+   */
+  @Test
+  void theLeadersSelfHoldHasNoDeadlineAndItsConclusionReleasesIt() {
+    final ArcadeStateMachine sm = stateMachine();
+    sm.holdOwnBootstrapPass("pass-1", List.of(DB_NAME));
+    receiveAnnounce(sm, "pass-other", "other-db");
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isTrue();
+
+    // A bounded announce from the same pass (the transfer) replaces it with a deadline again: zero lapses at once.
+    PostBootstrapStateHandler.applyPassMarker(
+        new JSONObject(BootstrapElection.announcePassBody("pass-1", List.of(DB_NAME))), sm, 0L);
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+
+    sm.holdOwnBootstrapPass("pass-2", List.of(DB_NAME));
+    sm.concludeBootstrapPass(null, List.of());
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+  }
+
+  /**
+   * Review of PR #8477: a database the pass holds but the collection did not report (dropped locally mid-pass) is
+   * bounded at the transfer like the others, rather than keeping the leader's unbounded self-hold for good.
+   */
+  @Test
+  void aTransferBoundsEveryDatabaseThePassHolds() {
+    final ArcadeStateMachine sm = spy(stateMachine());
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    // Listed when the pass starts, gone by the time the local states are computed: no peer reports it.
+    when(passServer.getDatabaseNames()).thenReturn(Set.of(DB_NAME, "gone-8477"));
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    final Collection<String>[] boundedAtTransfer = new Collection[1];
+    doAnswer(invocation -> {
+      boundedAtTransfer[0] = invocation.getArgument(1);
+      return invocation.callRealMethod();
+    }).when(sm).announceBootstrapPass(anyString(), any(), anyLong());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
+    assertThat(boundedAtTransfer[0]).as("the pass's held databases, not only the reported states")
+        .contains(DB_NAME, "gone-8477");
+  }
+
+  /** Issue #8409: a pass that fails while collecting releases the hold it took at its start. */
+  @Test
+  void aPassThatFailsWhileCollectingReleasesTheLeadersHold() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
+    election.probeRetryBackoffMs = 0L;
+    final boolean[] heldWhileCollecting = new boolean[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      throw new IllegalStateException("simulated collection failure");
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.FAILED);
+    assertThat(heldWhileCollecting[0]).isTrue();
     assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
     assertThat(sm.bootstrapWindowReason()).isNull();
   }
