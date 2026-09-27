@@ -87,7 +87,7 @@ public class RemoteServer extends RemoteHttpComponent {
           .header("Content-Type", "application/json")
           .build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "drop database");
@@ -124,7 +124,7 @@ public class RemoteServer extends RemoteHttpComponent {
           .header("Content-Type", "application/json")
           .build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "create user");
@@ -155,7 +155,7 @@ public class RemoteServer extends RemoteHttpComponent {
           .header("Content-Type", "application/json")
           .build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "drop user");

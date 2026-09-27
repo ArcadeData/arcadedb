@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.SilenceBoundedInputStream;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
@@ -1019,11 +1020,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * read and disarmed as soon as it returns, and when it fires it closes the underlying stream, which is what
    * releases a reader parked on it (issue #7738).
    * <p>
-   * It exists for the follower's relay of a streamed batch answer. The JDK client's request timeout
-   * ({@code arcadedb.ha.proxyBatchReadTimeout}) expires, on JDK 21 to 25, only until the leader's response
-   * HEADERS arrive, and on the streaming encoding those arrive with the leader's first progress line. (JDK 26
-   * extended the request timeout to the whole body, which turns the same setting into a cap on a streamed load's
-   * total length there: issue #8325.)
+   * It exists for the follower's relay of a streamed batch answer. That forward carries no request timeout (issue
+   * #8325): the wait for the leader's response HEADERS, which on the streaming encoding arrive with its first progress
+   * line, is bounded by {@link LeaderDial#sendBounded}, and every later wait by this stream alone.
    * {@code BodyHandlers.ofInputStream} has no per-read timeout and the client sets no socket read timeout, so a
    * leader that answered its 200 and then stalled - deadlocked, in a long GC, blocked on a full volume - parked
    * the follower's worker thread in {@code readLine()} for as long as the leader kept the connection open.
@@ -1040,82 +1039,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * <p>
    * Package-private, and timer-injected, so the bound can be tested without a live leader.
    */
-  static final class ReadBoundedInputStream extends FilterInputStream {
+  static final class ReadBoundedInputStream extends SilenceBoundedInputStream {
     /** Schedules one task; the returned {@link Runnable} cancels it and must tolerate running after it fired. */
     @FunctionalInterface
-    interface Timer {
-      Runnable schedule(Runnable task, long delayMs);
+    interface Timer extends SilenceBoundedInputStream.Timer {
     }
 
-    private final long      timeoutMs;
-    private final Timer     timer;
-    private volatile boolean expired;
-
+    // The implementation moved to `network` as SilenceBoundedInputStream (issue #8473), so the Java remote client and
+    // the AI handlers bound their streamed reads the same way. This subclass keeps the relay's own name and its timer
+    // type, which runs the task on the exchange's XNIO thread.
     ReadBoundedInputStream(final InputStream in, final long timeoutMs, final Timer timer) {
-      super(in);
-      this.timeoutMs = timeoutMs;
-      this.timer = timer;
-    }
-
-    @Override
-    public int read() throws IOException {
-      final Runnable disarm = arm();
-      final int b;
-      try {
-        b = in.read();
-      } catch (final IOException e) {
-        throw expired ? timedOut(e) : e;
-      } finally {
-        disarm.run();
-      }
-      if (b < 0 && expired)
-        throw timedOut(null);
-      return b;
-    }
-
-    @Override
-    public int read(final byte[] b, final int off, final int len) throws IOException {
-      final Runnable disarm = arm();
-      final int n;
-      try {
-        n = in.read(b, off, len);
-      } catch (final IOException e) {
-        throw expired ? timedOut(e) : e;
-      } finally {
-        disarm.run();
-      }
-      if (n < 0 && expired)
-        throw timedOut(null);
-      return n;
-    }
-
-    /** Whether a read was released by the timer: the stream is closed from then on. */
-    boolean hasExpired() {
-      return expired;
-    }
-
-    private Runnable arm() {
-      final AtomicBoolean armed = new AtomicBoolean(true);
-      final Runnable cancel = timer.schedule(() -> {
-        if (!armed.compareAndSet(true, false))
-          // The read returned between this task being dequeued and this line: nothing to release.
-          return;
-        expired = true;
-        // safeClose swallows whatever close() throws, checked or not: this runs on the XNIO I/O thread, where an
-        // escaping exception would hit the thread rather than the relay. The write watchdog closes the same way.
-        IoUtils.safeClose(in);
-      }, timeoutMs);
-      return () -> {
-        if (armed.compareAndSet(true, false))
-          cancel.run();
-      };
-    }
-
-    private HttpTimeoutException timedOut(final IOException cause) {
-      final HttpTimeoutException e = new HttpTimeoutException("No data received for " + timeoutMs + "ms");
-      if (cause != null)
-        e.initCause(cause);
-      return e;
+      super(in, timeoutMs, timer);
     }
   }
 
