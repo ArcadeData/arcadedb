@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -241,7 +242,9 @@ public class DatabaseReconciler {
    *         every path that never reaches the leader (auto-acquire disabled, or the RPC failed).
    *
    * @throws IOException if a database install fails while still inside its retry budget (so the caller leaves the
-   *                     Ratis snapshot install incomplete and Ratis re-triggers it; installs are idempotent).
+   *                     Ratis snapshot install incomplete and Ratis re-triggers it; installs are idempotent), or if the
+   *                     databases directory cannot be listed for the databases closed on this node (issue #8464): the
+   *                     install cannot then tell which local copies it would leave unrefreshed.
    */
   ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) throws IOException {
@@ -412,12 +415,18 @@ public class DatabaseReconciler {
     return false;
   }
 
-  /** This node's local non-reserved (user) database names. */
-  private Set<String> localUserDatabaseNames() {
+  /**
+   * This node's local non-reserved (user) database names: the registered ones AND the ones closed on this node with
+   * their directory still on disk (issue #8464). A closed database is reopened by the next request that names it, so
+   * an install that left it out would record the snapshot index as applied over a copy it never refreshed; counted
+   * here it is refreshed like any other, or reported {@link AcquireState#LEADER_MISSING} when the leader lacks it.
+   */
+  private Set<String> localUserDatabaseNames() throws IOException {
     final Set<String> names = new HashSet<>();
     for (final String name : server.getDatabaseNames())
       if (!name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
         names.add(name);
+    names.addAll(SnapshotInstaller.closedDatabaseNames(server));
     return names;
   }
 
@@ -505,17 +514,20 @@ public class DatabaseReconciler {
    */
   private void refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) throws IOException {
-    for (final String dbName : server.getDatabaseNames()) {
-      // Skip reserved internal databases (e.g. the Raft control directory '.raft'): the leader does not serve them
-      // as snapshots, so an install attempt would only fail. Mirrors the filter on the auto-acquire path.
-      if (dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
-        continue;
-      if (server.existsDatabase(dbName)) {
-        LogManager.instance().log(this, Level.INFO,
-            "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
-        installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-            leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
-      }
+    // Reserved internal databases (e.g. the Raft control directory '.raft') are skipped: the leader does not serve
+    // them as snapshots, so an install attempt would only fail. Databases closed on this node are included (issue
+    // #8464): the next request reopens their directory, so they are as present as the registered ones.
+    final Set<String> toRefresh = new LinkedHashSet<>();
+    for (final String dbName : server.getDatabaseNames())
+      // existsDatabase re-checks the live registry: a database dropped since the listing has no copy left to refresh
+      if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX) && server.existsDatabase(dbName))
+        toRefresh.add(dbName);
+    toRefresh.addAll(SnapshotInstaller.closedDatabaseNames(server));
+    for (final String dbName : toRefresh) {
+      LogManager.instance().log(this, Level.INFO,
+          "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
+      installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+          leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
     }
   }
 
