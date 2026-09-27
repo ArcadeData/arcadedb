@@ -18,12 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+
+import java.util.logging.Level;
 
 /**
  * POST /api/v1/cluster/resync/{database} - emergency recovery that forces THIS node to drop its
@@ -37,6 +40,13 @@ import io.undertow.server.HttpServerExchange;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostResyncDatabaseHandler extends AbstractServerHttpHandler {
+
+  /**
+   * Returned when a leader-driven order ({@link StalledResyncOrder}) no longer matches this node's state (issue
+   * #8490). Distinct from every other refusal so the leader can tell "declined as stale, nothing dropped" from a
+   * failure.
+   */
+  static final int STALE_ORDER_STATUS = 409;
 
   private final RaftHAPlugin plugin;
 
@@ -83,6 +93,23 @@ public class PostResyncDatabaseHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(503, new JSONObject().put("error",
           "Cannot resync database '" + databaseName
               + "': the leader is currently unknown (election in progress?). Retry once a leader is elected.").toString());
+
+    // Issue #8490: a leader-driven order describes the leader's view when it decided, and may arrive much later -
+    // after this node restarted and caught up. Check it against this node's own term and applied index as late as
+    // possible, right before the drop. A request without an order (an operator's manual resync) is not checked.
+    final StalledResyncOrder order = StalledResyncOrder.fromPayload(payload);
+    if (order != null) {
+      final String refusal = order.refusal(raftHAServer.getCurrentTerm(),
+          // The trusted index, not the raw Ratis one: a node whose snapshot marker runs ahead of what it really
+          // applied (#6111), or whose install of this database gave up (#6760), must not claim to be caught up.
+          raftHAServer.getTrustedAppliedIndex(databaseName));
+      if (refusal != null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Refusing the leader-driven resync of database '%s': %s. The local copy is kept.", databaseName, refusal);
+        return new ExecutionResponse(STALE_ORDER_STATUS, new JSONObject().put("error",
+            "Stale resync order for database '" + databaseName + "': " + refusal).toString());
+      }
+    }
 
     try {
       raftHAServer.getStateMachine().resyncDatabaseFromLeader(databaseName);
