@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -29,6 +30,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,6 +94,44 @@ class Issue8468QuarantinedSnapshotSourceIT extends BaseRaftHATest {
 
     leaderDb.transaction(() -> leaderDb.newVertex(type).set("id", 10).save());
     assertThat(awaitCountOn(followerIndex, type, 11)).isEqualTo(11);
+  }
+
+  /**
+   * A quarantine recorded between the handler's first check and the capture of the image (code review on PR #8484): the
+   * copy can hold entries past the skipped one while the reported index is below it, so the handler checks again once
+   * the image is captured and still answers 503.
+   */
+  @Test
+  @Timeout(180)
+  void aQuarantineRecordedAfterTheFirstCheckIsStillRefused() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final String dbName = getDatabaseName();
+
+    final Database leaderDb = getServerDatabase(leaderIndex, dbName);
+    leaderDb.transaction(() -> leaderDb.getSchema().createVertexType("Issue8468Late"));
+    assertClusterConsistency();
+
+    final ArcadeStateMachine leaderMachine = getRaftPlugin(leaderIndex).getRaftHAServer().getStateMachine();
+    final AtomicBoolean quarantinedInTheWindow = new AtomicBoolean();
+    SnapshotHttpHandler.afterQuarantineCheckForTesting = () -> {
+      if (quarantinedInTheWindow.compareAndSet(false, true))
+        leaderMachine.markStateDiverged(dbName, DivergenceCause.APPLY_ERROR);
+    };
+    try {
+      assertThat(snapshotStatus(leaderIndex, dbName)).as("the quarantine recorded before the capture must be seen")
+          .isEqualTo(503);
+      assertThat(quarantinedInTheWindow.get()).as("the quarantine must have landed after the first check").isTrue();
+    } finally {
+      SnapshotHttpHandler.afterQuarantineCheckForTesting = null;
+      leaderMachine.clearDivergedDatabase(dbName);
+    }
+    assertThat(snapshotStatus(leaderIndex, dbName)).isEqualTo(200);
+  }
+
+  @AfterEach
+  void clearSeam() {
+    SnapshotHttpHandler.afterQuarantineCheckForTesting = null;
   }
 
   private int snapshotStatus(final int serverIndex, final String dbName) throws Exception {
