@@ -684,6 +684,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // the state the decision was made on.
     final StalledResyncOrder order = new StalledResyncOrder(getCurrentTerm(), clusterMonitor.getReplicaMatchIndex(peerId),
         clusterMonitor.getLeaderCommitIndex());
+    final long stallGeneration = clusterMonitor.getStallGeneration(peerId);
 
     final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
     if (targetId.equals(localPeerId))
@@ -734,7 +735,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // Issue #8490: the task may run long after the decision (queued behind another, or behind the previous
         // database's snapshot download), and each database is one more copy the follower drops. Re-check that the
         // stall the order was based on is still current before sending it.
-        final String stale = staleStalledResyncOrderReason(isLeader(), getCurrentTerm(), clusterMonitor, peerId, order);
+        final String stale = staleStalledResyncOrderReason(isLeader(), getCurrentTerm(), clusterMonitor, peerId,
+            stallGeneration, order);
         if (stale != null) {
           LogManager.instance().log(this, Level.INFO,
               "Not forcing a resync of database '%s' on replica '%s': %s", dbName, peerId, stale);
@@ -1048,13 +1050,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * went unreachable, or its {@code matchIndex} moved. Static and fed its inputs so it is testable without Ratis.
    */
   static String staleStalledResyncOrderReason(final boolean leader, final long currentTerm, final ClusterMonitor monitor,
-      final String peerId, final StalledResyncOrder order) {
+      final String peerId, final long stallGeneration, final StalledResyncOrder order) {
     if (!leader)
       return "this node is no longer the leader";
     if (currentTerm != order.leaderTerm())
       return "the order was decided in term " + order.leaderTerm() + " and the term is now " + currentTerm;
-    if (!monitor.isStalledResyncStillWarranted(peerId, order.observedMatchIndex()))
-      return "the stall it was decided on is over (the replica recovered, progressed or is unreachable)";
+    if (!monitor.isStalledResyncStillWarranted(peerId, stallGeneration, order.observedMatchIndex()))
+      return "the stall it was decided on is over (the replica recovered, progressed or is unreachable, or a new "
+          + "stall began)";
     return null;
   }
 

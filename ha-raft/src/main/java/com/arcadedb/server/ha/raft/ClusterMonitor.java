@@ -124,6 +124,10 @@ public class ClusterMonitor {
   private final    Consumer<String>                exhaustedPeerChannelHandler;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
+  // Source of ReplicaState.stallGeneration (issue #8490). Monitor-wide rather than per replica so a streak started
+  // after reset() - which discards every ReplicaState - can never reuse the generation of one started before it.
+  // Written only from the single lag-monitor thread.
+  private          long                            stallGenerationCounter;
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
   // thread writes it while the lag-monitor thread reads it (consistent with the other volatile fields).
   private volatile LongSupplier                    clock         = System::currentTimeMillis;
@@ -479,6 +483,7 @@ public class ClusterMonitor {
       // Not in a streak: start one when the replica is over the lag threshold and its matchIndex did
       // not advance this tick. The duration guard below absorbs transient blips.
       if (behind && replicaDelta <= 0) {
+        state.stallGeneration = ++stallGenerationCounter;
         state.stalledSinceMs = now;
         state.stalledAtMatchIndex = matchIndex;
       }
@@ -645,14 +650,28 @@ public class ClusterMonitor {
   /**
    * Whether the leader-driven resync fired for {@code replicaId} is still warranted, read just before the leader
    * sends it (issue #8490). The order is decided on the lag-monitor thread and carried out on another one, possibly
-   * much later: true only while the same stall streak is still running (no leadership change cleared it, the replica
-   * did not recover), the replica is still reachable, and its {@code matchIndex} has not moved past the value the
-   * decision was based on.
+   * much later: true only while the SAME stall streak is still running ({@code stallGeneration} is the one the order
+   * was decided in, so neither a recovery nor a later streak can revive it, and a leadership change wiped it), the
+   * replica is still reachable, and its {@code matchIndex} has not moved past the value the decision was based on.
+   * <p>
+   * The fields are read without a lock, so the combination is not an atomic snapshot of one tick. That is enough for
+   * what this is - the leader's last look before sending - because the follower checks the order again against its
+   * own state before it drops anything.
    */
-  boolean isStalledResyncStillWarranted(final String replicaId, final long observedMatchIndex) {
+  boolean isStalledResyncStillWarranted(final String replicaId, final long stallGeneration,
+      final long observedMatchIndex) {
     final ReplicaState s = replicaStates.get(replicaId);
-    return s != null && s.resyncTriggered && s.stalledSinceMs != -1 && !s.unreachable
-        && s.lastMatchIndex <= observedMatchIndex;
+    return s != null && s.stallGeneration == stallGeneration && s.resyncTriggered && s.stalledSinceMs != -1
+        && !s.unreachable && s.lastMatchIndex <= observedMatchIndex;
+  }
+
+  /**
+   * The generation of {@code replicaId}'s current stall streak, or {@code -1} when no tick has been recorded yet.
+   * Captured with a resync order so {@link #isStalledResyncStillWarranted} can tell that streak from a later one.
+   */
+  long getStallGeneration(final String replicaId) {
+    final ReplicaState s = replicaStates.get(replicaId);
+    return s == null ? -1 : s.stallGeneration;
   }
 
   /** The last {@code matchIndex} recorded for {@code replicaId}, or {@code -1} if no tick has been recorded yet. */
@@ -750,8 +769,13 @@ public class ClusterMonitor {
     // just before it sends the order (isStalledResyncStillWarranted, issue #8490).
     // Wall-clock time (ms) when the current uninterrupted stall streak began; -1 = not stalled.
     volatile long    stalledSinceMs        = -1;
-    // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it.
+    // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it. Not volatile,
+    // unlike its neighbours: only trackStallForRecovery reads it, on the lag-monitor thread. Make it volatile before
+    // reading it from anywhere else.
     long             stalledAtMatchIndex   = -1;
+    // Identifies the current stall streak (issue #8490): taken from ClusterMonitor.stallGenerationCounter when the
+    // streak starts, so a resync order decided in one streak is never taken for one decided in the next.
+    volatile long    stallGeneration       = 0;
     // True once the leader-driven resync has been fired for the current streak (re-armed on recovery).
     volatile boolean resyncTriggered       = false;
     // Whether the replica was unreachable on the last tick the recovery looked at (issue #8490).

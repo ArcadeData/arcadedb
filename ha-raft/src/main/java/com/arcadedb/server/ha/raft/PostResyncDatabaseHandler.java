@@ -95,24 +95,16 @@ public class PostResyncDatabaseHandler extends AbstractServerHttpHandler {
               + "': the leader is currently unknown (election in progress?). Retry once a leader is elected.").toString());
 
     // Issue #8490: a leader-driven order describes the leader's view when it decided, and may arrive much later -
-    // after this node restarted and caught up. Check it against this node's own term and applied index as late as
-    // possible, right before the drop. A request without an order (an operator's manual resync) is not checked.
+    // after this node restarted and caught up. The state machine checks it against this node's own term and applied
+    // index, the last time holding the database's install lock right before the download. A request without an order
+    // (an operator's manual resync) is not checked.
     final StalledResyncOrder order = StalledResyncOrder.fromPayload(payload);
-    if (order != null) {
-      final String refusal = order.refusal(raftHAServer.getCurrentTerm(),
-          // The trusted index, not the raw Ratis one: a node whose snapshot marker runs ahead of what it really
-          // applied (#6111), or whose install of this database gave up (#6760), must not claim to be caught up.
-          raftHAServer.getTrustedAppliedIndex(databaseName));
-      if (refusal != null) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Refusing the leader-driven resync of database '%s': %s. The local copy is kept.", databaseName, refusal);
-        return new ExecutionResponse(STALE_ORDER_STATUS, new JSONObject().put("error",
-            "Stale resync order for database '" + databaseName + "': " + refusal).toString());
-      }
-    }
 
     try {
-      raftHAServer.getStateMachine().resyncDatabaseFromLeader(databaseName);
+      raftHAServer.getStateMachine().resyncDatabaseFromLeader(databaseName, order);
+    } catch (final StaleResyncOrderException e) {
+      LogManager.instance().log(this, Level.WARNING, "Refused the leader-driven resync: %s", e.getMessage());
+      return new ExecutionResponse(STALE_ORDER_STATUS, new JSONObject().put("error", e.getMessage()).toString());
     } catch (final Exception e) {
       return new ExecutionResponse(500, new JSONObject().put("error",
           "Resync of database '" + databaseName + "' failed: " + e.getMessage()).toString());

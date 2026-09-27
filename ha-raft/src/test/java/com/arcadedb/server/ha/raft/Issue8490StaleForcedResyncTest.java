@@ -32,9 +32,10 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -51,8 +52,9 @@ import static org.mockito.Mockito.when;
  *       from scratch when the follower reconnects;</li>
  *   <li>the send: {@link RaftHAServer#staleStalledResyncOrderReason} re-checks the leader's live view before each
  *       database is requested;</li>
- *   <li>the drop: {@link PostResyncDatabaseHandler} checks the {@link StalledResyncOrder} the leader sent against the
- *       follower's own term and applied index, and answers 409 without touching the database when it is stale.</li>
+ *   <li>the drop: the follower checks the {@link StalledResyncOrder} the leader sent against its own term and applied
+ *       index ({@link ArcadeStateMachine#checkStalledResyncOrder}, the last time holding the database's install lock),
+ *       and {@link PostResyncDatabaseHandler} answers 409 without touching the database when it is stale.</li>
  * </ul>
  */
 class Issue8490StaleForcedResyncTest {
@@ -165,10 +167,34 @@ class Issue8490StaleForcedResyncTest {
       tick(monitor, 0, 2_100, 100, 0);
       tick(monitor, RESYNC_DURATION_MS + 1_000, 2_200, 100, 0);
       assertThat(resynced).containsExactly(REPLICA);
-      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, 100)).isTrue();
+      final long generation = monitor.getStallGeneration(REPLICA);
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isTrue();
 
       tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 100, UNREACHABLE_MS);
-      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, 100)).isFalse();
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isFalse();
+    }
+
+    /**
+     * An order is bound to the stall streak it was decided in. Here the follower goes down (ending streak 1), comes
+     * back still stuck at the same matchIndex and trips a second, legitimate order: the first one, still queued, must
+     * not ride on it - without the generation every other field would say it is current.
+     */
+    @Test
+    void anOrderFromAnEarlierStreakIsNotRevivedByALaterOne() {
+      final ClusterMonitor monitor = monitor();
+      tick(monitor, 0, 2_100, 100, 0);
+      tick(monitor, RESYNC_DURATION_MS + 1_000, 2_200, 100, 0);
+      final long first = monitor.getStallGeneration(REPLICA);
+
+      tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 100, UNREACHABLE_MS);
+      tick(monitor, RESYNC_DURATION_MS + 11_000, 2_400, 100, 0);
+      tick(monitor, 2 * RESYNC_DURATION_MS + 12_000, 2_500, 100, 0);
+      assertThat(resynced).as("the second streak fires its own order").hasSize(2);
+      final long second = monitor.getStallGeneration(REPLICA);
+
+      assertThat(second).isNotEqualTo(first);
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, second, 100)).isTrue();
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, first, 100)).isFalse();
     }
 
     @Test
@@ -176,10 +202,11 @@ class Issue8490StaleForcedResyncTest {
       final ClusterMonitor monitor = monitor();
       tick(monitor, 0, 2_100, 100, 0);
       tick(monitor, RESYNC_DURATION_MS + 1_000, 2_200, 100, 0);
-      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, 100)).isTrue();
+      final long generation = monitor.getStallGeneration(REPLICA);
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isTrue();
 
       tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 150, 0);
-      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, 100)).isFalse();
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isFalse();
     }
 
     /** A leadership change wipes the monitor (#4841): an order decided under the old leadership is void. */
@@ -188,10 +215,17 @@ class Issue8490StaleForcedResyncTest {
       final ClusterMonitor monitor = monitor();
       tick(monitor, 0, 2_100, 100, 0);
       tick(monitor, RESYNC_DURATION_MS + 1_000, 2_200, 100, 0);
+      final long generation = monitor.getStallGeneration(REPLICA);
       monitor.reset();
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isFalse();
+      assertThat(monitor.isStalledResyncStillWarranted("never-seen", -1, -1)).isFalse();
 
-      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, 100)).isFalse();
-      assertThat(monitor.isStalledResyncStillWarranted("never-seen", -1)).isFalse();
+      // The new leadership's first streak must not reuse the wiped one's generation either.
+      tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 100, 0);
+      tick(monitor, 2 * RESYNC_DURATION_MS + 7_000, 2_400, 100, 0);
+      assertThat(resynced).hasSize(2);
+      assertThat(monitor.getStallGeneration(REPLICA)).isNotEqualTo(generation);
+      assertThat(monitor.isStalledResyncStillWarranted(REPLICA, generation, 100)).isFalse();
     }
   }
 
@@ -199,6 +233,7 @@ class Issue8490StaleForcedResyncTest {
   class TheSend {
 
     private final StalledResyncOrder order = new StalledResyncOrder(16, 100, 2_200);
+    private       long               generation;
 
     private ClusterMonitor firedMonitor() {
       final ClusterMonitor monitor = monitor();
@@ -207,23 +242,24 @@ class Issue8490StaleForcedResyncTest {
       assertThat(resynced).containsExactly(REPLICA);
       assertThat(monitor.getReplicaMatchIndex(REPLICA)).isEqualTo(100);
       assertThat(monitor.getLeaderCommitIndex()).isEqualTo(2_200);
+      generation = monitor.getStallGeneration(REPLICA);
       return monitor;
     }
 
     @Test
     void anOrderWhoseStallIsStillCurrentIsSent() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, firedMonitor(), REPLICA, order)).isNull();
+      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, firedMonitor(), REPLICA, generation, order)).isNull();
     }
 
     @Test
     void anOrderIsNotSentByANodeThatLostLeadership() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(false, 16, firedMonitor(), REPLICA, order))
+      assertThat(RaftHAServer.staleStalledResyncOrderReason(false, 16, firedMonitor(), REPLICA, generation, order))
           .contains("no longer the leader");
     }
 
     @Test
     void anOrderIsNotSentInALaterTerm() {
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 17, firedMonitor(), REPLICA, order))
+      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 17, firedMonitor(), REPLICA, generation, order))
           .contains("term");
     }
 
@@ -231,7 +267,7 @@ class Issue8490StaleForcedResyncTest {
     void anOrderIsNotSentOnceTheFollowerWentDown() {
       final ClusterMonitor monitor = firedMonitor();
       tick(monitor, RESYNC_DURATION_MS + 6_000, 2_300, 100, UNREACHABLE_MS);
-      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, monitor, REPLICA, order))
+      assertThat(RaftHAServer.staleStalledResyncOrderReason(true, 16, monitor, REPLICA, generation, order))
           .contains("stall it was decided on is over");
     }
   }
@@ -289,18 +325,54 @@ class Issue8490StaleForcedResyncTest {
     }
   }
 
+  /** The follower's check, as {@link ArcadeStateMachine#resyncDatabaseFromLeader(String, StalledResyncOrder)} runs it. */
+  @Nested
+  class TheFollowerCheck {
+
+    private RaftHAServer follower(final long term, final long trustedApplied) {
+      final RaftHAServer raft = mock(RaftHAServer.class);
+      when(raft.getCurrentTerm()).thenReturn(term);
+      when(raft.getTrustedAppliedIndex(DB)).thenReturn(trustedApplied);
+      return raft;
+    }
+
+    /** The reported incident, at the follower: the order is refused and nothing is installed. */
+    @Test
+    void theReportedStaleOrderIsRefused() {
+      assertThatThrownBy(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 653_580), DB,
+          new StalledResyncOrder(16, -1, 643_581), -1))
+          .isInstanceOf(StaleResyncOrderException.class)
+          .hasMessageContaining("not behind")
+          .hasMessageContaining("local copy is kept");
+    }
+
+    @Test
+    void anOrderThatStillHoldsPasses() {
+      assertThatCode(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 100), DB,
+          new StalledResyncOrder(16, 100, 2_200), -1)).doesNotThrowAnyException();
+    }
+
+    /**
+     * Under the install lock the check also sees what the apply thread really applied to this database, which a
+     * #6111/#6760 floor can hide from the trusted index: entries that reached this copy are held by it.
+     */
+    @Test
+    void entriesAppliedUnderTheInstallLockCount() {
+      assertThatThrownBy(() -> ArcadeStateMachine.checkStalledResyncOrder(follower(16, 100), DB,
+          new StalledResyncOrder(16, 100, 2_200), 2_200))
+          .isInstanceOf(StaleResyncOrderException.class);
+    }
+  }
+
   @Nested
   class TheDrop {
 
     private final ArcadeStateMachine stateMachine = mock(ArcadeStateMachine.class);
 
-    /** A follower of leader term 16 that has applied up to {@code applied}. */
-    private PostResyncDatabaseHandler handlerOnFollower(final long applied) {
+    private PostResyncDatabaseHandler handlerOnFollower() {
       final RaftHAServer raft = mock(RaftHAServer.class);
       when(raft.isLeader()).thenReturn(false);
       when(raft.getLeaderHttpAddress()).thenReturn("leader:2480");
-      when(raft.getCurrentTerm()).thenReturn(16L);
-      when(raft.getTrustedAppliedIndex(DB)).thenReturn(applied);
       when(raft.getStateMachine()).thenReturn(stateMachine);
 
       final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
@@ -320,32 +392,35 @@ class Issue8490StaleForcedResyncTest {
       return handler.execute(exchange, root, body);
     }
 
-    /** The reported incident, at the follower: a stale order is refused and the local copy is not touched. */
+    /** The order in the body reaches the state machine intact, and its refusal becomes a 409, not a 500. */
     @Test
-    void aStaleOrderIsRefusedAndTheDatabaseIsKept() {
-      final ExecutionResponse response = post(handlerOnFollower(653_580),
-          new StalledResyncOrder(16, -1, 643_581).toJSON());
+    void aRefusedOrderIsAnsweredWith409() {
+      final StalledResyncOrder order = new StalledResyncOrder(16, -1, 643_581);
+      doThrow(new StaleResyncOrderException("Stale resync order for database 'chaos': this node is not behind"))
+          .when(stateMachine).resyncDatabaseFromLeader(DB, order);
+
+      final ExecutionResponse response = post(handlerOnFollower(), order.toJSON());
 
       assertThat(response.getCode()).isEqualTo(PostResyncDatabaseHandler.STALE_ORDER_STATUS);
       assertThat(response.getResponse()).contains("not behind");
-      verify(stateMachine, never()).resyncDatabaseFromLeader(anyString());
     }
 
     @Test
     void anOrderThatStillHoldsIsCarriedOut() {
-      final ExecutionResponse response = post(handlerOnFollower(100), new StalledResyncOrder(16, 100, 1_200).toJSON());
+      final StalledResyncOrder order = new StalledResyncOrder(16, 100, 2_200);
+      final ExecutionResponse response = post(handlerOnFollower(), order.toJSON());
 
       assertThat(response.getCode()).isEqualTo(200);
-      verify(stateMachine).resyncDatabaseFromLeader(DB);
+      verify(stateMachine).resyncDatabaseFromLeader(DB, order);
     }
 
-    /** An operator's resync carries no order and is never second-guessed, however caught up the node is. */
+    /** An operator's resync carries no order, so the state machine is asked for an unconditional one. */
     @Test
-    void anOperatorResyncIsNeverRefused() {
-      final ExecutionResponse response = post(handlerOnFollower(653_580), new JSONObject());
+    void anOperatorResyncCarriesNoOrder() {
+      final ExecutionResponse response = post(handlerOnFollower(), new JSONObject());
 
       assertThat(response.getCode()).isEqualTo(200);
-      verify(stateMachine).resyncDatabaseFromLeader(DB);
+      verify(stateMachine).resyncDatabaseFromLeader(DB, null);
     }
   }
 }
