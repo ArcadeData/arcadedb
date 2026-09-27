@@ -4463,6 +4463,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (raftHA == null || !raftHA.isLeader())
       return false;
 
+    // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
+    // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
+    final List<String> replacing = getDatabasesBeingReplaced();
+    if (replacing.isEmpty())
+      return false;
+
     final long now = System.currentTimeMillis();
     final long previous = lastReplacingLeaderHandOffMs.get();
     if (previous != 0 && now - previous < REPLACING_LEADER_HAND_OFF_INTERVAL_MS)
@@ -4470,9 +4476,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (!lastReplacingLeaderHandOffMs.compareAndSet(previous, now))
       return false;
 
-    final List<String> replacing = getDatabasesBeingReplaced();
-    if (replacing.isEmpty())
-      return false; // the install finished since the first read
     LogManager.instance().log(this, Level.WARNING,
         "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
             + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
