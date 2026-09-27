@@ -163,6 +163,18 @@ public final class HealthMonitor {
     }
 
     /**
+     * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
+     * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
+     * write to it fails while it stays leader. No-op on a follower, when nothing is being replaced, and between
+     * throttled attempts. May block for the length of one leadership transfer.
+     * <p>
+     * Its own hook because nothing else sees the condition: the node's log is complete and it is not lagging, which
+     * is exactly why Raft elected it.
+     */
+    default void handOffLeadershipWhileReplacingDatabase() {
+    }
+
+    /**
      * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
      * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
      * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
@@ -442,6 +454,12 @@ public final class HealthMonitor {
       return;
     }
     noteLogWriterHealthy();
+    // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
+    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). A hand-off
+    // blocks this tick for up to one leadership transfer (ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_TIMEOUT_MS), so
+    // the checks after it wait that long too - on a node that is the leader, where the follower checks are no-ops, and
+    // at most once per REPLACING_LEADER_HAND_OFF_INTERVAL_MS.
+    target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
