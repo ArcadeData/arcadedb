@@ -76,7 +76,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.network.binary.ReplicationQueueFullException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
@@ -347,6 +349,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
       Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
+      // #8479: the refusals the leader answers a forwarded commit with BEFORE its entry reaches the Raft log, so the
+      // leader rolled it back and a retry runs it for the first time. The lookup is by exact class name, so without
+      // these entries they fell through to a plain, non-retryable TransactionException: the follower's retry loop
+      // gave up on the first attempt and its HTTP client got a 500 for a conflict that a retry resolves. The page
+      // conflict's (String) constructor parses its '[6965 ...]' header back, so the page and version survive the hop.
+      // The two QuorumNotReachedException subtypes are deliberately NOT here, although the leader answers them with
+      // 503 as well: MajorityCommittedAllFailedException means the entry IS committed and
+      // ReplicationDispatchedTimeoutException that it may yet be, so a retry could run the write twice. They keep the
+      // TransactionException fallback, which is non-retryable.
+      Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
+      Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
+      Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
       // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
