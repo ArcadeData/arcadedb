@@ -33,6 +33,13 @@ import java.util.*;
  * Created by luigidellaquila on 12/07/16.
  */
 public class AggregateProjectionCalculationStep extends ProjectionCalculationStep {
+  // #8523: below this many groups across the partial aggregations, merging them on this thread is cheaper than handing
+  // the merge to the pool
+  private static final int PARALLEL_MERGE_MIN_GROUPS = 16_384;
+
+  // #8523: set when the aggregation ran in the workers of a parallel scan, for the plan printout
+  private int parallelWorkers = 0;
+  private int parallelUnits   = 0;
 
   /**
    * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
@@ -78,13 +85,6 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private int nextItem = 0;
 
-  // #8523: below this many groups across the partial aggregations, merging them on this thread is cheaper than handing
-  // the merge to the pool
-  private static final int PARALLEL_MERGE_MIN_GROUPS = 16_384;
-
-  // #8523: set when the aggregation ran in the workers of a parallel scan, for the plan printout
-  private int parallelWorkers = 0;
-  private int parallelUnits   = 0;
 
   public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit,
       final CommandContext context,

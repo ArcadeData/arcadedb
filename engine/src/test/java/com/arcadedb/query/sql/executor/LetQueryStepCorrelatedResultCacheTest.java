@@ -27,12 +27,16 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.function.sql.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -252,6 +256,29 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
       assertThat(cache.getHits()).isZero();
       rs.close();
     });
+  }
+
+  /**
+   * #8441: a member read on an outer variable holding an iterator is keyed on the variable itself: re-evaluating the
+   * member to build the key would consume the iterator before the subquery could read it.
+   */
+  @Test
+  void aMemberOfAnIteratorVariableIsKeyedOnTheVariableNotReEvaluated() {
+    final BasicCommandContext outer = new BasicCommandContext();
+    outer.setDatabase((DatabaseInternal) database);
+    final Iterator<Map<String, Object>> iterator = List.<Map<String, Object>>of(Map.of("office", 1), Map.of("office", 2)).iterator();
+    outer.setVariable("$offices", iterator);
+
+    final CorrelatedSubQueryCache cache = new CorrelatedSubQueryCache(10, ((DatabaseInternal) database).getModificationCount());
+    final CorrelatedSubQueryCache.TrackingContext run = cache.newContext(outer);
+    final Object offices = ((CorrelatedSubQueryCache.ParentView) run.getParent())
+        .getVariableMember("$offices", new SuffixIdentifier(new Identifier("office")), run);
+    assertThat(offices).isEqualTo(List.of(1, 2));
+
+    cache.store(run, outer, (DatabaseInternal) database, List.of());
+    for (final CorrelatedSubQueryCache.Dependency d : cache.getDependencies())
+      assertThat(d.access()).as("an iterator is never re-read for a key").isNotEqualTo(CorrelatedSubQueryCache.Access.VARIABLE_MEMBER);
+    assertThat(cache.getDependencies()).extracting(CorrelatedSubQueryCache.Dependency::name).contains("$offices");
   }
 
   /**

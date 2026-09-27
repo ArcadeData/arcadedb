@@ -217,6 +217,27 @@ class Issue8523ParallelScanAggregationTest extends TestHelper {
     assertThat(plan("SELECT id FROM FourBuckets")).contains("(parallel)");
   }
 
+  /**
+   * With the split disabled, a type with fewer buckets than the threshold stays sequential even when a bucket is empty
+   * (the unit count used to overflow and miss the empty bucket, making such a type look split).
+   */
+  @Test
+  void disabledPageRangesKeepATypeUnderTheBucketThresholdSequential() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 0);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS, 4);
+    try {
+      database.getSchema().createDocumentType("ThreeBuckets", 3);
+      database.transaction(() -> {
+        database.newDocument("ThreeBuckets").set("id", 1).save();
+        database.newDocument("ThreeBuckets").set("id", 2).save();
+      });
+      assertThat(plan("SELECT id FROM ThreeBuckets")).doesNotContain("(parallel)");
+      assertThat(rows("SELECT id FROM ThreeBuckets")).hasSize(2);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS, 2);
+    }
+  }
+
   private List<String> rows(final String query) {
     final List<String> rows = new ArrayList<>();
     rowsAndPlan(query, rows);
