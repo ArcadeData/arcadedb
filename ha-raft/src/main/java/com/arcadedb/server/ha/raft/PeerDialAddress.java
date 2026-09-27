@@ -192,8 +192,12 @@ public record PeerDialAddress(String httpAddress, String httpsAddress, String re
    * Silent where the HTTP arm logs: this one degrading to {@code null} is not a refusal - the caller falls back to
    * the plain-HTTP endpoint it was already handed - and a line per attempt for an SSL cluster that simply has not
    * declared its {@code https} ports would say the same thing the resolver's own one-time INFO already says.
+   * <p>
+   * Package-private for the one caller that pairs it with a plain-HTTP endpoint of its own choosing rather than
+   * with the one {@link #resolve} vets: the bootstrap election's peer fan-out, which probes the {@code http}
+   * endpoints each peer declared and used to take the HTTPS half from the raw resolver (issue #8033).
    */
-  private static String encryptedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
+  static String encryptedEndpointOf(final RaftHAServer raft, final RaftPeerId peerId) {
     final String httpsAddress = raft.getUnambiguousPeerHttpsAddress(peerId);
     if (httpsAddress == null)
       return null;
