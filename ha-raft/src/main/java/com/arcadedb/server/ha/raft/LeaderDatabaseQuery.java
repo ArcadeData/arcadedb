@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.IOException;
@@ -142,10 +143,14 @@ public final class LeaderDatabaseQuery {
           .connectTimeout(Duration.ofSeconds(5))
           .sslContext(SnapshotInstaller.buildSSLContext(server))
           .build()) {
-        return parse(client.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
+        return parse(LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs),
+            endpoint.url());
       }
     }
-    return parse(HTTP.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
+    // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
+    // response headers, so a peer that stalled inside its body parked the caller unbounded. The request timeout stays:
+    // on JDK 26+ it covers the same span with the same value, and either one firing is the same HttpTimeoutException.
+    return parse(LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs), endpoint.url());
   }
 
   /**

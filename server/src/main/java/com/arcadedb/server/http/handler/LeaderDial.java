@@ -25,7 +25,14 @@ import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -186,6 +193,94 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * one-time notices about an SSL cluster's peer transport.
    */
   private static final AtomicBoolean HTTPS_CLIENT_UNAVAILABLE_WARNED = new AtomicBoolean(false);
+
+  /**
+   * Sends {@code request} and waits for the answer for at most {@code deadlineMs}, then cancels the exchange and throws
+   * {@link HttpTimeoutException} (issue #8325). Otherwise it behaves like {@link HttpClient#send}: the answer, or the
+   * exception the exchange failed with, of its own type ({@link java.net.http.HttpConnectTimeoutException},
+   * {@link java.net.ConnectException}, ...), so a caller's existing catch arms keep telling those apart.
+   * <p>
+   * {@code HttpRequest.timeout} cannot be relied on for the same bound, because what it covers depends on the JDK. On
+   * JDK 21-25 it stops at the response HEADERS: a leader that sends headers and then stalls inside its body leaves a
+   * {@code BodyHandlers.ofString()} read with no bound at all. On JDK 26+ it covers the body too. Awaiting the future
+   * applies one bound on every JDK, and what it covers is decided by the body handler: the whole body for a buffered
+   * handler, which completes the future only once the body is read; the headers alone for a streaming one such as
+   * {@code ofInputStream()}, whose body the caller then has to bound itself.
+   * <p>
+   * The future is cancelled on the deadline and on an interrupt, which aborts the exchange and closes its connection
+   * rather than leaving it to the leader.
+   *
+   * @param deadlineMs the longest to wait, floored at {@link #MIN_FORWARD_TIMEOUT_MS}
+   */
+  public static <T> HttpResponse<T> sendBounded(final HttpClient client, final HttpRequest request,
+      final HttpResponse.BodyHandler<T> handler, final long deadlineMs) throws IOException, InterruptedException {
+    final long deadline = Math.max(deadlineMs, MIN_FORWARD_TIMEOUT_MS);
+    final CompletableFuture<HttpResponse<T>> pending = client.sendAsync(request, handler);
+    try {
+      return pending.get(deadline, TimeUnit.MILLISECONDS);
+    } catch (final TimeoutException e) {
+      if (!pending.cancel(true))
+        // The answer completed between the wait expiring and the cancel. Handed over rather than dropped: dropping it
+        // would leave a streaming handler's body, and the connection under it, open with nobody to close it.
+        return completed(pending, request);
+      final HttpTimeoutException timeout = new HttpTimeoutException(
+          "no complete answer from " + request.uri().getAuthority() + " within " + deadline + " ms");
+      timeout.initCause(e);
+      throw timeout;
+    } catch (final InterruptedException e) {
+      if (!pending.cancel(true))
+        closeBodyOf(pending);
+      throw e;
+    } catch (final ExecutionException e) {
+      throw unwrap(e, request);
+    }
+  }
+
+  /** The outcome of a future that is already done, failures unwrapped as {@link #sendBounded} unwraps them. */
+  private static <T> HttpResponse<T> completed(final CompletableFuture<HttpResponse<T>> done, final HttpRequest request)
+      throws IOException {
+    try {
+      return done.get();
+    } catch (final ExecutionException e) {
+      throw unwrap(e, request);
+    } catch (final InterruptedException e) {
+      // Not reachable on a completed future; kept so the interrupt is never swallowed.
+      Thread.currentThread().interrupt();
+      throw new IOException("Interrupted while reading the answer of " + request.method() + " " + request.uri(), e);
+    }
+  }
+
+  /**
+   * Closes the body of an answer that completed but will never be read, so its connection is released. Never throws:
+   * it runs on the way out with an interrupt, which must reach the caller as it is. A future that completed with a
+   * failure has no body, and {@code getNow} would rethrow that failure in place of the interrupt.
+   */
+  // Package-private so a test can hand it a future that failed, which a live interrupt race cannot reliably produce.
+  // @VisibleForTesting
+  static void closeBodyOf(final CompletableFuture<? extends HttpResponse<?>> done) {
+    if (done.isCompletedExceptionally())
+      return;
+    final HttpResponse<?> response = done.getNow(null);
+    if (response != null && response.body() instanceof AutoCloseable body)
+      try {
+        body.close();
+      } catch (final Exception ignored) {
+        // Best effort: the caller is already on its way out with the interrupt
+      }
+  }
+
+  /** The exception the exchange failed with, of its own type, so the callers' catch arms can tell them apart. */
+  private static IOException unwrap(final ExecutionException e, final HttpRequest request) {
+    final Throwable cause = e.getCause();
+    if (cause instanceof IOException io)
+      return io;
+    if (cause instanceof RuntimeException runtime)
+      throw runtime;
+    if (cause instanceof Error error)
+      throw error;
+    return new IOException("Error sending " + request.method() + " " + request.uri(), cause);
+  }
+
 
   /** True when the cluster requires TLS for this forward and it cannot be established; {@link #refusal} says why. */
   public boolean refused() {
