@@ -116,6 +116,12 @@ public final class LeaderCommandForwarder {
    */
   static final String[] RELAYED_RESPONSE_HEADERS = { "Retry-After" };
 
+  /** The exception class name the error pipeline puts in the body of a "not the leader" refusal (issue #8486). */
+  private static final String NOT_THE_LEADER_EXCEPTION = ServerIsNotTheLeaderException.class.getName();
+
+  /** How often {@link #holdUnnamedNotTheLeaderRefusal} re-reads this node's leader view: RaftReplicatedDatabase's rate. */
+  static final long LEADER_VIEW_POLL_INTERVAL_MS = 100L;
+
   private final HttpServer httpServer;
   private final Transport  transport;
 
@@ -373,10 +379,65 @@ public final class LeaderCommandForwarder {
     // transport's own bounded client otherwise - while the deadline and the 504 translation stay here, so
     // neither scheme can produce an unbounded forward (issues #7507 and #7508).
     final HttpRequest request = builder.build();
-    if (relayEventStream && isEventStreamRequested(exchange))
-      return transport.stream(dial.client(), request, dial.address(), longRunningCommand,
-          streamTargetFactory.apply(exchange));
-    return transport.send(dial.client(), request, dial.address(), longRunningCommand);
+    final ExecutionResponse response = relayEventStream && isEventStreamRequested(exchange) ?
+        transport.stream(dial.client(), request, dial.address(), longRunningCommand, streamTargetFactory.apply(exchange)) :
+        transport.send(dial.client(), request, dial.address(), longRunningCommand);
+    return holdUnnamedNotTheLeaderRefusal(response, ha, intendedLeaderId, httpServer.getServer().getConfiguration());
+  }
+
+  /**
+   * Holds back the one refusal a client's retry would otherwise send straight back where it came from, then returns
+   * {@code response} unchanged (issue #8486).
+   * <p>
+   * When the node this forward dialled as the leader answers "not the leader" without naming one - a leader that just
+   * stepped down, or lost leadership, while this node's view still names it - relaying that 503 at once hands the
+   * client a retry that this node routes to the very same node, through the very same stale view. A client that
+   * retries without back-off was refused that way hundreds of times a second for a whole election timeout (the #8480
+   * measurements). So the answer is held until this node's view stops naming the refusing node - a new leader, or none
+   * while the election runs - bounded by {@link GlobalConfiguration#HA_FORWARD_LEADER_WAIT_TIMEOUT_MS}, the wait
+   * {@code RaftReplicatedDatabase} gives a forwarded SQL write in the same situation (issue #8480).
+   * <p>
+   * Every other answer is returned at once: a refusal that names the leader tells the client where to go, and no other
+   * status says anything about who leads. So is a forward without a stable {@code intendedLeaderId}, which cannot say
+   * which node the view has to move away from. Shared by this class and {@link PostBatchHandler}, the two forwarders
+   * of this module.
+   *
+   * @param intendedLeaderId the Raft peer id the forward was dialled for, or null when it has none
+   */
+  static ExecutionResponse holdUnnamedNotTheLeaderRefusal(final ExecutionResponse response, final HAServerPlugin ha,
+      final String intendedLeaderId, final ContextConfiguration configuration) {
+    if (intendedLeaderId == null || !isUnnamedNotTheLeaderRefusal(response))
+      return response;
+    // 0 restores the fail-fast relay, as it does for the leaderless wait the same setting bounds.
+    final long waitMs = configuration.getValueAsLong(GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS);
+    if (waitMs > 0)
+      LeaderForwardContext.awaitLeaderViewMovedFrom(ha::getLeaderPeerId, intendedLeaderId, waitMs,
+          LEADER_VIEW_POLL_INTERVAL_MS);
+    return response;
+  }
+
+  /**
+   * Whether {@code response} is a relayed "not the leader, and no leader to name": a 503 whose body carries
+   * {@code exception = ServerIsNotTheLeaderException} and no {@code exceptionArgs} - the shape the error pipeline gives
+   * a {@link ServerIsNotTheLeaderException} with no leader address (a named one is answered 400 with the address in
+   * {@code exceptionArgs}). Only the status and a substring are looked at before the body is parsed, so the answers
+   * this is not about cost no JSON parse.
+   */
+  static boolean isUnnamedNotTheLeaderRefusal(final ExecutionResponse response) {
+    if (response == null || response.getCode() != 503)
+      return false;
+    final String body = response.getResponse();
+    if (body == null || !body.contains(NOT_THE_LEADER_EXCEPTION))
+      return false;
+    try {
+      final JSONObject json = new JSONObject(body);
+      if (!NOT_THE_LEADER_EXCEPTION.equals(json.getString("exception", null)))
+        return false;
+      final String leaderAddress = json.getString("exceptionArgs", null);
+      return leaderAddress == null || leaderAddress.isBlank();
+    } catch (final RuntimeException e) {
+      return false;
+    }
   }
 
   /**
