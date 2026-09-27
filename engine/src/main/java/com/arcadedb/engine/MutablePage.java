@@ -200,13 +200,23 @@ public class MutablePage extends BasePage implements TrackableContent {
     this.published = true;
   }
 
+  /**
+   * #8492: the read cache shares a published page's array, so a write past publication would change a page other
+   * transactions are already reading. Refused in every JVM, not only under assertions: the alternative is silent
+   * corruption, and the check is one branch on a path that already bounds-checks every write.
+   */
+  private void checkNotPublished() {
+    if (published)
+      throw new IllegalStateException("Page " + pageId + " was modified after it was published to the read cache");
+  }
+
   /** Whether {@link #markPublished()} has been called, i.e. whether this image can be shared without a copy. */
   public boolean isPublished() {
     return published;
   }
 
   public void updateMetadata() {
-    assert !published : "page " + pageId + " was modified after it was published";
+    checkNotPublished();
     content.putInt(PAGE_VERSION_OFFSET, version);
     content.putInt(PAGE_CONTENTSIZE_OFFSET, content.size());
   }
@@ -390,9 +400,7 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   @Override
   public void updateModifiedRange(final int start, final int end) {
-    // #8492: the read cache shares a published page's array, so a write past this point would change a page other
-    // transactions are already reading
-    assert !published : "page " + pageId + " was modified after it was published";
+    checkNotPublished();
     if (start < 0 || end >= getPhysicalSize())
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
