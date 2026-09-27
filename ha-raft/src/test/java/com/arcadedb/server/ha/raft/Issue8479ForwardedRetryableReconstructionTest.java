@@ -113,7 +113,8 @@ class Issue8479ForwardedRetryableReconstructionTest {
 
   /**
    * MAJORITY committed the entry: the write is durable cluster-wide. Retrying the forwarded command would run it a second
-   * time, so the follower must not rebuild it as a NeedRetryException - even though the leader answers it with 503.
+   * time, so the follower must not rebuild it as a NeedRetryException. Since issue #8481 the leader answers it 409; the 503
+   * below is what a leader that predates #8481 sends, and the rebuild keys on the exception class, not on the status.
    */
   @Test
   void aMajorityCommittedRefusalStaysNonRetryable() {
