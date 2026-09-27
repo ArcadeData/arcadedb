@@ -2170,7 +2170,7 @@ public enum GlobalConfiguration {
       Long.class, 90000L),
 
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
-      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
+      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Also the signal the leader-driven stalled-replica resync (HA_STALLED_REPLICA_RESYNC_DURATION_MS) uses to tell a follower that is down from one that is stuck: no resync is forced while a follower is unreachable, and its stall timer starts over when it reconnects (issue #8490). Setting it to 0 turns that protection off along with the narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
   HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,

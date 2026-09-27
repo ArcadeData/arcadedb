@@ -282,10 +282,11 @@ class PluginApiSpecTest {
   void resyncNeverReturnsNotFound() {
     // Correction: unlike PostVerifyDatabaseHandler, PostResyncDatabaseHandler never calls
     // existsDatabase(); every failure of resyncDatabaseFromLeader() is caught locally and reported as
-    // 500, so 404 can never be returned. The brief's response set wrongly included 404.
+    // 500, so 404 can never be returned. The brief's response set wrongly included 404. 409 is a follower
+    // refusing a stale leader-driven resync order (issue #8490).
     final Operation post = openAPI.getPaths().get("/api/v1/cluster/resync/{database}").getPost();
     assertThat(post.getResponses().keySet())
-        .containsExactlyInAnyOrder("200", "400", "401", "403", "500", "503");
+        .containsExactlyInAnyOrder("200", "400", "401", "403", "409", "500", "503");
   }
 
   /**

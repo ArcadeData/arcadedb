@@ -111,6 +111,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -4373,9 +4374,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void installLeaderCopy(final String dbName, final Supplier<String> leaderHttpAddr,
       final Supplier<String> leaderHttpsAddr, final String clusterToken) throws IOException {
+    installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken, null);
+  }
+
+  /**
+   * As {@link #installLeaderCopy(String, Supplier, Supplier, String)}, first running {@code underGate} (when not
+   * {@code null}) with the install lock held and before anything is downloaded, fed the highest index applied to this
+   * database under that lock. It may throw to abandon the install with the local copy untouched (issue #8490).
+   */
+  private void installLeaderCopy(final String dbName, final Supplier<String> leaderHttpAddr,
+      final Supplier<String> leaderHttpsAddr, final String clusterToken, final LongConsumer underGate) throws IOException {
     // Read once: the field is volatile, and the path and the install must be about the same server.
     final ArcadeDBServer localServer = this.server;
-    runUnderInstallGate(dbName, () -> SnapshotInstaller.install(dbName,
+    runUnderInstallGate(dbName, underGate, () -> SnapshotInstaller.install(dbName,
         SnapshotInstaller.resolveDatabasePath(localServer, dbName), leaderHttpAddr, leaderHttpsAddr, clusterToken,
         localServer));
   }
@@ -4387,6 +4398,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * below the snapshot while the reconciler replaces the copy they target.
    */
   void runUnderInstallGate(final String dbName, final DatabaseReconciler.InstallAction install) throws IOException {
+    runUnderInstallGate(dbName, null, install);
+  }
+
+  private void runUnderInstallGate(final String dbName, final LongConsumer underGate,
+      final DatabaseReconciler.InstallAction install) throws IOException {
     // Registered for the whole install (issue #8491): from here until the finally below this node is replacing its copy
     // and cannot serve the database, so it must not stay leader - see databasesBeingReplaced.
     beginDatabaseReplacement(dbName);
@@ -4400,6 +4416,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final InstallApplyGate gate = installApplyGate(dbName);
       gate.lock();
       try {
+        if (underGate != null)
+          underGate.accept(gate.appliedUnderGate());
         // The lock excludes the entries this node would apply AFTER it asked for the leader's copy; it says nothing
         // about the ones it applied BEFORE, which the copy has to carry because nothing will apply them again. The
         // leader publishes an entry's pages on its own apply thread, so it can serve a copy that is still behind an
@@ -5014,6 +5032,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *                              unknown, or the snapshot install fails
    */
   public void resyncDatabaseFromLeader(final String dbName) {
+    resyncDatabaseFromLeader(dbName, null);
+  }
+
+  /**
+   * As {@link #resyncDatabaseFromLeader(String)}, carrying a leader-driven {@code order} (issue #8490) that is checked
+   * against this node's own term and applied index twice: before anything is logged or purged, and again holding the
+   * database's install lock right before the download starts - the last moment the apply thread can still have moved
+   * this database, since it waits on that lock for the rest of the install. {@code null} (an operator's resync) is
+   * unconditional.
+   *
+   * @throws StaleResyncOrderException when the order no longer holds; the local copy is left in place
+   */
+  public void resyncDatabaseFromLeader(final String dbName, final StalledResyncOrder order) {
     final RaftHAServer raft = raftHAServer;
     if (raft == null)
       throw new ReplicationException("Cannot resync database '" + dbName + "': Raft HA is not enabled");
@@ -5029,8 +5060,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // operator most needs told about before a database is replaced (issue #6202).
       throw new ReplicationException("Cannot resync database '" + dbName + "': " + source.refusal());
 
+    if (order != null)
+      checkStalledResyncOrder(raft, dbName, order, -1L);
+
     LogManager.instance().log(this, Level.WARNING,
-        "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot", dbName);
+        order != null
+            ? "Leader-driven resync of database '%s' (stalled replica recovery): dropping local copy and re-acquiring full snapshot"
+            : "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot",
+        dbName);
 
     try {
       // Resolve the leader address on each retry (it can change mid-operation if leadership moves) - and re-guard
@@ -5041,8 +5078,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // once a complete snapshot is on disk, rolling back on failure. A failed resync therefore never
       // leaves the database closed (the cause of the operator-visible DatabaseIsClosedException).
       final String clusterToken = raft.getClusterToken();
-      installLeaderCopy(dbName, this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken);
-      LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
+      installLeaderCopy(dbName, this::guardedLeaderHttpAddress, this::guardedLeaderHttpsAddress, clusterToken,
+          order == null ? null : appliedUnderGate -> checkStalledResyncOrder(raft, dbName, order, appliedUnderGate));
+      LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on %s", dbName,
+          order != null ? "the leader's stalled-replica recovery" : "operator request");
       // This is the action the bootstrap-divergence alert asks the operator for: the local copy the
       // overwrite guard kept has just been replaced, so the mark goes with it (issue #6124) - and so does a
       // bootstrap replacement still pending on it (issue #8367).
@@ -5051,6 +5090,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
     }
+  }
+
+  /**
+   * Throws {@link StaleResyncOrderException} when {@code order} no longer matches this node (issue #8490). The applied
+   * index judged is the trusted one (#6111/#6760 floors), raised to {@code appliedUnderGate} - the highest index the
+   * apply thread really applied to this database under its install lock - when that is known: entries that went to
+   * this copy are held by it, whatever a floor says about the rest.
+   */
+  static void checkStalledResyncOrder(final RaftHAServer raft, final String dbName,
+      final StalledResyncOrder order, final long appliedUnderGate) {
+    final long applied = Math.max(raft.getTrustedAppliedIndex(dbName), appliedUnderGate);
+    final String refusal = order.refusal(raft.getCurrentTerm(), applied);
+    if (refusal != null)
+      throw new StaleResyncOrderException(
+          "Stale resync order for database '" + dbName + "': " + refusal + ". The local copy is kept.");
   }
 
   /**
