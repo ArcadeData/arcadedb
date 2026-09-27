@@ -2146,13 +2146,20 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Asks the Raft leader to step down, triggering a new election. This forces all servers
-   * to recreate their internal gRPC log-appender channels, which resolves stale connections
-   * to restarted peers whose gRPC channels are stuck in exponential backoff.
+   * Hands this leader's leadership to the best eligible peer (the ranking {@link #selectStepDownTargets} gives
+   * {@link #stepDown()}), with the targeted Ratis transfer: the chosen follower starts its election at once, and the
+   * other followers learn the new leader from its first heartbeat. A leadership change also makes every server
+   * recreate its internal gRPC log-appender channels, which resolves stale connections to restarted peers whose
+   * gRPC channels are stuck in exponential backoff.
+   * <p>
+   * Only when no peer is eligible, or every targeted transfer fails, does it ask Ratis for a bare step-down, and it
+   * then reports success only once a different peer is seen as the leader (issue #8480): the bare step-down starts
+   * no election, so on its own it leaves the cluster leaderless for a whole election timeout.
    *
    * @param timeoutMs maximum time to wait for the transfer to complete
    *
-   * @return true if the transfer succeeded
+   * @return true only when leadership settled on a peer other than this one; false when this node is not the leader
+   *         or no handoff happened within {@code timeoutMs}
    */
   public boolean transferLeadership(final long timeoutMs) {
     return clusterManager.transferLeadership(timeoutMs);
@@ -4140,6 +4147,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Asks Ratis for a bare step-down, with no target, and reports success only once a different peer is seen as the
+   * leader (issue #8480). The last resort of {@link #stepDown()} and of {@link #transferLeadership(long)}, for when no
+   * peer is eligible as an explicit target: on its own it starts no election, so the cluster stays leaderless until
+   * a follower's election timer fires.
+   */
+  boolean stepDownWithoutTarget(final long timeoutMs) {
+    return clusterManager.stepDownWithoutTarget(timeoutMs);
+  }
+
+  /**
    * Steps this leader down by transferring leadership to the best eligible peer.
    * <p>
    * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
@@ -4175,9 +4192,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // No eligible explicit target (every other peer is a priority-0 witness/replica or is lagging, or
     // every explicit transfer failed). Delegate the choice to Ratis: the no-target transfer honors Raft
     // priorities and never elects a priority-0 peer, which is safer than abandoning the step-down (issue #4808).
+    // Straight to the bare step-down, not through transferLeadership(long): that would retry, against the same
+    // budget, the very candidates the loop above just tried (issue #8480).
     LogManager.instance().log(this, Level.INFO,
         "No explicit step-down target eligible; delegating leadership-transfer target selection to Ratis");
-    if (transferLeadership(10_000L))
+    if (stepDownWithoutTarget(10_000L))
       return;
 
     // The no-target API also returns false if leadership was lost before the transfer (issue #4809).
