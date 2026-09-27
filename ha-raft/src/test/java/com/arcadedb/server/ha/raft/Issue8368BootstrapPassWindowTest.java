@@ -387,23 +387,25 @@ class Issue8368BootstrapPassWindowTest {
   }
 
   /**
-   * Review of PR #8477: the leader's hold is renewed after the local fingerprints, which have no time bound of their
-   * own, and again before the decision, so a long collection cannot let it lapse before a source is elected.
+   * Review of PR #8477: the leader's own hold has no deadline while its pass runs - the pass itself concludes it - so a
+   * collection slower than twice {@code arcadedb.ha.bootstrapTimeoutMs} (here 1 s, a 2 s deadline) cannot let it lapse
+   * before a source is elected. The probe answers after 2.5 s.
    */
   @Test
-  void theLeadersHoldIsRenewedBeforeTheDecision() {
-    final ArcadeStateMachine sm = spy(stateMachine());
+  void theLeadersHoldCannotLapseWhileItsPassIsStillCollecting() {
+    final ArcadeStateMachine sm = stateMachine();
     final RaftHAServer ha = leaderOfAPassThatElects(sm);
     final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
-    final int[] announces = new int[1];
+    final boolean[] heldAfterTheOldDeadline = new boolean[1];
     doAnswer(invocation -> {
-      announces[0]++;
-      return invocation.callRealMethod();
-    }).when(sm).announceBootstrapPass(anyString(), any(), anyLong());
+      Thread.sleep(2_500L);
+      heldAfterTheOldDeadline[0] = sm.isBootstrapPassPending(DB_NAME);
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), Long.MAX_VALUE / 2))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
 
-    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
-    assertThat(announces[0]).as("at the start, after the local fingerprints, before the decision, at the transfer")
-        .isEqualTo(4);
+    election.runIfEligible();
+    assertThat(heldAfterTheOldDeadline[0]).isTrue();
   }
 
   /** Issue #8409: a pass that fails while collecting releases the hold it took at its start. */

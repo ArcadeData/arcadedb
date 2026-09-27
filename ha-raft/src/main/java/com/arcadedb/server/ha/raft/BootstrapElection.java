@@ -235,9 +235,6 @@ class BootstrapElection {
       // baseline for, and the apply of each baseline it did commit releases that one.
       holdOwnCopies(passId, pending);
       final Map<String, List<PeerState>> states = collectStates(pending, passId);
-      // Renewed again before the decision, so the deadline runs from here rather than from the start of a collection
-      // that may have used most of it: the hold must outlast source selection and the commit that follows.
-      holdOwnCopies(passId, pending);
       outcome = decideAndAct(states, passId, committed);
       return outcome;
     } catch (final Throwable t) {
@@ -255,15 +252,19 @@ class BootstrapElection {
   }
 
   /**
-   * Holds this node's own copies of {@code dbNames} for pass {@code passId} (issue #8409), or renews the hold with a
-   * fresh deadline of twice {@code arcadedb.ha.bootstrapTimeoutMs}. Renewal is bounded by the pass itself: it runs at
-   * most three times, at the start, after the local fingerprints and before the decision.
+   * Holds this node's own copies of {@code dbNames} for the pass {@code passId} it is running (issue #8409), with no
+   * deadline of its own beyond the state machine's ceiling.
+   * <p>
+   * A follower's hold needs a deadline because a leader that dies mid-pass sends it no conclusion. This hold is taken
+   * by the pass itself, on its own thread, and every way out of {@link #runIfEligible} settles it: the conclusion in
+   * its {@code finally} releases it, and a transfer replaces it with a bounded one before leadership moves. A deadline
+   * here could only lapse while the pass is still running - in the fingerprinting of the local copies, which reads
+   * every file and has no time bound, or in a slow collection - and let a client reach a copy the pass may reject.
    */
   private void holdOwnCopies(final String passId, final Collection<String> dbNames) {
     final ArcadeStateMachine stateMachine = haServer.getStateMachine();
     if (stateMachine != null)
-      stateMachine.announceBootstrapPass(passId, dbNames,
-          2L * server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
+      stateMachine.announceBootstrapPass(passId, dbNames, Long.MAX_VALUE);
   }
 
   /**
@@ -439,9 +440,6 @@ class BootstrapElection {
 
     // Self state computed locally to avoid a self-loop HTTP call.
     final Map<String, PeerState> selfStates = computeLocalStates(localId, dbFilter);
-    // Fingerprinting reads every file of every database and has no time bound of its own: renew this node's hold
-    // (issue #8409) so it cannot lapse there, and the remote collection below starts with a full deadline.
-    holdOwnCopies(passId, dbNames);
 
     // Collect every other peer's state, retrying transient probe failures (401/403/5xx/unreachable)
     // within the overall bootstrap-timeout budget instead of treating the first failure as a
@@ -866,8 +864,9 @@ class BootstrapElection {
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: transferring leadership to elected source %s (freshest copy of the cluster)", source);
       // This node is about to become a follower of a pass that may reject its copies (issue #8368). The elected
-      // source's pass announces to it too, but only after the transfer and its own collection: renew the hold this
-      // pass took at its start (issue #8409), so its deadline runs from here and covers the transfer.
+      // source's pass announces to it too, but only after the transfer and its own collection. The hold this pass
+      // took at its start (issue #8409) has no deadline, because this pass concludes it; from here the new source's
+      // pass does, and a source that dies sends no conclusion, so the hold is replaced by a bounded one.
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
       if (stateMachine != null)
         stateMachine.announceBootstrapPass(passId, states.keySet(), 2L * timeoutMs);
