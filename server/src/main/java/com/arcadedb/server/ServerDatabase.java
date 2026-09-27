@@ -126,6 +126,10 @@ public class ServerDatabase implements DatabaseInternal {
    * that wrapper, so only a stale handle changes behavior. Resolved here and not in {@code LocalDatabase}: engine code
    * calls the inner instance on purpose (a WAL-less vector graph persist, for one), and must keep doing so.
    * <p>
+   * Resolved per call, so a transaction whose {@code begin()} and {@code commit()} fall on either side of a re-wrap
+   * begins through one wrapper and commits through the next. That is still one transaction: every wrapper delegates to
+   * the same embedded {@link LocalDatabase}, and the transaction lives in its thread context, keyed by the database path.
+   * <p>
    * {@link #getWrappedDatabaseInstance()}, {@link #getEmbedded()}, {@code equals()}, {@code hashCode()} and
    * {@code toString()} stay on the captured instance: they describe what this handle was built around, which is what the
    * server's own registry maintenance ({@code rewrapDatabases()}) reads.
