@@ -1547,6 +1547,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
             databaseName, index, t.getMessage());
         triggerDatabaseResync(databaseName);
+        handOffLeadershipIfLeader(databaseName);
       } else {
         LogManager.instance().log(this, Level.SEVERE,
             "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
@@ -2860,11 +2861,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Publishing the pages of locally-originated tx %d on database '%s' failed at log index %d after the entry was "
                 + "committed cluster-wide; reconciling the local pages from the replicated payload: %s",
             local.walTxId(), decoded.databaseName(), entryIndex, t.getMessage());
-        // STRICT: a page this node cannot bring to the entry's version is not reconciled. Skipping it and applying
-        // the rest recorded the entry as held while part of it was not, so the reconcile fails instead and the entry
-        // takes the doubly-failed path below (issue #7602), which quarantines the database for a resync.
         databaseFor(decoded.databaseName()).getTransactionManager()
-            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), false);
+            .applyChanges(deserializeWalTransaction(decoded.walData()), decoded.bucketRecordDelta(), true);
         reconciled = true;
       } catch (final Error reconcileError) {
         throw reconcileError;
@@ -2926,46 +2924,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       db.getTransactionManager().applyChanges(walTx, decoded.bucketRecordDelta(), false);
     } catch (final WALVersionGapException e) {
-      throw divergedOnWalVersionGap(decoded.databaseName(), walTx.txId, entryIndex, e);
+      // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
+      // was never applied on this node. State has diverged; trigger snapshot resync.
+      final AtomicInteger gapCounter = TEST_WAL_GAP_COUNTER;
+      if (gapCounter != null)
+        gapCounter.incrementAndGet();
+      // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
+      // (issue #4740). quarantineDatabase() returns true only when the database was not already quarantined, so
+      // the FIRST gap logs loudly and triggers an immediate snapshot download (instead of waiting for
+      // the HealthMonitor's periodic check). Every subsequent committed entry for this database will
+      // hit the same gap until the resync lands: those log a throttled one-liner (no per-entry stack
+      // trace) so the log is not flooded and the download is not starved of CPU/IO on small nodes.
+      if (quarantineDatabase(decoded.databaseName(), DivergenceCause.WAL_VERSION_GAP)) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
+            decoded.databaseName(), walTx.txId, e.getMessage());
+        try {
+          lifecycleExecutor.submit(this::triggerSnapshotDownload);
+        } catch (final RejectedExecutionException ree) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
+              ree, decoded.databaseName());
+        }
+        handOffLeadershipIfLeader(decoded.databaseName());
+      } else if (shouldLogDivergedResync(decoded.databaseName())) {
+        LogManager.instance().log(this, Level.INFO,
+            "WAL version gap on database '%s' (snapshot resync in progress); skipping apply at index %d until resync completes",
+            decoded.databaseName(), entryIndex);
+      }
+      throw new ReplicationException(
+          "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
     }
   }
 
-  /**
-   * The one answer to a WAL page more than one version ahead of the local copy, whichever entry carried it: an
-   * intermediate write never reached this node, so the database is quarantined and resynced from a snapshot. The
-   * returned exception is what the caller throws.
-   */
-  private ReplicationException divergedOnWalVersionGap(final String databaseName, final long txId, final long entryIndex,
-      final WALVersionGapException e) {
-    // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
-    // was never applied on this node. State has diverged; trigger snapshot resync.
-    final AtomicInteger gapCounter = TEST_WAL_GAP_COUNTER;
-    if (gapCounter != null)
-      gapCounter.incrementAndGet();
-    // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
-    // (issue #4740). quarantineDatabase() returns true only when the database was not already quarantined, so
-    // the FIRST gap logs loudly and triggers an immediate snapshot download (instead of waiting for
-    // the HealthMonitor's periodic check). Every subsequent committed entry for this database will
-    // hit the same gap until the resync lands: those log a throttled one-liner (no per-entry stack
-    // trace) so the log is not flooded and the download is not starved of CPU/IO on small nodes.
-    if (quarantineDatabase(databaseName, DivergenceCause.WAL_VERSION_GAP)) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
-          databaseName, txId, e.getMessage());
-      try {
-        lifecycleExecutor.submit(this::triggerSnapshotDownload);
-      } catch (final RejectedExecutionException ree) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
-            ree, databaseName);
-      }
-    } else if (shouldLogDivergedResync(databaseName)) {
-      LogManager.instance().log(this, Level.INFO,
-          "WAL version gap on database '%s' (snapshot resync in progress); skipping apply at index %d until resync completes",
-          databaseName, entryIndex);
-    }
-    return new ReplicationException("WAL version gap detected - snapshot resync required (db=" + databaseName + ")", e);
-  }
 
   /**
    * Applies a committed DDL (schema change) entry to the local database.
@@ -3119,16 +3110,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
           if (walTx.pages != null)
             for (final WALFile.WALPage page : walTx.pages)
               walTouchedFileIds.add(page.fileId);
-          // STRICT, as for a transaction entry: a page more than one version ahead is a write this node never
-          // received. Skipping it (ignoreErrors=true, as this used to do) applied every OTHER page of the same
-          // transaction, leaving the transaction half on this node - records pointing at content that never landed -
-          // with nothing but a WARNING to say so. A replay after a restart is unaffected: a page already at or past
-          // the entry's version is skipped or re-applied by applyChanges whatever this flag says.
-          try {
-            db.getTransactionManager().applyChanges(walTx, bucketDelta, false);
-          } catch (final WALVersionGapException e) {
-            throw divergedOnWalVersionGap(decoded.databaseName(), walTx.txId, entryIndex, e);
-          }
+          // ignoreErrors=true: same rationale as applyTxEntry - replay safety during node restart
+          db.getTransactionManager().applyChanges(walTx, bucketDelta, true);
         }
         HALog.log(this, HALog.DETAILED,
             "Applied %d buffered WAL entries from schema entry to database '%s'",
@@ -6690,7 +6673,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public void retryUnfilledSnapshotGap() {
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || server == null || raftHA.isLeader())
+    if (raftHA == null)
+      return;
+    if (raftHA.isLeader()) {
+      // A leader cannot resync from itself, so what it holds behind the log is healed by moving the leadership
+      // instead (issue #8483); this node's next tick as a follower then drives the resync below.
+      handOffLeadershipIfHeldBehind(raftHA);
+      return;
+    }
+    if (server == null)
       return;
     final long floor = staleSnapshotAppliedFloor.get();
     // A per-database floor is an unfilled gap too: it is published exactly when an install gave up on a database,
@@ -6866,6 +6857,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return durable;
   }
 
+
+  /**
+   * Hands leadership off when this node is the leader and has just quarantined {@code dbName} (issue #8483). The
+   * resync the quarantine triggers is refused on the leader role, and since #8468 this node also refuses to serve the
+   * database to the followers, so while it leads nothing can heal the database anywhere. Once a healthy peer leads,
+   * this node's next health tick drives the targeted resync from it.
+   */
+  private void handOffLeadershipIfLeader(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null && raftHA.isLeader())
+      raftHA.handOffLeadershipToResync("quarantined database '" + dbName + "' (" + quarantineCause(dbName) + ")");
+  }
+
+  /**
+   * The health tick's arm for a LEADER (issue #8483): while it holds a quarantine or a read floor, hand leadership off
+   * so it can resync from the next leader. The backstop for what the apply paths' immediate handoff does not see - a
+   * quarantine restored from disk on a node elected after the restart, a floor an incomplete snapshot install left
+   * before the node was elected, a handoff that failed - so it asks on every tick and leaves the pacing to the
+   * cooldown in {@link RaftHAServer#handOffLeadershipToResync}.
+   */
+  private void handOffLeadershipIfHeldBehind(final RaftHAServer raftHA) {
+    ensureAppliedIndexLoaded();
+    final long floor = staleSnapshotAppliedFloor.get();
+    if (divergedDatabases.isEmpty() && staleDatabaseAppliedFloors.isEmpty() && floor < 0)
+      return;
+
+    final StringBuilder reason = new StringBuilder();
+    if (!divergedDatabases.isEmpty())
+      reason.append("quarantined database(s) ").append(new LinkedHashMap<>(divergedDatabases));
+    if (!staleDatabaseAppliedFloors.isEmpty())
+      reason.append(reason.isEmpty() ? "" : " and ").append("database(s) short of the snapshot index ")
+          .append(staleDatabaseAppliedFloors.keySet());
+    if (floor >= 0)
+      reason.append(reason.isEmpty() ? "" : " and ").append("a node-wide read floor at ").append(floor);
+    raftHA.handOffLeadershipToResync(reason.toString());
+  }
 
   /**
    * Triggers a targeted snapshot resync of a single database from the leader (issue #4797).
