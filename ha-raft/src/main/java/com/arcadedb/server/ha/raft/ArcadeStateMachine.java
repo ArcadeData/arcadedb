@@ -4377,6 +4377,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The applied index a snapshot this node serves is at least as current as (issue #8454): every entry up to it has
    * been applied here, its pages published, before this is read, so a copy captured after the read carries them.
    * Sent to the installing follower as {@link SnapshotManager#APPLIED_INDEX_HEADER}.
+   * <p>
+   * Not true of a database this node has quarantined, whose skipped entry this index already counts: the handler
+   * refuses to serve such a database at all (issue #8468, see {@link #quarantineCause(String)}).
    */
   long appliedIndexForServedSnapshot() {
     return lastAppliedIndex.get();
@@ -6866,6 +6869,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
+  }
+
+  /**
+   * Why {@code dbName} is quarantined on this node, or {@code null} when it is not (issue #8468). A database a snapshot
+   * install gave up on carries its read floor beside the quarantine, so this covers it too
+   * ({@link DivergenceCause#SNAPSHOT_INSTALL_INCOMPLETE}).
+   */
+  DivergenceCause quarantineCause(final String dbName) {
+    if (dbName == null)
+      return null;
+    // A quarantine restored from disk must be visible to the first caller after a restart (issue #7735)
+    ensureAppliedIndexLoaded();
+    return divergedDatabases.get(dbName);
   }
 
   // @VisibleForTesting
