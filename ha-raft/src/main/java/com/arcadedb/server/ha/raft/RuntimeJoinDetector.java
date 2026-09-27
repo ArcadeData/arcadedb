@@ -19,14 +19,13 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -298,9 +297,6 @@ public final class RuntimeJoinDetector {
       if (armedNow) {
         joinedAtRuntime = true;
         joinIndex = index;
-        // The armed gate takes over from the unarmed hold, whose marker is deleted below (issue #8465).
-        if (snapshotInstallIndex != NO_INDEX)
-          holdStateVersion++;
       } else if (rearmedNow)
         joinIndex = index;
       if (armedNow || rearmedNow)
@@ -319,9 +315,8 @@ public final class RuntimeJoinDetector {
     if (armedNow || rearmedNow) {
       armedPeer = self.toString();
       // Outside the monitor: the readiness probe reads it, and must not wait on a SYNC write.
+      // Also deletes the hold marker, once the armed state it hands over to is on disk (issue #8465).
       persist();
-      if (armedNow)
-        persistHold();
     }
     return armedNow || rearmedNow;
   }
@@ -554,8 +549,8 @@ public final class RuntimeJoinDetector {
   /**
    * Writes the unarmed hold to {@link #holdMarker} while it is open, and deletes the file once every document has been
    * confirmed since the install (issue #8465). Same discipline as {@link #persist()}: a failure is logged, never
-   * thrown, the write goes through a temporary file renamed over the marker, and a caller that lost the race to a
-   * newer state writes nothing.
+   * thrown, the write is atomic, and a caller that lost the race to a newer state writes nothing. On an armed node it
+   * does nothing: {@link #persist()} deletes the marker once the armed state is on disk.
    */
   private void persistHold() {
     if (holdMarker == null)
@@ -574,16 +569,16 @@ public final class RuntimeJoinDetector {
       if (version <= holdPersistedVersion)
         return;
 
-      // An armed node is judged by the armed gate, whose marker carries its own boundary: nothing left to hold here.
-      boolean released = armed;
-      if (!released) {
-        released = true;
-        for (final long c : confirmed)
-          if (c < installIndex) {
-            released = false;
-            break;
-          }
-      }
+      // An armed node is judged by the armed gate: persist() deletes this marker once the runtime-join marker that
+      // replaces it is on disk, so a failed write of that one never leaves a restart neither armed nor held.
+      if (armed)
+        return;
+      boolean released = true;
+      for (final long c : confirmed)
+        if (c < installIndex) {
+          released = false;
+          break;
+        }
 
       try {
         if (released) {
@@ -593,7 +588,7 @@ public final class RuntimeJoinDetector {
           content.append(HOLD_INSTALL_INDEX_KEY).append('=').append(installIndex).append('\n');
           for (int i = 0; i < CONFIRMED_KEYS.length; i++)
             content.append(CONFIRMED_KEYS[i]).append('=').append(confirmed[i]).append('\n');
-          writeAtomically(holdMarker, content);
+          FileUtils.atomicWriteFile(holdMarker, content.toString());
         }
         holdPersistedVersion = version;
       } catch (final IOException | RuntimeException e) {
@@ -646,16 +641,7 @@ public final class RuntimeJoinDetector {
             + "(arcadedb.ha.securityConvergenceReadinessTimeout)", installIndex, holdMarker.getAbsolutePath());
   }
 
-  /** Writes {@code content} to a temporary file with {@code SYNC} and renames it over {@code target}. */
-  private static void writeAtomically(final File target, final CharSequence content) throws IOException {
-    final File parent = target.getAbsoluteFile().getParentFile();
-    if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
-      throw new IOException("cannot create directory " + parent);
-    final File temp = new File(target.getAbsolutePath() + ".tmp");
-    Files.writeString(temp.toPath(), content, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-        StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, StandardOpenOption.SYNC);
-    Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-  }
+
 
   /** The names {@link #securityDocumentsNotInstalledSinceJoin()} reports, all of them. */
   public static List<String> allSecurityDocumentNames() {
@@ -676,10 +662,9 @@ public final class RuntimeJoinDetector {
    * thrown: this runs on a Ratis callback thread, and the in-memory state stays in place for the rest of the process
    * either way.
    * <p>
-   * The content goes to a temporary file written with {@code SYNC} and is then renamed over the marker, so a restart
-   * reads either the previous marker or the new one, never a torn one. The parent directory is not fsynced, so an OS
-   * crash in the instant after a write can lose it; the restart then reads the previous marker, or none, which is
-   * the behaviour before issue #8329.
+   * Written through {@link FileUtils#atomicWriteFile(File, String)}: a synced temporary file renamed over the marker,
+   * with the parent directory synced after the rename, so a restart - even after an OS crash - reads either the
+   * previous marker or the new one, never a torn one.
    */
   private void persist() {
     if (marker == null)
@@ -705,8 +690,11 @@ public final class RuntimeJoinDetector {
         content.append(INSTALLED_KEYS[i]).append('=').append(installed[i]).append('\n');
 
       try {
-        writeAtomically(marker, content);
+        FileUtils.atomicWriteFile(marker, content.toString());
         persistedVersion = version;
+        // The armed state is on disk: an unarmed hold left from before the arm no longer describes this node.
+        if (holdMarker != null)
+          Files.deleteIfExists(holdMarker.toPath());
       } catch (final IOException | RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Could not persist the runtime-join marker %s: a restart after the Raft log is compacted past the entry "

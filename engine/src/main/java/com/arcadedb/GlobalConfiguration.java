@@ -2131,7 +2131,7 @@ public enum GlobalConfiguration {
       install from the leader, which carries no security document, until the leader confirms its copies or \
       seeds them (issue #8432), a hold that survives a restart until that confirmation arrives (issue #8465). \
       A node that leads is never held, since nobody can confirm its copies while it leads: it is held again, \
-      with a fresh window, once it steps down. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
+      with a fresh window, once it steps down - unless its window had already expired, which stays final. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
       purpose: when the window expires the node reports READY and logs, once, at SEVERE, exactly which documents \
       never converged, so a scale-up or a rolling restart cannot stall behind a seed nobody is going to send. 0 \
       disables the wait entirely.""",

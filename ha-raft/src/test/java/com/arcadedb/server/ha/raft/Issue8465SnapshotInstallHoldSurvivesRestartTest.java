@@ -146,6 +146,26 @@ class Issue8465SnapshotInstallHoldSurvivesRestartTest {
     assertThat(holdMarker()).doesNotExist();
   }
 
+  /**
+   * Review of PR #8477: when the runtime-join marker cannot be written at the moment the node arms, the hold marker is
+   * kept, so a restart comes back held rather than neither armed nor held.
+   */
+  @Test
+  void aFailedJoinMarkerWriteKeepsTheHoldMarker() throws Exception {
+    final File notADirectory = new File(tempDir, "not-a-directory");
+    Files.writeString(notADirectory.toPath(), "x");
+    final RuntimeJoinDetector detector = new RuntimeJoinDetector(new File(notADirectory, "join"), holdMarker(), true);
+    detector.onConfiguration(SELF, peers("arcadedb-0", "arcadedb-1", "arcadedb-2", "arcadedb-3"), List.of(), 1);
+    detector.onSnapshotInstalledFromLeader(SNAPSHOT_INDEX);
+    assertThat(holdMarker()).exists();
+
+    detector.onConfiguration(SELF, peers("arcadedb-0", "arcadedb-1", "arcadedb-2", "arcadedb-3", "arcadedb-4"),
+        peers("arcadedb-0", "arcadedb-1", "arcadedb-2", "arcadedb-4"), SNAPSHOT_INDEX + 10);
+
+    assertThat(detector.hasJoinedAtRuntime()).isTrue();
+    assertThat(holdMarker()).as("the join marker never reached the disk").exists();
+  }
+
   /** An unreadable hold marker restores nothing: the node behaves as before issue #8465 rather than failing. */
   @Test
   void aCorruptHoldMarkerRestoresNothing() throws Exception {
