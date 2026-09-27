@@ -75,7 +75,7 @@ class Issue8491LeaderReplacingDatabaseHandsOffIT extends BaseRaftHATest {
     // Park the resync once its copy is downloaded, before the swap: the install is in flight from here until release.
     final CountDownLatch staged = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
-    SnapshotInstaller.snapshotStagedForTesting = db -> {
+    SnapshotInstaller.snapshotStagedForTesting = dbName -> {
       staged.countDown();
       try {
         release.await(60, TimeUnit.SECONDS);
