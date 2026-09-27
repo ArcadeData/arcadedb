@@ -130,6 +130,22 @@ class Issue8465SnapshotInstallHoldSurvivesRestartTest {
     assertThat(joinMarker()).exists();
   }
 
+  /**
+   * A crash between arming and deleting the hold marker leaves both markers on disk (review of PR #8477): the restart is
+   * armed, and the stale hold marker is dropped rather than leaked for good.
+   */
+  @Test
+  void aHoldMarkerLeftBesideAJoinMarkerIsDroppedOnRestart() throws Exception {
+    staticMember(true).onSnapshotInstalledFromLeader(SNAPSHOT_INDEX);
+    Files.writeString(joinMarker().toPath(), "peer=arcadedb-3\njoinIndex=10\n");
+
+    final RuntimeJoinDetector after = new RuntimeJoinDetector(joinMarker(), holdMarker(), true);
+
+    assertThat(after.hasJoinedAtRuntime()).isTrue();
+    assertThat(after.lastSnapshotInstallIndex()).isEqualTo(-1L);
+    assertThat(holdMarker()).doesNotExist();
+  }
+
   /** An unreadable hold marker restores nothing: the node behaves as before issue #8465 rather than failing. */
   @Test
   void aCorruptHoldMarkerRestoresNothing() throws Exception {

@@ -87,6 +87,24 @@ class Issue8465LeaderSecurityConvergenceGateTest {
     assertThat(controlPlane.notReadyReason()).as("stepped down: a fresh window, not an expired one").isNotNull();
   }
 
+  /**
+   * A window that already gave up stays given up (review of PR #8477): a node that has reported READY since its give-up
+   * must not be pulled out of the Service for a new window just because it later led an election and stepped down.
+   */
+  @Test
+  void aWindowThatGaveUpIsNotRestartedByALeadershipSpell() throws InterruptedException {
+    final HAServerPlugin ha = staticMemberHa("users");
+    when(ha.isLeader()).thenReturn(false, false, true, false);
+    final ServerControlPlane controlPlane = new ServerControlPlane(
+        onlineServerWith(ha, fingerprintsMissing(), configurationWith(1L)));
+
+    assertThat(controlPlane.notReadyReason()).as("a follower: the window opens").isNotNull();
+    Thread.sleep(5L);
+    assertThat(controlPlane.notReadyReason()).as("the window expired: gave up, READY").isNull();
+    assertThat(controlPlane.notReadyReason()).as("leading").isNull();
+    assertThat(controlPlane.notReadyReason()).as("stepped down: still READY, not a fresh window").isNull();
+  }
+
   /** The same holds for an armed runtime joiner that leads (#8353): nobody can seed or confirm it either. */
   @Test
   void anArmedJoinerThatLeadsIsNotHeldEither() {

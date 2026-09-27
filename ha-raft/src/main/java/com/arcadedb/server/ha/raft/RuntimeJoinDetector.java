@@ -252,6 +252,17 @@ public final class RuntimeJoinDetector {
     if (restore) {
       joinedAtRuntime = true;
       restoreIndexes(marker);
+      // A crash between arming and deleting the hold marker leaves both on disk (issue #8465). The armed gate is the
+      // one that reads this node, and nothing would delete the hold marker later, so it is dropped here.
+      if (holdMarker != null && holdMarker.exists()) {
+        synchronized (this) {
+          snapshotInstallIndex = NO_INDEX;
+          Arrays.fill(installedSinceSnapshot, NO_INDEX);
+        }
+        if (!holdMarker.delete())
+          LogManager.instance().log(this, Level.WARNING, "Could not delete the stale snapshot-install hold marker %s",
+              holdMarker.getAbsolutePath());
+      }
       LogManager.instance().log(this, Level.INFO,
           "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the cluster "
               + "security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",

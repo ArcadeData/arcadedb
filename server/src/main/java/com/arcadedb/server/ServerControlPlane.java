@@ -509,11 +509,11 @@ public class ServerControlPlane {
    * <b>A static member caught up by snapshot install is held too, without being armed (issue #8432).</b> Removed
    * while down, re-added and caught up past the leader's compaction point, it never observes the re-add, so the
    * runtime-join event above never happens for it, while no snapshot carries the security documents. On an unarmed
-   * node that installed a snapshot from the leader and has not had its documents confirmed since - in this process or,
-   * through the hold marker, a previous one (issue #8465) - ({@link HAServerPlugin#getLastSnapshotInstallIndex()}), the gate waits for
-   * {@link HAServerPlugin#securityDocumentsNotConfirmedSinceSnapshotInstall()}: the leader-confirmed match the
-   * install asks for, or the seed a mismatch triggers. The fingerprints are not consulted there, and the same bounded
-   * window applies, keyed by the install index the way an armed node's is keyed by its join index.
+   * node that installed a snapshot from the leader ({@link HAServerPlugin#getLastSnapshotInstallIndex()}) and has not
+   * had its documents confirmed since - in this process or, through the hold marker, a previous one (issue #8465) -
+   * the gate waits for {@link HAServerPlugin#securityDocumentsNotConfirmedSinceSnapshotInstall()}: the leader-confirmed
+   * match the install asks for, or the seed a mismatch triggers. The fingerprints are not consulted there, and the
+   * same bounded window applies, keyed by the install index the way an armed node's is keyed by its join index.
    * <p>
    * <b>A leader is not held (issue #8465).</b> Every piece of evidence that releases the gate comes from a leader
    * that is not this node: the seed it submits, a later change it replicates, or the match it answers to
@@ -596,8 +596,11 @@ public class ServerControlPlane {
 
     if (leading) {
       // Nobody can confirm a leader's documents (issue #8465): time spent leading is not time spent waiting, so the
-      // window restarts, and a step-down is held for a full one while its catch-up asks the new leader.
-      securityConvergenceWindowOpenedAt = 0L;
+      // window restarts, and a step-down is held for a full one while its catch-up asks the new leader. A window that
+      // already gave up stays given up: its give-up is the bound's final answer for this join, and restarting it would
+      // pull a node that has been READY for hours out of the Service because it once led an election.
+      if (!securityConvergenceGiveUpLogged)
+        securityConvergenceWindowOpenedAt = 0L;
       if (securityConvergenceLeaderLoggedFor != joinIndex) {
         securityConvergenceLeaderLoggedFor = joinIndex;
         LogManager.instance().log(this, Level.WARNING,

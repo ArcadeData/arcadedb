@@ -233,11 +233,11 @@ class BootstrapElection {
       // elected source's own pass skips and no baseline is ever committed. The common case, where the leader is the
       // source, costs only the collection itself: its conclusion below releases every database it did not commit a
       // baseline for, and the apply of each baseline it did commit releases that one.
-      final ArcadeStateMachine stateMachine = haServer.getStateMachine();
-      if (stateMachine != null)
-        stateMachine.announceBootstrapPass(passId, pending,
-            2L * configuration.getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
+      holdOwnCopies(passId, pending);
       final Map<String, List<PeerState>> states = collectStates(pending, passId);
+      // Renewed again before the decision, so the deadline runs from here rather than from the start of a collection
+      // that may have used most of it: the hold must outlast source selection and the commit that follows.
+      holdOwnCopies(passId, pending);
       outcome = decideAndAct(states, passId, committed);
       return outcome;
     } catch (final Throwable t) {
@@ -252,6 +252,18 @@ class BootstrapElection {
       if (outcome != Outcome.TRANSFERRED)
         concludePass(passId, committed);
     }
+  }
+
+  /**
+   * Holds this node's own copies of {@code dbNames} for pass {@code passId} (issue #8409), or renews the hold with a
+   * fresh deadline of twice {@code arcadedb.ha.bootstrapTimeoutMs}. Renewal is bounded by the pass itself: it runs at
+   * most three times, at the start, after the local fingerprints and before the decision.
+   */
+  private void holdOwnCopies(final String passId, final Collection<String> dbNames) {
+    final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+    if (stateMachine != null)
+      stateMachine.announceBootstrapPass(passId, dbNames,
+          2L * server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
   }
 
   /**
@@ -427,6 +439,9 @@ class BootstrapElection {
 
     // Self state computed locally to avoid a self-loop HTTP call.
     final Map<String, PeerState> selfStates = computeLocalStates(localId, dbFilter);
+    // Fingerprinting reads every file of every database and has no time bound of its own: renew this node's hold
+    // (issue #8409) so it cannot lapse there, and the remote collection below starts with a full deadline.
+    holdOwnCopies(passId, dbNames);
 
     // Collect every other peer's state, retrying transient probe failures (401/403/5xx/unreachable)
     // within the overall bootstrap-timeout budget instead of treating the first failure as a
