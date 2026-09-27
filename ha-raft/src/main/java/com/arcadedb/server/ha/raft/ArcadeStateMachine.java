@@ -447,7 +447,30 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code INSTALL_DATABASE_ENTRY} and a mismatched bootstrap baseline) while it already holds the lock. Never
    * removed: one small lock per database name this node has ever applied an entry for.
    */
-  private final ConcurrentHashMap<String, ReentrantLock> installApplyGates = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, InstallApplyGate> installApplyGates = new ConcurrentHashMap<>();
+
+  /**
+   * A database's install lock (issue #7958), which also remembers the highest Raft index the apply thread applied to
+   * that database while holding it (issue #8454).
+   * <p>
+   * The index is recorded BEFORE the lock is released, which is what an install needs: it takes the lock and reads
+   * the index, and has to see every entry that went to the copy it is about to replace. {@code lastAppliedIndex} is
+   * not enough on its own, because {@code applyTransaction} advances it only after it has released the lock, so an
+   * install that takes the lock in that gap would read the index of the entry BEFORE the one just applied.
+   */
+  static final class InstallApplyGate extends ReentrantLock {
+    private volatile long appliedUnderGate = -1L;
+
+    /** Called by the apply thread, holding this lock, for every entry it applied (or tried to) to the database. */
+    void recordApplied(final long index) {
+      if (index > appliedUnderGate)
+        appliedUnderGate = index;
+    }
+
+    long appliedUnderGate() {
+      return appliedUnderGate;
+    }
+  }
 
   /**
    * Test-only hook called with the database name when the apply thread finds that database's install lock held and
@@ -1200,7 +1223,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final boolean[] securitySuperseded = new boolean[1];
 
       // Not applied to a copy an install is replacing (issue #7958): see installApplyGates.
-      final ReentrantLock installGate = enterInstallApplyGate(decoded.databaseName(), index);
+      final InstallApplyGate installGate = enterInstallApplyGate(decoded.databaseName(), index);
       try {
         applyWithRetry(index, decoded.databaseName(), () -> {
           securitySuperseded[0] = false;
@@ -1216,8 +1239,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           }
         });
       } finally {
-        if (installGate != null)
+        if (installGate != null) {
+          // Recorded even when the apply failed: the floor an install derives from it can only be too high, which
+          // costs a retry, never too low, which would cost the entry (issue #8454).
+          installGate.recordApplied(index);
           installGate.unlock();
+        }
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -4261,10 +4288,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * as long as the install runs, and the entry waits for the installed copy rather than going to the one being
    * replaced - logged once per wait, so a replication pause while a snapshot downloads has a line that explains it.
    */
-  private ReentrantLock enterInstallApplyGate(final String dbName, final long index) {
+  private InstallApplyGate enterInstallApplyGate(final String dbName, final long index) {
     if (dbName == null)
       return null;
-    final ReentrantLock gate = installApplyGate(dbName);
+    final InstallApplyGate gate = installApplyGate(dbName);
     if (!gate.tryLock()) {
       LogManager.instance().log(this, Level.INFO,
           "Applying entry %d for database '%s' waits for the snapshot install replacing this node's copy of it: the "
@@ -4282,14 +4309,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * that may have the apply thread waiting on it, so it must not wait on the apply thread in turn.
    */
   boolean isHoldingInstallApplyGate() {
-    for (final ReentrantLock gate : installApplyGates.values())
+    for (final InstallApplyGate gate : installApplyGates.values())
       if (gate.isHeldByCurrentThread())
         return true;
     return false;
   }
 
-  private ReentrantLock installApplyGate(final String dbName) {
-    return installApplyGates.computeIfAbsent(dbName, name -> new ReentrantLock());
+  private InstallApplyGate installApplyGate(final String dbName) {
+    return installApplyGates.computeIfAbsent(dbName, name -> new InstallApplyGate());
   }
 
   /**
@@ -4331,13 +4358,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final RaftHAServer raftHA = this.raftHAServer;
     if (raftHA != null)
       raftHA.compactRaftLogBeforeSnapshotInstall(dbName);
-    final ReentrantLock gate = installApplyGate(dbName);
+    final InstallApplyGate gate = installApplyGate(dbName);
     gate.lock();
     try {
-      install.run();
+      // The lock excludes the entries this node would apply AFTER it asked for the leader's copy; it says nothing
+      // about the ones it applied BEFORE, which the copy has to carry because nothing will apply them again. The
+      // leader publishes an entry's pages on its own apply thread, so it can serve a copy that is still behind an
+      // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
+      // entry up to this floor went to the copy being replaced.
+      final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
+      SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
     } finally {
       gate.unlock();
     }
+  }
+
+  /**
+   * The applied index a snapshot this node serves is at least as current as (issue #8454): every entry up to it has
+   * been applied here, its pages published, before this is read, so a copy captured after the read carries them.
+   * Sent to the installing follower as {@link SnapshotManager#APPLIED_INDEX_HEADER}.
+   */
+  long appliedIndexForServedSnapshot() {
+    return lastAppliedIndex.get();
   }
 
   /** {@link #installLeaderCopy(String, Supplier, Supplier, String)} with addresses resolved once, by the caller. */

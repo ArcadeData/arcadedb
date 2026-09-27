@@ -85,6 +85,13 @@ public final class SnapshotManager {
    * space left on device} halfway through the extraction. A leader predating #7037 omits it and the check is skipped.
    */
   public static final String UNCOMPRESSED_BYTES_HEADER = "X-ArcadeDB-Snapshot-Uncompressed-Bytes";
+  /**
+   * Response header carrying the serving node's Raft applied index, read before the snapshot is captured (issue
+   * #8454): the served copy carries every entry up to it. A follower refuses, and asks again, a copy whose index is
+   * below the entries it has already applied to the copy it is replacing. A node predating #8454, or one serving
+   * without Raft, omits it and the check is skipped.
+   */
+  public static final String APPLIED_INDEX_HEADER = "X-ArcadeDB-Snapshot-Applied-Index";
 
   /**
    * One file recorded in a snapshot manifest: the entry name, its uncompressed byte size and its CRC32.

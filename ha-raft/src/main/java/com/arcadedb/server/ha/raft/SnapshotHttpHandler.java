@@ -34,6 +34,7 @@ import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
@@ -338,6 +339,11 @@ public class SnapshotHttpHandler implements HttpHandler {
       // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
       // requires it and rejects a download truncated at a ZIP-entry boundary.
       exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
+      // Read BEFORE the capture below, so every entry up to it is in the copy (issue #8454): the follower refuses a
+      // copy behind the entries it already applied to the one it is replacing.
+      final long appliedIndex = servedAppliedIndex(server);
+      if (appliedIndex != Long.MIN_VALUE)
+        exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
       exchange.startBlocking();
 
       // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
@@ -354,6 +360,20 @@ public class SnapshotHttpHandler implements HttpHandler {
     } finally {
       concurrencySemaphore.release();
     }
+  }
+
+  /**
+   * The Raft applied index of the node serving the snapshot (issue #8454), or {@link Long#MIN_VALUE} when it runs no
+   * Raft state machine and there is nothing to report. {@code -1} is a real answer - nothing applied yet - and is sent.
+   */
+  static long servedAppliedIndex(final ArcadeDBServer server) {
+    if (server != null && server.getHA() instanceof RaftHAPlugin plugin) {
+      final RaftHAServer raft = plugin.getRaftHAServer();
+      final ArcadeStateMachine stateMachine = raft != null ? raft.getStateMachine() : null;
+      if (stateMachine != null)
+        return stateMachine.appliedIndexForServedSnapshot();
+    }
+    return Long.MIN_VALUE;
   }
 
   /**

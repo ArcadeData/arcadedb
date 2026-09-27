@@ -155,6 +155,28 @@ public final class SnapshotInstaller {
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   /**
+   * The lowest Raft applied index a snapshot this thread downloads may be served at (issue #8454), or {@code -1}
+   * for no floor. Set by {@link #runRequiringSourceAppliedIndex} for the length of one install, which runs its
+   * download on the calling thread.
+   * <p>
+   * A thread-local rather than a parameter because the floor belongs to the install lock the caller holds
+   * ({@code ArcadeStateMachine.runUnderInstallGate}), and every install that lock guards reaches the download
+   * through a different chain of {@link #install} and {@link #acquireNewDatabase} overloads - the reconciler's
+   * three among them. Setting it where the lock is taken covers all of them at once, and an install that takes no
+   * lock gets no floor, which is exactly what it got before.
+   */
+  private static final ThreadLocal<Long> REQUIRED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
+
+  /** Logged at most once: a leader predating issue #8454 cannot say how current its copy is. */
+  private static final AtomicBoolean APPLIED_INDEX_HEADER_MISSING_WARNED = new AtomicBoolean(false);
+
+  /**
+   * Test-only hook called with the database name when a download is refused because the leader's copy is behind the
+   * entries this node already applied (issue #8454). {@code null} in production.
+   */
+  static volatile Consumer<String> sourceBehindForTesting = null;
+
+  /**
    * Absolute database directory paths with installs currently in flight, and how many. The lifecycle assumes
    * installs for a given database never overlap (see {@link #closeLocalDatabaseIfOpen}); registering here turns
    * a violation of that assumption from a silent double-close into a logged WARNING so it is diagnosable after
@@ -1678,6 +1700,10 @@ public final class SnapshotInstaller {
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
+      // Before anything else about the body: a copy behind what this node already applied is not worth reading.
+      checkSourceAppliedIndex(databaseName, connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER),
+          requiredSourceAppliedIndex());
+
       // A leader on issue #4831 or later advertises a completeness manifest via this header; when present
       // the manifest becomes mandatory, so a truncated download (manifest dropped) fails loudly. A leader
       // predating #4831 omits the header, and the follower keeps the legacy "ZipInputStream reached EOF"
@@ -1716,6 +1742,68 @@ public final class SnapshotInstaller {
   private static void purgeRaftLogBeforeInstall(final String databaseName, final ArcadeDBServer server) {
     if (server != null && server.getHA() instanceof RaftHAPlugin plugin && plugin.getRaftHAServer() != null)
       plugin.getRaftHAServer().compactRaftLogBeforeSnapshotInstall(databaseName);
+  }
+
+  /**
+   * Runs {@code install} with {@code floor} as the lowest applied index a snapshot it downloads may be served at
+   * (issue #8454). Restores the previous floor afterwards, because the apply thread installs reentrantly.
+   */
+  static void runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
+      throws IOException {
+    final Long previous = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    REQUIRED_SOURCE_APPLIED_INDEX.set(floor);
+    try {
+      install.run();
+    } finally {
+      if (previous == null)
+        REQUIRED_SOURCE_APPLIED_INDEX.remove();
+      else
+        REQUIRED_SOURCE_APPLIED_INDEX.set(previous);
+    }
+  }
+
+  /** The floor {@link #runRequiringSourceAppliedIndex} set on this thread, or {@code -1} when there is none. */
+  static long requiredSourceAppliedIndex() {
+    final Long floor = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    return floor != null ? floor : -1L;
+  }
+
+  /**
+   * Refuses a snapshot served at an applied index below {@code floor} (issue #8454), before a byte of its body is
+   * read. This node applied every entry up to {@code floor} to the copy the install is about to replace, and nothing
+   * applies them again once the swap is done, so a copy that lacks one of them loses it on this node for good - the
+   * #7958 divergence, reached from the leader's side instead of this one's. The leader publishes an entry's pages on
+   * its own apply thread, which can trail this node's. The refusal is an {@link IOException}, so the download is
+   * retried with backoff, which gives that apply thread time to catch up.
+   * <p>
+   * An absent or malformed header is accepted: a leader predating #8454 during a rolling upgrade cannot say, and
+   * refusing every copy it serves would fail every install until the upgrade is done.
+   */
+  static void checkSourceAppliedIndex(final String databaseName, final String header, final long floor)
+      throws IOException {
+    if (floor < 0)
+      return;
+    final long served;
+    try {
+      served = header == null || header.isBlank() ? Long.MIN_VALUE : Long.parseLong(header.trim());
+    } catch (final NumberFormatException e) {
+      return;
+    }
+    if (served == Long.MIN_VALUE) {
+      if (APPLIED_INDEX_HEADER_MISSING_WARNED.compareAndSet(false, true))
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "The leader serving the snapshot of '%s' does not report its applied index: it cannot be checked to carry "
+                + "every entry this node already applied. Upgrade every node to close this window", null, databaseName);
+      return;
+    }
+    if (served < floor) {
+      final Consumer<String> hook = sourceBehindForTesting;
+      if (hook != null)
+        hook.accept(databaseName);
+      throw new IOException("The leader's snapshot of '" + databaseName + "' was served at applied index " + served
+          + ", behind index " + floor + " this node already applied to the copy it would replace: refusing it so "
+          + "those entries are not lost, and asking again once the leader has applied them");
+    }
   }
 
   /** Parses the {@link SnapshotManager#UNCOMPRESSED_BYTES_HEADER} value; absent or malformed reads as unknown ({@code -1}). */
