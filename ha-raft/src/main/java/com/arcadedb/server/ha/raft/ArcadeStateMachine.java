@@ -471,10 +471,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * with the leader's calls (the same paths that clear the #6124 unreconciled mark), and by the DROP of the
    * database. Re-driven by {@link #retryPendingBootstrapReplacements()} on the {@link HealthMonitor} tick.
    * <p>
-   * In memory on purpose, NOT the durable {@link #bootstrapUnreconciledDatabases}: that set means "this node kept a
-   * FRESHER copy and an operator must choose a side" and is published as a CRITICAL with a drastic remedy, which
-   * misdiagnoses the ordinary "no leader yet" failure (PR #7964). Never populated by the #6124 "local is fresher,
-   * refuse to overwrite" branch either, which returns before any install is attempted.
+   * Deliberately NOT the {@link #bootstrapUnreconciledDatabases} mark: that set means "this node kept a FRESHER copy
+   * and an operator must choose a side" and is published as a CRITICAL with a drastic remedy, which misdiagnoses the
+   * ordinary "no leader yet" failure (PR #7964). Never populated by the #6124 "local is fresher, refuse to overwrite"
+   * branch either, which returns before any install is attempted.
+   * <p>
+   * <b>Durable</b> (issue #8411), as its own {@code pendingReplacement} flag of the database's entry in
+   * {@code .raft/bootstrap-baselines}, next to - and independent of - the {@code unreconciled} one. Kept in memory
+   * only, a restart before the replacement landed lost it for good: {@code applyTransaction} has already persisted
+   * the baseline entry's index as applied, so its replay is skipped for a registered database, and once a Ratis
+   * snapshot is taken past it the entry is not replayed at all. The node came back serving the copy the committed
+   * baseline rejected, in the Service and with nothing retrying the replacement. The loader restores the name
+   * together with the one readiness holder it owns, so the node comes back out of the Service and the health tick
+   * goes on retrying. Every add and every removal goes through {@link #bootstrapBaselinesFileLock} and rewrites the
+   * file.
    */
   private final Set<String> bootstrapReplacementsPending = ConcurrentHashMap.newKeySet();
 
@@ -770,6 +780,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // checkpoints again.
     pruneSnapshotMarkersAtStartup();
     reinitialize();
+    // Eagerly, not on first use: a bootstrap replacement left pending by the previous session must hold readiness and
+    // the request gate from the first request on, not from whichever read happens to load the file (issue #8411).
+    ensureBootstrapBaselinesLoaded();
     // Recover any snapshot installations that were interrupted by a crash
     if (server != null) {
       final String dbDir = server.getConfiguration().getValueAsString(
@@ -4116,7 +4129,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // The holder goes to the pending-replacement set rather than to the retry (issue #8367): it is released
         // when this node's copy is actually replaced, not when one retry happens to end. A name already pending
         // (a replay of the same entry) already owns its holder, so this one is released in the finally below.
-        holderHandedOver = bootstrapReplacementsPending.add(dbName);
+        holderHandedOver = markBootstrapReplacementPending(dbName);
       }
 
       // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
@@ -4414,14 +4427,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Arms a pending bootstrap replacement of {@code dbName} and durably records it (issue #8411), under
+   * {@link #bootstrapBaselinesFileLock} so the set and the file change together. Returns whether this call armed it,
+   * i.e. whether the caller's readiness holder now belongs to the pending replacement: a name already pending (a
+   * replay of the same entry, or one restored from the file) already owns its holder.
+   */
+  private boolean markBootstrapReplacementPending(final String dbName) {
+    synchronized (bootstrapBaselinesFileLock) {
+      ensureBootstrapBaselinesLoaded();
+      if (!bootstrapReplacementsPending.add(dbName))
+        return false;
+      persistBootstrapBaselinesFile();
+      return true;
+    }
+  }
+
+  /**
    * Retires a pending bootstrap replacement of {@code dbName} and releases the readiness holder it owns (issue
    * #8367). Called from every path that actually replaces this node's copy with the leader's, and from the DROP of
    * the database. The removal from the set is the ownership test, so the holder is released exactly once however
    * many of those paths race; a database with nothing pending costs one read of an empty set.
    */
   private void settleBootstrapReplacement(final String dbName) {
-    if (bootstrapReplacementsPending.isEmpty() || !bootstrapReplacementsPending.remove(dbName))
+    // Loaded first: a replacement pending from before a restart is not in the set until the file is read, and a path
+    // that replaced the copy before anything else read it would otherwise leave the flag on disk for the loader to
+    // re-arm afterwards (issue #8411).
+    ensureBootstrapBaselinesLoaded();
+    if (bootstrapReplacementsPending.isEmpty())
       return;
+    synchronized (bootstrapBaselinesFileLock) {
+      if (!bootstrapReplacementsPending.remove(dbName))
+        return;
+      persistBootstrapBaselinesFile();
+    }
     endBootstrapInstall(dbName);
     LogManager.instance().log(this, Level.INFO,
         "Database '%s' now carries the leader's copy: the pending bootstrap replacement is complete", dbName);
@@ -4429,6 +4467,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /** {@link #settleBootstrapReplacement} for every pending name not in {@code notReplaced}, for the full installs. */
   private void settleBootstrapReplacementsExcept(final Set<String> notReplaced) {
+    ensureBootstrapBaselinesLoaded();
     if (bootstrapReplacementsPending.isEmpty())
       return;
     for (final String dbName : new ArrayList<>(bootstrapReplacementsPending))
@@ -4442,6 +4481,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * holder in {@link #getBootstrapInstallsInFlight()}.
    */
   List<String> getPendingBootstrapReplacements() {
+    ensureBootstrapBaselinesLoaded();
     if (bootstrapReplacementsPending.isEmpty())
       return Collections.emptyList();
     final List<String> names = new ArrayList<>(bootstrapReplacementsPending);
@@ -4470,6 +4510,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the one the baseline rejected - and says so once per window, naming the leadership transfer that unblocks it.
    */
   public void retryPendingBootstrapReplacements() {
+    ensureBootstrapBaselinesLoaded();
     if (bootstrapReplacementsPending.isEmpty())
       return;
     final RaftHAServer raftHA = this.raftHAServer;
@@ -4549,6 +4590,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Asked on every client request, so the common answer - nothing in flight at all - costs one map read.
    */
   public boolean isBootstrapInstallInFlight(final String dbName) {
+    // One volatile read once loaded; restores a replacement left pending before a restart (issue #8411).
+    ensureBootstrapBaselinesLoaded();
     return !bootstrapInstallsInFlight.isEmpty() && bootstrapInstallsInFlight.containsKey(dbName);
   }
 
@@ -4562,6 +4605,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * nothing about it.
    */
   List<String> getBootstrapInstallsInFlight() {
+    ensureBootstrapBaselinesLoaded();
     // The overwhelmingly common answer, and this is on the readiness-probe path: allocate nothing for it.
     if (bootstrapInstallsInFlight.isEmpty())
       return Collections.emptyList();
@@ -6004,6 +6048,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
               // alone without dropping a mark on the floor.
               if (entry.getBoolean("unreconciled", false))
                 bootstrapUnreconciledDatabases.add(name);
+              // The pending bootstrap replacement (issue #8411), restored with the readiness holder it owns, so a
+              // node restarted before the replacement landed does not come back serving the copy the committed
+              // baseline rejected. Absent in files written before #8411, which read as "nothing pending".
+              if (entry.getBoolean("pendingReplacement", false) && bootstrapReplacementsPending.add(name)) {
+                beginBootstrapInstall(name);
+                LogManager.instance().log(this, Level.WARNING,
+                    "Database '%s' is still waiting to be replaced by the leader's copy the cluster's bootstrap baseline "
+                        + "chose (recorded before the restart). This node keeps it out of the Service and refuses client "
+                        + "requests on it until it is; the periodic health check retries the install once a leader is "
+                        + "reachable. To force it, run POST /api/v1/cluster/resync/%s on this node.", name, name);
+              }
             }
           }
         }
@@ -6119,11 +6174,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // issue #6124 and an older build reading it simply ignores the extra key.
         if (bootstrapUnreconciledDatabases.contains(e.getKey()))
           entry.put("unreconciled", true);
+        // Same rule for the pending bootstrap replacement (issue #8411): written only while one is pending.
+        if (bootstrapReplacementsPending.contains(e.getKey()))
+          entry.put("pendingReplacement", true);
         json.put(e.getKey(), entry);
       }
       // Iterating the baselines alone is sufficient for the marks too: a mark is only ever added right
       // after its baseline was recorded, and the loader refuses one on an entry that carries no
       // fingerprint, so a marked database without a baseline cannot exist in memory to be missed here.
+      // The pending replacement follows the same rule: it is only armed by the bootstrap-mismatch arm of
+      // applyBootstrapFingerprintEntry, which records the baseline first, and a DROP evicts both together.
       FileUtils.atomicWriteFile(file.toFile(), json.toString());
     } catch (final Exception e) {
       // WARNING, not FINE: unlike the applied-index file (whose loss merely re-runs an idempotent
