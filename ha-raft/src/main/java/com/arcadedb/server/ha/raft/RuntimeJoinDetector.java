@@ -239,38 +239,31 @@ public final class RuntimeJoinDetector {
   public RuntimeJoinDetector(final File marker, final File holdMarker, final boolean restore) {
     this.marker = marker;
     this.holdMarker = holdMarker;
-    if (holdMarker != null && holdMarker.exists()) {
-      if (restore)
-        restoreHold(holdMarker);
-      else if (!holdMarker.delete())
-        LogManager.instance().log(this, Level.WARNING, "Could not delete the stale snapshot-install hold marker %s",
-            holdMarker.getAbsolutePath());
+    if (marker != null && marker.exists()) {
+      if (restore) {
+        joinedAtRuntime = true;
+        restoreIndexes(marker);
+        LogManager.instance().log(this, Level.INFO,
+            "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the "
+                + "cluster security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
+            marker.getAbsolutePath());
+      } else if (!marker.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete the stale runtime-join marker %s",
+            marker.getAbsolutePath());
     }
-    if (marker == null || !marker.exists())
-      return;
 
-    if (restore) {
-      joinedAtRuntime = true;
-      restoreIndexes(marker);
-      // A crash between arming and deleting the hold marker leaves both on disk (issue #8465). The armed gate is the
-      // one that reads this node, and nothing would delete the hold marker later, so it is dropped here.
-      if (holdMarker != null && holdMarker.exists()) {
-        synchronized (this) {
-          snapshotInstallIndex = NO_INDEX;
-          Arrays.fill(installedSinceSnapshot, NO_INDEX);
-        }
-        if (!holdMarker.delete())
-          LogManager.instance().log(this, Level.WARNING, "Could not delete the stale snapshot-install hold marker %s",
-              holdMarker.getAbsolutePath());
-      }
-      LogManager.instance().log(this, Level.INFO,
-          "This peer joined the Raft configuration at runtime in an earlier run (%s): readiness waits for the cluster "
-              + "security documents to reach it (arcadedb.ha.securityConvergenceReadinessTimeout)",
-          marker.getAbsolutePath());
-    } else if (!marker.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete the stale runtime-join marker %s",
-          marker.getAbsolutePath());
+    if (holdMarker == null || !holdMarker.exists())
+      return;
+    // Restored only on a node that is not armed. An armed node is read by the armed gate, and a hold marker beside its
+    // join marker is what a crash between arming and deleting the hold marker leaves behind (issue #8465): nothing
+    // would delete it later, so it is dropped here.
+    if (restore && !joinedAtRuntime)
+      restoreHold(holdMarker);
+    else if (!holdMarker.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete the stale snapshot-install hold marker %s",
+          holdMarker.getAbsolutePath());
   }
+
 
   /**
    * Called for every configuration this node applies. Never throws and never blocks beyond this instance's own
