@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -82,7 +83,11 @@ final class PeerAuthSessionQuery {
     final HttpRequest request = request(raft, dial, token, "validate", timeoutMs);
     final HttpResponse<String> response;
     try {
-      response = client(raft, request).send(request, HttpResponse.BodyHandlers.ofString());
+      // Bounded by sendBounded rather than by the request timeout alone, which on JDK 21-25 stops at the response
+      // headers: an issuer that stalls inside its body would otherwise park the HTTP worker authenticating the
+      // request with no bound at all (issue #8472).
+      response = LeaderDial.sendBounded(client(raft, request), request, HttpResponse.BodyHandlers.ofString(),
+          timeoutMs);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IOException("interrupted while asking " + issuer + " about an authentication token", e);
