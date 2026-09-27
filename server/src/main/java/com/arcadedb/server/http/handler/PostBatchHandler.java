@@ -2010,11 +2010,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The response deadline (issues #7526/#7542): deliberately arcadedb.ha.proxyBatchReadTimeout rather than
     // arcadedb.ha.proxyReadTimeout, because a bulk load's legitimate duration is a function of the payload the
     // client is still streaming - the same reasoning relaxConnectionReadTimeout above applies to the INCOMING
-    // side of this same load. On the non-streaming path it bounds the wait for the leader's answer. On the
-    // streaming encoding the request timeout covers only the wait for the leader's first response line (send()
-    // below returns as soon as headers arrive), so relayNdJsonFromLeader applies the same budget to every later
-    // wait for the leader's data as well (issue #7738): a leader that stays silent that long is given up on,
-    // however far into the stream it stalls.
+    // side of this same load. On the non-streaming path it bounds the whole exchange, the leader's body included. On
+    // the streaming encoding it bounds the wait for the leader's first response line, and relayNdJsonFromLeader
+    // applies the same budget to every later wait for the leader's data (issue #7738): a leader that stays silent
+    // that long is given up on, however far into the stream it stalls - but one that keeps talking is never cut off.
+    //
+    // Enforced by LeaderDial.sendBounded rather than by the JDK request timeout (issue #8325), whose coverage depends
+    // on the JDK: on 21-25 it stops at the response headers, so a buffered answer whose body stalls half-way was
+    // read with no bound at all; on 26+ it covers the whole body, so on the streaming encoding it became a cap on the
+    // TOTAL length of a load that is working. The streaming request therefore carries no request timeout at all.
     final long configuredBatchTimeout = httpServer.getServer().getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT);
     if (configuredBatchTimeout < LeaderDial.MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
@@ -2029,17 +2033,20 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
         exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null,
-        Duration.ofMillis(deadlineMs), intendedLeaderId);
+        streaming ? null : Duration.ofMillis(deadlineMs), intendedLeaderId);
 
     try {
       if (streaming)
-        // send() returns as soon as the leader's response HEADERS arrive, which on the streaming encoding is at
-        // the leader's first progress line - while the JDK client's own executor thread is still publishing the
-        // relayed upload. That is what keeps the acknowledgements incremental across the hop.
+        // With ofInputStream the send completes as soon as the leader's response HEADERS arrive, which on the
+        // streaming encoding is at the leader's first progress line - while the JDK client's own executor thread is
+        // still publishing the relayed upload. That is what keeps the acknowledgements incremental across the hop,
+        // and why the deadline here bounds the headers only.
         return relayNdJsonFromLeader(exchange, databaseName, url,
-            dial.client().send(request, HttpResponse.BodyHandlers.ofInputStream()), deadlineMs);
+            LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
+            deadlineMs);
 
-      final HttpResponse<String> response = dial.client().send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
+          HttpResponse.BodyHandlers.ofString(), deadlineMs);
 
       // The leader's X-ArcadeDB-Commit-Index bookmark (issue #5862) is not on the relayed-header allow-list of
       // LeaderCommandForwarder, so it is copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
@@ -2136,8 +2143,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * As above, and additionally bounds the wait for the leader's response (issues #7526/#7542): without it a
    * leader that accepts the connection and never answers parks the Undertow worker thread serving
    * {@code POST /api/v1/batch} until the OS tears the socket down. The production forward
-   * ({@link #forwardBatchToLeader}) always supplies one; the shorter overloads above pass {@code null} for
-   * the tests that exercise the request shape without a deadline of their own.
+   * ({@link #forwardBatchToLeader}) supplies one on the buffered encoding only, and bounds the exchange itself through
+   * {@link LeaderDial#sendBounded} on both (issue #8325); the shorter overloads above pass {@code null} for the tests
+   * that exercise the request shape without a deadline of their own.
    *
    * @param timeout the response deadline, or {@code null} for none
    */
@@ -2202,9 +2210,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * before the load started, which is a normal status-carrying error response - is relayed as the buffered
    * answer it is, so the follower never invents a stream the leader did not send.
    * <p>
-   * Every wait for the leader's data is bounded by {@code readTimeoutMs} (issue #7738), the budget the request
-   * timeout already applied to the wait for its first line: a leader that stops sending mid-stream is given up
-   * on, the connection to it is closed, and the client's stream ends without a terminal line.
+   * Every wait for the leader's data is bounded by {@code readTimeoutMs} (issue #7738), the budget the forward
+   * already applied to the wait for its first line: a leader that stops sending mid-stream is given up on, the
+   * connection to it is closed, and the client's stream ends without a terminal line. It is the ONLY bound on the
+   * body, on every JDK (issue #8325): the request carries no timeout that could cap the stream's total length.
    *
    * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
    */

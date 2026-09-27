@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.server.protocol.TermIndex;
 
 import java.io.IOException;
@@ -134,17 +135,22 @@ public final class LeaderDatabaseQuery {
     final HttpRequest request = builder.build();
 
     if (endpoint.https()) {
-      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21+ only; on
-      // JDK 17 (this branch's target) there is no close()/shutdown API at all, so the client's own daemon
-      // selector thread is left to time out on its own. Building one per call is fine for these infrequent paths
-      // (reconcile / opt-in presence); if this ever moves onto a hot path, cache an SSL-configured client instead.
-      final HttpClient client = HttpClient.newBuilder()
+      // A dedicated client carrying the cluster trust context. HttpClient is AutoCloseable on Java 21, so the
+      // selector thread is released after the (rare, opt-in) query rather than leaked. Building one per call is
+      // fine for these infrequent paths (reconcile / opt-in presence); if this ever moves onto a hot path, cache
+      // an SSL-configured client instead.
+      try (final HttpClient client = HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(5))
           .sslContext(SnapshotInstaller.buildSSLContext(server))
-          .build();
-      return parse(client.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
+          .build()) {
+        return parse(LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs),
+            endpoint.url());
+      }
     }
-    return parse(HTTP.send(request, HttpResponse.BodyHandlers.ofString()), endpoint.url());
+    // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
+    // response headers, so a peer that stalled inside its body parked the caller unbounded. The request timeout stays:
+    // on JDK 26+ it covers the same span with the same value, and either one firing is the same HttpTimeoutException.
+    return parse(LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs), endpoint.url());
   }
 
   /**

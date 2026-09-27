@@ -278,17 +278,21 @@ public final class ClusterSecuritySeedQuery {
     if (fingerprints != null)
       body.put("fingerprints", fingerprints);
 
-    final long timeoutMs = reportTimeoutMs(server.getConfiguration());
+    final long timeoutMs = Math.max(reportTimeoutMs(server.getConfiguration()), LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(dial.url(PostSecuritySeedHandler.ROUTE)))
-        .timeout(Duration.ofMillis(Math.max(timeoutMs, LeaderDial.MIN_FORWARD_TIMEOUT_MS)))
+        .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
 
     PeerCredentials.attach(builder, raft.getClusterToken());
 
     try {
-      return parseAnswer(dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString()), dial.address());
+      // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
+      // response headers. It stays on the request: on JDK 26+ it covers the same span with the same value, and either
+      // one firing is the same IOException to the retry loop above.
+      return parseAnswer(LeaderDial.sendBounded(dial.client(), builder.build(), HttpResponse.BodyHandlers.ofString(),
+          timeoutMs), dial.address());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IOException("interrupted while requesting the cluster security seed from the leader", e);
