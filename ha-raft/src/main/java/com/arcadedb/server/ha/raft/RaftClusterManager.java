@@ -433,9 +433,14 @@ class RaftClusterManager {
    * forced an election on a leader that never asked for one, and answered 200 for an effect that landed on a
    * different node. #4809 added the same guard to the no-target {@link #transferLeadership(long)}; this is the
    * path it did not cover. It lives here rather than only in the handlers so no future caller can bypass it.
+   * <p>
+   * A failed call is settled, not sampled (issue #8487): the method waits, within {@code timeoutMs} (never less than
+   * {@link #leaderConfirmGraceMs}), for a concrete leader and returns normally only when that leader is the target.
    *
-   * @throws ConfigurationException when this node is not the leader, naming the leader (when known) so the
-   *                                caller can retry against the right node
+   * @throws NotTheLeaderRefusalException when this node is not the leader, naming the leader (when known) so the
+   *                                      caller can retry against the right node
+   * @throws ConfigurationException       when leadership did not settle on the target, naming the leader it settled
+   *                                      on, or saying that none was elected in time
    */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
     if (!raftHAServer.isLeader())
@@ -443,31 +448,96 @@ class RaftClusterManager {
           raftHAServer.getLeaderId());
 
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
-    final RaftClient client = raftHAServer.getClient();
-    try {
-      final RaftClientReply reply = client.admin().transferLeadership(
-          RaftPeerId.valueOf(targetPeerId), timeoutMs);
-      if (!reply.isSuccess()) {
-        // The leader change notification fires refreshRaftClient(), which closes the old client
-        // while this call is still in flight. If the leader actually changed to the target,
-        // the transfer succeeded despite the error reply.
-        if (isLeaderNow(targetPeerId)) {
-          LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed via leader check)", targetPeerId);
-          return;
-        }
-        throw new ConfigurationException(
-            "Failed to transfer leadership to " + targetPeerId + ": " + reply.getException());
-      }
-      LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
-    } catch (final IOException e) {
-      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which closes
-      // the old RaftClient. The in-flight RPC then fails with "is closed". Verify the transfer
-      // actually succeeded by checking who the leader is now.
-      if (isLeaderNow(targetPeerId)) {
-        LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed after IOException)", targetPeerId);
+    final RaftPeerId targetId = RaftPeerId.valueOf(targetPeerId);
+    final RaftPeerId selfId = raftHAServer.getLocalPeerId();
+    // One budget for every attempt, not a fresh one per retry: a retry starts only before the deadline, each RPC gets
+    // what is left of it, and each settle wait gets what is left floored at leaderConfirmGraceMs.
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    for (int attempt = 1; ; attempt++) {
+      final Exception failure = sendTransfer(targetId, Math.max(deadline - System.currentTimeMillis(), 1));
+      if (failure == null) {
+        LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s", targetPeerId);
         return;
       }
-      throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + e.getMessage(), e);
+
+      // A failed call does not mean a failed transfer, nor a successful one (issue #8487). Every leader change makes
+      // notifyLeaderChanged -> refreshRaftClient() close the client the RPC went through, so the call fails with
+      // "client-... is already CLOSED" whatever the election decided, and the leader view at the instant the failure
+      // is caught is often still empty. Settle it: wait for a concrete leader, then judge by who that is.
+      final RaftPeerId leaderId = awaitSettledLeader(selfId, confirmWindow(deadline));
+      if (targetId.equals(leaderId)) {
+        LogManager.instance().log(this, Level.INFO, "Leadership transferred to %s (confirmed after the call failed: %s)",
+            targetPeerId, failureMessage(failure));
+        return;
+      }
+      if (leaderId == null)
+        throw new ConfigurationException(
+            "Failed to transfer leadership to " + targetPeerId + ": no leader was elected within the timeout ("
+                + failureMessage(failure) + ")", failure);
+      if (!leaderId.equals(selfId))
+        throw new ConfigurationException(
+            "Failed to transfer leadership to " + targetPeerId + ": leadership went to " + leaderId + " instead of "
+                + targetPeerId + " (" + failureMessage(failure) + ")", failure);
+
+      // This node is the leader, still or again. A refusal Ratis gave it is the answer. A closed client is not: the
+      // refresh raced the call, or a failed election (the target losing a vote it was sent to win) re-elected this
+      // node. Re-send through the fresh client while the budget lasts; to a transfer still pending for the same
+      // target Ratis joins the new request rather than starting a second election.
+      final boolean clientClosed = RaftGroupCommitter.isClientClosed(failure);
+      if (!clientClosed)
+        throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + failureMessage(failure),
+            failure);
+      if (attempt >= MAX_TRANSFER_ATTEMPTS || System.currentTimeMillis() >= deadline || !raftHAServer.isLeader())
+        throw new ConfigurationException(
+            "Failed to transfer leadership to " + targetPeerId + ": this node (" + selfId + ") is still the leader ("
+                + failureMessage(failure) + ")", failure);
+      LogManager.instance().log(this, Level.INFO, "Leadership transfer to %s interrupted by a client refresh (%s); retrying",
+          targetPeerId, failureMessage(failure));
+    }
+  }
+
+  /** Attempts of one targeted transfer whose call failed only because its client was closed under it (#8487). */
+  static final int MAX_TRANSFER_ATTEMPTS = 3;
+
+  /** One targeted transfer RPC through the CURRENT client. Returns null on success, the failure otherwise. */
+  private Exception sendTransfer(final RaftPeerId targetId, final long timeoutMs) {
+    try {
+      final RaftClientReply reply = raftHAServer.getClient().admin().transferLeadership(targetId, timeoutMs);
+      if (reply.isSuccess())
+        return null;
+      final Exception failure = reply.getException();
+      return failure != null ? failure : new ConfigurationException("Ratis refused the transfer without giving a reason");
+    } catch (final IOException e) {
+      return e;
+    }
+  }
+
+  private static String failureMessage(final Exception failure) {
+    final String message = failure.getMessage();
+    return message != null && !message.isBlank() ? message : failure.toString();
+  }
+
+  /**
+   * Waits up to {@code waitMs} for a concrete leader: another peer named by this node's view, or this node itself
+   * once it actually holds the role (a view naming this node while it is no longer leader is stale). Returns null
+   * when none settled in time.
+   */
+  private RaftPeerId awaitSettledLeader(final RaftPeerId selfId, final long waitMs) {
+    final long deadline = System.currentTimeMillis() + waitMs;
+    while (true) {
+      final RaftPeerId leaderId = raftHAServer.getLeaderId();
+      // Two reads, not one snapshot: this node can lose the role between them. Accepted - a stale "this node" verdict
+      // only leads to the isLeader() re-check before a retry, never to a success being reported.
+      if (leaderId != null && (!leaderId.equals(selfId) || raftHAServer.isLeader()))
+        return leaderId;
+      if (System.currentTimeMillis() >= deadline)
+        return null;
+      try {
+        Thread.sleep(LEADER_CONFIRM_POLL_MS);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return null;
+      }
     }
   }
 
@@ -620,7 +690,7 @@ class RaftClusterManager {
         if (reply.isSuccess())
           return;
 
-        final Throwable failure = reply.getException();
+        final Exception failure = reply.getException();
         if (isPermanent(failure))
           throw new ConfigurationException(permanentMessage(operationDesc, startedAt, failure));
 
@@ -737,11 +807,6 @@ class RaftClusterManager {
       return "no error detail";
     final String failureMessage = failure.getMessage();
     return failureMessage != null && !failureMessage.isBlank() ? failureMessage : failure.toString();
-  }
-
-  private boolean isLeaderNow(final String expectedPeerId) {
-    final RaftPeerId leaderId = raftHAServer.getLeaderId();
-    return leaderId != null && leaderId.toString().equals(expectedPeerId);
   }
 
   private int getHttpPortOffset() {
