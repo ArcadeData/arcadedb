@@ -21,13 +21,18 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.utility.StringUtils;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
+import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.http.HttpServer;
@@ -61,8 +66,22 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * The historical heuristic is preserved while avoiding a full-command {@code toLowerCase} copy per request:
    * the command is expected to be already trimmed, only case-insensitive prefix/substring probes are used, and
    * the last line is lowercased only when an explicit LIMIT may already be present.
+   * <p>
+   * A {@code sqlscript} is pushed down only when its LAST statement is a {@code SELECT} or a {@code MATCH}. The
+   * LIMIT is appended to the end of the text, which in a script is the end of whatever the caller wrote last, not of
+   * the statement the text starts with: a script that opens with a {@code SELECT} and ends with a {@code DELETE} or
+   * an {@code UPDATE} used to have that write silently cut at the cap, and one ending with {@code INSERT ... SET}
+   * failed to parse (issue #8429). The last statement is also the one whose rows the script returns, so bounding it
+   * when it is a query is still the push-down this method exists for. No textual probe can find where the last
+   * statement starts, because the script grammar makes the separating semicolon optional, so the script is parsed -
+   * only once every cheaper check above has already said yes. Any other script is left as written: the rows it
+   * returns are still bounded by the serializer's cap.
+   *
+   * @param database the database the command runs against, used only to parse a {@code sqlscript} with its own
+   *                 parser configuration; {@code null} parses with the defaults
    */
-  static boolean requiresAutomaticLimit(final String command, final String language, final int limit) {
+  static boolean requiresAutomaticLimit(final String command, final String language, final int limit,
+      final Database database) {
     // A non-positive cap means unlimited, exactly as it does in the serializer: pushing 'limit 0' down would
     // instead return no row at all, which is what the previous asymmetry did with a request carrying limit=0.
     if (limit <= 0)
@@ -75,15 +94,38 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ((!isSelect && !isMatch) || command.endsWith(";"))
       return false;
 
-    if (!StringUtils.containsIgnoreCase(command, " limit ") && !StringUtils.containsIgnoreCase(command, "\nlimit "))
-      return true;
+    if (StringUtils.containsIgnoreCase(command, " limit ") || StringUtils.containsIgnoreCase(command, "\nlimit ")) {
+      // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
+      final String[] lines = LINE_BREAK.split(command);
+      final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
+      if (words.length <= 1 //
+          || "limit".equals(words[words.length - 2]) //
+          || (words.length >= 5 && "limit".equals(words[words.length - 4])))
+        return false;
+    }
 
-    // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
-    final String[] lines = LINE_BREAK.split(command);
-    final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
-    return words.length > 1 //
-        && !"limit".equals(words[words.length - 2]) //
-        && (words.length < 5 || !"limit".equals(words[words.length - 4]));
+    return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
+  }
+
+  /**
+   * Tells whether the script's last statement is a {@code SELECT} or a {@code MATCH}, i.e. the statement a trailing
+   * LIMIT lands on is a query. A script that does not parse is reported as not ending with one: it is then executed
+   * as written and fails with an error that quotes the caller's own text, not one with a LIMIT appended by this
+   * handler. Only the top-level statement list is inspected: a script ending with an {@code IF}, {@code WHILE} or
+   * {@code FOREACH} block is not one ending with a query, even when the block's body ends with a {@code SELECT},
+   * because the appended LIMIT would land after the closing brace, not inside it.
+   */
+  static boolean scriptEndsWithAQuery(final String script, final Database database) {
+    final List<Statement> statements;
+    try {
+      statements = new SQLAntlrParser(database).parseScript(script);
+    } catch (final CommandSQLParsingException e) {
+      return false;
+    }
+    if (statements == null || statements.isEmpty())
+      return false;
+    final Statement last = statements.getLast();
+    return last instanceof SelectStatement || last instanceof MatchStatement;
   }
 
   /**
@@ -247,7 +289,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // Only the caller's own value needs clamping here: getDefaultRowLimit() is already bounded by the ceiling.
     final int maxResultRows = getMaxResultRows();
     final int autoLimit = requestLimit != null ? applyMaxResultRows(requestLimit, maxResultRows) : getDefaultRowLimit();
-    final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit);
+    final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit, database);
     // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
     final String originalCommand = command;
     if (autoLimited)
