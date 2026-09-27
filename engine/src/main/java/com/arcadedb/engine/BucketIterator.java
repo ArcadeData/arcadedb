@@ -63,6 +63,14 @@ public class BucketIterator implements Iterator<Record> {
   private long skippedRecords = 0;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
+    this(bucket, forwardDirection, 0, -1);
+  }
+
+  /**
+   * @param fromPage first page to scan, forward only (issue #8523: a bucket split in page ranges scanned in parallel)
+   * @param toPage   page to stop at, excluded, or -1 to scan to the last page the bucket has when the iterator opens
+   */
+  BucketIterator(final LocalBucket bucket, final boolean forwardDirection, final int fromPage, final int toPage) {
     final DatabaseInternal db = bucket.getDatabase();
     db.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
@@ -77,11 +85,17 @@ public class BucketIterator implements Iterator<Record> {
     if (txPageCounter != null && txPageCounter > totalPages)
       this.totalPages = txPageCounter;
 
+    if (toPage > -1 && toPage < this.totalPages) {
+      if (!forwardDirection)
+        throw new IllegalArgumentException("A page range is scanned forward only");
+      this.totalPages = toPage;
+    }
+
     limit = database.getResultSetLimit();
 
     if (forwardDirection) {
       currentRecordInPage = 0;
-      nextPageNumber = 0;
+      nextPageNumber = fromPage;
     } else {
       nextPageNumber = this.totalPages - 1;
       currentRecordInPage = Integer.MAX_VALUE;

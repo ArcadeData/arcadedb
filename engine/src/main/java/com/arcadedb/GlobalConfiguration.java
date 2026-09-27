@@ -913,8 +913,17 @@ public enum GlobalConfiguration {
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,
       """
       Minimum number of buckets required to trigger parallel scanning. \
-      If the type has fewer buckets than this threshold, sequential scanning is used""",
+      If the type has fewer buckets than this threshold, sequential scanning is used, unless one of its buckets \
+      is large enough to be split in page ranges (see arcadedb.queryParallelScanPagesPerUnit)""",
       Integer.class, 2),
+
+  QUERY_PARALLEL_SCAN_PAGES_PER_UNIT("arcadedb.queryParallelScanPagesPerUnit", SCOPE.DATABASE,
+      """
+      Minimum number of pages of the unit of work a parallel type scan cuts a bucket in: a bucket of at least twice \
+      as many pages is scanned by several workers, each on a range of its pages, so a type with a single bucket is \
+      scanned in parallel too. The rows are still returned in the order of a sequential scan. 0 disables the split: \
+      each bucket is then scanned by one worker""",
+      Integer.class, 32),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
       """

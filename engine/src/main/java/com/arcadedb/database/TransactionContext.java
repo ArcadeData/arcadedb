@@ -131,8 +131,15 @@ public class TransactionContext implements Transaction {
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
   // so AtomicInteger was only a mutable-cell trick. IntIntHashMap.add(key, delta) covers it directly.
   private final IntIntHashMap                        bucketRecordDelta     = new IntIntHashMap();
-  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  // #8492: the record caches, the page cache and the deleted-record set below are reused by every transaction of this
+  // context, and clearing or iterating a hash table costs in proportion to its capacity, not to its size - which never
+  // shrinks. Past these sizes a transaction has grown them, and reset() replaces them rather than clearing them, so a
+  // single large transaction does not tax every small one that follows it.
+  private static final int                           RECORDS_CACHE_CAPACITY = 1024;
+  private static final int                           PAGES_CACHE_CAPACITY   = 64;
+  private static final int                           DELETED_SET_CAPACITY   = 256;
+  private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
+  private       Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(RECORDS_CACHE_CAPACITY);
   // Records created in this transaction (they got an optimistically-assigned RID at creation time). On rollback that
   // RID no longer exists, so the identity is reset to provisional (null) letting the same in-memory object be cleanly
   // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
@@ -147,8 +154,8 @@ public class TransactionContext implements Transaction {
   // replay rather than one per operation, and insertion-ordered so a failure logged while concluding names them in
   // a stable order. See IndexReplayConclusion.
   private       Map<IndexInternal, IndexReplayConclusion> indexReplayConclusion = null;
-  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
-  private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
+  private       Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(PAGES_CACHE_CAPACITY);
+  private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
@@ -2434,6 +2441,10 @@ public class TransactionContext implements Transaction {
 
       // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
       // never by aborting.
+      // #8492: nothing writes these images again - the transaction drops them at reset() - so the read cache can
+      // share their arrays instead of copying every page
+      for (final MutablePage page : pagesToPublish)
+        page.markPublished();
       database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
@@ -2752,11 +2763,14 @@ public class TransactionContext implements Transaction {
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
-    modifiedRecordsCache.clear();
-    immutableRecordsCache.clear();
-    immutablePages.clear();
+    modifiedRecordsCache = clearOrReplace(modifiedRecordsCache, RECORDS_CACHE_CAPACITY);
+    immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
+    immutablePages = clearOrReplace(immutablePages, PAGES_CACHE_CAPACITY);
     bucketRecordDelta.clear();
-    deletedRecordsInTx.clear();
+    if (deletedRecordsInTx.size() > DELETED_SET_CAPACITY * 3 / 4)
+      deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
+    else
+      deletedRecordsInTx.clear();
     newRecords.clear();
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
@@ -2764,6 +2778,18 @@ public class TransactionContext implements Transaction {
     commitLockTimeout = null;
     useWALOverride = null;
     txId = -1;
+  }
+
+  /**
+   * Empties a map reused across transactions, replacing it with a fresh one of its initial capacity when this
+   * transaction outgrew that capacity (issue #8492): {@link HashMap#clear()} and every iteration of the map walk its
+   * whole table, which only ever grows.
+   */
+  private static <K, V> Map<K, V> clearOrReplace(final Map<K, V> map, final int initialCapacity) {
+    if (map.size() > initialCapacity * 3 / 4)
+      return new HashMap<>(initialCapacity);
+    map.clear();
+    return map;
   }
 
   public void removeFile(final int fileId) {

@@ -74,21 +74,7 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
     // what to do with the result, for current record, depends on how this function has been invoked
     // for an unique result aggregated from all output records
     if (aggregateResults() && min != null) {
-      if (context == null)
-        // FIRST TIME
-        context = min;
-      else {
-        if (context instanceof Number number && min instanceof Number number1) {
-          final Number[] casted = Type.castComparableNumber(number, number1);
-          context = casted[0];
-          min = casted[1];
-        }
-
-        if (compareValues(context, min) > 0)
-          // MINOR
-          context = min;
-      }
-
+      accumulate(min);
       return null;
     }
 
@@ -100,6 +86,36 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
     // LET definitions (contain $current) does not require results aggregation
     return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString()
         .contains("$current"));
+  }
+
+  /** Folds one row's min into the cross-row one. */
+  private void accumulate(Object min) {
+    if (context == null)
+      // FIRST TIME
+      context = min;
+    else {
+      if (context instanceof Number number && min instanceof Number number1) {
+        final Number[] casted = Type.castComparableNumber(number, number1);
+        context = casted[0];
+        min = casted[1];
+      }
+
+      if (compareValues(context, min) > 0)
+        // MINOR
+        context = min;
+    }
+  }
+
+  @Override
+  public boolean canMergePartials() {
+    return aggregateResults();
+  }
+
+  @Override
+  public void mergePartial(final SQLAggregatedFunction other) {
+    final Object partial = ((SQLFunctionMin) other).context;
+    if (partial != null)
+      accumulate(partial);
   }
 
   public String getSyntax() {

@@ -73,20 +73,7 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
     // what to do with the result, for current record, depends on how this function has been invoked
     // for an unique result aggregated from all output records
     if (aggregateResults() && max != null) {
-      if (context == null)
-        // FIRST TIME
-        context = max;
-      else {
-        if (context instanceof Number number && max instanceof Number number1) {
-          final Number[] casted = Type.castComparableNumber(number, number1);
-          context = casted[0];
-          max = casted[1];
-        }
-        if (compareValues(context, max) < 0)
-          // BIGGER
-          context = max;
-      }
-
+      accumulate(max);
       return null;
     }
 
@@ -98,6 +85,35 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
     // LET definitions (contain $current) does not require results aggregation
     return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString()
         .contains("$current"));
+  }
+
+  /** Folds one row's max into the cross-row one. */
+  private void accumulate(Object max) {
+    if (context == null)
+      // FIRST TIME
+      context = max;
+    else {
+      if (context instanceof Number number && max instanceof Number number1) {
+        final Number[] casted = Type.castComparableNumber(number, number1);
+        context = casted[0];
+        max = casted[1];
+      }
+      if (compareValues(context, max) < 0)
+        // BIGGER
+        context = max;
+    }
+  }
+
+  @Override
+  public boolean canMergePartials() {
+    return aggregateResults();
+  }
+
+  @Override
+  public void mergePartial(final SQLAggregatedFunction other) {
+    final Object partial = ((SQLFunctionMax) other).context;
+    if (partial != null)
+      accumulate(partial);
   }
 
   public String getSyntax() {

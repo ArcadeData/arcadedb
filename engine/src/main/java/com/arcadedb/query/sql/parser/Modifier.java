@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.CorrelatedSubQueryCache;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -73,8 +74,13 @@ public class Modifier extends SimpleNode {
   public Object execute(final Identifiable currentRecord, Object result, final CommandContext context) {
     if (methodCall != null)
       result = methodCall.execute(result, context);
-    else if (suffix != null)
+    else if (suffix != null) {
+      if (readsMemberOfOuterVariable(result)) {
+        result = ((CorrelatedSubQueryCache.ParentView) result).getVariableMember(suffix.identifier.getStringValue(), next.suffix, context);
+        return next.next != null ? next.next.execute(currentRecord, result, context) : result;
+      }
       result = suffix.execute(result, context);
+    }
     else if (arrayRange != null)
       result = arrayRange.execute(currentRecord, result, context);
     else if (condition != null)
@@ -95,8 +101,13 @@ public class Modifier extends SimpleNode {
   public Object execute(final Result currentRecord, Object result, final CommandContext context) {
     if (methodCall != null)
       result = methodCall.execute(result, context);
-    else if (suffix != null)
+    else if (suffix != null) {
+      if (readsMemberOfOuterVariable(result)) {
+        result = ((CorrelatedSubQueryCache.ParentView) result).getVariableMember(suffix.identifier.getStringValue(), next.suffix, context);
+        return next.next != null ? next.next.execute(currentRecord, result, context) : result;
+      }
       result = suffix.execute(result, context);
+    }
     else if (arrayRange != null)
       result = arrayRange.execute(currentRecord, result, context);
     else if (condition != null)
@@ -112,6 +123,16 @@ public class Modifier extends SimpleNode {
       result = next.execute(currentRecord, result, context);
 
     return result;
+  }
+
+  /**
+   * Whether this modifier and the next one read one member of a variable of an outer context seen through a
+   * correlated subquery's parent view - the {@code .$current.office} of {@code $parent.$current.office} - so the view
+   * can record the member rather than the whole variable as what the subquery depends on (issue #8441).
+   */
+  private boolean readsMemberOfOuterVariable(final Object target) {
+    return target instanceof CorrelatedSubQueryCache.ParentView && suffix.identifier != null && !suffix.star && next != null
+        && next.methodCall == null && next.suffix != null && next.suffix.isMemberAccess();
   }
 
   private Object filterByCondition(Object iResult, final CommandContext context) {

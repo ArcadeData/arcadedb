@@ -119,6 +119,10 @@ public final class RidHashSet {
    * Removes all entries from the set.
    */
   public void clear() {
+    // AN EMPTY SET HAS NOTHING TO WIPE: THE FILL COSTS THE WHOLE CAPACITY, WHICH A SET REUSED ACROSS MANY SHORT LIVES
+    // (A TRANSACTION CONTEXT'S DELETED RECORDS, ISSUE #8492) WOULD OTHERWISE PAY ON EVERY ONE OF THEM
+    if (size == 0)
+      return;
     Arrays.fill(bucketIds, EMPTY_BUCKET);
     size = 0;
   }

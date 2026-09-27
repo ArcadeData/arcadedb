@@ -27,7 +27,6 @@ import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.lang.reflect.Field;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -276,13 +275,11 @@ class ParallelScanSafetyTest extends TestHelper {
         // queue forever (leaking their pool threads).
         final ResultSet rs = step.syncPull(context, RECORDS + 1);
 
-        final Field failureField = FetchFromTypeExecutionStep.class.getDeclaredField("parallelScanFailure");
-        failureField.setAccessible(true);
         final long deadline = System.currentTimeMillis() + 20_000;
-        while (failureField.get(step) == null && System.currentTimeMillis() < deadline)
+        while (step.getParallelScanFailure() == null && System.currentTimeMillis() < deadline)
           Thread.sleep(20);
 
-        assertThat(failureField.get(step))
+        assertThat(step.getParallelScanFailure())
             .as("producers must abandon a never-consumed, never-closed ResultSet instead of parking forever")
             .isNotNull();
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.parser.Expression;
 
 import java.util.ArrayList;
@@ -47,6 +48,17 @@ public class FunctionAggregationContext implements AggregationContext {
   @Override
   public Object getFinalValue() {
     return aggregateFunction.getResult();
+  }
+
+  @Override
+  public boolean canMerge() {
+    return aggregateFunction instanceof SQLAggregatedFunction function && function.canMergePartials();
+  }
+
+  @Override
+  public void merge(final AggregationContext other) {
+    ((SQLAggregatedFunction) aggregateFunction).mergePartial(
+        (SQLAggregatedFunction) ((FunctionAggregationContext) other).aggregateFunction);
   }
 
   @Override

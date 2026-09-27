@@ -94,6 +94,20 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     return configuredParameters.length == 1;
   }
 
+  @Override
+  public boolean canMergePartials() {
+    return aggregateResults();
+  }
+
+  @Override
+  public void mergePartial(final SQLAggregatedFunction other) {
+    final SQLFunctionAverage partial = (SQLFunctionAverage) other;
+    if (partial.sum == null)
+      return;
+    sum = sum == null ? partial.sum : Type.increment(sum, partial.sum);
+    total += partial.total;
+  }
+
   private Object computeAverage(final Number iSum, final int iTotal) {
     // EMPTY GROUP: NO VALUES TO AVERAGE (ALSO AVOIDS A DIVISION BY ZERO)
     if (iSum == null || iTotal == 0)

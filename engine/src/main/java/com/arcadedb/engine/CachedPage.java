@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.CoarseClock;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -40,11 +41,17 @@ public class CachedPage {
 
   public CachedPage(final MutablePage page, final boolean copyBuffer) {
     this.pageId = page.pageId;
-    if (copyBuffer) {
+    if (copyBuffer && page.isPublished())
+      // #8492: a committed transaction's page is final (MutablePage.markPublished), so sharing its array is safe and
+      // saves copying the whole page - 64KB for a bucket page, 256KB for an index page - on every commit. The Binary
+      // is still a new one: a Binary carries a read position, and the flush thread moves the page's own while it
+      // writes it out.
+      this.content = new Binary(page.content.getContent(), page.content.size());
+    else if (copyBuffer) {
       // Deep copy: duplicate the full backing array so the cached copy is completely independent
       // from the original MutablePage. Binary.copy() only creates a new ByteBuffer view over the
-      // SAME array, which is not safe when the original page is still reachable (e.g. from the
-      // async flush thread's queue).
+      // SAME array, which is not safe when the original page is still written after it is published, as the index
+      // compaction does with the page it keeps filling.
       final byte[] srcArray = page.content.getContent();
       final byte[] copied = Arrays.copyOf(srcArray, srcArray.length);
       this.content = new Binary(copied, page.content.size());
@@ -88,7 +95,11 @@ public class CachedPage {
   }
 
   public void updateLastAccesses() {
-    lastAccessed = System.currentTimeMillis();
+    // #8523: THE COARSE CLOCK, AND A WRITE ONLY WHEN IT TICKED: THIS RUNS ON EVERY PAGE ACCESS, AND THREADS READING THE SAME
+    // PAGE WOULD OTHERWISE FIGHT OVER ITS CACHE LINE EVERY TIME. THE EVICTION ORDERS PAGES BY IT, FOR WHICH 10MS IS PLENTY
+    final long now = CoarseClock.currentTimeMillis();
+    if (lastAccessed != now)
+      lastAccessed = now;
   }
 
   public PageId getPageId() {
