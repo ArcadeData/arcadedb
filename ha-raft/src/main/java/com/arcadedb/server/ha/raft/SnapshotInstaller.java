@@ -58,6 +58,8 @@ import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -818,6 +820,47 @@ public final class SnapshotInstaller {
     } catch (final RuntimeException e) {
       throw new IOException("downloaded snapshot failed to open: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * The databases this node holds on disk but not in the server registry, sorted (issue #8464): what {@code close
+   * database} leaves behind. That command closes the instance and deregisters it, leaves its directory in place and is
+   * not leader-forwarded, so it can run on any follower - and {@code ArcadeDBServer.getDatabase} reopens the directory
+   * on the next request that names it. A resync that walks only {@code getDatabaseNames()} therefore skips a copy
+   * this node will serve again, and then records the gap it was run to close as applied.
+   * <p>
+   * A directory counts when the server would load it under that name: not reserved (the {@code .raft} control
+   * directory, the {@code .acquire-} and {@code .dropped-} staging directories all start with the reserved prefix),
+   * a valid database name, and not empty. An empty directory holds nothing to reopen - it is how a failed install
+   * leaves the directory it created (issue #8045) - so installing over it would only pull a database this node never
+   * had. A directory carrying the {@code .snapshot-pending} marker of an interrupted install IS listed: the boot scan
+   * deferred it rather than registering it, and an install is exactly what reconciles it.
+   *
+   * @throws IOException when the databases directory cannot be listed: the caller cannot then tell which copies it
+   *                     would be skipping, so it must fail rather than report every database reinstalled
+   */
+  static Set<String> closedDatabaseNames(final ArcadeDBServer server) throws IOException {
+    final Set<String> names = new TreeSet<>();
+    final Path databasesDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    if (!Files.isDirectory(databasesDir))
+      return names;
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(databasesDir)) {
+      for (final Path entry : entries) {
+        final String name = entry.getFileName().toString();
+        if (ArcadeDBServer.isReservedDatabaseName(name) || !Files.isDirectory(entry) || server.existsDatabase(name))
+          continue;
+        try {
+          server.checkDatabaseNameIsValid(name);
+        } catch (final IllegalArgumentException e) {
+          continue; // getDatabase would refuse to open it under this name, so nothing serves it
+        }
+        try (final DirectoryStream<Path> content = Files.newDirectoryStream(entry)) {
+          if (content.iterator().hasNext())
+            names.add(name);
+        }
+      }
+    }
+    return names;
   }
 
   /**
