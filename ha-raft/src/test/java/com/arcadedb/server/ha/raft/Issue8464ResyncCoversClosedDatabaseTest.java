@@ -246,6 +246,31 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     assertThat(liveCount(DB_NAME)).isEqualTo(SNAPSHOT_COUNT);
   }
 
+  /**
+   * On the auto-acquire path a closed database used to be invisible: neither refreshed nor reported. The leader not
+   * holding it is now surfaced as {@code LEADER_MISSING}, and nothing is downloaded or dropped for it.
+   */
+  @Test
+  void theAutoAcquireReconcileReportsAClosedDatabaseTheLeaderDoesNotHold() throws Exception {
+    closeLocally(DB_NAME);
+
+    final DatabaseReconciler reconciler = new DatabaseReconciler() {
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) {
+        return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
+      }
+    };
+    reconciler.setServer(server);
+
+    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null);
+
+    assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
+    assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+    assertThat(downloadsOf(DB_NAME)).isZero();
+    assertThat(Files.isDirectory(root.resolve("databases").resolve(DB_NAME))).as("the local copy is kept").isTrue();
+  }
+
   // ------------------------------------------------------------------------------------------------------------
   // What counts as a closed database
   // ------------------------------------------------------------------------------------------------------------
