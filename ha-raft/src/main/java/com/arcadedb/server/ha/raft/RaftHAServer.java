@@ -159,9 +159,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * file inside it: the divergence reformat of {@link #restartRatis(boolean)} deletes that directory wholesale, and
    * reaches it automatically from the health monitor while an escalation record exists, so a record inside it was
    * silently lost with the storage and the next process start walked the whole restart/reformat ladder again
-   * (issue #8380). The record describes this node's crash-loop history, not its log, so only
-   * {@link #clearPersistedCrashLoopEscalation()} deletes it - or an operator, by hand, to re-arm the automatic
-   * crash-loop recovery. See {@link #crashLoopEscalationMarkerFile(File)}.
+   * (issue #8380). The record describes this node's crash-loop history, not its log, so it has exactly three
+   * deleters: {@link #clearPersistedCrashLoopEscalation()}; {@link #discardNonPersistentRaftStorage(File)}, which
+   * wipes it together with a storage that is not kept across starts ({@code arcadedb.ha.raftPersistStorage=false});
+   * and an operator, by hand, to re-arm the automatic crash-loop recovery. See
+   * {@link #crashLoopEscalationMarkerFile(File)}.
    */
   static final String CRASH_LOOP_ESCALATION_MARKER = "crash-loop-escalated";
 
