@@ -2409,8 +2409,12 @@ public enum GlobalConfiguration {
       command it has to forward to the leader. During cluster startup or a leader change there is a window \
       with no elected leader; without this wait a forwarded write fails immediately with "leader HTTP address \
       is not available" and the caller's transaction is lost (issue #4728 follow-up). The follower polls for \
-      the leader and forwards as soon as one appears. Set to 0 to restore the previous fail-fast behavior. \
-      Default 20000 comfortably covers a first-election window (which can exceed 10s on cluster startup).""",
+      the leader and forwards as soon as one appears. It also bounds how long a follower holds back a forwarded \
+      request's "not the leader" refusal that names no leader - the answer of a leader that just stepped down - \
+      until its own view stops naming that node, so the client's retry is not routed straight back to it (SQL \
+      writes, server commands and batch loads; issues #8480 and #8486). Set to 0 to restore the previous \
+      fail-fast behavior. Default 20000 comfortably covers a first-election window (which can exceed 10s on \
+      cluster startup).""",
       Long.class, 20000L),
 
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,

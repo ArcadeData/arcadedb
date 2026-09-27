@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server;
 
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
 /**
  * Records, for the duration of one HTTP request, that a cluster peer already redirected this request to
  * what it believed to be the leader. A node serving a marked request must execute it or refuse it, never
@@ -110,6 +113,9 @@ public final class LeaderForwardContext {
     UNDETERMINED
   }
 
+  /** Ceiling of {@link #awaitLeaderViewMovedFrom}'s wait, however large the configured timeout. */
+  private static final long MAX_LEADER_VIEW_WAIT_MS = TimeUnit.DAYS.toMillis(365);
+
   private static final ThreadLocal<Boolean> ALREADY_FORWARDED  = new ThreadLocal<>();
   private static final ThreadLocal<String>  INTENDED_LEADER_ID = new ThreadLocal<>();
 
@@ -162,6 +168,49 @@ public final class LeaderForwardContext {
     if (leaderIdBefore == null || leaderIdBefore.isBlank() || !leaderIdBefore.equals(leaderIdAfter))
       return null;
     return leaderIdBefore;
+  }
+
+  /**
+   * Waits until {@code leaderIdProbe} stops naming {@code refusingLeaderId} - it names a different leader, or none while
+   * an election runs - or {@code timeoutMs} elapses (issue #8486). The {@code server}-module counterpart of the wait
+   * {@code RaftReplicatedDatabase} gives a SQL write (issue #8480), for the forwarders that cannot see Raft types: a
+   * probe of {@link HAServerPlugin#getLeaderPeerId()} names the leader in the same form the forwards send in
+   * {@link #FORWARDED_LEADER_ID_HEADER}.
+   * <p>
+   * Either outcome returns and the caller relays the refusal regardless: what the wait buys is that the client's
+   * retry, when it comes, is routed by a view that no longer names the node that just refused it. A thread
+   * interrupted while waiting stops waiting and keeps its interrupt flag.
+   *
+   * @param timeoutMs      the longest to wait; 0 or less reads the view once and never sleeps
+   * @param pollIntervalMs how often to re-read the view
+   *
+   * @return true when the view moved within the timeout
+   */
+  public static boolean awaitLeaderViewMovedFrom(final Supplier<String> leaderIdProbe, final String refusingLeaderId,
+      final long timeoutMs, final long pollIntervalMs) {
+    if (movedFrom(leaderIdProbe.get(), refusingLeaderId))
+      return true;
+    if (timeoutMs <= 0)
+      return false;
+
+    // Capped so that a huge setting cannot overflow the deadline into the past (TimeUnit.toNanos saturates at
+    // Long.MAX_VALUE, and adding that to nanoTime() wraps negative): a year is "wait for the view" in any practical sense.
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.min(timeoutMs, MAX_LEADER_VIEW_WAIT_MS));
+    for (long remainingNanos = deadline - System.nanoTime(); remainingNanos > 0; remainingNanos = deadline - System.nanoTime()) {
+      try {
+        Thread.sleep(Math.max(1L, Math.min(pollIntervalMs, remainingNanos / 1_000_000L)));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      if (movedFrom(leaderIdProbe.get(), refusingLeaderId))
+        return true;
+    }
+    return false;
+  }
+
+  private static boolean movedFrom(final String currentLeaderId, final String refusingLeaderId) {
+    return currentLeaderId == null || !currentLeaderId.equals(refusingLeaderId);
   }
 
   /**
