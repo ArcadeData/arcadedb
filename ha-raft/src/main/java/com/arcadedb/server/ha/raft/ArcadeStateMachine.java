@@ -1547,6 +1547,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
             databaseName, index, t.getMessage());
         triggerDatabaseResync(databaseName);
+        handOffLeadershipIfLeader(databaseName);
       } else {
         LogManager.instance().log(this, Level.SEVERE,
             "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
@@ -2945,6 +2946,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
               ree, decoded.databaseName());
         }
+        handOffLeadershipIfLeader(decoded.databaseName());
       } else if (shouldLogDivergedResync(decoded.databaseName())) {
         LogManager.instance().log(this, Level.INFO,
             "WAL version gap on database '%s' (snapshot resync in progress); skipping apply at index %d until resync completes",
@@ -6671,7 +6673,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public void retryUnfilledSnapshotGap() {
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || server == null || raftHA.isLeader())
+    if (raftHA == null)
+      return;
+    if (raftHA.isLeader()) {
+      // A leader cannot resync from itself, so what it holds behind the log is healed by moving the leadership
+      // instead (issue #8483); this node's next tick as a follower then drives the resync below.
+      handOffLeadershipIfHeldBehind(raftHA);
+      return;
+    }
+    if (server == null)
       return;
     final long floor = staleSnapshotAppliedFloor.get();
     // A per-database floor is an unfilled gap too: it is published exactly when an install gave up on a database,
@@ -6847,6 +6857,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return durable;
   }
 
+
+  /**
+   * Hands leadership off when this node is the leader and has just quarantined {@code dbName} (issue #8483). The
+   * resync the quarantine triggers is refused on the leader role, and since #8468 this node also refuses to serve the
+   * database to the followers, so while it leads nothing can heal the database anywhere. Once a healthy peer leads,
+   * this node's next health tick drives the targeted resync from it.
+   */
+  private void handOffLeadershipIfLeader(final String dbName) {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null && raftHA.isLeader())
+      raftHA.handOffLeadershipToResync("quarantined database '" + dbName + "' (" + quarantineCause(dbName) + ")");
+  }
+
+  /**
+   * The health tick's arm for a LEADER (issue #8483): while it holds a quarantine or a read floor, hand leadership off
+   * so it can resync from the next leader. The backstop for what the apply paths' immediate handoff does not see - a
+   * quarantine restored from disk on a node elected after the restart, a floor an incomplete snapshot install left
+   * before the node was elected, a handoff that failed - so it asks on every tick and leaves the pacing to the
+   * cooldown in {@link RaftHAServer#handOffLeadershipToResync}.
+   */
+  private void handOffLeadershipIfHeldBehind(final RaftHAServer raftHA) {
+    ensureAppliedIndexLoaded();
+    final long floor = staleSnapshotAppliedFloor.get();
+    if (divergedDatabases.isEmpty() && staleDatabaseAppliedFloors.isEmpty() && floor < 0)
+      return;
+
+    final StringBuilder reason = new StringBuilder();
+    if (!divergedDatabases.isEmpty())
+      reason.append("quarantined database(s) ").append(new LinkedHashMap<>(divergedDatabases));
+    if (!staleDatabaseAppliedFloors.isEmpty())
+      reason.append(reason.isEmpty() ? "" : " and ").append("database(s) short of the snapshot index ")
+          .append(staleDatabaseAppliedFloors.keySet());
+    if (floor >= 0)
+      reason.append(reason.isEmpty() ? "" : " and ").append("a node-wide read floor at ").append(floor);
+    raftHA.handOffLeadershipToResync(reason.toString());
+  }
 
   /**
    * Triggers a targeted snapshot resync of a single database from the leader (issue #4797).
