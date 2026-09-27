@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -1928,10 +1929,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
       if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
         final String currentLeader = ha.getLeaderName();
+        // Typed as the unnamed ServerIsNotTheLeaderException the server-command route and the SQL forward answer in
+        // the same situation, so the follower that relayed this batch recognizes the refusal and holds it until its
+        // own view stops naming this node, instead of routing the client's retry straight back here (issue #8486).
         return new ExecutionResponse(503, new JSONObject()
             .put("error", "A cluster peer forwarded this batch here as the leader, and leadership moved away from this "
                 + "node while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader
                 + ")" : "") + ". Nothing was loaded: retry it")
+            .put("exception", ServerIsNotTheLeaderException.class.getName())
             .toString());
       }
 
@@ -2041,9 +2046,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // streaming encoding is at the leader's first progress line - while the JDK client's own executor thread is
         // still publishing the relayed upload. That is what keeps the acknowledgements incremental across the hop,
         // and why the deadline here bounds the headers only.
-        return relayNdJsonFromLeader(exchange, databaseName, url,
-            LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
-            deadlineMs);
+        //
+        // A leader that refused instead of streaming is relayed as a buffered answer, and an unnamed "not the leader"
+        // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
+        return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
+                LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
+                deadlineMs), ha, intendedLeaderId, httpServer.getServer().getConfiguration());
 
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
@@ -2054,8 +2062,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       response.headers().firstValue("X-ArcadeDB-Commit-Index")
           .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
 
-      // Retry-After and the other allow-listed headers ride on the relayed answer itself (issue #8343).
-      return LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers());
+      // Retry-After and the other allow-listed headers ride on the relayed answer itself (issue #8343). An ex-leader's
+      // unnamed "not the leader" is held until this node stops naming it, so the client's retry is not routed straight
+      // back to it (issue #8486).
+      return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(
+          LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers()), ha,
+          intendedLeaderId, httpServer.getServer().getConfiguration());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);
