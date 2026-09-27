@@ -3811,10 +3811,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // already authoritative, so the leader skips the reinstall; replicas close their local copy and pull the
       // fresh snapshot from the leader.
       //
-      // Checked FIRST, ahead of the replay guard below, because it is unconditional: a leader takes no action
-      // whatever the guard decides, and the guard's own WARNING announces a reinstall from the leader. Logged
-      // before the skip, that line recorded an action that never happened - on the node whose log an operator
-      // reads to find out what the cluster did with the entry (issue #7302).
+      // Checked FIRST, ahead of the replay guard below, because a leader never reinstalls from itself whatever the
+      // guard decides, and the guard's own WARNING announces a reinstall from the leader. Logged before the skip,
+      // that line recorded an action that never happened - on the node whose log an operator reads to find out what
+      // the cluster did with the entry (issue #7302). The one case the guard's WARNING exists for - applied before,
+      // absent now - is asserted inside the leader arm instead, below (issue #8067).
       //
       // The volatile field is read ONCE into a local. resolveSnapshotSource guards a null HA server and refuses
       // cleanly, but evaluating raftHAServer.getLeaderId() as its ARGUMENT dereferenced the field before that
@@ -3826,8 +3827,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // RaftHAServer:1419 is the only one), but it starts null and a state machine that has not been rewired
       // yet still carries null. Forgetting exactly that rewire on the recovery path is the regression
       // Issue4839RecoveryRewiresStateMachineIT exists to catch.
+      //
+      // The skip ASSERTS its premise rather than assuming it (issue #8067, the sibling of #7901). "The leader's own
+      // files are authoritative" says nothing about a leader that has no files: a node that applied this entry in a
+      // previous session, lost the database directory and came back as the leader used to return here at TRACE,
+      // ahead of the replay guard's "applied before but not registered now" arm - no install, no durable mark, no
+      // alert. Throwing routes it into the per-database quarantine (handleUnexpectedApplyError), which is durable,
+      // raises the alert, hands the leadership off, and reinstalls the database from the next leader through the
+      // targeted resync.
+      //
+      // Both halves of the replay guard's evidence are required, not just the absence. "Present" is registered OR on
+      // disk (isDatabasePresentLocally): a leader whose copy is merely closed still holds the authoritative files.
+      // And the per-database applied index must show a previous session applied this entry: a DROP evicts that
+      // index, so a missing database with no record is one the cluster dropped later in the log, and replaying the
+      // older install on the leader stays the no-op it always was.
       final RaftHAServer raftHA = this.raftHAServer;
       if (raftHA != null && raftHA.isLeader()) {
+        if (!isDatabasePresentLocally(databaseName)) {
+          final long appliedBefore = readPersistedAppliedIndex(databaseName);
+          if (appliedBefore >= entryIndex)
+            throw new IllegalStateException("Database '" + databaseName + "' was reinstalled by the forceSnapshot entry "
+                + "at index " + entryIndex + " in a previous session (persistedAppliedIndex=" + appliedBefore
+                + ") but has no copy on this node now, and this node is the Raft leader, so there is nowhere to "
+                + "reinstall it from. Quarantining it and handing the leadership off so it is reinstalled from the next "
+                + "leader");
+        }
         HALog.log(this, HALog.TRACE, "Leader skips forceSnapshot reinstall for '%s'", databaseName);
         return;
       }
@@ -7006,16 +7030,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // install() keeps the database open during the download and rolls back on failure, so a
             // targeted resync never leaves it closed. A database closed on this node is reinstalled too (issue
             // #8464): its directory is still here and the next request reopens it, so skipping it left the
-            // quarantine standing over a copy nothing would ever repair. A database with no copy at all is left
-            // alone, as before - there is nothing on this node to serve stale.
-            if (isDatabasePresentLocally(dbName)) {
-              installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
-              LogManager.instance().log(this, Level.INFO,
-                  "Targeted snapshot resync of quarantined database '%s' completed", dbName);
-              clearDivergedDatabase(dbName);
-              clearBootstrapUnreconciled(dbName);
-              settleBootstrapReplacement(dbName);
-            }
+            // quarantine standing over a copy nothing would ever repair.
+            //
+            // A database with no copy at all is installed too (issue #8067). It used to be left alone on the
+            // argument that there is nothing here to serve stale, but the quarantine is not only about serving: it
+            // holds the node out of the ready set and stops the log from being checkpointed, and nothing but this
+            // resync lifts it. A quarantined database is one the cluster still has - a DROP entry retires the
+            // quarantine with the database (clearDroppedDatabaseQuarantine) - so the missing copy is exactly what
+            // the leader's snapshot restores; this is how a leader that lost a database, quarantined it and handed
+            // off (applyInstallDatabaseEntry) gets it back. A leader that cannot serve it fails the install below,
+            // which leaves the quarantine standing for the next tick, the same as for a present copy.
+            installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+            LogManager.instance().log(this, Level.INFO,
+                "Targeted snapshot resync of quarantined database '%s' completed", dbName);
+            clearDivergedDatabase(dbName);
+            clearBootstrapUnreconciled(dbName);
+            settleBootstrapReplacement(dbName);
           } finally {
             snapshotDownloadLock.unlock();
           }
