@@ -6452,10 +6452,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Every database but these carries the leader's copy now: clear the rest, and quarantine these with their own
       // honest floors in the same durable write (issues #6760, #8137).
       final var snapshotInfo = storage.getLatestSnapshot();
-      settleDivergedStateAfterInstall(notInstalled, snapshotInfo != null ? snapshotInfo.getIndex() : -1L);
+      final boolean durable = settleDivergedStateAfterInstall(notInstalled,
+          snapshotInfo != null ? snapshotInfo.getIndex() : -1L, false);
       for (final String dbName : getBootstrapUnreconciledDatabases())
         if (!notInstalled.contains(dbName))
           clearBootstrapUnreconciled(dbName);
+      // Fail closed. The node-wide floor below is the only other thing protecting these copies across a restart, and a
+      // quarantine that lives in memory alone is gone after one: the directory would be reopened by the next request
+      // and served ready and unclamped. Failing here keeps the floor and re-arms the resync (triggerSnapshotDownload).
+      if (!durable)
+        throw new IOException("Snapshot resync could not persist the quarantine of database(s) " + notInstalled
+            + " it could not reinstall to " + getAppliedIndexFile() + "; keeping the stale-snapshot read floor "
+            + "(issue #8464)");
     }
     // The databases now carry the leader's state, so a read floor published by a stale marker in
     // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
@@ -6645,9 +6653,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true);
   }
 
-  private void settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
+  /**
+   * @return whether the settled state reached disk. {@code false} leaves it in memory only, so a restart would come back
+   * without the quarantines and floors published here
+   */
+  private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
       final boolean recordAppliedPositions) {
     final Map<String, Long> published = new LinkedHashMap<>();
+    final boolean durable;
     // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
     // is built under the lock and written ONCE (issue #8137). Clearing everything first and re-marking the give-ups in a
     // second write left a file with neither their quarantine nor their floor in between, and a crash there restarted
@@ -6675,7 +6688,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       staleDatabaseAppliedFloors.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
       divergedDatabases.keySet().removeIf(dbName -> !notInstalled.contains(dbName));
 
-      if (!persistAppliedIndexFile() && !closed && !published.isEmpty())
+      durable = persistAppliedIndexFile();
+      if (!durable && !closed && !published.isEmpty())
         LogManager.instance().log(this, Level.WARNING,
             "Database(s) %s are quarantined (%s) with their read floors but could NOT be written to %s: a restart "
                 + "before this is fixed serves them ready and their LINEARIZABLE reads unclamped. Check that the .raft "
@@ -6699,6 +6713,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "The other databases on this node are unaffected. Check the leader's copy of '%s'.",
           dbName, snapshotIndex, floor, dbName);
     }
+    return durable;
   }
 
 

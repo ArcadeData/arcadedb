@@ -171,6 +171,32 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     assertThat(liveCount(DB_NAME)).as("nothing replaced the closed copy").isEqualTo(LIVE_COUNT);
   }
 
+  /**
+   * The quarantine above is what protects the closed copy once the node-wide floor is gone, so it must reach disk
+   * before the floor is dropped: one that lives in memory alone is lost on a restart, and the directory would then be
+   * reopened ready and unclamped. When it cannot be written the resync fails and keeps the floor.
+   */
+  @Test
+  void aQuarantineThatCannotBePersistedKeepsTheNodeWideFloor() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    closeLocally(DB_NAME);
+    sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
+    setStaleSnapshotAppliedFloor(FLOOR);
+
+    // A non-empty directory where the applied-index file goes: the atomic replace of it fails on every write
+    final Path appliedIndex = root.resolve("databases").resolve(".raft").resolve("applied-index");
+    assertThat(Files.isRegularFile(appliedIndex)).as("the fixture targets the real file").isTrue();
+    Files.delete(appliedIndex);
+    Files.writeString(Files.createDirectories(appliedIndex).resolve("blocker"), "x");
+
+    sm.triggerSnapshotDownload();
+
+    assertThat(sm.getStaleSnapshotAppliedFloor()).as("the node-wide floor stands").isEqualTo(FLOOR);
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).as("and the in-memory quarantine too").isTrue();
+    assertThat(sm.isResyncInProgress()).isTrue();
+  }
+
   // ------------------------------------------------------------------------------------------------------------
   // The targeted resync of a quarantined database
   // ------------------------------------------------------------------------------------------------------------
@@ -226,7 +252,8 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
   /**
    * Only a directory the server would reopen under that name counts: not a registered one, not a reserved one (the
-   * Raft control directory, the staging directories), and not an empty one, which holds nothing to serve.
+   * Raft control directory, the staging directories), not one whose name the server refuses to open, and not an
+   * empty one, which holds nothing to serve.
    */
   @Test
   void onlyANonEmptyUnregisteredUserDirectoryIsAClosedDatabase() throws Exception {
@@ -235,6 +262,8 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     Files.createDirectories(databases.resolve("emptyDir"));
     Files.writeString(Files.createDirectories(databases.resolve(".dropped-x")).resolve("f"), "x");
     Files.writeString(databases.resolve("aPlainFile"), "x");
+    // A name getDatabase refuses to open ('..' is rejected by checkDatabaseNameIsValid), so nothing can serve it
+    Files.writeString(Files.createDirectories(databases.resolve("bad..name")).resolve("f"), "x");
     createLocalDatabase(OTHER_DB); // registered: the registry already covers it
 
     assertThat(SnapshotInstaller.closedDatabaseNames(server)).containsExactly(DB_NAME);
