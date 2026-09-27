@@ -19,6 +19,8 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BaseDocument;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
@@ -269,6 +271,9 @@ public class DatabaseChecker {
     result.put("totalDeletedConstraintViolatingRecords", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
+    // DEEP only: records whose storage is sound but whose content does not decode
+    result.put("undecodableRecords", new LinkedHashSet<RID>());
+    result.put("totalUndecodableRecords", 0L);
     result.put("distinctMissingReferences", 0L);
     result.put("topMissingReferences", new ArrayList<String>());
     // Issue #6128 (5): says WHICH copy of a replicated database this answer describes. The statement is classified
@@ -384,7 +389,8 @@ public class DatabaseChecker {
           + (constrainedTypes.isEmpty() ? 0 : 1)
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
-          + (compress ? 1 : 0);
+          + (compress ? 1 : 0)
+          + (deep ? 1 : 0); // record content decoding
 
       checkEdges(edgeTypes);
 
@@ -411,6 +417,10 @@ public class DatabaseChecker {
       checkConstraints(constrainedTypes);
 
       checkBuckets(result);
+
+      // AFTER the bucket pass: what it repaired or removed is decoded in the shape it left
+      if (deep)
+        checkRecordContent(edgeTypes, vertexTypes, documentTypes);
 
       checkExternalProperties();
 
@@ -705,6 +715,53 @@ public class DatabaseChecker {
    * reporting quirk - {@code corruptedRecords} drives the index rebuild at the end of {@link #check()}, and that
    * rebuild rescans the bucket, so the record left behind destroyed the very index the flag asked to repair.
    */
+  /**
+   * DEEP: decodes every property of every record. A record can be sound in every way the other passes look at - its
+   * slot, its chunk chain, its edges - and still hold content that does not decode, which is what a record keeps when
+   * part of its chain was overwritten by another record's bytes (a chunk shared by two records, see
+   * {@code LocalBucket.check}). Such records are listed, never deleted: part of their content still reads, and nothing
+   * here can tell which part is wrong, so the answer is to restore them from their source.
+   */
+  @SafeVarargs
+  private void checkRecordContent(final List<DocumentType>... typeGroups) {
+    long total = 0;
+    for (final List<DocumentType> types : typeGroups)
+      for (final DocumentType type : types)
+        total += database.countType(type.getName(), false);
+
+    stepBegin("Decoding record content", total);
+
+    database.begin();
+    try {
+      for (final List<DocumentType> types : typeGroups)
+        for (final DocumentType type : types)
+          for (final Bucket bucket : type.getBuckets(false))
+            bucket.scan((rid, view) -> {
+              try {
+                final Document document = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
+                    .asDocument(true);
+                if (document instanceof BaseDocument base) {
+                  final Binary content = base.getBuffer();
+                  content.position(base.getPropertiesStartingPosition());
+                  database.getSerializer().deserializePropertiesStrict(database, content, rid);
+                }
+              } catch (final Exception e) {
+                if (CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("undecodableRecords"), maxWarnings, rid)
+                    .isFirstSighting()) {
+                  result.put("totalUndecodableRecords", (Long) result.get("totalUndecodableRecords") + 1);
+                  addWarning("record " + rid + " cannot be decoded (" + e.getMessage() + "): restore it from its source");
+                }
+              }
+              stepTick();
+              return true;
+            }, null);
+    } finally {
+      database.commit();
+    }
+
+    stepComplete();
+  }
+
   private void checkDocuments(final List<DocumentType> documentTypes) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking documents...");

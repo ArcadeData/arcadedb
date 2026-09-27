@@ -344,6 +344,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private long totalChunks;
     private long orphanedChunks;
     private long crossLinkedChunks;
+    private long crossLinkedChunksRepaired;
     private long orphanedChunksReclaimed;
     private long danglingPlaceholderPointers;
     private long danglingPlaceholderPointersFixed;
@@ -358,6 +359,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     private final List<String> warnings               = new ArrayList<>();
     private final List<RID>    deletedRecordsAfterFix = new ArrayList<>();
+  }
+
+  /** A head a FIX repairs, and the continuation chunks of its chain another head reaches too. */
+  private record CrossLinkedHead(long position, long[] sharedChunks) {
   }
 
   /**
@@ -1174,6 +1179,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
 
       long total = 0;
+      int undecodableSlots = 0;
 
       final int txPageCount = getTotalPages();
 
@@ -1187,12 +1193,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
-            if (recordPositionInPage == 0)
-              // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
-              continue;
+            final long[] recordSize;
+            try {
+              final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
+              if (recordPositionInPage == 0)
+                // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
+                continue;
 
-            final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+              recordSize = page.readNumberAndSize(recordPositionInPage);
+            } catch (final PageCorruptionException | IllegalArgumentException e) {
+              // A slot whose offset or size marker cannot be decoded is not a record a scan would hand out either, so
+              // it is not counted - and it must not fail the count: count(*) answers from here once the counter is
+              // invalidated, and so does CHECK DATABASE before it reaches the bucket walk that reports the slot and
+              // repairs it.
+              ++undecodableSlots;
+              continue;
+            }
 
             // #6196: the same three shapes a scan hands out, and for the same reason - FIRST_CHUNK and not
             // isChunkHead(), because the head chunk of a placeholder's CONTENT is counted through its pointer.
@@ -1201,6 +1217,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
         }
       }
+
+      if (undecodableSlots > 0)
+        LogManager.instance().log(this, Level.WARNING,
+                "Bucket '%s' has %d slot(s) that cannot be decoded; they are not counted. Run CHECK DATABASE FIX to remove them",
+                componentName, undecodableSlots);
 
       // Publish the recomputed value only when this scan ran under the lock (acquired now, or already held by
       // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
@@ -1312,6 +1333,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // page and walks every chain.
     final LongHashSet chunkSlots = new LongHashSet();
     final LongHashSet reachableChunks = new LongHashSet();
+    // The heads a FIX gives their own copy of the chunks another head already reaches. Repaired only after the walk
+    // and the orphan sweep: see repairCrossLinkedChain.
+    List<CrossLinkedHead> crossLinkedHeads = null;
     // FAIL CLOSED, exactly as the edge-segment reclaim does: a chain walk that could not read a page, or a page or
     // slot the pass could not read at all, leaves live chunks unmarked - and an unmarked live chunk deleted as an
     // orphan is destroyed data. Any such gap disables the sweep entirely rather than shrinking it.
@@ -1467,13 +1491,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 // still parse, and the first update or delete of either frees the chunk under the other. Nothing else
                 // in this pass can see it - it is corruption that reads as healthy until it breaks. It is reported and
                 // never repaired: which of the two heads the bytes belong to is not something the page records.
-                final long crossLinked = markReachableChunks(reachableChunks, chainWalk.chunks);
-                if (crossLinked != -1L) {
+                final long[] sharedChunks = markReachableChunks(reachableChunks, chainWalk.chunks);
+                if (sharedChunks != null) {
                   ++totals.totalErrors;
                   ++totals.crossLinkedChunks;
-                  warning = ("multi-page record %s shares its continuation chunk #%d:%d with another record (cross-linked "
-                          + "chunk chain): one of the two records reads bytes that are not its own").formatted(rid, fileId,
-                          crossLinked);
+                  warning = ("multi-page record %s shares %d continuation chunk(s) with another record, e.g. #%d:%d (cross-"
+                          + "linked chunk chain): one of the two records reads bytes that are not its own").formatted(rid,
+                          sharedChunks.length, fileId, sharedChunks[0]);
+                  if (fix) {
+                    if (crossLinkedHeads == null)
+                      crossLinkedHeads = new ArrayList<>();
+                    crossLinkedHeads.add(new CrossLinkedHead(rid.getPosition(), sharedChunks));
+                  }
                 }
               }
 
@@ -1584,6 +1613,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     reconcilePlaceholderPointers(totals, placeholderPointers, repairedAwaySlots, totalPages, verboseLevel, fix, repairTx);
     reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunkReachabilityComplete, verboseLevel, fix, repairTx);
 
+    // AFTER the sweep: the chunks a repair allocates are in no reachability set, and a sweep running later would
+    // reclaim them as orphans.
+    if (crossLinkedHeads != null)
+      for (final CrossLinkedHead head : crossLinkedHeads)
+        repairCrossLinkedChain(totals, new RID(fileId, head.position), head.sharedChunks, verboseLevel, repairTx);
+
     // AFTER both reconciliations, because they are what make the tally the final answer, and BEFORE the
     // invalidation below, which is the repair it reports (#8040).
     reconcileCachedRecordCount(totals, stats, cachedRecordCountBefore, fix, verboseLevel);
@@ -1626,6 +1661,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     stats.put("orphanedChunks", totals.orphanedChunks);
     stats.put("orphanedChunksReclaimed", totals.orphanedChunksReclaimed);
     stats.put("crossLinkedChunks", totals.crossLinkedChunks);
+    stats.put("crossLinkedChunksRepaired", totals.crossLinkedChunksRepaired);
     stats.put("danglingPlaceholderPointers", totals.danglingPlaceholderPointers);
     stats.put("danglingPlaceholderPointersFixed", totals.danglingPlaceholderPointersFixed);
 
@@ -1802,17 +1838,103 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Marks the continuation chunks of one head as reachable and returns the first one another head already reached
-   * (a cross-linked chunk), or {@code -1} when every chunk is this head's alone. Keeps marking past a cross-link so the
-   * orphan sweep still sees the whole chain as live.
+   * Marks the continuation chunks of one head as reachable and returns the ones another head already reached (the
+   * cross-linked part of the chain), or {@code null} when every chunk is this head's alone. Keeps marking past a
+   * cross-link so the orphan sweep still sees the whole chain as live. The set iterates in no particular order, so the
+   * result says WHICH chunks are shared, not which one comes first in the chain.
    */
-  private static long markReachableChunks(final LongHashSet reachableChunks, final LongHashSet headChunks) {
-    final long[] crossLinked = { -1L };
+  private static long[] markReachableChunks(final LongHashSet reachableChunks, final LongHashSet headChunks) {
+    final long[][] shared = { null };
+    final int[] count = { 0 };
     headChunks.forEach(chunk -> {
-      if (!reachableChunks.add(chunk) && crossLinked[0] == -1L)
-        crossLinked[0] = chunk;
+      if (!reachableChunks.add(chunk)) {
+        if (shared[0] == null)
+          shared[0] = new long[4];
+        else if (count[0] == shared[0].length)
+          shared[0] = Arrays.copyOf(shared[0], count[0] * 2);
+        shared[0][count[0]++] = chunk;
+      }
     });
-    return crossLinked[0];
+    return shared[0] == null ? null : Arrays.copyOf(shared[0], count[0]);
+  }
+
+  /**
+   * Gives a record whose chunk chain runs into chunks another record already reaches ({@code sharedChunks}) its own copy
+   * of that shared remainder: the content it reads today is read once, the chain is cut right before the shared chunk,
+   * and the content is written back - which lays everything past the cut on newly allocated chunks. Both records then
+   * read exactly what they read before (which of the two the bytes belonged to is recorded nowhere), and updating or
+   * deleting one of them no longer frees chunks the other one still reads. A record that no longer has the shape the
+   * walk saw is left alone.
+   */
+  private void repairCrossLinkedChain(final CheckStats totals, final RID rid, final long[] sharedChunks,
+                                      final int verboseLevel, final RepairTransaction repairTx) {
+    String warning;
+    boolean cut = false;
+    try {
+      final TransactionContext tx = database.getTransaction();
+      final int headPageId = (int) (rid.getPosition() / maxRecordsInPage);
+      final MutablePage headPage = tx.getPageToModify(new PageId(database, file.getFileId(), headPageId), pageSize, false);
+      final int recordPositionInPage = getRecordPositionInPage(headPage, (int) (rid.getPosition() % maxRecordsInPage));
+      if (recordPositionInPage == 0)
+        return;
+      final long[] recordSize = headPage.readNumberAndSize(recordPositionInPage);
+      if (!isChunkHead(recordSize[0]))
+        return;
+
+      // THE CONTENT AS IT READS TODAY, SHARED REMAINDER INCLUDED
+      final Binary content = loadMultiPageRecord(rid, headPage, recordPositionInPage, recordSize);
+
+      // FIND THE POINTER THAT LEADS INTO THE FIRST SHARED CHUNK, IN CHAIN ORDER. Cutting anywhere later would write
+      // into a chunk the other record reads too.
+      final LongHashSet shared = new LongHashSet(sharedChunks.length * 2);
+      for (final long chunk : sharedChunks)
+        shared.add(chunk);
+      MutablePage pointerPage = headPage;
+      int pointerOffset = (int) (recordPositionInPage + recordSize[1] + INT_SERIALIZED_SIZE);
+      long pointer = pointerPage.readLong(pointerOffset);
+      final LongHashSet visited = new LongHashSet();
+      while (!shared.contains(pointer)) {
+        if (pointer <= 0 || !visited.add(pointer))
+          return;
+        pointerPage = tx.getPageToModify(new PageId(database, file.getFileId(), (int) (pointer / maxRecordsInPage)), pageSize,
+                false);
+        final int chunkPosition = getRecordPositionInPage(pointerPage, (int) (pointer % maxRecordsInPage));
+        if (chunkPosition == 0)
+          return;
+        final long[] marker = pointerPage.readNumberAndSize(chunkPosition);
+        if (marker[0] != NEXT_CHUNK)
+          return;
+        pointerOffset = (int) (chunkPosition + marker[1] + INT_SERIALIZED_SIZE);
+        pointer = pointerPage.readLong(pointerOffset);
+      }
+
+      // Writes no commit-time merge can replay: keep both pages out of it
+      if (tx.isSlotMergeEnabled()) {
+        tx.poisonSlotRebasePage(fileId, headPageId);
+        tx.poisonSlotRebasePage(fileId, pointerPage.getPageId().getPageNumber());
+      }
+
+      // CUT, THEN WRITE THE CONTENT BACK: THE PART PAST THE CUT LANDS ON NEW CHUNKS
+      pointerPage.writeLong(pointerOffset, 0L);
+      cut = true;
+      updateMultiPageRecord(rid, content, headPage, (int) (recordPositionInPage + recordSize[1]), 0,
+              headChunkRegionEnd(headPage, headPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET), recordPositionInPage));
+
+      ++totals.crossLinkedChunksRepaired;
+      warning = "cross-linked chunk chain of record %s repaired: it now has its own copy of the chunks it shared".formatted(rid);
+      repairTx.commitBatchIfFull();
+    } catch (final Exception e) {
+      if (cut)
+        // The chain is cut and the content only partly written back: committing this batch would truncate the record.
+        // Failing the run rolls the batch back (RepairTransaction.finish), and every earlier batch was committed with
+        // its repairs complete.
+        throw new DatabaseOperationException("Cannot repair the cross-linked chunk chain of record " + rid, e);
+      warning = "cannot repair the cross-linked chunk chain of record %s: %s".formatted(rid, e.getMessage());
+    }
+
+    totals.warnings.add(warning);
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.SEVERE, "- " + warning);
   }
 
   /**
