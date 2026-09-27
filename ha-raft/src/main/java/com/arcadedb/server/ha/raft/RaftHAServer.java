@@ -345,6 +345,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Last escalation timestamp per follower id, for the cooldown above. Node-local and intentionally NOT
   // cleared on leadership change - that is precisely what makes it bound cross-node flapping.
   private final    Map<String, Long>         lastChannelEscalationAtMs = new ConcurrentHashMap<>();
+  // Minimum interval between two leadership handoffs this node starts because it holds data it knows is behind the
+  // committed log while it leads (issue #8483). The handoff is the only way such a leader heals - it cannot resync from
+  // itself - but a database that EVERY peer quarantines (a deterministic apply error, say) would otherwise bounce
+  // leadership around the cluster on every health tick. Node-local and kept across leadership changes for the same
+  // reason as the channel-escalation cooldown above: it bounds that to one handoff per node per window.
+  private static final long                  QUARANTINE_HANDOFF_COOLDOWN_MS = 10 * 60_000L;
+  // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
+  private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -946,6 +954,88 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         return true;
       // Lost the race against a concurrent escalation for the same follower: re-read and re-decide.
     }
+  }
+
+  /**
+   * Hands leadership to a healthy peer because this leader holds a database it knows is behind the committed Raft log
+   * (issue #8483): a quarantine, or a read floor an incomplete snapshot install left.
+   * <p>
+   * Every way out of that state is a resync FROM the leader, and a leader cannot pull from itself: the targeted resync
+   * and the HealthMonitor retry both refuse on the leader role (issue #6111), and since #8468 this node also refuses to
+   * serve the quarantined database as a snapshot, so every follower install of it fails too. Until this, the only way
+   * out was an operator's {@code POST /api/v1/cluster/leader}. Once another peer leads, this node's own
+   * {@code retryUnfilledSnapshotGap} tick drives the targeted resync from it.
+   * <p>
+   * The peers and their order are the ones a manual step-down uses ({@link #transferLeadership(long)}). A node with no
+   * other peer in the configuration does not attempt it, because a Ratis step-down would only re-elect this node; it
+   * logs the operator action instead. Admitted at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS}, and run on
+   * {@link #channelRecoveryExecutor} because the transfer blocks for seconds and the callers are the apply thread
+   * and the HealthMonitor tick.
+   *
+   * @param reason what this node holds behind the log, for the log line
+   */
+  void handOffLeadershipToResync(final String reason) {
+    if (raftServer == null || shutdownRequested || !isLeader())
+      return;
+    final long now = System.currentTimeMillis();
+    if (!admitQuarantineHandoff(lastQuarantineHandoffAtMs, now))
+      return;
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        // Leadership may have moved while this sat in the queue, and a transfer sent through a follower's client is
+        // routed to the real leader, which would then step down for a reason that is not its own (issue #7134).
+        if (shutdownRequested || !isLeader())
+          return;
+        if (!hasAnotherPeer(getLivePeers(), localPeerId)) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "This leader holds %s, which it cannot resync from itself, and there is no other peer to hand leadership "
+                  + "to (issue #8483). Restore the database from a backup, or add a peer so the leadership can move and "
+                  + "this node resync from it.", reason);
+          return;
+        }
+        LogManager.instance().log(this, Level.WARNING,
+            "This leader holds %s, which it cannot resync from itself: handing leadership to a healthy peer so this "
+                + "node can resync from it (issue #8483)", reason);
+        try {
+          if (transferLeadership(ESCALATION_TRANSFER_TIMEOUT_MS))
+            return;
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING, "Leadership handoff to resync %s failed: %s", reason,
+              e.getMessage());
+        }
+        if (isLeader())
+          LogManager.instance().log(this, Level.SEVERE,
+              "Could not hand leadership off to resync %s; retrying in %d minutes. Transfer it manually with "
+                  + "POST /api/v1/cluster/leader (issue #8483).", reason, QUARANTINE_HANDOFF_COOLDOWN_MS / 60_000L);
+      });
+    } catch (final RejectedExecutionException e) {
+      // Nothing ran, so give the slot back: the next health tick asks again instead of waiting out the window.
+      lastQuarantineHandoffAtMs.compareAndSet(now, 0L);
+      LogManager.instance().log(this, Level.WARNING,
+          "Recovery queue is saturated; the leadership handoff to resync %s is retried on the next health tick", reason);
+    }
+  }
+
+  /**
+   * Admits a quarantine handoff at {@code now} at most once per {@link #QUARANTINE_HANDOFF_COOLDOWN_MS}, recording the
+   * time when it does (issue #8483). Package-private and static so the window can be unit-tested without a cluster.
+   */
+  static boolean admitQuarantineHandoff(final AtomicLong lastHandoffAtMs, final long now) {
+    while (true) {
+      final long last = lastHandoffAtMs.get();
+      if (last != 0L && now - last < QUARANTINE_HANDOFF_COOLDOWN_MS)
+        return false;
+      if (lastHandoffAtMs.compareAndSet(last, now))
+        return true;
+    }
+  }
+
+  /** Whether {@code livePeers} holds a peer other than {@code localPeerId}. Package-private for unit tests. */
+  static boolean hasAnotherPeer(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId) {
+    for (final RaftPeer peer : livePeers)
+      if (!peer.getId().equals(localPeerId))
+        return true;
+    return false;
   }
 
   /**
