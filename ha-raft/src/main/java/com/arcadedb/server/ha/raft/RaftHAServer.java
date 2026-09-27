@@ -680,15 +680,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (peerId == null || !isLeader())
       return;
 
+    final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
+    if (targetId.equals(localPeerId))
+      return; // never resync the leader itself
+
     // Captured on the lag-monitor thread, in the same tick that decided the resync, so the order describes exactly
     // the state the decision was made on.
     final StalledResyncOrder order = new StalledResyncOrder(getCurrentTerm(), clusterMonitor.getReplicaMatchIndex(peerId),
         clusterMonitor.getLeaderCommitIndex());
     final long stallGeneration = clusterMonitor.getStallGeneration(peerId);
-
-    final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
-    if (targetId.equals(localPeerId))
-      return; // never resync the leader itself
 
     // Through the guard, like every other unattended dial of a resolved peer address (issue #6221). This one
     // carries the most destructive payload of them all - "drop your copy of every database and download it
