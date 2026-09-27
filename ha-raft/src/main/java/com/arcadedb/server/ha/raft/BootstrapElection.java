@@ -335,8 +335,17 @@ class BootstrapElection {
           final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
         }
-        CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
-            .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        try {
+          CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
+              .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        } finally {
+          // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
+          // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
+          // JDK 21-25, where the request timeout stops at the response headers (issue #8472). A send that already
+          // completed ignores the cancel.
+          for (final CompletableFuture<HttpResponse<String>> send : sends)
+            send.cancel(true);
+        }
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();

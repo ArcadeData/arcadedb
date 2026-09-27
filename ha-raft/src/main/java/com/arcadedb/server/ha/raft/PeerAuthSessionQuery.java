@@ -139,6 +139,12 @@ final class PeerAuthSessionQuery {
       LogManager.instance().log(PeerAuthSessionQuery.class, Level.FINE,
           "Not every peer confirmed dropping an authentication session copy within %d ms: %s", timeoutMs,
           e.getMessage());
+    } finally {
+      // A send the deadline gave up on is cancelled, which aborts its exchange and releases the connection: on JDK
+      // 21-25 the request timeout stops at the response headers, so a peer that stalls inside its body would
+      // otherwise hold one open on every logout (issue #8472). A send that already completed ignores the cancel.
+      for (final CompletableFuture<HttpResponse<Void>> send : pending)
+        send.cancel(true);
     }
   }
 

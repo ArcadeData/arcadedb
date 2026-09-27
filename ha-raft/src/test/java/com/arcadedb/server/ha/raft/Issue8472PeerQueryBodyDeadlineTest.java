@@ -23,17 +23,23 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import com.sun.net.httpserver.HttpServer;
+import org.apache.ratis.protocol.RaftGroup;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
@@ -92,6 +98,30 @@ class Issue8472PeerQueryBodyDeadlineTest {
       assertGivenUpOn(issuer, () -> PeerAuthSessionQuery.validate(raft, issuerId, "session-token", TIMEOUT_MS));
     } finally {
       clients.close();
+    }
+  }
+
+  /**
+   * {@code PeerAuthSessionQuery.revokeEverywhere}: the logout fan-out. Its caller was always bounded, but a send the
+   * deadline gave up on was left running, holding a connection to a peer stalled inside its body for as long as the
+   * peer kept it open - one more on every logout (found in review of the #8472 fix).
+   */
+  @Test
+  void aRevocationWhosePeerStallsInsideItsBodyReleasesTheConnection() throws Exception {
+    try (final StallingBodyPeer peer = new StallingBodyPeer()) {
+      final RaftPeerId peerId = RaftPeerId.valueOf("peer-1");
+      final RaftHAServer raft = raftDialling(peerId, plainServer(), peer.address(), null, null);
+      when(raft.getRaftGroup()).thenReturn(
+          RaftGroup.valueOf(RaftGroupId.randomId(), RaftPeer.newBuilder().setId(peerId).build()));
+
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      peer.callWithin(() -> {
+        PeerAuthSessionQuery.revokeEverywhere(raft, "session-token", TIMEOUT_MS);
+        return null;
+      });
+      watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a 1s fan-out deadline from an unbounded wait");
+
+      assertThat(peer.connectionClosedByCaller.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
     }
   }
 
@@ -155,6 +185,36 @@ class Issue8472PeerQueryBodyDeadlineTest {
       final ArcadeDBServer server = tlsServer();
       assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(server, "127.0.0.1:1",
           leader.address(), "test-token", Set.of("db"), TIMEOUT_MS));
+    }
+  }
+
+  /**
+   * {@code BootstrapElection.concludePass}: the fan-out telling every peer a bootstrap pass finished. Its HTTPS client
+   * is built per pass and closed once the fan-out's deadline expires, and {@code close()} waits for every exchange
+   * still running on it - so one that nothing cancelled kept the leader's bootstrap thread on a peer stalled inside
+   * its body, past the deadline that had already fired (found in review of the #8472 fix).
+   */
+  @Test
+  void aPassConclusionWhosePeerStallsInsideItsBodyOverTlsIsGivenUpOn() throws Exception {
+    try (final StallingBodyPeer peer = new StallingBodyPeer(tls())) {
+      final RaftPeerId peerId = RaftPeerId.valueOf("peer-1");
+      final RaftHAServer raft = mock(RaftHAServer.class);
+      when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
+      when(raft.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(peerId).build()));
+      when(raft.getHttpAddresses()).thenReturn(Map.of(peerId, "127.0.0.1:1"));
+      when(raft.getPeerHttpsAddress(peerId)).thenReturn(peer.address());
+      when(raft.getClusterToken()).thenReturn("test-token");
+      final BootstrapElection election = new BootstrapElection(raft, tlsServer());
+      election.probeAttemptTimeoutMs = TIMEOUT_MS;
+
+      final Method conclude = BootstrapElection.class.getDeclaredMethod("concludePass", String.class, List.class);
+      conclude.setAccessible(true);
+
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      peer.callWithin(() -> conclude.invoke(election, "pass-1", List.of()));
+      watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a 1s fan-out deadline from a close() waiting on the stalled body");
+
+      assertThat(peer.connectionClosedByCaller.await(GAVE_UP_BOUND_MS, TimeUnit.MILLISECONDS)).isTrue();
     }
   }
 
