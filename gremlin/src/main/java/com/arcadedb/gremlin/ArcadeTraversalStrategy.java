@@ -155,8 +155,8 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
                 // WALKS UP THE HIERARCHY: A SUPER TYPE'S INDEX SPANS ITS SIBLING SUB-TYPES TOO, WHICH THE STEP FILTERS
                 // OUT BY BUCKET (#8249)
                 final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
-                if (index == null)
-                  continue;
+                if (index == null || !index.getType().isExactKeyLookup())
+                  continue; // A FULL_TEXT INDEX ANSWERS BY TOKEN AND MISSES A VALUE WITH NONE (#8439)
                 final int rank = c.getBiPredicate() == Compare.eq ? (index.isUnique() ? 0 : 1) : 2;
                 if (rank < chosenRank) {
                   chosenRank = rank;

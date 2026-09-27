@@ -120,6 +120,10 @@ public class StatisticsProvider {
     // FETCH FROM INDEX / FILTER ITEMS BY TYPE plan does.
     final Collection<TypeIndex> indexes = type.getAllIndexes(true);
     for (final TypeIndex index : indexes) {
+      // Only a key index can anchor a seek or a range scan: a FULL_TEXT, vector or geospatial index handed an
+      // equality answers by token or similarity, and misses what it cannot tokenize (issue #8439)
+      if (!index.getType().isExactKeyLookup())
+        continue;
       final List<String> propertyNames = index.getPropertyNames();
       final boolean isUnique = index.isUnique();
       final String indexName = index.getName();

@@ -4499,6 +4499,15 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block,
       final DocumentType clazz) {
+    // Only a key index answers "the value equals the key". A FULL_TEXT index - BY ITEM included - answers by analyzer
+    // token (so `txt = 'two'` also matched the item 'two words' and 'Two') and parses the key as a query (so '--', '-two'
+    // or 'a:b' find nothing), and the vector and geospatial families answer a similarity or a shape. Handing them `=`,
+    // IN, CONTAINS, CONTAINSANY, CONTAINSALL and dropping the condition from the residual filter was answering them
+    // wrong in both directions; a recheck could remove the extra rows but never bring back the missing ones. CONTAINSTEXT
+    // reaches a FULL_TEXT index through buildIndexSearchDescriptorForFulltext instead (issues #8435, #8438).
+    if (!index.getType().isExactKeyLookup())
+      return null;
+
     final List<String> indexFields = index.getPropertyNames();
     boolean found = false;
 

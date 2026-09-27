@@ -79,7 +79,10 @@ public class ContainsAllCondition extends BooleanExpression {
       }
       return true;
     }
-    return false;
+
+    // A scalar left operand is the one-element collection it stands for (issue #8436, see ContainsAnyCondition): it
+    // contains all of the right-hand items only when every one of them equals it. A missing value stays false.
+    return left != null && execute(Collections.singletonList(left), right);
   }
 
   private static boolean containsItem(final Collection<?> collection, final Object item) {

@@ -828,8 +828,10 @@ public class SelectExecutor {
         return false;
 
       if (!(node.right instanceof SelectPropertyValue)) {
-        final TypeIndex propertyIndex = select.fromType.getPolymorphicIndexByProperties(
+        final TypeIndex found = select.fromType.getPolymorphicIndexByProperties(
             ((SelectPropertyValue) node.left).propertyName);
+        // A FULL_TEXT index answers by token and misses a value with none: the cursor must hold every match (#8439)
+        final TypeIndex propertyIndex = found != null && found.getType().isExactKeyLookup() ? found : null;
 
         if (propertyIndex != null)
           node.index = propertyIndex;

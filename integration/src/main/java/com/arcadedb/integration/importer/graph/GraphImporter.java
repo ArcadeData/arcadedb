@@ -1044,6 +1044,13 @@ public class GraphImporter implements AutoCloseable {
   public void run() throws Exception {
     final long start = System.currentTimeMillis();
 
+    // A bulk load commits every COMMIT_EVERY_ROWS rows and writes its edges through WAL-less batches of its own, none
+    // of which a caller's transaction can take back: a nested commit is independently durable. Refuse to start inside
+    // one rather than let the caller believe a rollback undid the import (issue #8171).
+    if (database.isTransactionActive())
+      throw new IllegalStateException("GraphImporter commits its own batches and cannot run inside a transaction the "
+          + "caller holds: commit or roll back the active transaction before starting the import");
+
     validateEdgeTargets();
 
     // Held around the WHOLE import, not only while one of the batches below is open. Each GraphBatch suspends the
