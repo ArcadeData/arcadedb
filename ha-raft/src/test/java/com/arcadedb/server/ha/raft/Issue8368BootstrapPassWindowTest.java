@@ -335,6 +335,76 @@ class Issue8368BootstrapPassWindowTest {
     assertThat(sm.bootstrapWindowReason()).isNull();
   }
 
+  /**
+   * Issue #8409: the leader running the pass holds its own copy from the start of the collection, before it knows
+   * whether its copy is the baseline, on readiness and on the request path alike.
+   */
+  @Test
+  void aLeaderHoldsItsOwnCopyWhileItCollects() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    final boolean[] heldWhileCollecting = new boolean[1];
+    final String[] reasonWhileCollecting = new String[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      reasonWhileCollecting[0] = sm.bootstrapWindowReason();
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), Long.MAX_VALUE / 2))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
+    assertThat(heldWhileCollecting[0]).as("the defect: the leader served its own copy while it collected").isTrue();
+    assertThat(reasonWhileCollecting[0]).contains("deciding which copy of 1 database(s)");
+  }
+
+  /**
+   * Issue #8409, the common case: the leader IS the source. Its hold outlives the collection only for the databases
+   * it committed a baseline for, until that baseline is applied here - the same rule its followers follow.
+   */
+  @Test
+  void aLeaderThatIsTheSourceIsReleasedByItsOwnBaseline() throws Exception {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    when(ha.getTransactionBroker()).thenReturn(mock(RaftTransactionBroker.class));
+    final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
+    election.probeRetryBackoffMs = 0L;
+    final boolean[] heldWhileCollecting = new boolean[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      // The remote copy is older than this node's: this node is the source.
+      return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.ok(
+          Map.of(DB_NAME, new BootstrapElection.PeerState(REMOTE_PEER, DB_NAME, "f".repeat(64), -1L))));
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.COMMITTED);
+    assertThat(heldWhileCollecting[0]).isTrue();
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).as("its baseline is committed but not yet applied here").isTrue();
+
+    assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(matchingBaseline(), 7L));
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+    assertThat(sm.bootstrapWindowReason()).isNull();
+  }
+
+  /** Issue #8409: a pass that fails while collecting releases the hold it took at its start. */
+  @Test
+  void aPassThatFailsWhileCollectingReleasesTheLeadersHold() {
+    final ArcadeStateMachine sm = stateMachine();
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    final BootstrapElection election = spy(new BootstrapElection(ha, passServer));
+    election.probeRetryBackoffMs = 0L;
+    final boolean[] heldWhileCollecting = new boolean[1];
+    doAnswer(invocation -> {
+      heldWhileCollecting[0] = sm.isBootstrapPassPending(DB_NAME);
+      throw new IllegalStateException("simulated collection failure");
+    }).when(election).queryPeer(eq(REMOTE_PEER), anyString(), any(), anyLong(), any(), anyString());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.FAILED);
+    assertThat(heldWhileCollecting[0]).isTrue();
+    assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+    assertThat(sm.bootstrapWindowReason()).isNull();
+  }
+
   private static final RaftPeerId LOCAL_PEER  = RaftPeerId.valueOf("local-8368");
   private ArcadeDBServer          passServer;
   private static final RaftPeerId REMOTE_PEER = RaftPeerId.valueOf("remote-8368");

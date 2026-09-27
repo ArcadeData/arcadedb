@@ -226,6 +226,17 @@ class BootstrapElection {
     final List<String> committed = new ArrayList<>();
     Outcome outcome = Outcome.FAILED;
     try {
+      // Issue #8409: the leader holds its own copies from the start of the pass, like every follower its probe
+      // reaches. Until decideAndAct has elected a source it cannot know its copy is the baseline, and it is the only
+      // node still serving while its followers are held: a read there may return a copy the pass then rejects, and a
+      // write commits an application entry that closes first formation on every node - so after a transfer the
+      // elected source's own pass skips and no baseline is ever committed. The common case, where the leader is the
+      // source, costs only the collection itself: its conclusion below releases every database it did not commit a
+      // baseline for, and the apply of each baseline it did commit releases that one.
+      final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+      if (stateMachine != null)
+        stateMachine.announceBootstrapPass(passId, pending,
+            2L * configuration.getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS));
       final Map<String, List<PeerState>> states = collectStates(pending, passId);
       outcome = decideAndAct(states, passId, committed);
       return outcome;
@@ -840,7 +851,8 @@ class BootstrapElection {
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: transferring leadership to elected source %s (freshest copy of the cluster)", source);
       // This node is about to become a follower of a pass that may reject its copies (issue #8368). The elected
-      // source's pass announces to it too, but only after the transfer and its own collection: hold them from now.
+      // source's pass announces to it too, but only after the transfer and its own collection: renew the hold this
+      // pass took at its start (issue #8409), so its deadline runs from here and covers the transfer.
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
       if (stateMachine != null)
         stateMachine.announceBootstrapPass(passId, states.keySet(), 2L * timeoutMs);
