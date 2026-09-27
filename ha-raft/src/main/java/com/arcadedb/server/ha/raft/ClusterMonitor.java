@@ -124,6 +124,10 @@ public class ClusterMonitor {
   private final    Consumer<String>                exhaustedPeerChannelHandler;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
+  // Source of ReplicaState.stallGeneration (issue #8490). Monitor-wide rather than per replica so a streak started
+  // after reset() - which discards every ReplicaState - can never reuse the generation of one started before it.
+  // Written only from the single lag-monitor thread.
+  private          long                            stallGenerationCounter;
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
   // thread writes it while the lag-monitor thread reads it (consistent with the other volatile fields).
   private volatile LongSupplier                    clock         = System::currentTimeMillis;
@@ -332,7 +336,7 @@ public class ClusterMonitor {
     // forces it to resync instead of merely logging forever. Tracked regardless of the log throttle.
     // The never-appended case (#5295) counts as stuck even with a small numeric lag, so the resync the
     // #4728 doc already promises for "matchIndex stuck at -1" actually engages here.
-    trackStallForRecovery(replicaId, state, matchIndex, replicaDelta, lag, neverAppended, now);
+    trackStallForRecovery(replicaId, state, matchIndex, replicaDelta, lag, neverAppended, unreachableStale, now);
 
     // Channel-level recovery (#4696): if the follower stays unreachable long enough, the leader resets
     // that follower's replication gRPC channel so a wedged appender re-resolves DNS and reconnects.
@@ -373,11 +377,17 @@ public class ClusterMonitor {
           // Issue #5295: distinct message - this is not a slow/disk-saturated replica, it has never
           // received a single append. The leader-driven resync (if enabled) re-engages it; a leadership
           // transfer, which rebuilds the appender, is the operator fallback.
-          LogManager.instance().log(this, Level.SEVERE,
-              """
-              Replica '%s' has NEVER received a single append (matchIndex=%d) while the leader committed up to \
-              %d, for %dms: its replication path is dead. The leader will force a resync to re-engage it; if it \
-              persists, transfer leadership to that follower's healthy peer to rebuild the appender.""",
+          LogManager.instance().log(this, Level.SEVERE, unreachableStale
+                  // Issue #8490: an unreachable follower is down or partitioned, not wedged. It catches up through
+                  // Raft when it returns, so no resync is forced while it is away.
+                  ? """
+                  Replica '%s' has NEVER received a single append (matchIndex=%d) while the leader committed up to \
+                  %d, for %dms, and it is unreachable. No resync is forced while it is down: it catches up through \
+                  Raft when it returns, and the resync engages only if it then stays reachable without progressing."""
+                  : """
+                  Replica '%s' has NEVER received a single append (matchIndex=%d) while the leader committed up to \
+                  %d, for %dms: its replication path is dead. The leader will force a resync to re-engage it; if it \
+                  persists, transfer leadership to that follower's healthy peer to rebuild the appender.""",
               replicaId, matchIndex, leaderIdx, now - state.neverAppendedSinceMs);
         else if (leaderDelta <= 0)
           // Issue #8341: the leader did not advance either. Most likely because it cannot: the stuck replica is
@@ -432,11 +442,27 @@ public class ClusterMonitor {
    * has not advanced at all since the streak began; it resets the moment the replica catches up (lag
    * drops to the threshold) or its {@code matchIndex} moves. The handler fires at most once per streak
    * and re-arms only after a reset.
+   * <p>
+   * A follower that is UNREACHABLE (no successful RPC for {@link #peerUnreachableThresholdMs}) is never in a streak
+   * (issue #8490). A stopped or partitioned node is not a stuck one: it catches up through ordinary Raft replication
+   * once it returns, and forcing it to drop its databases only throws away a copy that was about to be current - the
+   * order is carried out whenever the follower next answers, long after it was decided. Its {@code matchIndex} does
+   * not move while it is away, so without this a node held down for longer than {@link #stalledResyncDurationMs}
+   * always tripped the recovery. The streak re-arms from scratch when it reconnects, so the resync engages only for a
+   * follower that stays reachable without progressing for the full duration. With the unreachable threshold disabled
+   * ({@code <= 0}) reachability is unknown and the previous behaviour is kept.
    */
   private void trackStallForRecovery(final String replicaId, final ReplicaState state, final long matchIndex,
-      final long replicaDelta, final long lag, final boolean neverAppended, final long now) {
+      final long replicaDelta, final long lag, final boolean neverAppended, final boolean unreachable, final long now) {
     if (stalledResyncDurationMs <= 0 || stalledReplicaHandler == null)
       return; // detection/logging still run, but leader-driven recovery is disabled
+
+    state.unreachable = unreachable;
+    if (unreachable) {
+      state.stalledSinceMs = -1;
+      state.resyncTriggered = false;
+      return;
+    }
 
     // A follower is "behind" enough to recover either when it lags past the warning threshold, or when it
     // has never received a single append (issue #5295): the latter is a dead replication path whose tiny
@@ -457,6 +483,7 @@ public class ClusterMonitor {
       // Not in a streak: start one when the replica is over the lag threshold and its matchIndex did
       // not advance this tick. The duration guard below absorbs transient blips.
       if (behind && replicaDelta <= 0) {
+        state.stallGeneration = ++stallGenerationCounter;
         state.stalledSinceMs = now;
         state.stalledAtMatchIndex = matchIndex;
       }
@@ -621,6 +648,39 @@ public class ClusterMonitor {
   }
 
   /**
+   * Whether the leader-driven resync fired for {@code replicaId} is still warranted, read just before the leader
+   * sends it (issue #8490). The order is decided on the lag-monitor thread and carried out on another one, possibly
+   * much later: true only while the SAME stall streak is still running ({@code stallGeneration} is the one the order
+   * was decided in, so neither a recovery nor a later streak can revive it, and a leadership change wiped it), the
+   * replica is still reachable, and its {@code matchIndex} has not moved past the value the decision was based on.
+   * <p>
+   * The fields are read without a lock, so the combination is not an atomic snapshot of one tick. That is enough for
+   * what this is - the leader's last look before sending - because the follower checks the order again against its
+   * own state before it drops anything.
+   */
+  boolean isStalledResyncStillWarranted(final String replicaId, final long stallGeneration,
+      final long observedMatchIndex) {
+    final ReplicaState s = replicaStates.get(replicaId);
+    return s != null && s.stallGeneration == stallGeneration && s.resyncTriggered && s.stalledSinceMs != -1
+        && !s.unreachable && s.lastMatchIndex <= observedMatchIndex;
+  }
+
+  /**
+   * The generation of {@code replicaId}'s current stall streak, or {@code -1} when no tick has been recorded yet.
+   * Captured with a resync order so {@link #isStalledResyncStillWarranted} can tell that streak from a later one.
+   */
+  long getStallGeneration(final String replicaId) {
+    final ReplicaState s = replicaStates.get(replicaId);
+    return s == null ? -1 : s.stallGeneration;
+  }
+
+  /** The last {@code matchIndex} recorded for {@code replicaId}, or {@code -1} if no tick has been recorded yet. */
+  long getReplicaMatchIndex(final String replicaId) {
+    final ReplicaState s = replicaStates.get(replicaId);
+    return s == null ? -1 : s.lastMatchIndex;
+  }
+
+  /**
    * Returns the latest classified status for {@code replicaId}, or {@link ReplicaStatus#UNKNOWN}
    * if no tick has been recorded yet (e.g. just-started leader, or peer that has never replied).
    */
@@ -695,7 +755,7 @@ public class ClusterMonitor {
 
   /** Per-replica tracking. Mutated only from the single lag-monitor thread. */
   private static final class ReplicaState {
-    long          lastMatchIndex;
+    volatile long lastMatchIndex;
     long          lastLeaderCommitIndex;
     long          lastLag;
     long          lastWarnAtMs;
@@ -704,16 +764,22 @@ public class ClusterMonitor {
     // Read cross-thread (status JSON / metrics), written on the lag-monitor thread - same tolerated-
     // staleness contract as the snapshot fields above (issue #4812: surface "how long it's been slow").
     long          laggingSinceMs    = -1;
-    // Stall-streak state for leader-driven recovery. Unlike the snapshot fields above (which the
-    // status table / lag map read cross-thread, tolerating staleness), these three are BOTH written
-    // and read only from the single lag-monitor thread, so they need no synchronization. Any future
-    // change that reads or mutates them from another thread MUST add it.
+    // Stall-streak state for leader-driven recovery. Written only from the single lag-monitor thread; volatile
+    // because the resync task re-reads stalledSinceMs, resyncTriggered and unreachable from the resync executor
+    // just before it sends the order (isStalledResyncStillWarranted, issue #8490).
     // Wall-clock time (ms) when the current uninterrupted stall streak began; -1 = not stalled.
-    long          stalledSinceMs        = -1;
-    // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it.
-    long          stalledAtMatchIndex   = -1;
+    volatile long    stalledSinceMs        = -1;
+    // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it. Not volatile,
+    // unlike its neighbours: only trackStallForRecovery reads it, on the lag-monitor thread. Make it volatile before
+    // reading it from anywhere else.
+    long             stalledAtMatchIndex   = -1;
+    // Identifies the current stall streak (issue #8490): taken from ClusterMonitor.stallGenerationCounter when the
+    // streak starts, so a resync order decided in one streak is never taken for one decided in the next.
+    volatile long    stallGeneration       = 0;
     // True once the leader-driven resync has been fired for the current streak (re-armed on recovery).
-    boolean       resyncTriggered       = false;
+    volatile boolean resyncTriggered       = false;
+    // Whether the replica was unreachable on the last tick the recovery looked at (issue #8490).
+    volatile boolean unreachable           = false;
     // Wall-clock time (ms) when the replica was first observed still at the never-appended sentinel
     // (matchIndex < 0 while the leader already holds committed entries); -1 = it has appended at least
     // once or the leader has no committed entries yet (issue #5295).

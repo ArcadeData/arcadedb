@@ -2159,7 +2159,7 @@ public enum GlobalConfiguration {
       Long.class, 90000L),
 
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
-      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
+      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Also the signal the leader-driven stalled-replica resync (HA_STALLED_REPLICA_RESYNC_DURATION_MS) uses to tell a follower that is down from one that is stuck: no resync is forced while a follower is unreachable, and its stall timer starts over when it reconnects (issue #8490). Setting it to 0 turns that protection off along with the narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
   HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
@@ -2398,8 +2398,12 @@ public enum GlobalConfiguration {
       command it has to forward to the leader. During cluster startup or a leader change there is a window \
       with no elected leader; without this wait a forwarded write fails immediately with "leader HTTP address \
       is not available" and the caller's transaction is lost (issue #4728 follow-up). The follower polls for \
-      the leader and forwards as soon as one appears. Set to 0 to restore the previous fail-fast behavior. \
-      Default 20000 comfortably covers a first-election window (which can exceed 10s on cluster startup).""",
+      the leader and forwards as soon as one appears. It also bounds how long a follower holds back a forwarded \
+      request's "not the leader" refusal that names no leader - the answer of a leader that just stepped down - \
+      until its own view stops naming that node, so the client's retry is not routed straight back to it (SQL \
+      writes, server commands and batch loads; issues #8480 and #8486). Set to 0 to restore the previous \
+      fail-fast behavior. Default 20000 comfortably covers a first-election window (which can exceed 10s on \
+      cluster startup).""",
       Long.class, 20000L),
 
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
