@@ -226,7 +226,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
               .header("Content-Type", "application/json").build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "drop database");
@@ -436,7 +436,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
           HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
@@ -472,7 +472,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
               .build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
@@ -512,7 +512,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           createRequestBuilder("POST", getUrl("rollback", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
               .build();
 
-      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "rollback transaction");
@@ -977,14 +977,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     InputStream body = null;
     try {
+      // No request timeout: on JDK 26+ it covers the whole body, which would cap how long a result may stream.
+      // sendStreamed bounds the wait for the headers and then every read of the body instead (issue #8473).
       final HttpRequest request = addReadConsistencyHeaders(
-          createRequestBuilder("POST", getUrl(operation + "/" + databaseName)))
+          createRequestBuilder("POST", getUrl(operation + "/" + databaseName), false))
           .method("POST", HttpRequest.BodyPublishers.ofString(jsonRequest.toString()))
           .header("Content-Type", "application/json")
           .header("Accept", NDJSON_CONTENT_TYPE)
           .build();
 
-      final HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+      final HttpResponse<InputStream> response = sendStreamed(request, getTimeout());
       body = response.body();
 
       // Before the status check, and deliberately: on an HA cluster the bookmark is meaningful on a refused
@@ -1101,7 +1103,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     try {
       final HttpRequest request = createRequestBuilder("GET", getUrl("progress", databaseName)).GET().build();
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200)
         throw new RemoteException("Error on requesting operation progress", manageException(response, "progress"));
@@ -1156,7 +1158,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Content-Type", "text/plain")
           .build();
 
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = sendWithWatchdog(request);
 
       // Captured unconditionally, not only on success: a partial write's already-appended samples are durable,
       // so a READ_YOUR_WRITES client that skipped the bookmark on the 400 would silently miss them - the same
@@ -1314,7 +1316,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     try {
       final HttpRequest request = createRequestBuilder("GET", url.toString()).GET().build();
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = sendWithWatchdog(request);
 
       if (response.statusCode() != 200)
         // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
@@ -1344,7 +1346,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Content-Type", "application/json")
           .build();
 
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = sendWithWatchdog(request);
       if (response.statusCode() != 200)
         // asRuntime, not a fixed "Error on time series <endpoint>" with the reason hung off it as the cause
         // (issue #7716). The server names the offending member in its refusal - which is the whole point of
@@ -1434,8 +1436,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       setStickyTransactionServer(null);
   }
 
-  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
-    HttpRequest.Builder builder = super.createRequestBuilder(httpMethod, url);
+  /**
+   * Adds the transaction's session header. Overrides the three-argument form, which the two-argument one delegates to,
+   * so a request built without the request timeout - a streamed query or batch load (issue #8473) - still runs inside
+   * the caller's open transaction.
+   */
+  @Override
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url, final boolean withRequestTimeout) {
+    final HttpRequest.Builder builder = super.createRequestBuilder(httpMethod, url, withRequestTimeout);
 
     if (getSessionId() != null)
       builder.header(ARCADEDB_SESSION_ID, getSessionId());
@@ -1481,17 +1489,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
 
     try {
-      final HttpRequest.Builder builder = createRequestBuilder("POST", batchUrl(queryParams))
+      // The streamed answer carries no request timeout, which on JDK 26+ would cap how long the load may report
+      // progress; sendStreamed bounds the wait for the headers and then every read of the body (issue #8473).
+      final HttpRequest.Builder builder = createRequestBuilder("POST", batchUrl(queryParams), onProgress == null)
           .POST(HttpRequest.BodyPublishers.ofString(content))
           .header("Content-Type", NDJSON_CONTENT_TYPE);
 
       if (onProgress != null)
-        return readStreamedBatch(
-            httpClient.send(builder.header("Accept", NDJSON_CONTENT_TYPE).build(),
-                HttpResponse.BodyHandlers.ofInputStream()),
+        return readStreamedBatch(sendStreamed(builder.header("Accept", NDJSON_CONTENT_TYPE).build(), getTimeout()),
             onProgress);
 
-      final HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = sendWithWatchdog(builder.build());
 
       // GraphBatch commits internally every commitEvery records (issue #5862), so unlike a single
       // begin/commit/rollback a non-200 response here can still carry chunks the server already made

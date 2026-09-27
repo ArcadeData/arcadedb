@@ -31,6 +31,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -40,10 +41,12 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -53,11 +56,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
+
+import javax.net.ssl.SSLSession;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -169,23 +172,70 @@ public class RemoteHttpComponent extends RWLockContext {
   /**
    * Package-private overload that accepts an explicit watchdog budget, used by tests to exercise the
    * watchdog without waiting on the 30 second floor computed by {@link #computeWatchdogMs(int)}.
+   * <p>
+   * The budget covers the whole exchange, body included, on every JDK: the request's own timeout does not (issue
+   * #8473), since on JDK 21-25 it stops once the response headers arrive. On a timeout the exchange is cancelled
+   * rather than abandoned, so the connection and its buffers are released instead of draining unbounded in the
+   * background (see issue #5847), and the same happens when the waiting thread is interrupted.
    */
   HttpResponse<String> sendWithWatchdog(final HttpRequest request, final long watchdogMs) throws IOException, InterruptedException {
-    final CompletableFuture<HttpResponse<String>> future = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
-    try {
-      return future.get(watchdogMs, TimeUnit.MILLISECONDS);
-    } catch (final java.util.concurrent.TimeoutException e) {
-      // The exchange is not just abandoned: cancel it so the connection and its buffers are released
-      // instead of draining unbounded in the background (see issue #5847).
-      future.cancel(true);
-      throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
-    } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof IOException ioe)
-        throw ioe;
-      if (cause instanceof InterruptedException ie)
-        throw ie;
-      throw new IOException("HTTP request failed: " + request.uri(), cause);
+    return BoundedHttpExchange.send(httpClient, request, HttpResponse.BodyHandlers.ofString(), watchdogMs,
+        "HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri());
+  }
+
+  /**
+   * Sends a request whose answer is STREAMED and returns once its headers have arrived, with its body bounded by
+   * silence rather than by length (issue #8473).
+   * <p>
+   * The wait for the headers is bounded by {@code timeoutMs}, and so is every later read of the body: a server that
+   * keeps sending keeps the stream alive however long the result is, and one that stops for longer than that fails
+   * the read with an {@link java.net.http.HttpTimeoutException}. The request must therefore carry no timeout of its
+   * own (see {@link #createRequestBuilder(String, String, boolean)}), which on JDK 26+ would cap the stream's total
+   * length.
+   */
+  HttpResponse<InputStream> sendStreamed(final HttpRequest request, final long timeoutMs)
+      throws IOException, InterruptedException {
+    final HttpResponse<InputStream> response = BoundedHttpExchange.send(httpClient, request,
+        HttpResponse.BodyHandlers.ofInputStream(), timeoutMs);
+    return new SilenceBoundedResponse(response, BoundedHttpExchange.silenceBounded(response.body(), timeoutMs));
+  }
+
+  /** A streamed answer whose body is the silence-bounded wrapper of the original one; everything else delegates. */
+  private record SilenceBoundedResponse(HttpResponse<InputStream> response, InputStream body)
+      implements HttpResponse<InputStream> {
+    @Override
+    public int statusCode() {
+      return response.statusCode();
+    }
+
+    @Override
+    public HttpRequest request() {
+      return response.request();
+    }
+
+    @Override
+    public Optional<HttpResponse<InputStream>> previousResponse() {
+      return response.previousResponse();
+    }
+
+    @Override
+    public HttpHeaders headers() {
+      return response.headers();
+    }
+
+    @Override
+    public Optional<SSLSession> sslSession() {
+      return response.sslSession();
+    }
+
+    @Override
+    public URI uri() {
+      return response.uri();
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return response.version();
     }
   }
 
@@ -594,13 +644,25 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
+    return createRequestBuilder(httpMethod, url, true);
+  }
+
+  /**
+   * @param withRequestTimeout whether the request carries the connection's timeout as its own. A request whose answer
+   *                           is read as a stream passes {@code false}: on JDK 26+ that timeout covers the whole body
+   *                           and would cap the stream's total length, so {@link #sendStreamed} bounds it instead
+   *                           (issue #8473)
+   */
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url, final boolean withRequestTimeout) {
     final String authHeader = getBasicAuthorizationHeader();
 
-    return HttpRequest.newBuilder()
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
-        .timeout(Duration.ofMillis(timeout))
         .header("charset", "utf-8")
         .header("Authorization", authHeader);
+    if (withRequestTimeout)
+      builder.timeout(Duration.ofMillis(timeout));
+    return builder;
   }
 
   void requestClusterConfiguration() {

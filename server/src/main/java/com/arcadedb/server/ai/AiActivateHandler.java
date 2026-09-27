@@ -20,6 +20,7 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -47,6 +48,14 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
   // a SelectorManager NIO thread that survives until the client is GC'd; per-instance
   // clients leaked dozens of threads per server start under the integration-test suite.
   private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+
+  /**
+   * How long the gateway has to answer an activation, body included. Enforced by {@link BoundedHttpExchange#send}
+   * rather than by the request timeout alone, which on JDK 21-25 stops once the response headers arrive (issue #8473).
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
+   */
+  static volatile long gatewayTimeoutMs = 15_000L;
 
   private final AiConfiguration config;
 
@@ -89,10 +98,11 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
           .uri(URI.create(config.getGatewayUrl() + "/api/activate"))//
           .header("Content-Type", "application/json")//
           .POST(HttpRequest.BodyPublishers.ofString(activationRequest.toString()))//
-          .timeout(Duration.ofSeconds(15))//
+          .timeout(Duration.ofMillis(gatewayTimeoutMs))//
           .build();
 
-      final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
+          HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
 
       if (response.statusCode() != 200) {
         String errorMsg = "Activation failed";
