@@ -145,6 +145,20 @@ class ContainsAnyConditionTest {
     assertThat(op.execute(Arrays.<Object>asList(1, 2).iterator(), Arrays.asList(9, 2))).isTrue();
   }
 
+  /**
+   * Issue #8436: a scalar left operand is the one-element collection it stands for, so it answers like IN does.
+   */
+  @Test
+  void scalarLeftIsASingletonCollection() {
+    final ContainsAnyCondition op = new ContainsAnyCondition();
+
+    assertThat(op.execute("u1", Arrays.asList("u1", "u2"))).isTrue();
+    assertThat(op.execute("u3", Arrays.asList("u1", "u2"))).isFalse();
+    assertThat(op.execute("u1", "u1")).isTrue();
+    assertThat(op.execute(2, new long[] { 9L, 2L })).isTrue();
+    assertThat(op.execute(null, Arrays.asList("u1", null))).isFalse();
+  }
+
   @Test
   void issue1785() {
     final ContainsAnyCondition op = new ContainsAnyCondition();

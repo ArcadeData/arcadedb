@@ -1115,6 +1115,8 @@ public class MergeStep extends AbstractExecutionStep {
     // records and every sibling child's - and findAllNodes(), unlike the anchor walk, re-verifies only the
     // properties, so a MERGE could otherwise match a record of the wrong type and skip the creation.
     for (final TypeIndex index : type.getAllIndexes(true)) {
+      if (!index.getType().isExactKeyLookup())
+        continue; // a FULL_TEXT index answers by token, and misses a value with none: MERGE would duplicate it (#8439)
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();

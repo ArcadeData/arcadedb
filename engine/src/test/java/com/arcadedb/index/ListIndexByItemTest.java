@@ -352,14 +352,15 @@ public class ListIndexByItemTest extends TestHelper {
       ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
       assertThat(ids).containsExactlyInAnyOrder(1, 3);
 
-      // Query documents containing "database" in tags list
-      result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags = 'database'");
+      // Query documents containing "database" in tags list: CONTAINS, an exact item match, which a FULL_TEXT index does
+      // not answer (issue #8438) - it only answers CONTAINSTEXT
+      result = database.query("sql", "SELECT FROM SimpleListDoc WHERE tags CONTAINS 'database'");
       ids = result.stream().map(r -> r.<Integer>getProperty("id")).toList();
       assertThat(ids).containsExactlyInAnyOrder(1, 2);
 
       // Verify index is being used
       String explain = database.query("sql",
-              "EXPLAIN SELECT FROM SimpleListDoc WHERE tags = 'java'")
+              "EXPLAIN SELECT FROM SimpleListDoc WHERE tags CONTAINSTEXT 'java'")
           .next()
           .getProperty("executionPlan")
           .toString();

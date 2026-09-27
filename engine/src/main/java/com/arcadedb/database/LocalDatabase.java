@@ -1108,6 +1108,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (idx == null)
         throw new IllegalArgumentException(
             "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
+      if (!idx.getType().isExactKeyLookup())
+        // A FULL_TEXT (or vector, geospatial) index does not answer "value equals key": handing its answer back as one
+        // attached edges to every vertex sharing a token with the key, and to none when the key has no token (#8439)
+        throw new IllegalArgumentException(
+            "No key index has been created on type '" + type + "' properties " + Arrays.toString(keyNames) + ": index '"
+                + idx.getName() + "' is " + idx.getType() + " and cannot look up a record by exact key");
 
       return idx.get(keyValues);
     });

@@ -119,30 +119,27 @@ class GraphImporterFailedSourceTest {
   }
 
   /**
-   * The case the issue reports: the caller already holds a transaction, so {@code database.begin()}
-   * pushes a nested one. Leaving it there shadows the caller's - the caller's next {@code commit()}
-   * pops the importer's instead, committing rows the importer had abandoned and leaving the
-   * caller's own work uncommitted and still open.
+   * The caller already holds a transaction. A bulk load commits its own batches, which the caller's rollback could never
+   * take back, so it refuses to start (issue #8171) - and in doing so leaves the caller's transaction, and the work in
+   * it, untouched: one commit for the one transaction the caller opened lands on the caller's own work.
    */
   @Test
-  void aFailedVertexSourceGivesTheCallerItsOwnTransactionBack() throws Exception {
+  void aCallerTransactionIsRefusedAndLeftToTheCaller() throws Exception {
     database.begin();
     database.newVertex("Marker").set("name", "caller").save();
 
     try (final GraphImporter importer = GraphImporter.builder(database)
-        .vertex("Row", rows(10, 5), v -> {
+        .vertex("Row", rows(10, -1), v -> {
           v.id("id");
           v.intProperty("score", "score");
         })
         .build()) {
 
       assertThatThrownBy(importer::run)
-          .isInstanceOf(IllegalArgumentException.class)
-          .hasMessageContaining("score");
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("inside a transaction");
     }
 
-    // The caller commits the transaction it opened, unaware that the importer failed inside one of
-    // its own. That commit has to land on the caller's work
     database.commit();
 
     assertThat(database.isTransactionActive())
@@ -152,7 +149,7 @@ class GraphImporterFailedSourceTest {
         .as("the caller's own record must be what its commit made durable")
         .isEqualTo(1);
     assertThat(countOf("Row"))
-        .as("the importer's abandoned rows must not ride out on the caller's commit")
+        .as("the importer wrote nothing")
         .isZero();
   }
 

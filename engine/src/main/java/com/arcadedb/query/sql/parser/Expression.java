@@ -489,6 +489,8 @@ public class Expression extends SimpleNode {
     if (mathExpression != null) {
       mathExpression.extractSubQueries(collector);
     }
+    if (whereCondition != null)
+      whereCondition.extractSubQueries(collector);
     if (arrayConcatExpression != null) {
       arrayConcatExpression.extractSubQueries(collector);
     }
@@ -501,6 +503,8 @@ public class Expression extends SimpleNode {
     if (mathExpression != null) {
       mathExpression.extractSubQueries(letAlias, collector);
     }
+    if (whereCondition != null)
+      whereCondition.extractSubQueries(collector);
     if (arrayConcatExpression != null) {
       arrayConcatExpression.extractSubQueries(collector);
     }
@@ -529,6 +533,8 @@ public class Expression extends SimpleNode {
    */
   public boolean containsInputParameter() {
     if (mathExpression != null && mathExpression.containsInputParameter())
+      return true;
+    if (whereCondition != null && whereCondition.getBaseExpression() != null && whereCondition.getBaseExpression().containsInputParameter())
       return true;
     return value instanceof MathExpression me && me.containsInputParameter();
   }
@@ -602,9 +608,15 @@ public class Expression extends SimpleNode {
         booleanValue, value };
   }
 
+  /**
+   * Every child that can read the record, the context or a parameter. {@link #whereCondition} (a parenthesized boolean
+   * such as {@code ($parent.flag = true and $parent.office = 1)}) used to be missing, so {@link #refersToParent()} and
+   * {@link #isCacheable()} never looked inside it and a LET subquery whose only {@code $parent} reference sat there was
+   * planned as a global LET, evaluated once for every row (issue #8442).
+   */
   @Override
   protected SimpleNode[] getCacheableElements() {
-    return new SimpleNode[] { mathExpression, arrayConcatExpression, json };
+    return new SimpleNode[] { mathExpression, arrayConcatExpression, json, whereCondition };
   }
 
   public String prettyPrint(final int depth, final int indent) {

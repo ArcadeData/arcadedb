@@ -149,19 +149,20 @@ public class FullTextListByItemTest extends TestHelper {
 
   @Test
   void fullTextByItemEquality() {
-    // Test equality operator with FULL_TEXT BY ITEM index (should work)
+    // A FULL_TEXT index answers by token, so it never answers an exact operator (issue #8438): `=` on a list keeps the
+    // scan meaning (a one-item list equals its item), and CONTAINS is the operator for "some item equals"
     database.transaction(() ->
       database.command("sql", "CREATE INDEX ON doc (txt BY ITEM) FULL_TEXT"));
 
     database.transaction(() -> {
       database.command("sql", "INSERT INTO doc SET txt = ['one','two','three']");
       database.command("sql", "INSERT INTO doc SET txt = ['four','five','six']");
+      database.command("sql", "INSERT INTO doc SET txt = ['two']");
     });
 
     database.transaction(() -> {
-      ResultSet result = database.query("sql", "SELECT FROM doc WHERE txt = 'two'");
-      assertThat(result.hasNext()).as("Equality operator should find 'two'").isTrue();
-      assertThat(result.stream().count()).isEqualTo(1);
+      assertThat(database.query("sql", "SELECT FROM doc WHERE txt = 'two'").stream().count()).isEqualTo(1);
+      assertThat(database.query("sql", "SELECT FROM doc WHERE txt CONTAINS 'two'").stream().count()).isEqualTo(2);
     });
   }
 

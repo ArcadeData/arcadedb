@@ -696,6 +696,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     List<String> bestMatchedProperties = null;
 
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
+      if (!index.getType().isExactKeyLookup())
+        continue; // a FULL_TEXT index answers by token, and misses a value with none (issue #8439)
       final List<String> indexProperties = index.getPropertyNames();
 
       // Check how many properties match as a leftmost prefix
@@ -796,6 +798,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     List<String> bestMatchedProperties = null;
 
     for (final TypeIndex index : polymorphicIndexesOf(type)) {
+      if (!index.getType().isExactKeyLookup())
+        continue; // a FULL_TEXT index answers by token, and misses a value with none (issue #8439)
       final List<String> indexProperties = index.getPropertyNames();
       int matchCount = 0;
       final List<String> matchedProperties = new ArrayList<>();

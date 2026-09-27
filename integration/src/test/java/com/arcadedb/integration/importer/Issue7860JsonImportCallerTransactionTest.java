@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -47,9 +48,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue7860JsonImportCallerTransactionTest {
 
   /**
-   * The issue's own repro: a UNIQUE index the array's second record duplicates, which an LSM index raises at commit
-   * time and not at {@code save()}, so the throw comes out of {@code commit()} itself - the one failure that moves
-   * the rollback's target.
+   * The issue's own repro: a UNIQUE index the array's second record duplicates. Since issue #8171 the import no longer
+   * commits anything inside a transaction the caller owns: both records land in the caller's transaction, where the
+   * index sees the first one and refuses the second at {@code save()}. The import still fails loudly, and the
+   * transaction - with the caller's own work in it - is still the caller's to resolve.
    */
   @Test
   void aCommitFailureDoesNotDiscardTheCallersOwnPendingWork() throws Exception {
@@ -81,19 +83,17 @@ class Issue7860JsonImportCallerTransactionTest {
 
       assertThatThrownBy(importer::load)
           .as("the duplicate key still fails the import, loudly")
-          .isInstanceOf(ImportException.class);
+          .isInstanceOf(ImportException.class)
+          .hasRootCauseInstanceOf(DuplicatedKeyException.class);
 
       assertThat(db.isTransactionActive())
           .as("the caller's transaction is still theirs to resolve, not something the import rolled back")
           .isTrue();
+      // The caller decides: discarding the transaction discards the import together with the caller's own work.
+      db.rollback();
 
-      // And the work in it is still pending: committing it now makes it durable, which it could not be if the
-      // import had rolled the transaction back.
-      db.commit();
-
-      assertThat(db.query("sql", "SELECT FROM Marker WHERE tag = 'mine'").stream().count())
-          .as("the caller's own record survived the import's failure")
-          .isEqualTo(1);
+      assertThat(db.countType("Doc", false)).as("nothing of the import was committed on its own").isZero();
+      assertThat(db.countType("Marker", false)).isZero();
     } finally {
       if (db.isTransactionActive())
         db.rollback();
@@ -142,8 +142,8 @@ class Issue7860JsonImportCallerTransactionTest {
 
       assertThat(db.query("sql", "SELECT FROM Marker WHERE tag = 'mine'").stream().count()).isEqualTo(1);
       assertThat(db.countType("Food", false))
-          .as("the failing record's own nested level was discarded - the loop commits per record, so the one before "
-              + "it is durable and the failing one left nothing behind")
+          .as("the record before the failing one is in the caller's transaction and lands with its commit, the "
+              + "failing one left nothing behind")
           .isEqualTo(1);
     } finally {
       if (db.isTransactionActive())

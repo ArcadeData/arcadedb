@@ -57,10 +57,12 @@ import static com.google.gson.stream.JsonToken.END_ARRAY;
 import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 /**
- * On {@code -onRowError skip}, {@code parseRecords} always begins a fresh, nested transaction per record ({@code
- * database.begin()} pushes an independent {@code TransactionContext} rather than reusing an active one - see {@code
- * LocalDatabase#begin()}), so its own commit/rollback can never affect a pre-existing caller transaction. See
- * {@link ImporterSettings#isSkipOnRowError()} for the full contract.
+ * When the import owns the transaction ({@link ImporterContext#importOwnsTransaction}), {@code parseRecords} commits
+ * every record in a transaction of its own, so {@code -onRowError skip} can discard one record without touching the
+ * others. When the caller already holds a transaction, the records are created in it and nothing here commits: a
+ * nested commit is independently durable, so the caller's rollback would not take them back (issue #8171).
+ * {@code -onRowError skip} is refused in that case, since discarding one record would mean rolling back the caller's.
+ * See {@link ImporterSettings#isSkipOnRowError()} for the full contract.
  */
 public class JSONImporterFormat implements FormatImporter {
   static class CascadingProperties {
@@ -158,10 +160,20 @@ public class JSONImporterFormat implements FormatImporter {
     // loop). Cleared right before every commit, set right after every begin.
     final AtomicBoolean txOpen = new AtomicBoolean();
 
-    database.begin();
-    txOpen.set(true);
+    // Whether the transaction the records land in belongs to the import, as opposed to the caller's, and so whether
+    // the loop may commit it per record and at the end. A nested commit() is independently durable, so beginning and
+    // committing our own level inside a caller's transaction made every record survive the caller's rollback
+    // (issue #8171). Read once, here, before anything below opens a transaction: after that one is always active.
+    // When the caller owns it, the records are created in the caller's transaction and the caller decides when, and
+    // whether, to commit - exactly as JsonlImporterFormat, CSVImporterFormat and RDFImporterFormat do.
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
+
+    if (ownsTransaction) {
+      database.begin();
+      txOpen.set(true);
+    }
     try {
-      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen);
+      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen, ownsTransaction);
     } catch (final IOException | RuntimeException e) {
       // Gated on txOpen rather than on database.isTransactionActive() alone: a failure that left our own level on
       // the stack still has to discard it, and one that did not - a throw out of commit() - must not reach past it
@@ -175,7 +187,8 @@ public class JSONImporterFormat implements FormatImporter {
   }
 
   private void parseRecordsArray(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
-      final ImporterContext context, final JSONArray mapping, boolean ignore, final AtomicBoolean txOpen) throws IOException {
+      final ImporterContext context, final JSONArray mapping, boolean ignore, final AtomicBoolean txOpen,
+      final boolean ownsTransaction) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
@@ -232,8 +245,10 @@ public class JSONImporterFormat implements FormatImporter {
         // Cleared BEFORE the call, not after it: commit() pops the transaction in a finally, so a commit that throws
         // has already taken our level off the stack and whatever isTransactionActive() reports below belongs to
         // somebody else (issue #7860).
-        txOpen.set(false);
-        database.commit();
+        if (ownsTransaction) {
+          txOpen.set(false);
+          database.commit();
+        }
       } catch (final RuntimeException e) {
         if (txOpen.get() && database.isTransactionActive()) {
           txOpen.set(false);
@@ -253,8 +268,10 @@ public class JSONImporterFormat implements FormatImporter {
         context.errors.incrementAndGet();
       }
 
-      database.begin();
-      txOpen.set(true);
+      if (ownsTransaction) {
+        database.begin();
+        txOpen.set(true);
+      }
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
       // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
@@ -274,8 +291,10 @@ public class JSONImporterFormat implements FormatImporter {
       }
     }
 
-    txOpen.set(false);
-    database.commit();
+    if (ownsTransaction) {
+      txOpen.set(false);
+      database.commit();
+    }
 
     reader.endArray();
   }
