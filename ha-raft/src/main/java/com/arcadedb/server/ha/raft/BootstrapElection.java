@@ -235,7 +235,7 @@ class BootstrapElection {
       // baseline for, and the apply of each baseline it did commit releases that one.
       holdOwnCopies(passId, pending);
       final Map<String, List<PeerState>> states = collectStates(pending, passId);
-      outcome = decideAndAct(states, passId, committed);
+      outcome = decideAndAct(states, pending, passId, committed);
       return outcome;
     } catch (final Throwable t) {
       LogManager.instance().log(this, Level.WARNING,
@@ -844,7 +844,7 @@ class BootstrapElection {
    * without committing anything (when a remote peer is elected). See the class Javadoc for why a
    * single source is both correct and sufficient under ArcadeDB's one-leader-per-cluster model.
    */
-  private Outcome decideAndAct(final Map<String, List<PeerState>> states, final String passId,
+  private Outcome decideAndAct(final Map<String, List<PeerState>> states, final List<String> held, final String passId,
       final List<String> committedOut) {
     final RaftPeerId localId = haServer.getLocalPeerId();
     final long timeoutMs = server.getConfiguration()
@@ -867,9 +867,13 @@ class BootstrapElection {
       // source's pass announces to it too, but only after the transfer and its own collection. The hold this pass
       // took at its start (issue #8409) has no deadline, because this pass concludes it; from here the new source's
       // pass does, and a source that dies sends no conclusion, so the hold is replaced by a bounded one.
+      // Every database this pass holds, not only those the collection reported: one missing from the states (dropped
+      // locally mid-pass) would otherwise keep its unbounded self-hold, since a transfer concludes nothing here.
+      final Set<String> toHold = new HashSet<>(states.keySet());
+      toHold.addAll(held);
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
       if (stateMachine != null)
-        stateMachine.announceBootstrapPass(passId, states.keySet(), 2L * timeoutMs);
+        stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
       try {
         haServer.transferLeadership(source.toString(), timeoutMs);
       } catch (final Exception e) {

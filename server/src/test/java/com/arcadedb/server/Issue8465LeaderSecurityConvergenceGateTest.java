@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -74,6 +75,7 @@ class Issue8465LeaderSecurityConvergenceGateTest {
    * node led is restarted, so the step-down gets a full window for its catch-up to be answered.
    */
   @Test
+  @Tag("slow")
   void leadingRestartsTheWindowInsteadOfSpendingIt() throws InterruptedException {
     final long windowMs = 2_000L;
     final HAServerPlugin ha = staticMemberHa("users");

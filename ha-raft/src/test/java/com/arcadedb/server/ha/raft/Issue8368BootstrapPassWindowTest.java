@@ -34,9 +34,11 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -392,6 +394,7 @@ class Issue8368BootstrapPassWindowTest {
    * before a source is elected. The probe answers after 2.5 s.
    */
   @Test
+  @Tag("slow")
   void theLeadersHoldCannotLapseWhileItsPassIsStillCollecting() {
     final ArcadeStateMachine sm = stateMachine();
     final RaftHAServer ha = leaderOfAPassThatElects(sm);
@@ -427,6 +430,28 @@ class Issue8368BootstrapPassWindowTest {
     sm.holdOwnBootstrapPass("pass-2", List.of(DB_NAME));
     sm.concludeBootstrapPass(null, List.of());
     assertThat(sm.isBootstrapPassPending(DB_NAME)).isFalse();
+  }
+
+  /**
+   * Review of PR #8477: a database the pass holds but the collection did not report (dropped locally mid-pass) is
+   * bounded at the transfer like the others, rather than keeping the leader's unbounded self-hold for good.
+   */
+  @Test
+  void aTransferBoundsEveryDatabaseThePassHolds() {
+    final ArcadeStateMachine sm = spy(stateMachine());
+    final RaftHAServer ha = leaderOfAPassThatElects(sm);
+    // Listed when the pass starts, gone by the time the local states are computed: no peer reports it.
+    when(passServer.getDatabaseNames()).thenReturn(Set.of(DB_NAME, "gone-8477"));
+    final BootstrapElection election = electionWhereTheRemotePeerIsFresher(ha);
+    final Collection<String>[] boundedAtTransfer = new Collection[1];
+    doAnswer(invocation -> {
+      boundedAtTransfer[0] = invocation.getArgument(1);
+      return invocation.callRealMethod();
+    }).when(sm).announceBootstrapPass(anyString(), any(), anyLong());
+
+    assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.TRANSFERRED);
+    assertThat(boundedAtTransfer[0]).as("the pass's held databases, not only the reported states")
+        .contains(DB_NAME, "gone-8477");
   }
 
   /** Issue #8409: a pass that fails while collecting releases the hold it took at its start. */
