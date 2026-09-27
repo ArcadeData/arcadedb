@@ -563,5 +563,17 @@ public interface Schema {
     public boolean buildCanShareCallerTransaction() {
       return this != LSM_VECTOR && this != LSM_SPARSE_VECTOR;
     }
+
+    /**
+     * Whether {@code get(key)} on an index of this type answers the records whose indexed value EQUALS the key. Only the
+     * key indexes do. A FULL_TEXT index answers a key by analyzer tokens parsed as a query (so {@code 'a'} also finds
+     * {@code 'a b'}, and a value that tokenizes to nothing, such as {@code '--'}, finds nothing at all), and the vector
+     * and geospatial families answer a similarity or a shape. Every exact lookup by property value - lookupByKey, the
+     * Cypher node seek and MERGE, the Java select API, Gremlin's {@code has()} - must skip the others rather than filter
+     * their answer afterwards, because what they miss cannot be filtered back in (issue #8439).
+     */
+    public boolean isExactKeyLookup() {
+      return this == LSM_TREE || this == HASH;
+    }
   }
 }
