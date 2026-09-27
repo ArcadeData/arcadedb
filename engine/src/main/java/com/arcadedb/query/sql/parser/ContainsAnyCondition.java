@@ -55,6 +55,12 @@ public class ContainsAnyCondition extends BooleanExpression {
         leftItems.add(leftIterator.next());
       return containsAny(leftItems, right);
     }
+    // A scalar left operand ("uuid CONTAINSANY ?") is membership on one value: treat it as a
+    // single-element collection, the same semantics IN gives to the same query shape. Before,
+    // a scalar fell through to `false`, so the condition silently matched nothing for every
+    // parameter binding (issue #8436).
+    if (left != null)
+      return containsAny(List.of(left), right);
     return false;
   }
 
