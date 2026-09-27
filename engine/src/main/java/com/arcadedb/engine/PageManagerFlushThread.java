@@ -169,6 +169,12 @@ public class PageManagerFlushThread extends Thread {
    * maintained there and nowhere else.
    */
   final                FlushPageIndex                         pageIndex = new FlushPageIndex();
+  /**
+   * Committed pages whose write to disk FAILED, newest copy per page. See {@link #registerFailedFlush}.
+   */
+  private final        ConcurrentHashMap<PageId, MutablePage>     failedFlushPages = new ConcurrentHashMap<>();
+  private static final long                                       FAILED_FLUSH_RETRY_INTERVAL_MS = 1_000L;
+  private              long                                       lastFailedFlushRetryMs;
 
   /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
@@ -657,6 +663,8 @@ public class PageManagerFlushThread extends Thread {
         // FLUSH ALL THE PAGES
         flushPagesFromQueueToDisk(null, 1_000L);
 
+        retryFailedFlushes();
+
       } catch (final InterruptedException e) {
         running = false;
       } catch (final Throwable e) {
@@ -851,7 +859,8 @@ public class PageManagerFlushThread extends Thread {
                   break;
                 }
                 try {
-                  pageManager.flushPage(page);
+                  if (pageManager.flushPage(page))
+                    supersedeFailedFlush(page);
                 } catch (final InterruptedIOException e) {
                   if (Thread.currentThread() != this)
                     throw e;
@@ -868,7 +877,8 @@ public class PageManagerFlushThread extends Thread {
                   Thread.interrupted();
                   running = false;
                   try {
-                    pageManager.flushPage(page);
+                    if (pageManager.flushPage(page))
+                      supersedeFailedFlush(page);
                   } catch (final DatabaseMetadataException e2) {
                     // FILE DELETED, CONTINUE WITH THE NEXT PAGES (same handling as the primary attempt). Unlike
                     // a genuine I/O failure, there is nothing left to recover this page onto - ack its WAL file
@@ -883,6 +893,7 @@ public class PageManagerFlushThread extends Thread {
                     LogManager.instance().log(this, Level.SEVERE,
                         "Error on flushing page '%s' to disk after interrupt, the page will be recovered from the WAL on restart",
                         e2, page);
+                    registerFailedFlush(page);
                     // A re-interrupt set the flag again: clear it so the rest of the batch can reach the disk.
                     Thread.interrupted();
                   }
@@ -902,6 +913,7 @@ public class PageManagerFlushThread extends Thread {
                   // once the read cache evicts it, readers see the stale on-disk version.
                   LogManager.instance().log(this, Level.SEVERE,
                       "Error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e, page);
+                  registerFailedFlush(page);
                 } catch (final RuntimeException e) {
                   // Same containment as the IOException above, for an UNCHECKED failure (issue #7363). Without it
                   // an IllegalArgumentException out of PaginatedComponentFile.write() - what a file closed under
@@ -915,6 +927,7 @@ public class PageManagerFlushThread extends Thread {
                   LogManager.instance().log(this, Level.SEVERE,
                       "Unexpected error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e,
                       page);
+                  registerFailedFlush(page);
                 } finally {
                   // Remove from index AFTER flushing: the page is now on disk and will be
                   // found in the read cache (putPageInReadCache was called at commit time).
@@ -1187,9 +1200,10 @@ public class PageManagerFlushThread extends Thread {
                   // it at the source is exact, and per database, so no reset can ever wipe a sibling's live count.
                   // Its WAL ack is released too (issue #6440): nothing will ever replay it once the database is
                   // gone, and withholding the ack only strands TransactionManager.close()'s retry loop.
-                  if (batch.database.isOpen())
-                    pageManager.flushPage(page);
-                  else
+                  if (batch.database.isOpen()) {
+                    if (pageManager.flushPage(page))
+                      supersedeFailedFlush(page);
+                  } else
                     ackWalFileOfAbandonedPage(page);
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES. Nothing left to recover this page onto - ack its
@@ -1202,7 +1216,8 @@ public class PageManagerFlushThread extends Thread {
                   restoreCallerInterrupt = true;
                   Thread.interrupted();
                   try {
-                    pageManager.flushPage(page);
+                    if (pageManager.flushPage(page))
+                      supersedeFailedFlush(page);
                   } catch (final DatabaseMetadataException e2) {
                     // File dropped: nothing left to recover this page onto - ack its WAL file (issue #6440).
                     LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
@@ -1214,10 +1229,12 @@ public class PageManagerFlushThread extends Thread {
                     // deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
                     // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
                     LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                    registerFailedFlush(page);
                     Thread.interrupted();
                   }
                 } catch (final IOException e) {
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+                  registerFailedFlush(page);
                 } catch (final Throwable e) {
                   // ONE PAGE'S UNEXPECTED FAILURE MUST NOT ABANDON THE REST OF THE BACKLOG (review of #6223). Letting
                   // it escape this loop left every page after it in the batch without the finally below: still in
@@ -1230,6 +1247,7 @@ public class PageManagerFlushThread extends Thread {
                   LogManager.instance().log(this, Level.SEVERE,
                       "Unexpected error on flushing deferred page '%s' to disk, the page will be recovered from the WAL on restart",
                       e, page);
+                  registerFailedFlush(page);
                 } finally {
                   // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
                   addDeferredRAM(database, -page.getPhysicalSize());
@@ -1612,11 +1630,94 @@ public class PageManagerFlushThread extends Thread {
     return bytes;
   }
 
+  long getFailedFlushPageCount() {
+    return failedFlushPages.size();
+  }
+
   public CachedPage getCachedPageFromMutablePageInQueue(final PageId pageId) {
-    final MutablePage page = pageIndex.get(pageId);
+    MutablePage page = pageIndex.get(pageId);
+    if (!failedFlushPages.isEmpty()) {
+      final MutablePage failed = failedFlushPages.get(pageId);
+      if (failed != null && (page == null || failed.getVersion() > page.getVersion()))
+        page = failed;
+    }
     if (page != null)
       return new CachedPage(page, true);
     return null;
+  }
+
+  /**
+   * Keeps a committed page whose write to disk failed where every read can still find it.
+   * <p>
+   * Before this, the failed page left {@link #pageIndex} like a written one and survived only in the read cache: once
+   * the cache evicted it, {@link PageManager#loadPage} read the OLDER image from the file, and so did the commit-time
+   * version probe, so the next transaction on that page was built on stale content, passed its MVCC check and silently
+   * overwrote the committed update - on a bucket page a record rewritten from its previous content, or a chunk slot
+   * handed to a second record while the first one still points at it. The WAL ack is still withheld, so the page is
+   * recovered from the WAL on the next open exactly as before; this only stops the running database from reading
+   * behind its own commits, and lets {@link #retryFailedFlushes} put the page on disk once the disk accepts it again.
+   * <p>
+   * Not counted as pending: {@link #waitAllPagesOfDatabaseAreFlushed} keeps the #4928 guarantee of never hanging on a
+   * page the disk refuses.
+   */
+  void registerFailedFlush(final MutablePage page) {
+    failedFlushPages.merge(page.getPageId(), page,
+        (current, failed) -> failed.getVersion() >= current.getVersion() ? failed : current);
+  }
+
+  /**
+   * A copy of {@code flushed}'s page reached the disk: any older failed copy is superseded by it, a full page image
+   * covering it, so it is dropped and its WAL ack released - the same policy as the superseded copies
+   * {@link PageManager#materializePendingFlushOfPage} writes over.
+   */
+  private void supersedeFailedFlush(final MutablePage flushed) {
+    if (failedFlushPages.isEmpty())
+      return;
+    final MutablePage[] superseded = new MutablePage[1];
+    failedFlushPages.computeIfPresent(flushed.getPageId(), (id, failed) -> {
+      if (failed == flushed || failed.getVersion() <= flushed.getVersion()) {
+        superseded[0] = failed;
+        return null;
+      }
+      return failed;
+    });
+    if (superseded[0] != null && superseded[0] != flushed)
+      ackWalFileOfAbandonedPage(superseded[0]);
+  }
+
+  /**
+   * Writes again the pages whose flush failed, at most once per {@link #FAILED_FLUSH_RETRY_INTERVAL_MS}. Runs on this
+   * thread only, under the same per-database lock {@link #detachPendingPages} takes, so a replicated write of the page
+   * can never be overtaken by the retry of an older copy. A database whose flushing is suspended is left alone: a
+   * suspension promises the files do not change.
+   */
+  private void retryFailedFlushes() {
+    if (failedFlushPages.isEmpty())
+      return;
+    final long now = System.currentTimeMillis();
+    if (now - lastFailedFlushRetryMs < FAILED_FLUSH_RETRY_INTERVAL_MS)
+      return;
+    lastFailedFlushRetryMs = now;
+
+    for (final MutablePage page : failedFlushPages.values()) {
+      final Database database = (Database) page.getPageId().getDatabase();
+      if (!database.isOpen() || isSuspended(database))
+        continue;
+      synchronized (replayDrainLock(database)) {
+        if (failedFlushPages.get(page.getPageId()) != page)
+          // Superseded or detached meanwhile
+          continue;
+        try {
+          // Written, or released because its database or file is gone: either way the copy is settled
+          final boolean written = pageManager.flushPage(page);
+          failedFlushPages.remove(page.getPageId(), page);
+          if (written)
+            LogManager.instance().log(this, Level.INFO, "Page '%s' reached the disk on retry after a failed flush", page);
+        } catch (final IOException | RuntimeException e) {
+          LogManager.instance().log(this, Level.FINE, "Retry of the failed flush of page '%s' failed again", e, page);
+        }
+      }
+    }
   }
 
   public void removeAllPagesOfDatabase(final Database database) {
@@ -1657,6 +1758,10 @@ public class PageManagerFlushThread extends Thread {
 
     // Also clean index entries for pages currently being flushed, and forget the database's pending count with them
     pageIndex.removeAllOfDatabase(database);
+
+    // Failed copies go with the instance, by reference identity for the same reason as above. Their WAL acks stay
+    // withheld: on a close they are what the next open replays (#4928).
+    failedFlushPages.values().removeIf(page -> page.getPageId().getDatabase() == database);
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
@@ -1723,6 +1828,12 @@ public class PageManagerFlushThread extends Thread {
 
     // Finally clean any index entry for a page currently being flushed.
     pageIndex.removeAllOfFile(database, fileId);
+
+    for (final MutablePage page : failedFlushPages.values()) {
+      final PageId pageId = page.getPageId();
+      if (pageId.getFileId() == fileId && pageId.getDatabase() == database && failedFlushPages.remove(pageId, page))
+        ackWalFileOfAbandonedPage(page);
+    }
   }
 
   /**
@@ -1761,12 +1872,18 @@ public class PageManagerFlushThread extends Thread {
     // conservative: it skips the walk only when the WHOLE pipeline is empty, because a copy can outlive its
     // pageIndex entry (a newer instance flushed out of order removes the entry while an older one is still queued),
     // so "no entry for this pageId" alone would not prove the batches are clean.
-    if (pageIndex.isEmpty() && queue.isEmpty() && deferredRAMBytes.get() == 0 && nextPagesToFlush.get() == null)
+    if (pageIndex.isEmpty() && queue.isEmpty() && deferredRAMBytes.get() == 0 && nextPagesToFlush.get() == null
+        && failedFlushPages.isEmpty())
       return Collections.emptyList();
 
     synchronized (replayDrainLock(database)) {
       final MutablePage indexed = pageIndex.remove(pageId);
       final List<MutablePage> detached = new ArrayList<>(1);
+
+      // A copy whose flush failed is pending too: it is the baseline the caller's write goes on top of
+      final MutablePage failed = failedFlushPages.get(pageId);
+      if (failed != null && failed.getPageId().getDatabase() == database && failedFlushPages.remove(pageId, failed))
+        detached.add(failed);
 
       // Iterated directly rather than through a snapshot: LinkedBlockingQueue's iterator is weakly consistent and
       // never throws ConcurrentModificationException, and this runs per replayed page, so the copy would be pure
