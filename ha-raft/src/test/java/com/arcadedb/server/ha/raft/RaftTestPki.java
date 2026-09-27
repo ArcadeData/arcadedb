@@ -218,6 +218,19 @@ final class RaftTestPki {
     return context(null, trustedBy);
   }
 
+  /**
+   * Builds a JSSE context that presents this authority's node certificate as a SERVER identity, for a raw TLS
+   * listener standing in for a peer's HTTPS endpoint. It trusts nothing, since it never asks for a client
+   * certificate.
+   */
+  static SSLContext serverContext(final RaftTestPki identity) throws Exception {
+    final KeyManagerFactory keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    keyManagers.init(load(identity.nodeKeyStore), PASSWORD.toCharArray());
+    final SSLContext context = SSLContext.getInstance("TLS");
+    context.init(keyManagers.getKeyManagers(), null, null);
+    return context;
+  }
+
   private static SSLContext context(final KeyManagerFactory keyManagers, final RaftTestPki trustedBy)
       throws Exception {
     final TrustManagerFactory trustManagers = TrustManagerFactory.getInstance(

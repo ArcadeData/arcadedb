@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -334,8 +335,17 @@ class BootstrapElection {
           final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
         }
-        CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
-            .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        try {
+          CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
+              .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        } finally {
+          // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
+          // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
+          // JDK 21-25, where the request timeout stops at the response headers (issue #8472). A send that already
+          // completed ignores the cancel.
+          for (final CompletableFuture<HttpResponse<String>> send : sends)
+            send.cancel(true);
+        }
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -723,13 +733,16 @@ class BootstrapElection {
       PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
     try {
       final HttpRequest request = bootstrapStateRequestTo(url, clusterToken, timeoutMs);
+      // Bounded by sendBounded rather than by the request timeout alone, which on JDK 21-25 stops at the response
+      // headers: a leader that stalls inside its body would otherwise park the state-machine thread asking for its
+      // bootstrap baselines with no bound at all (issue #8472).
       final HttpResponse<String> response;
       if (url.startsWith("https://"))
         try (final HttpClient client = newTrustingClient(server)) {
-          response = client.send(request, HttpResponse.BodyHandlers.ofString());
+          response = LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
         }
       else
-        response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        response = LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
       if (response.statusCode() != 200) {
         LogManager.instance().log(BootstrapElection.class, Level.INFO,
             "bootstrap-state probe of %s answered HTTP %d", url, response.statusCode());
