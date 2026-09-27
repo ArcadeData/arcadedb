@@ -450,6 +450,8 @@ class RaftClusterManager {
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     final RaftPeerId targetId = RaftPeerId.valueOf(targetPeerId);
     final RaftPeerId selfId = raftHAServer.getLocalPeerId();
+    // One budget for every attempt, not a fresh one per retry: a retry starts only before the deadline, each RPC gets
+    // what is left of it, and each settle wait gets what is left floored at leaderConfirmGraceMs.
     final long deadline = System.currentTimeMillis() + timeoutMs;
     for (int attempt = 1; ; attempt++) {
       final Exception failure = sendTransfer(targetId, Math.max(deadline - System.currentTimeMillis(), 1));
@@ -504,7 +506,7 @@ class RaftClusterManager {
       if (reply.isSuccess())
         return null;
       final Exception failure = reply.getException();
-      return failure != null ? failure : new ConfigurationException("the transfer was not accepted");
+      return failure != null ? failure : new ConfigurationException("Ratis refused the transfer without giving a reason");
     } catch (final IOException e) {
       return e;
     }
@@ -524,6 +526,8 @@ class RaftClusterManager {
     final long deadline = System.currentTimeMillis() + waitMs;
     while (true) {
       final RaftPeerId leaderId = raftHAServer.getLeaderId();
+      // Two reads, not one snapshot: this node can lose the role between them. Accepted - a stale "this node" verdict
+      // only leads to the isLeader() re-check before a retry, never to a success being reported.
       if (leaderId != null && (!leaderId.equals(selfId) || raftHAServer.isLeader()))
         return leaderId;
       if (System.currentTimeMillis() >= deadline)
