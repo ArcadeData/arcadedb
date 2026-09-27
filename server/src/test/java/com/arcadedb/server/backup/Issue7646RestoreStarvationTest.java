@@ -152,11 +152,11 @@ class Issue7646RestoreStarvationTest {
 
   /**
    * Blocks until the waiting restore is actually REGISTERED, proved by the guard it registers for: a fresh export
-   * answered with {@link Operation#RESTORE} can only come from {@code isRestoreWaiting}, since no restore holds
+   * answered with {@link Operation#RESTORE} can only come from the waiter guard, since no restore holds
    * the slot yet (the export the waiter is parked behind does).
    * <p>
    * A started thread, or one still alive after a short join, proves neither - the thread can be alive and not yet
-   * have reached {@code restoreStartedWaiting}, which would make everything asserted after it either
+   * have reached {@code startedWaiting}, which would make everything asserted after it either
    * scheduling-dependent or a false positive (review of PR #7649). This waits on the state itself instead.
    * <p>
    * The refusals it consumes are the point rather than a side effect: they ARE the behaviour under test, and every

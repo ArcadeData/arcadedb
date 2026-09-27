@@ -134,6 +134,15 @@ public interface MaintenanceCoordinator {
     }
 
     /**
+     * Whether this kind excludes every other operation, including a second of its own kind: {@link #RESTORE},
+     * {@link #DROP} and {@link #CLOSE}. A coordinator that gives a waiting operation priority over new arrivals
+     * (issues #7646, #8452) asks this rather than naming the kinds, so a new such kind is covered there too.
+     */
+    public boolean excludesEverything() {
+      return excludesEverything(this);
+    }
+
+    /**
      * The kinds that take the database away from every other operation: {@link #RESTORE} and {@link #DROP} replace
      * or delete its directory, {@link #CLOSE} closes the instance they all work through. Named rather than spelled
      * out inline so the next such kind is added in one place instead of two halves of one condition.
