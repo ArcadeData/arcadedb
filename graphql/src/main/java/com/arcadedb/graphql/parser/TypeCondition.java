@@ -27,5 +27,7 @@ public class TypeCondition extends SimpleNode {
     super(id);
   }
 
+  public String getTypeName() {
+    return name != null ? name.getName() : null;
+  }
 }
-/* ParserGeneratorCC - OriginalChecksum=29df67b79bac10f7c2d7db706ec651dc (do not edit this line) */

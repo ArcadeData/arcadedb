@@ -26,5 +26,12 @@ public class FragmentSpread extends SimpleNode {
   public FragmentSpread(final int id) {
     super(id);
   }
+
+  public String getName() {
+    return name != null ? name.getName() : null;
+  }
+
+  public Directives getDirectives() {
+    return directives;
+  }
 }
-/* ParserGeneratorCC - OriginalChecksum=d963ff13f71ad79b35665827792399de (do not edit this line) */
