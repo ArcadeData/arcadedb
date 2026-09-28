@@ -2316,7 +2316,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
       // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
       // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
-      completeSnapshotInstall(snapshotIndex, notInstalled);
+      // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
+      // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
+      completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -7015,7 +7017,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled) {
-    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true);
+    completeSnapshotInstall(snapshotIndex, notInstalled, Set.of());
+  }
+
+  /**
+   * Same, except that the databases in {@code notRefreshed} - kept by the install without being refreshed, the ones the
+   * leader does not hold (issue #8588) - keep their own applied position too. Unlike {@code notInstalled} they are not
+   * quarantined and get no read floor: the leader has no committed state for them to be behind.
+   */
+  void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled, final Set<String> notRefreshed) {
+    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true, notRefreshed);
   }
 
   /**
@@ -7024,6 +7035,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
       final boolean recordAppliedPositions) {
+    return settleDivergedStateAfterInstall(notInstalled, snapshotIndex, recordAppliedPositions, Set.of());
+  }
+
+  private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
+      final boolean recordAppliedPositions, final Set<String> notRefreshed) {
     final Map<String, Long> published = new LinkedHashMap<>();
     final boolean durable;
     // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
@@ -7037,7 +7053,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         globalAppliedIndex = snapshotIndex;
         if (server != null)
           for (final String dbName : server.getDatabaseNames())
-            if (!notInstalled.contains(dbName))
+            if (!notInstalled.contains(dbName) && !notRefreshed.contains(dbName))
               appliedIndexByDb.put(dbName, snapshotIndex);
       }
       for (final String dbName : notInstalled) {

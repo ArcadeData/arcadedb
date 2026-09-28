@@ -391,13 +391,60 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     leaderServes(OTHER_DB);
     final DatabaseReconciler reconciler = legacyReconciler();
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    final DatabaseReconciler.ReconcileFromLeaderResult result =
+        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
 
     assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
     assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
     assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+    assertThat(result.notInstalled()).as("not quarantined by the install").isEmpty();
+    assertThat(result.leaderMissing()).as("but handed back as not refreshed").containsExactly(DB_NAME);
     assertThat(server.existsDatabase(DB_NAME)).as("still registered").isTrue();
     assertThat(liveCount(DB_NAME)).as("the local copy is kept").isEqualTo(LIVE_COUNT);
+  }
+
+  /**
+   * The auto-acquire reconcile hands its LEADER_MISSING databases back too (issue #8588), so the leader-driven install
+   * does not record a copy it never refreshed as being at the snapshot index.
+   */
+  @Test
+  void theAutoAcquireReconcileHandsBackARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    final DatabaseReconciler reconciler = new DatabaseReconciler() {
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) {
+        return new LeaderDatabaseQuery.BootstrapState(List.of(new LeaderDatabaseQuery.DatabaseInfo(OTHER_DB, 1L)),
+            TermIndex.valueOf(3L, MARKER));
+      }
+    };
+    reconciler.setServer(server);
+
+    final DatabaseReconciler.ReconcileFromLeaderResult result =
+        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+
+    assertThat(result.notInstalled()).isEmpty();
+    assertThat(result.leaderMissing()).containsExactly(DB_NAME);
+    assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+  }
+
+  /**
+   * The leader-driven install records the snapshot index for every database it refreshed, but a LEADER_MISSING one keeps
+   * its own position - and, unlike a database the install gave up on, is neither quarantined nor clamped (issue #8588).
+   */
+  @Test
+  void theInstallDoesNotRecordALeaderMissingDatabaseAtTheSnapshotIndex() {
+    createLocalDatabase(OTHER_DB);
+    sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
+    sm.markStateDiverged(DB_NAME);
+
+    sm.completeSnapshotInstall(MARKER, Set.of(), Set.of(DB_NAME));
+
+    assertThat(sm.readPersistedAppliedIndex(OTHER_DB)).isEqualTo(MARKER);
+    assertThat(sm.readPersistedAppliedIndex(DB_NAME)).as("not laundered into applied").isEqualTo(FLOOR);
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).as("not quarantined").isFalse();
+    assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("nor clamped").isEqualTo(-1L);
   }
 
   /** Any other failure of a registered database still fails the legacy install, so Ratis retries it (issue #8588). */
