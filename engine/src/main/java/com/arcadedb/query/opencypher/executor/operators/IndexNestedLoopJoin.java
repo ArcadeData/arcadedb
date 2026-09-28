@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
@@ -143,7 +144,10 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
           finish();
           return;
         }
-        index = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
+        // The very index the planner chose, by name: one dropped and created again with other properties or of another
+        // kind since the plan was made (a hash index cannot walk the key prefix a range seek needs) asks for a new plan
+        final Index named = schema.existsIndex(indexName) ? schema.getIndexByName(indexName) : null;
+        index = named instanceof TypeIndex typeIndex && typeIndex.getPropertyNames().equals(indexProperties) ? typeIndex : null;
         if (index == null)
           throw new CommandExecutionException(
               "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");

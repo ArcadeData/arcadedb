@@ -99,12 +99,16 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       private boolean finished    = false;
 
       private Result currentProbe;
-      // The build rows the current probe row is paired with: either every row, or the ones listed in candidates
+      // The build rows the current probe row is paired with: every row, or the rows of its key merged with the
+      // unhashable ones, both ascending, walked side by side without building the merged list
       private boolean allCandidates;
-      private int[]   candidates;
-      private final int[] oneCandidate = new int[1];
-      private int     candidateCount;
-      private int     candidateIndex;
+      private int     allCount;
+      private int     allIndex;
+      private int[]   keyed;
+      private final int[] oneKeyed = new int[1];
+      private int     keyedCount;
+      private int     keyedIndex;
+      private int     unhashableIndex;
       private Result  pending;
 
       @Override
@@ -193,10 +197,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       private boolean advance() {
         while (!finished) {
           if (currentProbe != null) {
-            while (candidateIndex < candidateCount) {
+            int index;
+            while ((index = nextCandidate()) >= 0) {
               guard.check();
-              final int index = allCandidates ? candidateIndex : candidates[candidateIndex];
-              ++candidateIndex;
               // A compact buffer answers null for a row whose record was deleted since it was buffered
               final Result buildRow = buildRows.get(index);
               if (buildRow != null && (pairFilter == null || (buildLeft ?
@@ -219,55 +222,44 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       }
 
       private void selectCandidates(final Object key) {
-        candidateIndex = 0;
         allCandidates = false;
-        if (key == EquiJoinKey.NO_MATCH) {
-          candidateCount = 0;
+        allCount = 0;
+        allIndex = 0;
+        keyedCount = 0;
+        keyedIndex = 0;
+        unhashableIndex = unhashableRows.size;
+        if (key == EquiJoinKey.NO_MATCH)
           return;
-        }
         if (key == EquiJoinKey.UNHASHABLE) {
           allCandidates = true;
-          candidateCount = buildRows.size();
+          allCount = buildRows.size();
           return;
         }
 
         final Object matching = rowsByKey.get(key);
-        if (unhashableRows.size == 0) {
-          if (matching == null)
-            candidateCount = 0;
-          else if (matching instanceof Integer single) {
-            oneCandidate[0] = single;
-            candidates = oneCandidate;
-            candidateCount = 1;
-          } else {
-            candidates = ((IntList) matching).values;
-            candidateCount = ((IntList) matching).size;
-          }
-          return;
-        }
-
-        // Merge the rows of the key with the unhashable ones, so the pairs keep the order of the build input
-        final int[] keyed;
-        final int keyedCount;
-        if (matching == null) {
-          keyed = null;
-          keyedCount = 0;
-        } else if (matching instanceof Integer single) {
-          keyed = new int[] { single };
+        if (matching instanceof Integer single) {
+          oneKeyed[0] = single;
+          keyed = oneKeyed;
           keyedCount = 1;
-        } else {
+        } else if (matching != null) {
           keyed = ((IntList) matching).values;
           keyedCount = ((IntList) matching).size;
         }
-        final int[] merged = new int[keyedCount + unhashableRows.size];
-        int k = 0;
-        int u = 0;
-        int m = 0;
-        while (k < keyedCount || u < unhashableRows.size)
-          merged[m++] = u >= unhashableRows.size || (k < keyedCount && keyed[k] < unhashableRows.values[u]) ?
-              keyed[k++] : unhashableRows.values[u++];
-        candidates = merged;
-        candidateCount = merged.length;
+        // Every probe row is paired with the unhashable build rows too
+        unhashableIndex = 0;
+      }
+
+      // The next build row to pair the current probe row with, in the order the build input produced them, or -1
+      private int nextCandidate() {
+        if (allCandidates)
+          return allIndex < allCount ? allIndex++ : -1;
+        final boolean keyedLeft = keyedIndex < keyedCount;
+        final boolean unhashableLeft = unhashableIndex < unhashableRows.size;
+        if (keyedLeft && (!unhashableLeft || keyed[keyedIndex] < unhashableRows.values[unhashableIndex]))
+          return keyed[keyedIndex++];
+        if (unhashableLeft)
+          return unhashableRows.values[unhashableIndex++];
+        return -1;
       }
 
       private void finish() {
@@ -286,9 +278,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           buildRows.clear();
         rowsByKey = null;
         unhashableRows = null;
-        // The candidates of the last key may be the array of the rows of a key: it goes with the table
-        candidates = null;
-        candidateCount = 0;
+        // The rows of the last key are an array of the table: it goes with it
+        keyed = null;
+        keyedCount = 0;
         // The hash table goes with the rows
         if (joinLimit != null)
           joinLimit.release();

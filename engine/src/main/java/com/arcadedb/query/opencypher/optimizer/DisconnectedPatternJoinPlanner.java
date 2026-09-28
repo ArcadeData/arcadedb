@@ -81,6 +81,9 @@ import java.util.function.UnaryOperator;
  * </ul>
  * The join order is greedy and left-deep: the cheapest pair first, then the cheapest part to join onto it. With three or
  * more parts a plan joining two later parts with each other before the first is not considered.
+ * <p>
+ * A conjunct reading one part is evaluated once per row of that part rather than once per combination: the same rows
+ * pass, but a non-deterministic function in it (rand()) is called fewer times, which Cypher leaves unspecified.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
