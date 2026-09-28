@@ -20,9 +20,14 @@ package com.arcadedb.query;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
+import com.arcadedb.query.opencypher.executor.operators.RowBuffer;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -216,6 +221,49 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
   }
 
   @Test
+  void anEagerForeachHoldsItsRowsUnderTheBudget() {
+    // A FOREACH followed by a read holds every input row until its last write is applied (issue #6922)
+    final String query = "MATCH (p:P) FOREACH (x IN [1] | SET p.f = x) WITH p CALL meta.stats() YIELD value AS stats "
+        + "RETURN count(*) AS c";
+    final QueryHeapTracker others = holdAllBut(MB / 2);
+    try {
+      assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", query).close()))
+          .isInstanceOf(QueryHeapBudgetExceededException.class);
+    } finally {
+      others.close();
+    }
+    assertThat(countRows("opencypher", "MATCH (p:P) WHERE p.f = 1 RETURN p")).as("rolled back").isZero();
+
+    database.transaction(() -> database.command("opencypher", query).close());
+    assertThat(countRows("opencypher", "MATCH (p:P) WHERE p.f = 1 RETURN p")).isEqualTo(ROWS);
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+  }
+
+  @Test
+  void aCompactingJoinBufferAdjustsOnlyItsOwnShareOfTheOperation() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase((DatabaseInternal) database);
+    final OperationHeapLimit limit = OperationHeapLimit.of(context, "hash join");
+    // THE HASH TABLE OVER THE ROWS, CHARGED TO THE SAME OPERATION AS THE BUFFER
+    limit.charge(MB);
+
+    final RowBuffer buffer = new RowBuffer(database, limit, 5);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (q:Q) RETURN q LIMIT 10")) {
+      while (rs.hasNext()) {
+        final ResultInternal row = new ResultInternal();
+        row.setProperty("q", rs.next().getProperty("q"));
+        buffer.add(row);
+      }
+    }
+    assertThat(buffer.isCompact()).isTrue();
+    assertThat(limit.getChargedBytes()).as("the compaction kept the table's charge").isEqualTo(MB + 10L * 12);
+
+    buffer.clear();
+    assertThat(limit.getChargedBytes()).as("the buffer gave back its own share only").isEqualTo(MB);
+    limit.release();
+  }
+
+  @Test
   void concurrentQueriesCannotHoldMoreThanTheBudget() throws Exception {
     final String query = "SELECT FROM Doc ORDER BY name";
     final long single = measureReservation("sql", query);
@@ -257,8 +305,10 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       });
       workers[t].start();
     }
-    for (final Thread worker : workers)
+    for (final Thread worker : workers) {
       worker.join(60_000);
+      assertThat(worker.isAlive()).as("the worker finished").isFalse();
+    }
 
     assertThat(unexpected).isEmpty();
     assertThat(completed.get() + refused.get()).isEqualTo(threads);

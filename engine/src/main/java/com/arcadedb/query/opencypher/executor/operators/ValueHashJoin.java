@@ -87,6 +87,7 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       private Map<Object, Object> rowsByKey;
       /** The right rows whose key cannot be hashed, ascending: every left row is paired with them. */
       private IntList unhashableRows;
+      private OperationHeapLimit joinLimit;
       private boolean initialized = false;
       private boolean finished    = false;
 
@@ -135,7 +136,8 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
         }
 
         // The rows and the hash table over them are charged to one operation, released with the buffer
-        final OperationHeapLimit limit = OperationHeapLimit.of(context, "hash join");
+        joinLimit = OperationHeapLimit.of(context, "hash join");
+        final OperationHeapLimit limit = joinLimit;
         rightRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null, limit, compactAfterRows);
         rowsByKey = new HashMap<>();
         unhashableRows = new IntList();
@@ -272,6 +274,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           rightRows.clear();
         rowsByKey = null;
         unhashableRows = null;
+        // The hash table goes with the rows
+        if (joinLimit != null)
+          joinLimit.release();
       }
 
       @Override

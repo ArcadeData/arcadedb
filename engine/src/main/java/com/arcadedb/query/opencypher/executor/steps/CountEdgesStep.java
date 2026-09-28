@@ -88,6 +88,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
     heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+    final int groupOverhead = groupOverheadBytes(aliasOutputNames.length + 1);
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -118,8 +119,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         final int groupsBefore = groups.size();
         final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
         if (groups.size() > groupsBefore)
-          // A GROUP: ITS KEY VALUES, THE KEY THAT WRAPS THEM, ITS COUNTER AND ITS ENTRY IN THE MAP
-          heapLimit.add(groups.size(), keyValues, HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES);
+          heapLimit.add(groups.size(), keyValues, groupOverhead);
         accumulator[0] += count;
       } finally {
         if (context.isProfiling())
@@ -138,6 +138,15 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     }
 
     return new IteratorResultSet(results.iterator());
+  }
+
+  /**
+   * What a group holds besides its key values: the key that wraps them, its counter, its entry in the map - and the row
+   * it becomes, of {@code columns} columns, since the rows are built while the groups are still held.
+   */
+  static int groupOverheadBytes(final int columns) {
+    return HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES + HeapEstimator.RESULT_BYTES
+        + HeapEstimator.HASH_ENTRY_BYTES * columns;
   }
 
   @Override

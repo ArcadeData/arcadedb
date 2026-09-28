@@ -78,6 +78,11 @@ public final class RowBuffer {
 
   private Result[] rows = new Result[16];
   private int      size = 0;
+  /**
+   * What the rows of this buffer were charged. The operation may charge more than the buffer - a hash join charges its
+   * hash table to the same one - so the buffer keeps its own share, which is what it adjusts and gives back.
+   */
+  private long     chargedBytes;
 
   // Compact form, column by column. A column's arrays are allocated the first time it holds that kind of value.
   private boolean  compact = false;
@@ -127,7 +132,9 @@ public final class RowBuffer {
   public void add(final Result row) {
     if (!compact) {
       if (compactAfterRows <= 0 || size < compactAfterRows) {
+        final long before = limit.getChargedBytes();
         limit.add(size + 1L, row);
+        chargedBytes += limit.getChargedBytes() - before;
         if (size == rows.length)
           rows = Arrays.copyOf(rows, size + (size >> 1) + 1);
         rows[size++] = row;
@@ -142,6 +149,7 @@ public final class RowBuffer {
     final long bytes = store(size, row);
     ++size;
     limit.charge(bytes);
+    chargedBytes += bytes;
   }
 
   /**
@@ -184,7 +192,8 @@ public final class RowBuffer {
 
   /** Empties the buffer and gives back the heap its rows were charged. */
   public void clear() {
-    limit.release();
+    limit.release(chargedBytes);
+    chargedBytes = 0L;
     rows = new Result[16];
     size = 0;
     compact = false;
@@ -216,11 +225,11 @@ public final class RowBuffer {
     compact = true;
 
     // THE ROWS AS THEY CAME GO, THEIR COMPACT FORM STAYS: ONE ADJUSTMENT, SO NO OTHER QUERY CAN TAKE THE HEAP IN BETWEEN
-    final long fullBytes = limit.getChargedBytes();
-    if (compactBytes < fullBytes)
-      limit.release(fullBytes - compactBytes);
+    if (compactBytes < chargedBytes)
+      limit.release(chargedBytes - compactBytes);
     else
-      limit.charge(compactBytes - fullBytes);
+      limit.charge(compactBytes - chargedBytes);
+    chargedBytes = compactBytes;
   }
 
   /** Stores a row at {@code index} and returns the estimated heap it takes there. */

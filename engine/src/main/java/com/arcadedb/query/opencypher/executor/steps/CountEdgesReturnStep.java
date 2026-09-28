@@ -30,7 +30,6 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -137,8 +136,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           final int groupsBefore = groups.size();
           groups.merge(key, count, Long::sum);
           if (groups.size() > groupsBefore)
-            // A GROUP: ITS KEY, ITS COUNTER AND ITS ENTRY IN THE MAP
-            heapLimit.add(groups.size(), key, HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES);
+            heapLimit.add(groups.size(), key, CountEdgesStep.groupOverheadBytes(2));
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -185,8 +183,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
         final int groupsBefore = groups.size();
         groups.merge(new GroupKey(keys), count, Long::sum);
         if (groups.size() > groupsBefore)
-          // A GROUP: ITS KEY VALUES, THE KEY THAT WRAPS THEM, ITS COUNTER AND ITS ENTRY IN THE MAP
-          heapLimit.add(groups.size(), keys, HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES);
+          heapLimit.add(groups.size(), keys, CountEdgesStep.groupOverheadBytes(groupingAliases.length + 1));
       } finally {
         if (context.isProfiling())
           cost += System.nanoTime() - begin;

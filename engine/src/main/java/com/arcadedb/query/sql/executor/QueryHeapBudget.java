@@ -49,7 +49,10 @@ public final class QueryHeapBudget {
   /** The budget in bytes, or 0 when it is disabled. */
   public static long getLimitBytes() {
     final long megabytes = GlobalConfiguration.QUERY_MAX_HEAP_RAM.getValueAsLong();
-    return megabytes > 0 ? megabytes * 1024 * 1024 : 0L;
+    if (megabytes <= 0)
+      return 0L;
+    // A VALUE TOO LARGE FOR BYTES IN A LONG IS A BUDGET NOTHING REACHES
+    return megabytes < Long.MAX_VALUE / (1024 * 1024) ? megabytes * 1024 * 1024 : Long.MAX_VALUE;
   }
 
   public static boolean isEnabled() {
