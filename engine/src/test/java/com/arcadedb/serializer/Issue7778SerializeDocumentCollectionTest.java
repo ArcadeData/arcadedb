@@ -79,6 +79,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
 
       d.set("empty", new ArrayList<>());
       d.set("scalars", List.of(1, 2, 3));
+      d.set("dates", List.of(LocalDateTime.of(2026, 9, 29, 10, 15, 30), LocalDateTime.of(2026, 9, 30, 11, 0, 0)));
       d.set("nonFinite", List.of(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY));
       // A primitive array (e.g. a vector embedding) is not a Collection: it must honour the same flags.
       d.set("vector", new float[] { 1.5F, 2.5F, 3.5F, 4.5F });
@@ -123,12 +124,16 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
     assertThat(json.getInt("empty")).isEqualTo(0);
     assertThat(json.getInt("scalars")).isEqualTo(3);
     assertThat(json.getInt("nonFinite")).isEqualTo(3);
+    assertThat(json.getInt("dates")).isEqualTo(2);
     assertThat(json.getInt("vector")).isEqualTo(4);
   }
 
   /**
    * The document path and the query path must render the same record's collection properties identically,
-   * for every combination of the two collection-size flags.
+   * for every combination of the two collection-size flags. A persisted record cannot hold Edge instances in a
+   * property (links are stored as RIDs), so useCollectionSizeForEdges must never change the output here - the loop
+   * pins exactly that. Object[]/String[] values are persisted as lists, so the primitive float[] is the only array
+   * shape a loaded record can carry.
    */
   @Test
   void documentAndQueryPathsAgreeOnCollectionProperties() {
@@ -143,7 +148,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
           fromQuery = serializer.serializeResult(database, rs.next());
         }
 
-        for (final String property : List.of("items", "nested", "empty", "scalars", "nonFinite", "vector"))
+        for (final String property : List.of("items", "nested", "empty", "scalars", "dates", "nonFinite", "vector"))
           assertThat(fromDocument.toMap().get(property))
               .as("property '%s' with useCollectionSize=%s useCollectionSizeForEdges=%s", property, collectionSize,
                   collectionSizeForEdges)
