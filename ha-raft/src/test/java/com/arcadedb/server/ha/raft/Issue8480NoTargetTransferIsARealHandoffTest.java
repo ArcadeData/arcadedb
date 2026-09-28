@@ -34,7 +34,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -77,6 +79,8 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     when(raft.getLocalPeerId()).thenReturn(SELF);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getLivePeers()).thenReturn(List.of(peer(SELF), peer(B), peer(C)));
+    // Both peers answer (issue #8556): these tests are about the transfer loop, not reachability.
+    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
   }
 
   /** The crux: the no-target form picks a peer and makes a targeted transfer, and never issues the bare step-down. */
@@ -238,6 +242,12 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     final int[] attempts = new int[1];
     final boolean[] leader = { true };
     final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      // Every configured peer answers (issue #8556): these tests are about the step-down loop, not reachability.
+      @Override
+      Set<String> handoffReachablePeers() {
+        return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+      }
+
       @Override
       public boolean isLeader() {
         return leader[0];
@@ -269,6 +279,12 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     final int[] attempts = new int[1];
     final boolean[] leader = { true };
     final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      // Every configured peer answers (issue #8556): these tests are about the step-down loop, not reachability.
+      @Override
+      Set<String> handoffReachablePeers() {
+        return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+      }
+
       @Override
       public boolean isLeader() {
         return leader[0];
@@ -336,6 +352,12 @@ class Issue8480NoTargetTransferIsARealHandoffTest {
     final int[] attempts = new int[1];
     final boolean[] leader = { true };
     final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      // Every configured peer answers (issue #8556): these tests are about the step-down loop, not reachability.
+      @Override
+      Set<String> handoffReachablePeers() {
+        return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+      }
+
       @Override
       public boolean isLeader() {
         return leader[0];

@@ -38,11 +38,13 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -89,6 +91,8 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     when(raft.getLocalPeerId()).thenReturn(SELF);
     when(raft.isLeader()).thenReturn(true);
     when(raft.getLivePeers()).thenReturn(List.of(peer(SELF), peer(B), peer(C)));
+    // Every peer answers (issue #8556): these tests are about concurrent hand-offs, not reachability.
+    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
   }
 
   // ---- the refusal is classified -------------------------------------------------------------------------------
@@ -423,6 +427,12 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
   private RaftHAServer stepDownServer(final AtomicInteger attempts, final AtomicInteger bareStepDowns,
       final boolean otherHandOffLands) {
     return new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      // Every configured peer answers (issue #8556): these tests are about concurrent hand-offs, not reachability.
+      @Override
+      Set<String> handoffReachablePeers() {
+        return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+      }
+
       @Override
       public boolean isLeader() {
         return true;

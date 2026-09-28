@@ -265,8 +265,10 @@ class RaftClusterManager {
 
   /**
    * Hands leadership to another peer of the cluster's choosing. The peers {@link RaftHAServer#selectStepDownTargets}
-   * ranks are tried in order with the targeted transfer, all within one {@code timeoutMs} budget; only when none is
-   * eligible, or all of them fail, does it fall back to {@link #stepDownWithoutTarget(long)}.
+   * ranks, among those {@link RaftHAServer#handoffReachablePeers()} proves reachable, are tried in order with the
+   * targeted transfer, all within one {@code timeoutMs} budget and each with at most a slice of it
+   * ({@link #candidateTransferBudgetMs}); only when none is eligible, or all of them fail, does it fall back to
+   * {@link #stepDownWithoutTarget(long)}.
    * <p>
    * Except when a candidate is refused because another transfer is already pending on this leader (issue #8557): every
    * other candidate would be refused the same way, and the bare step-down would pull the leadership out from under
@@ -315,13 +317,16 @@ class RaftClusterManager {
     // heartbeat. The candidates and their order are the ones stepDown() uses.
     final long deadline = System.currentTimeMillis() + timeoutMs;
     final List<RaftPeer> candidates = RaftHAServer.selectStepDownTargets(raftHAServer.getLivePeers(), selfId,
-        raftHAServer.getClusterMonitor());
+        raftHAServer.getClusterMonitor(), raftHAServer.handoffReachablePeers());
     for (final RaftPeer candidate : candidates) {
       final long remaining = deadline - System.currentTimeMillis();
       if (remaining <= 0)
         return false;
       try {
-        transferLeadership(candidate.getId().toString(), remaining);
+        // A slice of the budget, not all of it (issue #8556): while a targeted transfer is pending Ratis refuses every
+        // write on this leader, so a candidate that cannot win must not hold the whole budget, nor leave nothing for
+        // the next one.
+        transferLeadership(candidate.getId().toString(), candidateTransferBudgetMs(timeoutMs, remaining));
         return true;
       } catch (final NotTheLeaderRefusalException e) {
         // This node stopped being the leader between candidates: every remaining one would refuse the same way.
@@ -357,6 +362,25 @@ class RaftClusterManager {
     if (remaining <= 0)
       return false;
     return stepDownWithoutTarget(remaining);
+  }
+
+  /** How many slices of the caller's budget one candidate of {@link #transferLeadership(long)} gets (issue #8556). */
+  static final int  CANDIDATE_TRANSFER_BUDGET_SLICES = 4;
+  /** The floor of one candidate's slice, so a short budget still leaves a transfer the time a healthy one needs. */
+  static final long MIN_CANDIDATE_TRANSFER_BUDGET_MS = 1_000L;
+
+  /**
+   * The budget one candidate's targeted transfer gets out of the {@code timeoutMs} of {@link #transferLeadership(long)}
+   * (issue #8556): {@link #CANDIDATE_TRANSFER_BUDGET_SLICES a quarter} of it, never less than
+   * {@link #MIN_CANDIDATE_TRANSFER_BUDGET_MS}, never more than what is {@code remaining}.
+   * <p>
+   * Ratis keeps a targeted transfer pending until the target wins or the transfer's own timeout elapses, and while it
+   * is pending the leader refuses every non-read-only request with {@code LeaderSteppingDownException}. A target that
+   * has not answered cannot win, so the timeout is what it costs: all of it, in refused writes on every database. A
+   * target that can win does so in about one round trip plus an election, far inside a slice.
+   */
+  static long candidateTransferBudgetMs(final long timeoutMs, final long remaining) {
+    return Math.min(remaining, Math.max(timeoutMs / CANDIDATE_TRANSFER_BUDGET_SLICES, MIN_CANDIDATE_TRANSFER_BUDGET_MS));
   }
 
   /**
