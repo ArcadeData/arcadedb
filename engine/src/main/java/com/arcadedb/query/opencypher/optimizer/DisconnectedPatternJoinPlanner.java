@@ -74,6 +74,8 @@ import java.util.function.UnaryOperator;
  *   <li>the conjuncts relating several parts stay in a filter above the joins, which decides every pair the joins let
  *   through.</li>
  * </ul>
+ * The join order is greedy and left-deep: the cheapest pair first, then the cheapest part to join onto it. With three or
+ * more parts a plan joining two later parts with each other before the first is not considered.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
