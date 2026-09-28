@@ -235,6 +235,47 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     bare.get(10, TimeUnit.SECONDS);
   }
 
+  /**
+   * A bare step-down that backed off holds nothing while it waits for the transfer in flight: a third caller's targeted
+   * transfer in that window is sent, not refused as "a step-down without a target is in progress" (review of PR #8596).
+   */
+  @Test
+  void aBackedOffBareStepDownDoesNotBlockOtherTargetedTransfersWhileItWaits() throws Exception {
+    final CountDownLatch inFlight = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch waiting = new CountDownLatch(1);
+    final RaftClientReply ok = reply(true);
+    when(admin.transferLeadership(eq(B), anyLong())).thenAnswer(invocation -> {
+      inFlight.countDown();
+      release.await(10, TimeUnit.SECONDS);
+      return ok;
+    });
+    when(admin.transferLeadership(eq(C), anyLong())).thenReturn(ok);
+    // the first leader-view read comes from the backed-off step-down's wait: the B transfer is blocked in its RPC
+    when(raft.getLeaderId()).thenAnswer(invocation -> {
+      waiting.countDown();
+      return SELF;
+    });
+
+    final RaftClusterManager manager = manager();
+    final CompletableFuture<Void> targeted = CompletableFuture.runAsync(() -> manager.transferLeadership(B.toString(), 10_000));
+    CompletableFuture<Boolean> bare = null;
+    try {
+      assertThat(inFlight.await(10, TimeUnit.SECONDS)).isTrue();
+      bare = CompletableFuture.supplyAsync(() -> manager.stepDownWithoutTarget(2_000));
+      assertThat(waiting.await(10, TimeUnit.SECONDS)).isTrue();
+
+      assertThatCode(() -> manager.transferLeadership(C.toString(), 10_000)).doesNotThrowAnyException();
+
+      verify(admin).transferLeadership(eq(C), anyLong());
+      verify(admin, never()).transferLeadership(isNull(), anyLong());
+    } finally {
+      release.countDown();
+    }
+    targeted.get(10, TimeUnit.SECONDS);
+    bare.get(10, TimeUnit.SECONDS);
+  }
+
   // ---- stepDown() has its own candidate loop --------------------------------------------------------------------
 
   @Test

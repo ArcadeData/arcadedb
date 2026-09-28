@@ -383,17 +383,20 @@ class RaftClusterManager {
     // flag, so two racing callers cannot BOTH miss each other and both send. They can both see each other and both back
     // off: then neither RPC is sent, Ratis state does not move, and each caller reports that no hand-off happened (a
     // spurious failure the caller retries, never the leaderless window this guard exists to prevent).
+    // The flag covers the RPC only, never the wait below: held through a back-off it would refuse, for seconds, targeted
+    // transfers that nothing is racing (review of PR #8596).
+    final boolean backedOff;
     bareStepDownsInFlight.incrementAndGet();
     try {
-      if (targetedTransfersInFlight.get() > 0) {
-        LogManager.instance().log(this, Level.INFO,
-            "Not stepping down without a target: a targeted leadership transfer is in progress on this node; waiting for it");
-        return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
-      }
-      sendBareStepDown(client, timeoutMs);
+      backedOff = targetedTransfersInFlight.get() > 0;
+      if (!backedOff)
+        sendBareStepDown(client, timeoutMs);
     } finally {
       bareStepDownsInFlight.decrementAndGet();
     }
+    if (backedOff)
+      LogManager.instance().log(this, Level.INFO,
+          "Not stepping down without a target: a targeted leadership transfer is in progress on this node; waiting for it");
     return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
   }
 
