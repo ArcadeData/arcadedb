@@ -145,6 +145,36 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
     assertThat(buffer.get(0)).isNotNull();
     assertThat(buffer.get(1)).as("the record is gone, and so is its row").isNull();
     assertThat(buffer.get(2)).isNotNull();
+    assertThat(buffer.size()).isEqualTo(3);
+    assertThat(buffer.liveSize()).as("a row found deleted is not replayed again").isEqualTo(2);
+    assertThat(buffer.get(1)).isNull();
+    assertThat(buffer.liveSize()).isEqualTo(2);
+  }
+
+  @Test
+  void aProductStopsOnceEveryCompactRightRowIsDeleted() {
+    final List<RID> others = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (o:Other) RETURN o")) {
+      while (rs.hasNext())
+        others.add(rs.next().<Vertex>getProperty("o").getIdentity());
+    }
+    final CartesianProduct product = new CartesianProduct(new NodeByLabelScan("a", "Item", 1, ITEMS),
+        new NodeByLabelScan("b", "Other", 1, 3), 1, 3L * ITEMS);
+    product.setCompactAfterRows(1);
+    int rows = 0;
+    try (final ResultSet rs = product.execute(context(), 100)) {
+      // The first Item crosses every Other, which fills the buffer; then another transaction deletes them all
+      for (int i = 0; i < 3; i++) {
+        rs.next();
+        ++rows;
+      }
+      database.transaction(() -> others.forEach(rid -> rid.asVertex().delete()));
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    assertThat(rows).isEqualTo(3);
   }
 
   @Test

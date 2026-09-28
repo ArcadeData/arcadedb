@@ -180,7 +180,8 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
             }
           }
 
-          if (!leftResults.hasNext()) {
+          // Nothing left to pair with: every compact right row was found deleted since it was buffered
+          if (!leftResults.hasNext() || rightRows.liveSize() == 0) {
             finish();
             break;
           }

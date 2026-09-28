@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -87,6 +88,9 @@ public final class RowBuffer {
   private Object[][]           objects;
   /** Rows whose columns are not the ones of the first row, held as they came. */
   private Map<Integer, Result> irregularRows;
+  /** Compact rows found deleted when replayed: never loaded again, and no longer {@link #liveSize() live}. */
+  private BitSet               deletedRows;
+  private int                  deletedCount = 0;
 
   /**
    * @param database         the database to load the records of a compact row from, or null to never compact
@@ -102,6 +106,11 @@ public final class RowBuffer {
 
   public int size() {
     return size;
+  }
+
+  /** The rows still to be replayed: every row, but the ones found deleted since they were buffered. */
+  public int liveSize() {
+    return size - deletedCount;
   }
 
   /** Whether the rows are held compact. */
@@ -140,6 +149,8 @@ public final class RowBuffer {
       if (irregular != null)
         return irregular;
     }
+    if (deletedRows != null && deletedRows.get(index))
+      return null;
 
     final ResultInternal row = new ResultInternal();
     for (int column = 0; column < columns.length; column++) {
@@ -150,6 +161,10 @@ public final class RowBuffer {
           value = database.lookupByRID(new RID(bucketColumn[index], positions[column][index]), true);
         } catch (final RecordNotFoundException e) {
           // Deleted since it was buffered: a nested loop reading the input again would not find it either
+          if (deletedRows == null)
+            deletedRows = new BitSet();
+          deletedRows.set(index);
+          ++deletedCount;
           return null;
         }
       } else
@@ -168,6 +183,8 @@ public final class RowBuffer {
     positions = null;
     objects = null;
     irregularRows = null;
+    deletedRows = null;
+    deletedCount = 0;
     capacity = 0;
   }
 
