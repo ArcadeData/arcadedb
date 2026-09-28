@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -56,6 +57,12 @@ public class GraphQLResultSet implements ResultSet {
    * directive declared in the schema: see {@link #evaluateDirectives}.
    */
   private final Map<String, Object> variables;
+
+  /**
+   * The fragments of the query document, which the selections of every level are expanded through before they are
+   * resolved: see {@link #mapBySelections}.
+   */
+  private final GraphQLFragments fragments;
 
   /**
    * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
@@ -82,6 +89,11 @@ public class GraphQLResultSet implements ResultSet {
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
       final ObjectTypeDefinition returnType, final Map<String, Object> variables) {
+    this(schema, resultSet, projections, returnType, variables, GraphQLFragments.NONE);
+  }
+
+  public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
+      final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
 
@@ -90,6 +102,7 @@ public class GraphQLResultSet implements ResultSet {
     this.projections = projections;
     this.returnType = returnType;
     this.variables = variables;
+    this.fragments = fragments != null ? fragments : GraphQLFragments.NONE;
   }
 
   @Override
@@ -131,22 +144,76 @@ public class GraphQLResultSet implements ResultSet {
    */
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections,
       final ObjectTypeDefinition parentType) {
-    final List<Projection> projections = new ArrayList<>(definedProjections.size());
-    for (final Selection selection : definedProjections) {
+    // A FRAGMENT SPREAD OR AN INLINE FRAGMENT HAS NO FIELD NAME OF ITS OWN: IT IS REPLACED BY THE FIELDS IT SELECTS, IF
+    // ITS TYPE CONDITION APPLIES TO THIS RECORD. LEFT IN, IT DROPPED THOSE FIELDS AND TURNED INTO A NULL RESPONSE KEY
+    // THAT NO SERIALIZER CAN RENDER. SEE ISSUE #7770
+    final List<Selection> selections = fragments.expand(definedProjections,
+        typeCondition -> typeConditionApplies(typeCondition, current, parentType));
+
+    final List<Projection> projections = new ArrayList<>(selections.size());
+    for (final Selection selection : selections) {
       // A selection written as `alias: field` parses into fieldWithAlias (name = the real field,
       // alias carried by Selection.getName()); an unaliased selection parses into field instead.
-      // Neither is set for an ellipsis selection (fragment spread / inline fragment).
       final AbstractField field = selection.getAnyField();
       final String        fieldName = selection.getFieldName();
       final SelectionSet  set = selection.getSelectionSet();
+      final String        responseKey = selection.getName();
+
+      final int existing = selections != definedProjections ? indexOf(projections, responseKey) : -1;
+      if (existing > -1) {
+        // THE SAME RESPONSE KEY SELECTED TWICE, WHICH A FRAGMENT MAKES ORDINARY (`{ authors { a } ...F }` WITH
+        // `F { authors { b } }`): THE SPECIFICATION MERGES THE SUB-SELECTIONS INTO ONE FIELD RATHER THAN LETTING THE
+        // LAST ONE WIN
+        final Projection first = projections.get(existing);
+        if (set != null && first.set() != null) {
+          final List<Selection> merged = new ArrayList<>(first.set().size() + set.getSelections().size());
+          merged.addAll(first.set());
+          merged.addAll(set.getSelections());
+          projections.set(existing, new Projection(first.name(), first.fieldName(), first.field(), first.schemaField(),
+              first.type(), merged));
+        }
+        continue;
+      }
 
       final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
       final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
 
-      projections.add(new Projection(selection.getName(), fieldName, field, schemaField, subType,
+      projections.add(new Projection(responseKey, fieldName, field, schemaField, subType,
           set != null ? set.getSelections() : null));
     }
     return mapProjections(current, projections);
+  }
+
+  /**
+   * Whether a fragment written {@code on typeCondition} applies to {@code current}: it does when it names the schema type
+   * the selections are written against, or the database type of the record or one of its super types. When neither type
+   * is known there is nothing to refute the condition with, and the fragment is applied.
+   */
+  private static boolean typeConditionApplies(final String typeCondition, final Result current,
+      final ObjectTypeDefinition parentType) {
+    boolean typeKnown = false;
+    if (parentType != null) {
+      if (typeCondition.equals(parentType.getName()))
+        return true;
+      typeKnown = true;
+    }
+
+    if (current.getElement().isPresent()) {
+      final DocumentType recordType = current.getElement().get().getType();
+      if (recordType != null) {
+        if (recordType.instanceOf(typeCondition))
+          return true;
+        typeKnown = true;
+      }
+    }
+    return !typeKnown;
+  }
+
+  private static int indexOf(final List<Projection> projections, final String responseKey) {
+    for (int i = 0; i < projections.size(); i++)
+      if (Objects.equals(projections.get(i).name(), responseKey))
+        return i;
+    return -1;
   }
 
   /**
