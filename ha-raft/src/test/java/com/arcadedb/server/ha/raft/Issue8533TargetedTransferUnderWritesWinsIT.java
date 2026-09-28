@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.ConfigurationException;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
@@ -34,19 +33,20 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #8487 on a real 3-node cluster: the TARGETED {@code transferLeadership(peerId, timeoutMs)},
- * run while every node keeps writing, failed with "client-... is already CLOSED". The failure was judged by sampling
- * the leader view once, the instant it was caught, and the closed client was only the symptom of whatever leader change
- * came next: the handoff itself, or, when the target lost the election it was sent to win, the election timer that
- * finally ended the leaderless window.
+ * Regression test for issue #8533 on a real 3-node cluster: a TARGETED {@code transferLeadership(peerId, timeoutMs)} run
+ * while every node keeps writing must hand leadership to the target, every time.
  * <p>
- * Every round must now either return with the target already the leader, or fail with a message naming where
- * leadership actually went; and the whole cluster must then agree on one leader.
+ * Before the fix the target could lose the election it was sent to win. When the target's acknowledgement was the one
+ * that completed the majority for the leader's last data entry D, Ratis sent {@code StartLeaderElection} with
+ * {@code lastEntry = D} and only then appended the commit-index metadata entry D+1 for that commit. D+1 reached the
+ * other follower before the target campaigned, both voters rejected a candidate one entry short, and the cluster stayed
+ * leaderless until an election timer fired. #8487 made the call REPORT that outcome; this test requires it not to
+ * happen.
  */
 @Tag("slow")
-class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
+class Issue8533TargetedTransferUnderWritesWinsIT extends BaseRaftHATest {
 
-  private static final int ROUNDS = 6;
+  private static final int ROUNDS = 12;
 
   @Override
   protected int getServerCount() {
@@ -54,11 +54,11 @@ class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
   }
 
   @Test
-  void aTargetedTransferUnderConcurrentWritesReportsTheHandoffItMade() throws Exception {
+  void aTargetedTransferUnderConcurrentWritesHandsLeadershipToTheTarget() throws Exception {
     final int firstLeader = findLeaderIndex();
     assertThat(firstLeader).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
     final Database leaderDb = getServerDatabase(firstLeader, getDatabaseName());
-    leaderDb.transaction(() -> leaderDb.getSchema().getOrCreateVertexType("Issue8487"));
+    leaderDb.transaction(() -> leaderDb.getSchema().getOrCreateVertexType("Issue8533"));
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
@@ -71,18 +71,19 @@ class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
       final Thread writer = new Thread(() -> {
         while (!stop.get()) {
           try {
-            db.transaction(() -> db.newVertex("Issue8487").set("node", node).save());
+            db.transaction(() -> db.newVertex("Issue8533").set("node", node).save());
             written.incrementAndGet();
           } catch (final Exception e) {
             // Writes are refused or retried while leadership moves: they are the load here, not the assertion.
           }
         }
-      }, "issue8487-writer-" + i);
+      }, "issue8533-writer-" + i);
       writer.setDaemon(true);
       writer.start();
       writers.add(writer);
     }
 
+    final List<String> failures = new ArrayList<>();
     try {
       for (int round = 0; round < ROUNDS; round++) {
         final long before = written.get();
@@ -95,34 +96,18 @@ class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
         final int targetIndex = (leaderIndex + 1 + (round % 2)) % getServerCount();
         final RaftPeerId targetId = getRaftPlugin(targetIndex).getRaftHAServer().getLocalPeerId();
 
-        Exception failure = null;
         try {
           leader.transferLeadership(targetId.toString(), 10_000);
         } catch (final Exception e) {
-          failure = e;
+          failures.add("round " + round + ": " + e.getMessage());
         }
 
-        final RaftPeerId settledLeader;
-        if (failure == null) {
-          assertThat(leader.getLeaderId()).as("round %d: the target must be the leader when the transfer returns", round)
-              .isEqualTo(targetId);
-          settledLeader = targetId;
-        } else {
-          // A transfer can still genuinely fail. The one known way it did under writes - a commit-index metadata entry
-          // the leader appends after sending StartLeaderElection leaving the target one entry short - is closed by #8533
-          // (Issue8533TargetedTransferUnderWritesWinsIT requires every round to succeed), but whatever fails must be
-          // reported as a failure: naming where leadership went, not the client the leader change closed under the RPC.
-          assertThat(failure).as("round %d: a failed transfer is a ConfigurationException", round)
-              .isInstanceOf(ConfigurationException.class);
-          assertThat(failure.getMessage()).as("round %d: the failure names the outcome", round)
-              .containsAnyOf("instead of " + targetId, "no leader was elected", "is still the leader");
-          settledLeader = null;
-        }
-
+        // Whatever the outcome, let the cluster agree on one leader before the next round, so one lost election does not
+        // cascade into the rounds after it.
         Awaitility.await("round " + round + ": every node names the same leader").atMost(30, TimeUnit.SECONDS)
             .pollInterval(50, TimeUnit.MILLISECONDS).until(() -> {
               final RaftPeerId first = getRaftPlugin(0).getRaftHAServer().getLeaderId();
-              if (first == null || (settledLeader != null && !settledLeader.equals(first)))
+              if (first == null)
                 return false;
               for (int i = 1; i < getServerCount(); i++)
                 if (!first.equals(getRaftPlugin(i).getRaftHAServer().getLeaderId()))
@@ -135,5 +120,7 @@ class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
       for (final Thread writer : writers)
         writer.join(30_000);
     }
+
+    assertThat(failures).as("every targeted transfer under writes must hand leadership to its target").isEmpty();
   }
 }
