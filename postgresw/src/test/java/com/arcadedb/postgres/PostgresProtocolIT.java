@@ -104,7 +104,8 @@ class PostgresProtocolIT extends PostgresWireProtocolTestBase {
     try (var conn = getConnection(); var st = conn.createStatement()) {
       ResultSet rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL");
       assertThat(rs.next()).isTrue();
-      assertThat(rs.getString("LEVEL")).isNotNull();
+      // PostgreSQL's column name and value (issue #8569)
+      assertThat(rs.getString("transaction_isolation")).isEqualTo("read committed");
     }
   }
 
@@ -722,7 +723,11 @@ class PostgresProtocolIT extends PostgresWireProtocolTestBase {
   @Test
   void showCommand() throws Exception {
     try (var conn = getConnection(); var st = conn.createStatement()) {
-      ResultSet rs = st.executeQuery("SHOW DATABASES");
+      // Not a PostgreSQL parameter: refused with 42704 as PostgreSQL refuses it, rather than answered with an invented
+      // empty value (issue #8573). SHOW ALL is the form that lists parameters.
+      assertThatThrownBy(() -> st.executeQuery("SHOW DATABASES")).isInstanceOfSatisfying(SQLException.class,
+          e -> assertThat(e.getSQLState()).isEqualTo("42704"));
+      ResultSet rs = st.executeQuery("SHOW ALL");
       assertThat(rs.next()).isTrue();
     }
   }

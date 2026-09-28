@@ -70,8 +70,8 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
         next = vertexRID;
         return true;
       } else {
-        currentContainer = currentContainer.getPrevious();
-        if (currentContainer != null)
+        // Guarded hop: a chunk whose previous pointer names itself ends the walk instead of looping (issue #8568)
+        if (moveToPreviousChunk() != null)
           currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
         else
           break;

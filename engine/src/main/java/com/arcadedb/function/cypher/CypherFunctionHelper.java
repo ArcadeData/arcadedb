@@ -477,13 +477,13 @@ public final class CypherFunctionHelper {
     // Optimized: single map lookup instead of containsKey() + get()
     Object value = map.get("year");
     if (value != null)
-      date = date.withYear(((Number) value).intValue());
+      date = date.withYear(TemporalUtil.toIntField("year", value));
     value = map.get("month");
     if (value != null)
-      date = date.withMonth(((Number) value).intValue());
+      date = date.withMonth(TemporalUtil.toIntField("month", value));
     value = map.get("day");
     if (value != null)
-      date = date.withDayOfMonth(((Number) value).intValue());
+      date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
     value = map.get("dayOfWeek");
     if (value != null)
       date = date.with(WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
@@ -499,13 +499,13 @@ public final class CypherFunctionHelper {
     // Optimized: single map lookup instead of containsKey() + get()
     Object value = map.get("hour");
     if (value != null)
-      time = time.withHour(((Number) value).intValue());
+      time = time.withHour(TemporalUtil.toIntField("hour", value));
     value = map.get("minute");
     if (value != null)
-      time = time.withMinute(((Number) value).intValue());
+      time = time.withMinute(TemporalUtil.toIntField("minute", value));
     value = map.get("second");
     if (value != null)
-      time = time.withSecond(((Number) value).intValue());
+      time = time.withSecond(TemporalUtil.toIntField("second", value));
     time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
     return time;
   }

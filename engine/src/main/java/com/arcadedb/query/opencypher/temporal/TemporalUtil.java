@@ -330,30 +330,73 @@ public final class TemporalUtil {
    * Compute the total nanoseconds from millisecond, microsecond, and nanosecond map fields.
    * Per Cypher spec, these are additive: total = millisecond*1_000_000 + microsecond*1_000 + nanosecond.
    * If none are present, returns the defaultNanos value.
+   * <p>
+   * Each component is range-checked the way Neo4j does, BEFORE it is combined: millisecond in 0..999, microsecond in
+   * 0..999 when millisecond is given (else 0..999_999), nanosecond in 0..999 when a coarser component is given (else up
+   * to 999_999 or 999_999_999). A component is read as a long, so a value past the int range is refused rather than
+   * wrapped into a plausible fraction of a second (issue #8571).
    */
   public static int computeNanos(final Map<String, Object> map, final int defaultNanos) {
-    final boolean hasMs = map.containsKey("millisecond");
-    final boolean hasUs = map.containsKey("microsecond");
-    final boolean hasNs = map.containsKey("nanosecond");
-    if (!hasMs && !hasUs && !hasNs)
+    final Object ms = map.get("millisecond");
+    final Object us = map.get("microsecond");
+    final Object ns = map.get("nanosecond");
+    if (ms == null && us == null && ns == null)
       return defaultNanos;
 
     // Preserve unspecified higher-order portions from defaultNanos.
     // E.g. truncate('millisecond', t, {nanosecond: 2}) should keep the millisecond portion.
-    int nanos = 0;
-    if (hasMs)
-      nanos += ((Number) map.get("millisecond")).intValue() * 1_000_000;
+    long nanos = 0;
+    if (ms != null)
+      nanos += subSecondField("Millisecond", ms, 1_000L) * 1_000_000L;
     else
-      nanos += (defaultNanos / 1_000_000) * 1_000_000;
-    if (hasUs)
-      nanos += ((Number) map.get("microsecond")).intValue() * 1_000;
+      nanos += (defaultNanos / 1_000_000) * 1_000_000L;
+    if (us != null)
+      nanos += subSecondField("Microsecond", us, ms != null ? 1_000L : 1_000_000L) * 1_000L;
     else
-      nanos += ((defaultNanos % 1_000_000) / 1_000) * 1_000;
-    if (hasNs)
-      nanos += ((Number) map.get("nanosecond")).intValue();
+      nanos += ((defaultNanos % 1_000_000) / 1_000) * 1_000L;
+    if (ns != null)
+      nanos += subSecondField("Nanosecond", ns, us != null ? 1_000L : ms != null ? 1_000_000L : 1_000_000_000L);
     else
       nanos += defaultNanos % 1_000;
-    return nanos;
+    if (nanos >= 1_000_000_000L)
+      // Only reachable when a preserved coarser portion of defaultNanos is combined with a wide nanosecond field
+      throw new IllegalArgumentException("Invalid value for NanoOfSecond: " + nanos + " (valid values 0 - 999999999)");
+    return (int) nanos;
+  }
+
+  private static long subSecondField(final String name, final Object value, final long limit) {
+    final long v = toIntegralLong(name, value);
+    if (v < 0 || v >= limit)
+      throw new IllegalArgumentException("Invalid value for " + name + ": " + value + " (valid values 0 - " + (limit - 1) + ")");
+    return v;
+  }
+
+  /**
+   * Reads a temporal component as an int, refusing a value the int range cannot represent instead of letting
+   * {@link Number#intValue()} wrap it into a different, in-range value (issue #8571: {@code hour: 4294967308} must not
+   * become 12).
+   */
+  public static int toIntField(final String name, final Object value) {
+    final long v = toIntegralLong(name, value);
+    if (v < Integer.MIN_VALUE || v > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
+    return (int) v;
+  }
+
+  private static long toIntegralLong(final String name, final Object value) {
+    if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
+      return ((Number) value).longValue();
+    if (value instanceof Number n) {
+      final double d = n.doubleValue();
+      if (d != Math.rint(d) || d < Long.MIN_VALUE || d >= 0x1p63)
+        throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
+      return (long) d;
+    }
+    try {
+      return Long.parseLong(value.toString());
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
+    }
   }
 
   /**

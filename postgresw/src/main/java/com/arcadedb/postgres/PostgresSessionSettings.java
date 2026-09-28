@@ -21,9 +21,19 @@ package com.arcadedb.postgres;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -68,6 +78,14 @@ import java.util.regex.Pattern;
  * changed since the last report - the value {@code SHOW} answers, never the raw {@code SET} text, which is what keeps
  * pgjdbc's checks on a reported {@code DateStyle} and {@code client_encoding} satisfied.
  * <p>
+ * <b>Names</b> (issue #8573): a name PostgreSQL does not know is refused with {@code 42704}, by {@code SET},
+ * {@code SHOW} and {@code RESET} alike, instead of being invented: the recognized names are PostgreSQL 17's own
+ * ({@code postgresql-parameters.txt}, generated from its {@code pg_settings}), plus any name the startup packet named.
+ * A name qualified with a dot ({@code myapp.tenant}) is a custom placeholder, which PostgreSQL accepts for any prefix:
+ * {@code SET} and {@code RESET} always accept it, and {@code SHOW} answers it once this connection has set it. A
+ * parameter PostgreSQL only lets the server configuration change (its {@code internal}, {@code postmaster},
+ * {@code sighup} and {@code backend} contexts) is refused with {@code 55P02} as PostgreSQL refuses it.
+ * <p>
  * Not thread-safe: a connection is served by one thread.
  */
 final class PostgresSessionSettings {
@@ -80,6 +98,9 @@ final class PostgresSessionSettings {
   static final String[] REPORTED_PARAMETERS = { "application_name", "client_encoding", "DateStyle", "integer_datetimes",
       "IntervalStyle", "is_superuser", "server_encoding", "server_version", "standard_conforming_strings", "TimeZone" };
 
+  private static final String  PARAMETERS_RESOURCE = "postgresql-parameters.txt";
+  // PostgreSQL's parameters by lower-cased name: canonical spelling and pg_settings context (issue #8573)
+  private static final Map<String, String[]> KNOWN_PARAMETERS = loadKnownParameters();
   private static final String  DEFAULT_DATE_ORDER  = "MDY";
   private static final Pattern DATESTYLE_SEPARATOR = Pattern.compile("[,\\s]+");
 
@@ -98,6 +119,8 @@ final class PostgresSessionSettings {
 
   static final String SQLSTATE_FEATURE_NOT_SUPPORTED = "0A000";
   static final String SQLSTATE_INVALID_VALUE         = "22023";
+  static final String SQLSTATE_UNDEFINED_OBJECT      = "42704";
+  static final String SQLSTATE_CANT_CHANGE_RUNTIME   = "55P02";
   static final String READ_ONLY_NOT_SUPPORTED        =
       "read-only transactions are not supported by this server: a transaction declared READ ONLY would still accept writes";
 
@@ -121,6 +144,9 @@ final class PostgresSessionSettings {
   private       Map<String, String> rollbackValues = null;
   // SET LOCAL values of the open transaction; a null value is a SET LOCAL ... TO DEFAULT.
   private final Map<String, String> localValues    = new HashMap<>();
+  // The custom (dotted) parameters this connection has set, which SHOW answers from then on, as PostgreSQL does once
+  // a placeholder exists; null until the first one.
+  private       Set<String>         placeholders   = null;
   private       boolean             superuser      = false;
   private       String              sessionUser    = "";
   // The isolation level the open transaction runs at (the default one when none is open), and the default level of
@@ -163,8 +189,13 @@ final class PostgresSessionSettings {
    */
   void set(final String name, final String value, final boolean local) {
     final String key = name.toLowerCase(Locale.ENGLISH);
-    if (!isStored(key, value))
+    if (!isStored(key, value, false))
       return;
+    if (isPlaceholder(key) && value != null) {
+      if (placeholders == null)
+        placeholders = new HashSet<>();
+      placeholders.add(key);
+    }
     final String normalized = normalize(key, value);
     if (local)
       localValues.put(key, normalized);
@@ -198,7 +229,7 @@ final class PostgresSessionSettings {
   void setFromStartup(final String name, final String value) {
     final String key = name.toLowerCase(Locale.ENGLISH);
     try {
-      if (!isStored(key, value))
+      if (!isStored(key, value, true))
         return;
       final String normalized = normalize(key, value);
       if (normalized != null)
@@ -270,6 +301,45 @@ final class PostgresSessionSettings {
    */
   String show(final String name) {
     final String key = name.toLowerCase(Locale.ENGLISH);
+    if (!isKnown(key) && (placeholders == null || !placeholders.contains(key)))
+      throw unrecognized(name);
+    return answer(key);
+  }
+
+  /**
+   * The name PostgreSQL spells {@code name} with, which is also the column {@code SHOW} answers under (e.g.
+   * {@code DateStyle}, {@code TimeZone}); the name as given when PostgreSQL does not know it.
+   */
+  static String canonicalName(final String name) {
+    final String[] known = KNOWN_PARAMETERS.get(name.toLowerCase(Locale.ENGLISH));
+    return known != null ? known[0] : name;
+  }
+
+  /**
+   * {@code SHOW ALL}: name and value of every parameter this server answers for - the ones it reports or answers from
+   * its own state, and every one this connection or its startup packet set - in name order.
+   */
+  List<String[]> showAll() {
+    final Set<String> names = new LinkedHashSet<>();
+    for (final String reported : REPORTED_PARAMETERS)
+      names.add(reported.toLowerCase(Locale.ENGLISH));
+    names.addAll(List.of("role", "session_authorization", "transaction_isolation", "default_transaction_isolation",
+        "transaction_read_only", "default_transaction_read_only"));
+    names.addAll(resetValues.keySet());
+    names.addAll(sessionValues.keySet());
+    for (final Map.Entry<String, String> local : localValues.entrySet())
+      if (local.getValue() != null)
+        names.add(local.getKey());
+    if (placeholders != null)
+      names.addAll(placeholders);
+    final List<String[]> rows = new ArrayList<>(names.size());
+    for (final String key : names)
+      rows.add(new String[] { canonicalName(key), answer(key) });
+    rows.sort((a, b) -> a[0].compareToIgnoreCase(b[0]));
+    return rows;
+  }
+
+  private String answer(final String key) {
     return switch (key) {
       // Server facts: nothing a client sets changes them.
       case "server_version" -> PostgresNetworkExecutor.PG_SERVER_VERSION;
@@ -306,7 +376,7 @@ final class PostgresSessionSettings {
       return;
     reportedVersion = version;
     for (int i = 0; i < REPORTED_PARAMETERS.length; i++) {
-      final String value = show(REPORTED_PARAMETERS[i]);
+      final String value = answer(REPORTED_PARAMETERS[i].toLowerCase(Locale.ENGLISH));
       if (!value.equals(reportedValues[i])) {
         reportedValues[i] = value;
         sink.accept(REPORTED_PARAMETERS[i], value);
@@ -320,10 +390,10 @@ final class PostgresSessionSettings {
    * answered with success must have done what it asked (issue #8392). A null {@code value} is the reset value, which
    * is what these parameters already hold.
    */
-  private boolean isStored(final String key, final String value) {
+  private boolean isStored(final String key, final String value, final boolean startup) {
     return switch (key) {
       case "server_version", "server_encoding", "integer_datetimes", "is_superuser" ->
-          throw new SettingException("parameter \"" + key + "\" cannot be changed", "55P02"); // cant_change_runtime_param
+          throw new SettingException("parameter \"" + key + "\" cannot be changed", SQLSTATE_CANT_CHANGE_RUNTIME);
       // Accepted, as drivers send them routinely, but not stored: show() answers what the server really does.
       case "client_encoding", "standard_conforming_strings" -> false;
       case "role" -> {
@@ -351,8 +421,74 @@ final class PostgresSessionSettings {
           throw new SettingException(READ_ONLY_NOT_SUPPORTED, SQLSTATE_FEATURE_NOT_SUPPORTED);
         yield false;
       }
-      default -> true;
+      default -> {
+        final String[] known = KNOWN_PARAMETERS.get(key);
+        if (known == null) {
+          // A dotted name is a custom placeholder, and a name the startup packet named stays usable on the connection
+          if (startup || isPlaceholder(key) || resetValues.containsKey(key))
+            yield true;
+          throw unrecognized(key);
+        }
+        checkContext(known, startup);
+        yield true;
+      }
     };
+  }
+
+  /**
+   * Refuses a {@code SET} of a parameter PostgreSQL does not let a session change, with PostgreSQL's own message for
+   * its context. The {@code backend} ones can still be named in the startup packet, as in PostgreSQL.
+   */
+  private static void checkContext(final String[] known, final boolean startup) {
+    final String reason = switch (known[1]) {
+      case "internal" -> "cannot be changed";
+      case "postmaster" -> "cannot be changed without restarting the server";
+      case "sighup" -> "cannot be changed now";
+      case "backend", "superuser-backend" -> startup ? null : "cannot be set after connection start";
+      default -> null;
+    };
+    if (reason != null)
+      throw new SettingException("parameter \"" + known[0] + "\" " + reason, SQLSTATE_CANT_CHANGE_RUNTIME);
+  }
+
+  /**
+   * True for a name {@code SHOW} can answer: one PostgreSQL knows, one this server adds, or one the startup packet
+   * named. A custom placeholder is answered only once set, which {@link #show} checks separately.
+   */
+  private boolean isKnown(final String key) {
+    return KNOWN_PARAMETERS.containsKey(key) || switch (key) {
+      case "role", "session_authorization", "is_superuser" -> true;
+      default -> resetValues.containsKey(key);
+    };
+  }
+
+  private static boolean isPlaceholder(final String key) {
+    final int dot = key.indexOf('.');
+    return dot > 0 && dot < key.length() - 1;
+  }
+
+  private static SettingException unrecognized(final String name) {
+    return new SettingException("unrecognized configuration parameter \"" + name + "\"", SQLSTATE_UNDEFINED_OBJECT);
+  }
+
+  private static Map<String, String[]> loadKnownParameters() {
+    final Map<String, String[]> parameters = new HashMap<>(512);
+    try (final InputStream in = PostgresSessionSettings.class.getResourceAsStream(PARAMETERS_RESOURCE)) {
+      if (in == null)
+        throw new IllegalStateException("Missing resource " + PARAMETERS_RESOURCE);
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+      for (String line; (line = reader.readLine()) != null; ) {
+        line = line.trim();
+        if (line.isEmpty() || line.charAt(0) == '#')
+          continue;
+        final int space = line.indexOf(' ');
+        final String name = line.substring(0, space);
+        parameters.put(name.toLowerCase(Locale.ENGLISH), new String[] { name, line.substring(space + 1).trim() });
+      }
+    } catch (final IOException e) {
+      throw new IllegalStateException("Cannot read " + PARAMETERS_RESOURCE, e);
+    }
+    return parameters;
   }
 
   /**

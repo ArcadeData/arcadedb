@@ -198,9 +198,7 @@ public class CypherDate implements CypherTemporalValue {
   }
 
   static int toInt(final Object val) {
-    if (val instanceof Number)
-      return ((Number) val).intValue();
-    return Integer.parseInt(val.toString());
+    return TemporalUtil.toIntField("temporal component", val);
   }
 
   static long toLong(final Object val) {
