@@ -21,6 +21,8 @@ package com.arcadedb.console;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
@@ -217,6 +219,139 @@ class ConsoleBatchTest {
     // STILL BE GREEN
     assertThat(db.countType("ConsoleOnlyVertex", false)).isEqualTo(1);
     db.drop();
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7865: `set asyncMode = true` with no database open yet dereferenced a
+   * null database and threw a NullPointerException out of a `set` that has nothing to do with any database. Turning the mode
+   * on first must work, and a commit-time failure on the database connected afterwards must still decide the exit code.
+   */
+  @Test
+  void asyncModeTurnedOnBeforeAnyDatabaseIsOpenStillReportsACommitFailure() throws Exception {
+    Console.execute(new String[] { "-b", """
+        create database console;
+        create vertex type ConsoleOnlyVertex;
+        create property ConsoleOnlyVertex.id integer;
+        create index on ConsoleOnlyVertex (id) unique;
+        insert into ConsoleOnlyVertex set id = 1;
+        """ });
+    assertThat(Console.isErrored()).isFalse();
+
+    Console.execute(new String[] { "-b", """
+        set asyncMode = true;
+        connect console;
+        insert into ConsoleOnlyVertex set id = 1;
+        """ });
+    assertThat(Console.isErrored())
+        .as("the commit-time failure on a database connected after `set asyncMode` must decide the exit code")
+        .isTrue();
+
+    // THE VIOLATION REALLY WAS REFUSED: WITHOUT THIS THE FLAG COULD BE TRUE FOR ANY OTHER REASON
+    final Database db = new DatabaseFactory("./target/databases/console").open();
+    try {
+      assertThat(db.countType("ConsoleOnlyVertex", false)).isEqualTo(1);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7865: the executor-wide async error handler #7300 added was registered
+   * once, on whatever database was current when `set asyncMode = true` ran. The async executor belongs to one database
+   * instance, so after `close` + `connect` the statements ran on an executor with no handler at all.
+   * <p>
+   * The handler is exercised directly rather than through a unique-index violation: since #7615 a failed batch commit is ALSO
+   * reported to each buffered command's own callback, which marks the run errored on its own and would keep an end-to-end
+   * exit-code test green whether or not the executor-wide channel is wired. What is asserted here is the channel itself -
+   * the one that carries a failure no per-statement callback owns.
+   */
+  @Test
+  void asyncErrorHandlerFollowsTheDatabaseAcrossConnect() throws Exception {
+    Console.execute(new String[] { "-b", "create database console; create document type Doc;" });
+    FileUtils.deleteRecursively(new File("./target/databases/other"));
+
+    runOnFreshConsole(console -> {
+      assertThat(console.parse("create database other")).isTrue();
+      assertThat(console.parse("set asyncMode = true")).isTrue();
+      assertThat(console.parse("close")).isTrue();
+      assertThat(console.parse("connect console")).isTrue();
+      assertThat(console.parse("insert into Doc set id = 1")).isTrue();
+    });
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7865, `create database` entry point: same loss as with `connect`.
+   */
+  @Test
+  void asyncErrorHandlerFollowsTheDatabaseAcrossCreate() throws Exception {
+    runOnFreshConsole(console -> {
+      assertThat(console.parse("create database other")).isTrue();
+      assertThat(console.parse("set asyncMode = true")).isTrue();
+      assertThat(console.parse("close")).isTrue();
+      assertThat(console.parse("create database console")).isTrue();
+      assertThat(console.parse("select 1")).isTrue();
+    });
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/7865, the ordering that used to throw: no database open at all when
+   * `set asyncMode = true` runs. The registration is deferred, not dropped.
+   */
+  @Test
+  void asyncErrorHandlerIsRegisteredWhenTheModeIsTurnedOnBeforeAnyDatabase() throws Exception {
+    runOnFreshConsole(console -> {
+      assertThat(console.parse("set asyncMode = true")).isTrue();
+      assertThat(console.parse("create database console")).isTrue();
+      assertThat(console.parse("select 1")).isTrue();
+    });
+  }
+
+  /**
+   * The ordering #7300 already covered - the database open before the mode is turned on - must keep its handler, including
+   * when no async statement ever runs.
+   */
+  @Test
+  void asyncErrorHandlerIsRegisteredWhenTheModeIsTurnedOnAfterTheDatabase() throws Exception {
+    runOnFreshConsole(console -> {
+      assertThat(console.parse("create database console")).isTrue();
+      assertThat(console.parse("set asyncMode = true")).isTrue();
+    });
+  }
+
+  private interface ConsoleScript {
+    void run(Console console) throws Exception;
+  }
+
+  /**
+   * Runs {@code script} on a fresh console, then raises a failure on the executor-wide async error channel of the database
+   * the console ends up on - exactly where the async worker reports a commit it performs outside any statement - and asserts
+   * that the failure marks the run as errored. Drops every database the script created.
+   */
+  private static void runOnFreshConsole(final ConsoleScript script) throws Exception {
+    // execute() IS WHAT RESETS THE STATIC FLAG: AN EMPTY RUN STARTS THIS TEST FROM A CLEAN ONE
+    Console.execute(new String[] { "-b", "" });
+    assertThat(Console.isErrored()).isFalse();
+
+    final Console console = new Console(true, false);
+    try {
+      script.run(console);
+
+      final DatabaseInternal db = (DatabaseInternal) console.getDatabase();
+      db.async().waitCompletion();
+      assertThat(Console.isErrored()).as("the script itself must succeed, or the check below proves nothing").isFalse();
+
+      ((DatabaseAsyncExecutorImpl) db.async()).onError(new IOException("simulated WAL write failure at commit"));
+      assertThat(Console.isErrored())
+          .as("a failure on the current database's executor-wide async channel must decide the exit code")
+          .isTrue();
+    } finally {
+      console.close();
+      for (final String name : new String[] { "console", "other" }) {
+        final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + name);
+        if (factory.exists())
+          factory.open().drop();
+      }
+    }
   }
 
   /**
