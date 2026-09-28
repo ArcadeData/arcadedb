@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
 /**
  * Created by luigidellaquila on 08/07/16.
  */
-public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
+public class FetchFromTypeExecutionStep extends AbstractExecutionStep implements ParallelAggregationSource {
   private              String                             typeName;
   private              boolean                            orderByRidAsc  = false;
   private              boolean                            orderByRidDesc = false;
@@ -229,7 +229,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   }
 
   /** Whether an execution starting now would scan in parallel: what an EXPLAIN shows. */
-  boolean wouldRunInParallel(final CommandContext context) {
+  @Override
+  public boolean wouldRunInParallel(final CommandContext context) {
     return !parallelDecided && !orderByRidAsc && !orderByRidDesc && ParallelTypeScan.plan(context, typeName, getSubSteps()) != null;
   }
 
@@ -237,7 +238,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
    * Plans a parallel execution of this scan for an aggregation that consumes its rows in the scan's workers (issue
    * #8523), or returns {@code null} when this execution cannot run in parallel, or has already started.
    */
-  ParallelTypeScan planParallelAggregation(final CommandContext context) {
+  @Override
+  public ParallelTypeScan planParallelAggregation(final CommandContext context) {
     if (parallelDecided || orderByRidAsc || orderByRidDesc)
       return null;
     pullPrevious(context, Integer.MAX_VALUE);

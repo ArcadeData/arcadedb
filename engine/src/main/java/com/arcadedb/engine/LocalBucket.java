@@ -1133,6 +1133,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return new BucketIterator(this, true, fromPage, toPage);
   }
 
+  /**
+   * Iterates the records at {@code positions[from, to)}, which must be sorted ascending: the addresses an index range
+   * matched, loaded in physical order (issue #8333). Every page is read once however many of the positions it holds,
+   * and the records are built from it in batches, as a scan builds them, rather than looked up one by one. A position
+   * whose record is gone is skipped.
+   */
+  public BucketIterator iterator(final long[] positions, final int from, final int to) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return new BucketIterator(this, positions, from, to);
+  }
+
   @Override
   public String toString() {
     return componentName;
