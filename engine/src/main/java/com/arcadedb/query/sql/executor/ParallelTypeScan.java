@@ -538,11 +538,19 @@ final class ParallelTypeScan {
         typeName);
   }
 
-  /** Stops every worker still running. Idempotent. */
+  /** Stops every worker still running and drops what the consumer holds. Idempotent. */
   void close() {
     if (futures != null)
       for (final Future<?> f : futures)
         f.cancel(true);
+
+    // A UNIT THE CONSUMER WAS SCANNING ITSELF: A COPY IS THIS SCAN'S TO CLOSE, A WHOLE TEMPLATE IS ITS OWNING STEP'S
+    final AbstractExecutionStep step = consumerStep;
+    if (step != null && step != units.get(consumerUnit).template())
+      step.close();
+    consumerStep = null;
+    consumerCursor = null;
+    consumerBatch = null;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
