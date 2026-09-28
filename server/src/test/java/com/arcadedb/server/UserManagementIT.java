@@ -44,7 +44,7 @@ class UserManagementIT extends BaseGraphServerTest {
           .put("graph", new JSONArray().put("admin")));
 
       final HttpURLConnection putConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=dbuser").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=dbuser").openConnection();
       putConn.setRequestMethod("PUT");
       putConn.setRequestProperty("Authorization", basicAuth());
       putConn.setDoOutput(true);
@@ -60,7 +60,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
       // GET users and verify change
       final HttpURLConnection getConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users").openConnection();
       getConn.setRequestMethod("GET");
       getConn.setRequestProperty("Authorization", basicAuth());
       getConn.connect();
@@ -100,7 +100,7 @@ class UserManagementIT extends BaseGraphServerTest {
       updatePayload.put("password", "newpassword2");
 
       final HttpURLConnection putConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=pwduser").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=pwduser").openConnection();
       putConn.setRequestMethod("PUT");
       putConn.setRequestProperty("Authorization", basicAuth());
       putConn.setDoOutput(true);
@@ -118,7 +118,7 @@ class UserManagementIT extends BaseGraphServerTest {
       final String newAuth = "Basic " + Base64.getEncoder()
           .encodeToString("pwduser:newpassword2".getBytes());
       final HttpURLConnection authConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
       authConn.setRequestMethod("GET");
       authConn.setRequestProperty("Authorization", newAuth);
       authConn.connect();
@@ -133,7 +133,7 @@ class UserManagementIT extends BaseGraphServerTest {
       final String oldAuth = "Basic " + Base64.getEncoder()
           .encodeToString("pwduser:oldpassword1".getBytes());
       final HttpURLConnection oldAuthConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
       oldAuthConn.setRequestMethod("GET");
       oldAuthConn.setRequestProperty("Authorization", oldAuth);
       oldAuthConn.connect();
@@ -157,7 +157,7 @@ class UserManagementIT extends BaseGraphServerTest {
       payload.put("password", "password1234");
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.setDoOutput(true);
@@ -182,7 +182,7 @@ class UserManagementIT extends BaseGraphServerTest {
       final JSONObject updatePayload = new JSONObject().put("password", "short");
 
       final HttpURLConnection putConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=shortpwduser").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=shortpwduser").openConnection();
       putConn.setRequestMethod("PUT");
       putConn.setRequestProperty("Authorization", basicAuth());
       putConn.setDoOutput(true);
@@ -211,7 +211,7 @@ class UserManagementIT extends BaseGraphServerTest {
       final JSONObject updatePayload = new JSONObject().put("password", tooLongPassword);
 
       final HttpURLConnection putConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=longpwduser").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=longpwduser").openConnection();
       putConn.setRequestMethod("PUT");
       putConn.setRequestProperty("Authorization", basicAuth());
       putConn.setDoOutput(true);
@@ -237,7 +237,7 @@ class UserManagementIT extends BaseGraphServerTest {
       updatePayload.put("password", "doesntmatter");
 
       final HttpURLConnection putConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=nonexistent").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=nonexistent").openConnection();
       putConn.setRequestMethod("PUT");
       putConn.setRequestProperty("Authorization", basicAuth());
       putConn.setDoOutput(true);
@@ -265,7 +265,7 @@ class UserManagementIT extends BaseGraphServerTest {
       payload.put("databases", new JSONObject().put(getDatabaseName(), "admin"));
 
       final HttpURLConnection postConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users").openConnection();
       postConn.setRequestMethod("POST");
       postConn.setRequestProperty("Authorization", basicAuth());
       postConn.setDoOutput(true);
@@ -284,7 +284,7 @@ class UserManagementIT extends BaseGraphServerTest {
       final String userAuth = "Basic " + Base64.getEncoder()
           .encodeToString("stringuser:password1234".getBytes());
       final HttpURLConnection queryConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + getDatabaseName()
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + getDatabaseName()
               + "/sql/select%201%20as%20value").openConnection();
       queryConn.setRequestMethod("GET");
       queryConn.setRequestProperty("Authorization", userAuth);
@@ -313,7 +313,7 @@ class UserManagementIT extends BaseGraphServerTest {
     payload.put("databases", databases);
 
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", basicAuth());
     connection.setDoOutput(true);
@@ -330,7 +330,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   private void deleteUser(final int serverIndex, final String name) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server/users?name=" +
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=" +
             URLEncoder.encode(name, "UTF-8")).openConnection();
     connection.setRequestMethod("DELETE");
     connection.setRequestProperty("Authorization", basicAuth());

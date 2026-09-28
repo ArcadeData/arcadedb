@@ -332,7 +332,7 @@ class TimeSeriesPerTypeAclIT extends BaseGraphServerTest {
   private HttpURLConnection open(final int serverIndex, final String method, final String path, final String auth)
       throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + path).openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + path).openConnection();
     connection.setRequestMethod(method);
     connection.setRequestProperty("Authorization", auth);
     return connection;

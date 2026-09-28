@@ -105,7 +105,7 @@ class Issue5222CommandFieldTypeHttpStatusIT extends BaseGraphServerTest {
 
   private JSONObject execute(final int serverIndex, final JSONObject payload, final int expectedStatus) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/graph").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

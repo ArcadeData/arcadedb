@@ -134,7 +134,7 @@ class Issue5812PropsTypeHintHttpIT extends BaseGraphServerTest {
 
   private String getQuery(final int serverIndex, final String sql, final String typeHints) throws IOException {
     final String encoded = java.net.URLEncoder.encode(sql, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
-    String url = "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/" + encoded;
+    String url = "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME + "/sql/" + encoded;
     if (typeHints != null)
       url += "?typeHints=" + typeHints;
 
@@ -153,7 +153,7 @@ class Issue5812PropsTypeHintHttpIT extends BaseGraphServerTest {
 
   private HttpURLConnection openCommandConnection(final int serverIndex) throws IOException {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+        "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

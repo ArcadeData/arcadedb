@@ -47,7 +47,7 @@ class Issue5026TransactionSessionLifecycleIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "graph";
 
   private String baseUrl(final int serverIndex) {
-    return "http://127.0.0.1:248" + serverIndex + "/api/v1";
+    return "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1";
   }
 
   private static String rootAuth() {
