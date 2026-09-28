@@ -331,7 +331,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // With exact rescoring on (issue #8576) the committed side keeps k * oversample candidates for it to choose from:
     // their quantized scores decide only who is a candidate, never the final order.
     final int oversample = rescoreOversample();
-    final int keep = oversample > 1 ? (int) Math.min((long) k * oversample, Math.max(k, MAX_OVERFETCH_ROWS)) : k;
+    final int keep = oversampled(k, oversample);
     final long widened = (long) keep + (overlay != null ? overlay.touchedCount() : 0);
     // The unfiltered branch stays UNCAPPED, as it was before the overflow guard went in (PR #8001 review). The
     // 100_000 ceiling belongs to the over-fetch: it bounds the multiplier applied to compensate for a selective
@@ -761,9 +761,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return out;
   }
 
-  /** {@code count} widened by the rescoring oversample, saturating rather than overflowing. */
+  /**
+   * {@code count} widened by the rescoring oversample. The widening is bounded by {@link #MAX_OVERFETCH_ROWS} like the
+   * ungrouped over-fetch, but the caller's own {@code count} never is: the cap limits what the oversample ADDS.
+   */
   private static int oversampled(final int count, final int oversample) {
-    return oversample > 1 ? (int) Math.min((long) count * oversample, Integer.MAX_VALUE) : count;
+    return oversample > 1 ? (int) Math.min((long) count * oversample, Math.max(count, MAX_OVERFETCH_ROWS)) : count;
   }
 
   private static void addSource(final GroupedTopUpPlanner planner, final List<RidScore> rows,
