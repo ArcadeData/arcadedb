@@ -297,7 +297,7 @@ public final class LabelReplacements {
   }
 
   /**
-   * Rewrites {@code vertex} under {@code newTypeName}, carrying over its properties and its edges (with their own
+   * Rewrites {@code matched} under {@code newTypeName}, carrying over its properties and its edges (with their own
    * properties, which a plain re-link would silently drop), deletes the original and records the replacement.
    * <p>
    * <b>This is a write proportional to the vertex's degree, and it changes RIDs.</b> Every incident edge is
@@ -315,7 +315,12 @@ public final class LabelReplacements {
    *
    * @return the vertex that now holds the identity of the original
    */
-  public MutableVertex replace(final Vertex vertex, final String newTypeName) {
+  public MutableVertex replace(final Vertex matched, final String newTypeName) {
+    // #8538: the rewrite copies the vertex's properties and deletes it, so it must copy the LATEST committed record,
+    // not the image the row read: a commit landing in between would otherwise vanish with the deleted original, and the
+    // delete, taken on a page loaded fresh, has no older image left to refuse it against. modify() pins the page and
+    // reloads a record whose page moved on, so a commit landing AFTER this point fails the commit-time version check.
+    final Vertex vertex = matched.modify();
     final Database database = vertex.getDatabase();
     final RID originalRid = vertex.getIdentity();
     final String originalTypeName = vertex.getTypeName();

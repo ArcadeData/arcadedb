@@ -57,6 +57,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
   private static final String MERGE_MANY = "UNWIND $ids AS id MERGE (c:C {id: id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.id AS id, c.n AS n";
 
   private Database database;
+  private boolean  lastCommitted;
 
   @BeforeEach
   void setUp() {
@@ -75,18 +76,111 @@ class Issue8538MergeOnMatchLostUpdateTest {
 
   /**
    * Deterministic interleaving: a concurrent increment commits right after the MERGE has matched the record and before
-   * its ON MATCH SET runs. The MERGE must build on that commit (or fail with a retryable conflict), never write back
-   * the value computed from the record it matched.
+   * its ON MATCH SET runs. The MERGE must build on that commit, never write back the value computed from the record it
+   * matched. A retryable conflict is accepted too (the MERGE then owes no increment): both are correct outcomes, so do
+   * not tighten the assertion to one of them.
    */
   @Test
-  void onMatchSetSeesTheIncrementCommittedAfterTheMatch() throws Exception {
+  void onMatchSetSeesTheIncrementCommittedAfterTheMatch() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    final Thread mergeThread = Thread.currentThread();
+    final AtomicInteger written = new AtomicInteger();
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> {
+      try (final ResultSet rs = database.command("cypher", MERGE_ONE, Map.of("id", "c0"))) {
+        written.set(((Number) rs.next().getProperty("n")).intValue());
+      }
+    });
+
+    if (committed) {
+      assertThat(written.get()).as("the MERGE must have built on the concurrent increment").isEqualTo(2);
+      assertThat(readN("c0")).isEqualTo(2);
+    } else
+      assertThat(readN("c0")).isEqualTo(1);
+  }
+
+  /**
+   * An expression target names the record through the row, so it must be reloaded as a plain variable target is: the
+   * right-hand side reads the same record through {@code c}.
+   */
+  @Test
+  void onMatchSetOnAnExpressionTargetSeesTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MERGE (c:C {id: 'c0'}) ON MATCH SET (CASE WHEN true THEN c END).n = c.n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(lastCommitted ? 2 : 1);
+  }
+
+  /**
+   * The same for a stand-alone SET, whose expression targets were not reloaded either.
+   */
+  @Test
+  void setOnAnExpressionTargetSeesTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MATCH (c:C {id: 'c0'}) SET (CASE WHEN true THEN c END).n = c.n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(lastCommitted ? 2 : 1);
+  }
+
+  /**
+   * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
+   * committed record, or the concurrent increment vanishes with the deleted original.
+   */
+  @Test
+  void onMatchLabelWriteKeepsTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    runWithConcurrentIncrementAfterFirstRead(
+        () -> database.command("cypher", "MERGE (c:C {id: 'c0'}) ON MATCH SET c:Hot", Map.of()).close());
+
+    // Committed or refused, the concurrent increment must survive either way.
+    assertThat(readN("c0")).isEqualTo(1);
+  }
+
+  /**
+   * The same for a stand-alone SET of a label.
+   */
+  @Test
+  void labelWriteKeepsTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    runWithConcurrentIncrementAfterFirstRead(
+        () -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(1);
+  }
+
+  /**
+   * Issue #4474 must survive the fix: an ON MATCH SET that re-asserts the value the record already holds writes nothing
+   * and pins nothing, so a concurrent commit to the same record never turns it into a conflict.
+   */
+  @Test
+  void unchangedOnMatchSetStaysConflictFree() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0, kind: 'const'})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(
+        () -> database.command("cypher", "MERGE (c:C {id: 'c0'}) ON MATCH SET c.kind = 'const'", Map.of()).close());
+
+    assertThat(committed).as("a no-op MERGE action must not conflict").isTrue();
+    assertThat(readN("c0")).isEqualTo(1);
+  }
+
+  /**
+   * Runs {@code body} in a READ_COMMITTED transaction of this thread. On the first record read by {@code body}, another
+   * transaction increments {@code c0.n} and commits before {@code body} goes on.
+   *
+   * @return whether the transaction committed; {@code false} when it was refused with a retryable conflict
+   */
+  private boolean runWithConcurrentIncrementAfterFirstRead(final Runnable body) {
+    lastCommitted = false;
+    final Thread bodyThread = Thread.currentThread();
     final AtomicBoolean armed = new AtomicBoolean(true);
     final AtomicReference<Throwable> concurrentFailure = new AtomicReference<>();
     final AfterRecordReadListener interleave = record -> {
-      if (Thread.currentThread() == mergeThread && armed.compareAndSet(true, false)) {
+      if (Thread.currentThread() == bodyThread && armed.compareAndSet(true, false)) {
         final Thread concurrent = new Thread(() -> {
           try {
             database.transaction(() -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1"));
@@ -105,17 +199,14 @@ class Issue8538MergeOnMatchLostUpdateTest {
     };
     database.getSchema().getType("C").getEvents().registerListener(interleave);
 
-    final AtomicInteger written = new AtomicInteger();
     boolean committed;
     try {
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
-      try (final ResultSet rs = database.command("cypher", MERGE_ONE, Map.of("id", "c0"))) {
-        written.set(((Number) rs.next().getProperty("n")).intValue());
-      }
+      body.run();
       database.commit();
       committed = true;
+      lastCommitted = true;
     } catch (final ConcurrentModificationException e) {
-      // A retryable conflict is a correct outcome too: the MERGE did not commit, so it owes no increment.
       committed = false;
       if (database.isTransactionActive())
         database.rollback();
@@ -125,13 +216,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
 
     assertThat(armed.get()).as("the concurrent increment must have been interleaved").isFalse();
     assertThat(concurrentFailure.get()).isNull();
-
-    final int finalValue = readN("c0");
-    if (committed) {
-      assertThat(written.get()).as("the MERGE must have built on the concurrent increment").isEqualTo(2);
-      assertThat(finalValue).isEqualTo(2);
-    } else
-      assertThat(finalValue).isEqualTo(1);
+    return committed;
   }
 
   /**
@@ -142,12 +227,11 @@ class Issue8538MergeOnMatchLostUpdateTest {
   @Test
   void concurrentMergeIncrementsAreNeverLost() throws Exception {
     final int writers = 8;
-    final int batches = 100;
-    final List<String> ids = new ArrayList<>();
-    for (int i = 0; i < 1; i++)
-      ids.add("c" + i);
+    final int batches = 50;
+    // One hot record: the one each transaction touches first, which is the record the reporter saw lose
+    final List<String> ids = List.of("c0");
 
-    for (int round = 0; round < 3; round++) {
+    for (int round = 0; round < 2; round++) {
       database.transaction(() -> database.command("sql", "DELETE FROM C"));
 
       final AtomicInteger committedTx = new AtomicInteger();

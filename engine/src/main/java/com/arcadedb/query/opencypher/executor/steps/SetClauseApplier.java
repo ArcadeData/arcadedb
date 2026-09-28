@@ -57,9 +57,10 @@ import java.util.Set;
  * <ul>
  *   <li><b>reloading the write target</b> ({@link #forSetClause}): a stand-alone SET reloads each target to its
  *       latest committed version before evaluating the right-hand side, so a concurrent commit is observed instead of
- *       being silently overwritten (issue #5227). A MERGE action already runs inside the retrying transaction that
- *       matched or created the record, and reloading would pin the page and reintroduce exactly the write-conflict
- *       storm the next point exists to prevent;</li>
+ *       being silently overwritten (issue #5227). A MERGE action first evaluates against the record it matched, and
+ *       reloads only a target that evaluation shows it will write, then evaluates the right-hand sides again against
+ *       the reloaded record (issue #8538). Reloading every target up front would pin the page of every matched record
+ *       and reintroduce exactly the write-conflict storm the next point exists to prevent;</li>
  *   <li><b>skipping a no-op property write</b> ({@link #forMergeAction}): re-asserting an unchanged value bumps the
  *       record's MVCC version and invalidates it for every concurrent reader. A high-throughput MERGE that re-writes
  *       constant attributes on a shared vertex turns read-only matches into a conflict storm, so the write (not the
@@ -137,14 +138,8 @@ public final class SetClauseApplier {
     final boolean[] keyIsNull = new boolean[items.size()];
     evaluateRightHandSides(items, result, writtenDocs, reloadLatestTarget, values, targets, keys, keyIsNull);
 
-    // #8538: a MERGE action evaluated its right-hand sides against the record the MERGE matched, which is exactly the
-    // stale snapshot #5227 guards the stand-alone SET against: modify() then pins the page and silently reloads a
-    // record whose page moved on, so "ON MATCH SET c.n = c.n + 1" wrote a value computed from the older image over a
-    // concurrent commit, and the reload had already made that image look current to every commit-time check - both
-    // transactions committed the same value. The first pass above still decides, without pinning anything, whether
-    // the action writes at all (the #4474 no-op skip). Only a target it does write is reloaded, and then every
-    // right-hand side is evaluated again, now against the latest committed state, exactly as a stand-alone SET does.
-    if (!reloadLatestTarget && reloadWrittenTargets(items, result, writtenDocs, values, keys, keyIsNull))
+    // #8538: only values evaluated against the reloaded write target are written, see reloadWrittenTargets().
+    if (reloadWrittenTargets(items, result, writtenDocs, values, targets, keys, keyIsNull))
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
 
     // Phase 2: apply the writes using the pre-computed snapshot values.
@@ -232,45 +227,79 @@ public final class SetClauseApplier {
   }
 
   /**
-   * #8538: reloads, to its latest committed version, every variable target a MERGE action is going to write, which is
-   * what pins its page for the commit-time conflict check. A target the action leaves untouched (an unchanged value,
-   * issue #4474) is not pinned, so a read-only match stays conflict-free.
+   * #8538: reloads, to its latest committed version, every target the clause is going to write that the first pass did
+   * not reload already, which is what pins its page for the commit-time conflict check: every variable target of a
+   * MERGE action, and every expression target of either kind of clause. Writing values evaluated against the record
+   * the row carries would be a lost update, because {@code modify()} silently reloads a record whose page moved on, so
+   * "ON MATCH SET c.n = c.n + 1" would overwrite a concurrent commit with a value computed from the older image while
+   * the reload made that image look current to every commit-time check.
+   * <p>
+   * The caller evaluates every right-hand side again after a reload, and only that second result is written: the data
+   * is always right, but a non-idempotent expression ({@code rand()}, a custom function with side effects) runs twice.
+   * The second pass validates exactly like the first.
+   * <p>
+   * A target a MERGE action leaves untouched (an unchanged value, issue #4474) is not pinned, so a read-only match
+   * stays conflict-free. The decision is taken on the first-pass values; once an earlier item reloaded a target, a
+   * later item may be judged against the fresh record with a stale value, which is harmless because any reload forces
+   * the second pass and {@link #applyPropertySet} checks the no-op again. A map item always counts as a write, as it
+   * already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call {@code modify()}. A label write is not
+   * a reload trigger here: its right-hand side never reads the record's properties, and the rewrite reloads the vertex
+   * it copies itself ({@link LabelReplacements#replace}).
    *
    * @return whether any target was replaced in the row by its reloaded version, so the right-hand sides must be
    * evaluated again
    */
   private boolean reloadWrittenTargets(final List<SetClause.SetItem> items, final Result result,
-      final Map<RID, MutableDocument> writtenDocs, final Object[] values, final String[] keys, final boolean[] keyIsNull) {
+      final Map<RID, MutableDocument> writtenDocs, final Object[] values, final Object[] targets, final String[] keys,
+      final boolean[] keyIsNull) {
     boolean reloaded = false;
     for (int i = 0; i < items.size(); i++) {
       final SetClause.SetItem item = items.get(i);
-      final String variable = item.getVariable();
-      if (variable == null)
-        continue;
-
-      final boolean writes;
       switch (item.getType()) {
       case PROPERTY:
-        if (item.getTargetExpression() != null || keyIsNull[i])
-          writes = false;
-        else {
-          final Document doc = resolveLatestDoc(variable, result, writtenDocs);
-          writes = doc != null && writesProperty(doc, item.getKeyExpression() != null ? keys[i] : item.getProperty(), values[i]);
+        if (keyIsNull[i])
+          break;
+        final String propertyName = item.getKeyExpression() != null ? keys[i] : item.getProperty();
+        if (item.getTargetExpression() != null) {
+          // An expression target (SET (CASE WHEN ... THEN n END).p = ...) names a record of the row that no variable
+          // of the item names, so a stand-alone SET did not reload it either: both reload it here, in every alias.
+          if (targets[i] instanceof Document doc && (!skipUnchangedPropertyWrites || writesProperty(doc, propertyName,
+              values[i])) && reloadDocument(doc, result))
+            reloaded = true;
+        } else if (!reloadLatestTarget && item.getVariable() != null) {
+          final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+          if (doc != null && writesProperty(doc, propertyName, values[i]) && reloadTarget(item.getVariable(), result,
+              writtenDocs))
+            reloaded = true;
         }
         break;
       case REPLACE_MAP:
       case MERGE_MAP:
-        writes = values[i] != null;
+        if (!reloadLatestTarget && values[i] != null && reloadTarget(item.getVariable(), result, writtenDocs))
+          reloaded = true;
         break;
       default:
-        writes = false;
+        break;
       }
-
-      if (writes && reloadTarget(variable, result, writtenDocs))
-        reloaded = true;
     }
     return reloaded;
   }
+
+  /**
+   * Replaces {@code doc} with its mutable, latest-committed version in every alias of the row that binds it.
+   *
+   * @return whether the row now holds a different record than before
+   */
+  private static boolean reloadDocument(final Document doc, final Result result) {
+    if (doc.getIdentity() == null)
+      return false;
+    final MutableDocument mutable = doc.modify();
+    if (mutable == doc)
+      return false;
+    RowAliases.propagateUpdate(result, doc, mutable);
+    return true;
+  }
+
 
   /**
    * Whether setting {@code propertyName} to {@code value} changes {@code doc}: a MERGE action skips the write otherwise
@@ -517,7 +546,7 @@ public final class SetClauseApplier {
    * {@code writtenDocs}) is a {@link MutableDocument} whose {@code modify()} returns itself, so cross-row
    * read-your-writes semantics are preserved.
    * <p>
-   * A MERGE action does not do this: see the class Javadoc.
+   * A MERGE action does this only for a target it writes: see {@link #reloadWrittenTargets}.
    */
   private void reloadLatestDoc(final String variable, final Result result, final Map<RID, MutableDocument> writtenDocs) {
     if (variable != null)
@@ -539,7 +568,6 @@ public final class SetClauseApplier {
     ((ResultInternal) result).setProperty(variable, mutable);
     return true;
   }
-
 
   /**
    * Resolves the labels this item writes: the statically written ones, plus whatever each Cypher 25
