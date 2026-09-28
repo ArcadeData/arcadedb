@@ -1706,11 +1706,11 @@ public enum GlobalConfiguration {
       failure is logged with a diagnosis and the worker thread is released. It is the write-side counterpart \
       of 'arcadedb.server.httpStreamingReadTimeout' and is shorter than it on purpose: that budget covers a \
       pause nobody is at fault for (the server committing), while a write that has made no progress at all \
-      for this long means the peer stopped consuming. The timer is armed around each hand-off of at most 64 KB \
-      to the socket and disarmed as soon as it returns, so a long server-side pause BETWEEN two writes never \
-      trips it, and a large response sent to a slow but reading client restarts it with every chunk. Set to 0, or to any \
-      negative value, to leave streamed writes unbounded (WARNING: restores the indefinite block). Default is \
-      1 minute""",
+      for this long means the peer stopped consuming. The timer is armed around each hand-off of at most \
+      64 KB to the socket and disarmed as soon as it returns, so a long server-side pause BETWEEN two writes \
+      never trips it, and a large response sent to a slow but reading client restarts it with every chunk. \
+      Set to 0, or to any negative value, to leave streamed writes unbounded (WARNING: restores the indefinite \
+      block). Default is 1 minute""",
       Integer.class, 60_000), // 1 MINUTE DEFAULT
 
   // SERVER gRPC

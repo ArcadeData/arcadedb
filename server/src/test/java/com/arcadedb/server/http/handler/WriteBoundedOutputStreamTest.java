@@ -167,7 +167,7 @@ class WriteBoundedOutputStreamTest {
     assertThat(sink.size()).as("and reach nothing below it").isZero();
 
     out.flush();
-    assertThat(armed.get()).as("the flush hands the buffer on under a timer").isEqualTo(2);
+    assertThat(armed.get()).as("the flush hands the buffer on and flushes it under ONE timer").isEqualTo(1);
     assertThat(sink.size()).isEqualTo(rows * row.length);
   }
 
@@ -188,6 +188,45 @@ class WriteBoundedOutputStreamTest {
 
     assertThat(armed.get()).isEqualTo(4);
     assertThat(sink.toByteArray()).isEqualTo(large);
+  }
+
+  /** A close whose pending bytes cannot be handed on still closes the response, and reports the write that failed. */
+  @Test
+  void aCloseThatCannotHandOnItsBufferStillClosesAndReportsTheWrite() throws Exception {
+    final AtomicInteger closed = new AtomicInteger();
+    final OutputStream failing = new OutputStream() {
+      @Override
+      public void write(final int b) throws IOException {
+        throw new IOException("write refused");
+      }
+
+      @Override
+      public void write(final byte[] b, final int off, final int len) throws IOException {
+        throw new IOException("write refused");
+      }
+
+      @Override
+      public void close() throws IOException {
+        closed.incrementAndGet();
+        throw new IOException("close refused");
+      }
+    };
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(failing,
+        WriteBoundedOutputStream.WriteWatchdog.NONE);
+    out.write(new byte[] { 1, 2, 3 });
+
+    assertThatThrownBy(out::close)
+        .hasMessage("write refused")
+        .satisfies(e -> assertThat(e.getSuppressed()).extracting(Throwable::getMessage).containsExactly("close refused"));
+    assertThat(closed.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anOutOfBoundsWriteIsRefusedBeforeAnythingIsBuffered() {
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink, WriteBoundedOutputStream.WriteWatchdog.NONE);
+    assertThatThrownBy(() -> out.write(new byte[4], 2, 3)).isInstanceOf(IndexOutOfBoundsException.class);
+    assertThatThrownBy(() -> out.write(new byte[4], -1, 1)).isInstanceOf(IndexOutOfBoundsException.class);
   }
 
   /** Bytes buffered by writes of every shape come out in order, whole, on close. */

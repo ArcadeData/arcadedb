@@ -41,6 +41,10 @@ import java.util.logging.Level;
  * that only fills the buffer arms nothing, and a large write is handed on in bounded chunks, each armed on its own:
  * what the budget bounds is one chunk of at most {@value #MAX_BOUNDED_CHUNK} bytes making no progress.
  * <p>
+ * Because of that buffer a caller MUST flush or close the stream: bytes still held here are not flushed by the
+ * exchange when it completes. Not thread-safe, like the response stream it wraps; a caller writing from several
+ * threads serializes them itself, as {@code PostServerCommandHandler}'s SSE sink does.
+ * <p>
  * Every streamed response this server writes - the NDJSON answer of {@code POST /api/v1/batch}, the NDJSON query
  * encoding of {@code /query} and {@code /command}, the Server-Sent Events of the AI chat and of the long-running
  * server commands, and a follower's relay of any of them - is written through a blocking {@code write()} on a
@@ -205,28 +209,49 @@ public final class WriteBoundedOutputStream extends OutputStream {
    */
   @Override
   public void flush() throws IOException {
-    drain();
+    // One timer for the hand-off and the flush together: one budget per event, not two in a row.
     final Runnable disarm = watchdog.arm();
     try {
+      writePending();
       out.flush();
     } finally {
       disarm.run();
     }
   }
 
-  /** Bounded as well: closing the response flushes whatever is still pending, which blocks for the same reason. */
+  /**
+   * Bounded as well: closing the response flushes whatever is still pending, which blocks for the same reason. The
+   * response is closed even when handing on the pending bytes fails, and that failure - the write the watchdog
+   * released - is the one reported, with a failing close attached to it as suppressed.
+   */
   @Override
   public void close() throws IOException {
+    final Runnable disarm = watchdog.arm();
     try {
-      drain();
-    } finally {
-      final Runnable disarm = watchdog.arm();
       try {
-        out.close();
-      } finally {
-        disarm.run();
+        writePending();
+      } catch (final IOException e) {
+        try {
+          out.close();
+        } catch (final IOException closeFailure) {
+          e.addSuppressed(closeFailure);
+        }
+        throw e;
       }
+      out.close();
+    } finally {
+      disarm.run();
     }
+  }
+
+  /** Hands the buffer on under the caller's timer. At most {@value #BUFFER_SIZE} bytes, so one call. */
+  private void writePending() throws IOException {
+    if (count == 0)
+      return;
+    final int pending = count;
+    // Reset first: a write that failed killed the response, and close() must not try to send the same bytes again.
+    count = 0;
+    out.write(buffer, 0, pending);
   }
 
   private void drain() throws IOException {
