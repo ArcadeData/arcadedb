@@ -1166,8 +1166,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final String databaseName = decoded.databaseName();
     if (databaseName != null && databasesBeingReplaced.containsKey(databaseName))
       return context.build().setException(new NeedRetryException(
-          "Database '" + databaseName + "' is being replaced with a copy from another node on the leader, so the "
-              + "transaction cannot be validated against it. Please retry"));
+          "Database '" + databaseName + "' is being replaced with a copy from another node, so the leader cannot "
+              + "validate the transaction against it right now. Please retry"));
 
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
