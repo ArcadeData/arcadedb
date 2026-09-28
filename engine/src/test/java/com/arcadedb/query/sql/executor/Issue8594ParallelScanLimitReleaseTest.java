@@ -111,13 +111,12 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
 
     for (int i = 0; i < maxThreads * 2; i++) {
       // NEVER CLOSED, ON PURPOSE
+      // EXACTLY TEN next(), NO FINAL hasNext(): THE RELEASE MUST COME WITH THE LAST ROW, NOT WITH A LATER CALL
       final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " LIMIT 10");
-      int n = 0;
-      while (rs.hasNext()) {
+      for (int row = 0; row < 10; row++) {
+        assertThat(rs.hasNext()).isTrue();
         rs.next();
-        n++;
       }
-      assertThat(n).isEqualTo(10);
     }
 
     final long deadline = System.currentTimeMillis() + 20_000;
@@ -138,11 +137,20 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
   void queriesProgressWhileAbandonedScansHoldEveryProducerThread() throws Exception {
     createAndPopulate();
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
+    final String scan = "SELECT FROM " + TYPE_NAME;
+    final String count = "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE rating >= 0";
+    // ONE GROUP PER RECORD: 100,000 PARTIAL GROUPS, FAR ABOVE THE 16,384 FROM WHICH THE PARTIALS ARE MERGED IN PARALLEL TOO
+    final String groupBy = "SELECT id, count(*) AS c FROM " + TYPE_NAME + " GROUP BY id";
+    assertThat(explain(scan)).as("the scan must take the parallel path, or this test proves nothing").contains("(parallel)");
+    assertThat(explain(count)).as("the count must aggregate in parallel, or this test proves nothing")
+        .contains("CALCULATE AGGREGATE PROJECTIONS (parallel");
+    assertThat(explain(groupBy)).as("the GROUP BY must aggregate in parallel, or this test proves nothing")
+        .contains("CALCULATE AGGREGATE PROJECTIONS (parallel");
 
     final List<ResultSet> abandoned = new ArrayList<>();
     try {
       for (int i = 0; i < maxThreads; i++) {
-        final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME);
+        final ResultSet rs = database.query("sql", scan);
         assertThat(rs.hasNext()).isTrue();
         rs.next();
         abandoned.add(rs);
@@ -155,7 +163,7 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
       assertThat(ParallelScanProducerPool.getInstance().getPoolStats().activeThreads())
           .as("the abandoned scans must hold every producer thread, or this test proves nothing").isEqualTo(maxThreads);
 
-      try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME)) {
+      try (final ResultSet rs = database.query("sql", scan)) {
         long n = 0;
         while (rs.hasNext()) {
           rs.next();
@@ -164,12 +172,11 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
         assertThat(n).isEqualTo(RECORDS);
       }
 
-      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE rating >= 0")) {
+      try (final ResultSet rs = database.query("sql", count)) {
         assertThat(rs.next().<Long>getProperty("c")).isEqualTo(RECORDS);
       }
 
-      // ONE GROUP PER RECORD: ENOUGH GROUPS FOR THE MERGE OF THE PARTIALS TO RUN IN PARALLEL TOO
-      try (final ResultSet rs = database.query("sql", "SELECT id, count(*) AS c FROM " + TYPE_NAME + " GROUP BY id")) {
+      try (final ResultSet rs = database.query("sql", groupBy)) {
         long groups = 0;
         while (rs.hasNext()) {
           assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
@@ -184,8 +191,12 @@ class Issue8594ParallelScanLimitReleaseTest extends TestHelper {
   }
 
   private boolean wouldRunInParallel(final String sql) {
+    return explain(sql).contains("(parallel)");
+  }
+
+  private String explain(final String sql) {
     try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
-      return rs.next().<String>getProperty("executionPlanAsString").contains("(parallel)");
+      return rs.next().getProperty("executionPlanAsString");
     }
   }
 }
