@@ -27,6 +27,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.lang.reflect.Array;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -279,9 +280,17 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
         embeddedTypeName);
-    if (old instanceof Collection) {
-      ((Collection<EmbeddedDocument>) old).add(emb);
-      dirty = true;
+    if (old instanceof Collection<?> collection) {
+      try {
+        ((Collection<EmbeddedDocument>) old).add(emb);
+        dirty = true;
+      } catch (final UnsupportedOperationException e) {
+        // THE STORED COLLECTION IS IMMUTABLE (E.G. A List.of() THE CALLER SET, WHICH A LIST PROPERTY KEEPS AS-IS BECAUSE
+        // IT IS ALREADY A List): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE NEW ELEMENT (ISSUE #7777)
+        final Collection<Object> copy = old instanceof Set ? new LinkedHashSet<>(collection) : new ArrayList<>(collection);
+        copy.add(emb);
+        set(propertyName, copy);
+      }
     } else
       set(propertyName, emb);
 
