@@ -450,6 +450,8 @@ public final class BmwScorer {
       if (anyCursorExhausted)
         heapDirty = true;
       else
+        // A cursor that moved onto an unpackable RID this iteration leaves the heap ordered on UNPACKABLE: tolerated,
+        // because nothing reads the heap before the next iteration's overflow check hands the query to scanWide.
         for (int j = alignedCount - 1; j >= 0; j--)
           siftDownFromFloyd(keys, heap, heapSize, alignedSlots[j]);
       if (exhaustedAny) {
