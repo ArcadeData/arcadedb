@@ -199,23 +199,23 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * Plans the parallel load of the records of the fetcher's current chunk, in physical order: the sorted addresses of
    * every bucket are cut in slices a worker loads each.
    *
-   * @param first whether this is the first chunk, which goes parallel only when it is large enough to share; a later
-   *              one always does, the execution being parallel already
+   * @param first whether this is the first chunk, which decides for the whole execution: it goes parallel only where
+   *              parallel scans are allowed and when it is large enough to share. A later chunk always does, the
+   *              execution being parallel already: its entries are loaded, and answering null would drop them
    *
    * @return the scan, or null when the load stays sequential: parallel scans are not allowed here, or the first chunk
    * is too small to share
    */
   private ParallelTypeScan planRound(final CommandContext context, final boolean first) {
     final DatabaseInternal database = context.getDatabase();
-    if (!ParallelTypeScan.isAllowed(database))
-      return null;
-
     final int entriesPerUnit = ParallelTypeScan.entriesPerUnit(database, fetcher.getBufferedRids());
-    if (first && fetcher.slices(entriesPerUnit, null) < 2)
+    // Counted before the units are built: building them hands the entries that are not record addresses over, which
+    // a sequential load then would not serve
+    if (first && (!ParallelTypeScan.isAllowed(database) || fetcher.slices(entriesPerUnit, null) < 2))
       return null;
 
     final ParallelTypeScan round = ParallelTypeScan.ofUnits(context, scanFallback.typeName(),
-        unitsOfCurrentChunk(context, entriesPerUnit), 1);
+        unitsOfCurrentChunk(context, entriesPerUnit));
     if (round != null)
       ++parallelRounds;
     return round;

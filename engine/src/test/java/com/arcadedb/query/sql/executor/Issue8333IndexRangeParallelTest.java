@@ -21,12 +21,14 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.event.AfterRecordReadListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -134,6 +136,46 @@ class Issue8333IndexRangeParallelTest extends TestHelper {
         assertThat(plan).as(query).contains("loaded in parallel").contains("CALCULATE AGGREGATE PROJECTIONS (parallel:");
         assertThat(parallel).as(query).isNotEmpty().isEqualTo(sequentialRows(query));
       }
+    }
+  }
+
+  /** A residual condition reading {@code $current} sees the row the worker evaluates it on. */
+  @Test
+  void residualConditionOnCurrentMatchesTheSequentialAnswer() {
+    for (final String type : new String[] { "OneBucket", "FourBuckets" }) {
+      final String query = "SELECT count(*) AS n, sum(l_quantity) AS q FROM " + type
+          + " WHERE l_shipdate >= '1994-01-01' AND l_shipdate < '1994-04-01' AND $current.l_quantity < 24";
+      final List<String> parallel = new ArrayList<>();
+      assertThat(rowsAndPlan(query, parallel)).as(query).contains("FILTER ITEMS WHERE").contains("(parallel:");
+      assertThat(parallel).as(query).isEqualTo(sequentialRows(query)).isEqualTo(rowsWithoutTheIndex(query, type));
+    }
+  }
+
+  /**
+   * An execution that started parallel stays parallel to its last chunk: parallel scans turned off while it runs must
+   * not make it stop at the chunk it was on, as if no entry were left.
+   */
+  @Test
+  void disablingParallelScansMidQueryLosesNoChunk() {
+    PhysicalOrderRidFetcher.maxBufferedRids = 100;
+    final String query = "SELECT count(*) AS n, sum(l_quantity) AS q FROM OneBucket WHERE l_shipdate >= '1994-01-01' AND l_shipdate < '1994-04-01'";
+    final List<String> expected = sequentialRows(query);
+
+    final AtomicBoolean flipped = new AtomicBoolean();
+    final AfterRecordReadListener listener = record -> {
+      if (flipped.compareAndSet(false, true))
+        database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+      return record;
+    };
+    database.getEvents().registerListener(listener);
+    try {
+      final List<String> rows = new ArrayList<>();
+      assertThat(rowsAndPlan(query, rows)).contains("loaded in parallel");
+      assertThat(flipped.get()).isTrue();
+      assertThat(rows).isEqualTo(expected);
+    } finally {
+      database.getEvents().unregisterListener(listener);
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
     }
   }
 

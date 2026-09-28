@@ -183,14 +183,17 @@ final class ParallelTypeScan {
   }
 
   /**
-   * Plans a parallel execution of {@code unitSteps}, each one a unit run as it is, in their order: the slices of an
-   * index range loaded in physical order (issue #8333). Returns {@code null} when this execution must stay sequential,
-   * for the reasons {@link #plan} gives, or when there are fewer than {@code minUnits} units.
+   * A parallel execution of {@code unitSteps}, each one a unit run as it is, in their order: the slices of an index
+   * range loaded in physical order (issue #8333). The caller decides whether the execution may run in parallel
+   * ({@link #isAllowed}), once for all its rounds: a round of an execution already parallel must not fall back to
+   * nothing because a setting changed in between.
+   *
+   * @return the scan, or {@code null} when there is no unit
    */
   static ParallelTypeScan ofUnits(final CommandContext context, final String typeName,
-      final List<? extends AbstractExecutionStep> unitSteps, final int minUnits) {
+      final List<? extends AbstractExecutionStep> unitSteps) {
     final DatabaseInternal db = context.getDatabase();
-    if (!isAllowed(db) || unitSteps.isEmpty() || unitSteps.size() < minUnits)
+    if (unitSteps.isEmpty())
       return null;
 
     final List<Unit> units = new ArrayList<>(unitSteps.size());
