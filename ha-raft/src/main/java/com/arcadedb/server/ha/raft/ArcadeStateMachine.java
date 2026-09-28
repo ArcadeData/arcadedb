@@ -2010,12 +2010,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
     }
-
-    // Wake up any threads waiting for leadership change (e.g. leaveCluster)
-    final Object notifier = raftHA.getLeaderChangeNotifier();
-    synchronized (notifier) {
-      notifier.notifyAll();
-    }
   }
 
   /**
