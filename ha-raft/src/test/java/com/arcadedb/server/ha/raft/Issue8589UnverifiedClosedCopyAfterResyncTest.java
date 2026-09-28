@@ -270,6 +270,32 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     }
   }
 
+  /** The same fallback on the targeted resync: a quarantine it cannot replace with a mark is left standing. */
+  @Test
+  void aMarkThatCannotBeWrittenLeavesTheTargetedResyncsQuarantineStanding() throws Exception {
+    final Path dir = root.resolve("databases").resolve(DB_NAME);
+    assumeTrue(Files.getFileStore(dir).supportsFileAttributeView("posix"), "needs POSIX permissions");
+    closeLocally(DB_NAME);
+    sm.settleDivergedStateAfterInstall(Set.of(DB_NAME), 40L);
+    final long floor = sm.getDatabaseAppliedFloor(DB_NAME);
+    final Set<PosixFilePermission> original = Files.getPosixFilePermissions(dir);
+    Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
+    try {
+      assumeTrue(!Files.isWritable(dir), "the process can write a read-only directory (running as root?)");
+
+      sm.retryUnfilledSnapshotGap();
+      sm.awaitLifecycleTasksForTesting(60_000);
+
+      assertThat(Files.exists(marker(DB_NAME))).isFalse();
+      assertThat(sm.isDatabaseDiverged(DB_NAME)).as("still quarantined").isTrue();
+      assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("with its floor").isEqualTo(floor);
+      assertThat(sm.isResyncInProgress()).isTrue();
+      assertThat(leaderMissing(DB_NAME)).as("and not reported as kept").isFalse();
+    } finally {
+      Files.setPosixFilePermissions(dir, original);
+    }
+  }
+
   // ------------------------------------------------------------------------------------------------------------
 
   private void assertRefusedOnThisFollower(final String name) {

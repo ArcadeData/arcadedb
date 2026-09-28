@@ -880,16 +880,20 @@ public final class SnapshotInstaller {
    *                     install it is, rather than leave it reopenable
    */
   static boolean markUnverifiedClosedCopy(final ArcadeDBServer server, final String databaseName) throws IOException {
+    // Lock-free early outs first, so a reconcile that reports the same databases LEADER_MISSING on every install does not
+    // queue on the registry lock for each of them: a registered database is not marked, and an existing mark stays -
+    // only an install or a drop removes it, and neither can run concurrently with the caller's install.
+    if (server.existsDatabase(databaseName))
+      return false;
+    final Path dbDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName);
+    final Path marker = dbDir.resolve(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
+    if (Files.exists(marker))
+      return true;
     synchronized (server.getDatabasesLock()) {
-      if (server.existsDatabase(databaseName))
+      if (server.existsDatabase(databaseName) || !Files.isDirectory(dbDir))
         return false;
-      final Path dbDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
-          databaseName);
-      if (!Files.isDirectory(dbDir))
-        return false;
-      final Path marker = dbDir.resolve(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
-      if (!Files.exists(marker))
-        writeMarkerDurable(marker);
+      writeMarkerDurable(marker);
       return true;
     }
   }
