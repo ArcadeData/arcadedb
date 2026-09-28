@@ -791,8 +791,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * {@code k * groupSize}, before this widening, so the widening has to bound itself.
    */
   static int groupedWidening(final long rows, final int oversample) {
+    // Already at or past the budget: nothing to add. Returning here also keeps the product below from overflowing,
+    // since past this point rows < MAX_OVERFETCH_ROWS and oversample <= MAX_RESCORE_OVERSAMPLE.
+    if (rows >= MAX_OVERFETCH_ROWS)
+      return Math.min(oversample, 1);
     int widening = oversample;
-    final long budget = Math.max(rows, MAX_OVERFETCH_ROWS);
+    final long budget = MAX_OVERFETCH_ROWS;
     while (widening > 1 && rows * widening * widening > budget)
       widening--;
     return widening;
@@ -800,8 +804,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   /** As {@link #groupedWidening}, for a search that widens only the per-group cap, so the rows grow linearly. */
   static int rowWidening(final long rows, final int oversample) {
+    // Already at or past the budget: nothing to add. Returning here also keeps the product below from overflowing,
+    // since past this point rows < MAX_OVERFETCH_ROWS and oversample <= MAX_RESCORE_OVERSAMPLE.
+    if (rows >= MAX_OVERFETCH_ROWS)
+      return Math.min(oversample, 1);
     int widening = oversample;
-    final long budget = Math.max(rows, MAX_OVERFETCH_ROWS);
+    final long budget = MAX_OVERFETCH_ROWS;
     while (widening > 1 && rows * widening > budget)
       widening--;
     return widening;

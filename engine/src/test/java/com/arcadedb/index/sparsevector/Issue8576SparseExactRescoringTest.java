@@ -332,6 +332,9 @@ class Issue8576SparseExactRescoringTest extends TestHelper {
     assertThat(LSMSparseVectorIndex.groupedWidening(1_000_000L, 5)).isEqualTo(1);
     assertThat(LSMSparseVectorIndex.rowWidening(40_000L, 100)).isEqualTo(2);
     assertThat(LSMSparseVectorIndex.rowWidening(10L, 3)).isEqualTo(3);
+    // limit * groupSize near Long range must not overflow the widening arithmetic into a bogus factor.
+    assertThat(LSMSparseVectorIndex.groupedWidening((long) Integer.MAX_VALUE * Integer.MAX_VALUE, 100)).isEqualTo(1);
+    assertThat(LSMSparseVectorIndex.rowWidening(Long.MAX_VALUE / 2, 100)).isEqualTo(1);
   }
 
   /** compact() settles the WHOLE index: the memtable is sealed too, not left behind unquantized (issue #8576, Q3). */
