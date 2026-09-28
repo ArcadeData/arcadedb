@@ -71,6 +71,9 @@ public final class GraphQLFragments {
    * Rejects a selection set that spreads a fragment the document does not define, or whose fragments spread each other
    * in a cycle. Both are validation errors in the GraphQL specification, and checking them before any record is read
    * keeps them parsing errors rather than failures raised lazily while the result set is iterated.
+   * <p>
+   * Only the fragments reachable from {@code selectionSet} are walked: a fragment the operation never spreads is not
+   * checked, although the specification rejects an unused fragment too. It can never be expanded, so it cannot fail.
    */
   public void validate(final SelectionSet selectionSet) {
     validate(selectionSet, new ArrayList<>(), new HashSet<>());
