@@ -72,6 +72,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       person.createProperty("id", Type.INTEGER);
       person.createProperty("score", Type.FLOAT);
       database.getSchema().createEdgeType("KNOWS");
+      database.getSchema().createEdgeType("IN_CITY");
 
       final VertexType place = database.getSchema().createVertexType("Place");
       place.createProperty("pid", Type.INTEGER);
@@ -102,6 +103,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
         persons.get(i).newEdge("KNOWS", persons.get((i + 1) % PERSONS)).save();
       // A self loop, which two relationships of one MATCH clause must not both bind
       persons.get(5).newEdge("KNOWS", persons.get(5)).save();
+
+      // Every person is in the city of its index, which an anonymous (:City {id: ...}) is sought by
+      try (final ResultSet rs = database.query("opencypher", "MATCH (c:City) WHERE c.id < $n RETURN c ORDER BY c.id",
+          Map.of("n", PERSONS))) {
+        int i = 0;
+        while (rs.hasNext())
+          persons.get(i++).newEdge("IN_CITY", rs.next().<Vertex>getProperty("c")).save();
+      }
 
       // Persons 5 and 9 live in a village, which a seek of the index Town inherits from Place also finds
       for (int k = 1; k <= 300; k++)
@@ -265,6 +274,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       while (rs.hasNext())
         assertThat(rs.next().<Integer>getProperty("id")).isNotNull();
     }
+  }
+
+  @Test
+  void anAnonymousNodeIsSoughtByItsIndex() {
+    // The statistics of an anonymous node's label were never collected: its index read back as missing
+    final String query = "MATCH (p:Person)-[:IN_CITY]->(:City {id: 3}) RETURN p.id AS a, 0 AS b";
+    assertThat(plan(query)).containsPattern("NodeIndexSeek\\(  __anon[0-9]+:City\\)");
+    assertThat(pairs(query)).containsExactly("3/0");
   }
 
   @Test
