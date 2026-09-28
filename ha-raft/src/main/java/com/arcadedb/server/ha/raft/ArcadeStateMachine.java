@@ -4526,7 +4526,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
-   * copy (issue #8491). Driven by the {@link HealthMonitor} tick.
+   * copy (issue #8491). Driven by the {@link HealthMonitor} tick, through {@link RaftHAServer}, which runs it on the
+   * executor the other automatic hand-offs share so that none of them races it (issue #8557).
    * <p>
    * A node can be elected in the middle of such an install: an operator resync ({@link #resyncDatabaseFromLeader})
    * or a targeted resync of a quarantined database leaves its Raft log complete, and Raft elects on the log alone.

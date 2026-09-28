@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
@@ -266,6 +267,10 @@ class RaftClusterManager {
    * Hands leadership to another peer of the cluster's choosing. The peers {@link RaftHAServer#selectStepDownTargets}
    * ranks are tried in order with the targeted transfer, all within one {@code timeoutMs} budget; only when none is
    * eligible, or all of them fail, does it fall back to {@link #stepDownWithoutTarget(long)}.
+   * <p>
+   * Except when a candidate is refused because another transfer is already pending on this leader (issue #8557): every
+   * other candidate would be refused the same way, and the bare step-down would pull the leadership out from under
+   * that pending transfer. The method then waits, within what is left of the budget, for that transfer to land.
    *
    * @return true only when leadership settled on a peer other than this one; false when this node is not the leader,
    *         leadership moved away on its own while the transfer was being attempted, or no handoff happened in time
@@ -316,6 +321,16 @@ class RaftClusterManager {
         LogManager.instance().log(this, Level.INFO,
             "This node (%s) stopped being the leader while transferring leadership to %s", selfId, candidate.getId());
         return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
+      } catch (final LeadershipTransferInProgressException e) {
+        // Another caller is handing this leadership over right now (issue #8557). The refusal says nothing about the
+        // candidate: the next one would be refused identically, in microseconds, and the loop would then reach the
+        // bare step-down with its budget unspent - which Ratis does not hold back for the pending transfer, so it
+        // would make this node a follower under it and leave the cluster leaderless for an election timeout. The
+        // pending transfer is the hand-off this caller wanted: report whether it lands.
+        LogManager.instance().log(this, Level.INFO,
+            "Leadership transfer to %s refused because another transfer is already in progress; waiting for it instead",
+            candidate.getId());
+        return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
       } catch (final Exception e) {
         // The same race: the candidate may have won although the call reported failure. Trying the next one would
         // then only be refused, or worse, start a second election against the leader just elected.
@@ -360,6 +375,32 @@ class RaftClusterManager {
       return false;
     // One budget for the RPC and the confirmation together: the confirmation gets what the RPC left of it.
     final long deadline = System.currentTimeMillis() + timeoutMs;
+    // Never under a targeted transfer this node has in flight (issue #8557). Ratis routes a null target to
+    // stepDownLeaderAsync, which - unlike the targeted path - is not refused while a transfer is pending: it would make
+    // this node a follower at the same term, fail the pending transfer with it, and leave every follower naming the
+    // ex-leader until its election timer fires. The transfer in flight is already the hand-off: wait for it instead.
+    // The flag is raised BEFORE the counter is read, and the targeted overload raises its counter before it reads the
+    // flag, so two racing callers cannot BOTH miss each other and both send. They can both see each other and both back
+    // off: then neither RPC is sent, Ratis state does not move, and each caller reports that no hand-off happened (a
+    // spurious failure the caller retries, never the leaderless window this guard exists to prevent).
+    // The flag covers the RPC only, never the wait below: held through a back-off it would refuse, for seconds, targeted
+    // transfers that nothing is racing (review of PR #8596).
+    final boolean backedOff;
+    bareStepDownsInFlight.incrementAndGet();
+    try {
+      backedOff = targetedTransfersInFlight.get() > 0;
+      if (!backedOff)
+        sendBareStepDown(client, timeoutMs);
+    } finally {
+      bareStepDownsInFlight.decrementAndGet();
+    }
+    if (backedOff)
+      LogManager.instance().log(this, Level.INFO,
+          "Not stepping down without a target: a targeted leadership transfer is in progress on this node; waiting for it");
+    return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
+  }
+
+  private void sendBareStepDown(final RaftClient client, final long timeoutMs) {
     try {
       final RaftClientReply reply = client.admin().transferLeadership(null, timeoutMs);
       if (!reply.isSuccess())
@@ -371,7 +412,6 @@ class RaftClusterManager {
       // in-flight RPC fails with "is closed". Confirm an actual, settled handoff instead (issue #4809).
       LogManager.instance().log(this, Level.INFO, "No-target leadership transfer request: %s", e.getMessage());
     }
-    return confirmLeadershipMovedAway(selfId, confirmWindow(deadline));
   }
 
   private static final long LEADER_CONFIRM_TIMEOUT_MS = 3_000;
@@ -396,6 +436,16 @@ class RaftClusterManager {
    */
   boolean leadershipMovedAway() {
     return confirmLeadershipMovedAway(raftHAServer.getLocalPeerId(), leaderConfirmGraceMs);
+  }
+
+  /**
+   * Whether leadership settled on a peer other than this one within {@code waitMs} (never less than
+   * {@link #leaderConfirmGraceMs}). For {@link RaftHAServer#stepDown()} when a transfer another caller started is
+   * pending on this leader (issue #8557): that transfer has its own budget, and the grace alone would give up on it
+   * too early.
+   */
+  boolean leadershipMovedAway(final long waitMs) {
+    return confirmLeadershipMovedAway(raftHAServer.getLocalPeerId(), Math.max(waitMs, leaderConfirmGraceMs));
   }
   private static final long LEADER_CONFIRM_POLL_MS     = 50;
 
@@ -437,16 +487,33 @@ class RaftClusterManager {
    * A failed call is settled, not sampled (issue #8487): the method waits, within {@code timeoutMs} (never less than
    * {@link #leaderConfirmGraceMs}), for a concrete leader and returns normally only when that leader is the target.
    *
-   * @throws NotTheLeaderRefusalException when this node is not the leader, naming the leader (when known) so the
-   *                                      caller can retry against the right node
-   * @throws ConfigurationException       when leadership did not settle on the target, naming the leader it settled
-   *                                      on, or saying that none was elected in time
+   * @throws NotTheLeaderRefusalException          when this node is not the leader, naming the leader (when known) so
+   *                                               the caller can retry against the right node
+   * @throws LeadershipTransferInProgressException when Ratis refused it because another transfer, to a different
+   *                                               peer, is already pending on this leader (issue #8557)
+   * @throws ConfigurationException                when leadership did not settle on the target, naming the leader it
+   *                                               settled on, or saying that none was elected in time
    */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
     if (!raftHAServer.isLeader())
       throw new NotTheLeaderRefusalException("Refusing to transfer leadership to " + targetPeerId,
           raftHAServer.getLeaderId());
 
+    targetedTransfersInFlight.incrementAndGet();
+    try {
+      // The mirror of the guard in stepDownWithoutTarget (issue #8557): a bare step-down in flight is about to make this
+      // node a follower, and a targeted transfer sent now would only race it. See there for why the order of the
+      // increment and this read matters.
+      if (bareStepDownsInFlight.get() > 0)
+        throw new LeadershipTransferInProgressException(targetPeerId,
+            new ConfigurationException("a leadership step-down without a target is in progress on this node"));
+      sendTargetedTransfer(targetPeerId, timeoutMs);
+    } finally {
+      targetedTransfersInFlight.decrementAndGet();
+    }
+  }
+
+  private void sendTargetedTransfer(final String targetPeerId, final long timeoutMs) {
     LogManager.instance().log(this, Level.INFO, "Transferring leadership to %s (timeout=%d ms)", targetPeerId, timeoutMs);
     final RaftPeerId targetId = RaftPeerId.valueOf(targetPeerId);
     final RaftPeerId selfId = raftHAServer.getLocalPeerId();
@@ -483,6 +550,8 @@ class RaftClusterManager {
       // refresh raced the call, or a failed election (the target losing a vote it was sent to win) re-elected this
       // node. Re-send through the fresh client while the budget lasts; to a transfer still pending for the same
       // target Ratis joins the new request rather than starting a second election.
+      if (isTransferAlreadyPending(failure))
+        throw new LeadershipTransferInProgressException(targetPeerId, failure);
       final boolean clientClosed = RaftGroupCommitter.isClientClosed(failure);
       if (!clientClosed)
         throw new ConfigurationException("Failed to transfer leadership to " + targetPeerId + ": " + failureMessage(failure),
@@ -494,6 +563,35 @@ class RaftClusterManager {
       LogManager.instance().log(this, Level.INFO, "Leadership transfer to %s interrupted by a client refresh (%s); retrying",
           targetPeerId, failureMessage(failure));
     }
+  }
+
+  /**
+   * Targeted transfers this node is sending right now, from any caller (issue #8557). Read by
+   * {@link #stepDownWithoutTarget(long)}, which must not pull the leadership out from under one of them.
+   */
+  private final AtomicInteger targetedTransfersInFlight = new AtomicInteger();
+
+  /** Bare no-target step-downs this node is sending right now; the mirror of {@link #targetedTransfersInFlight}. */
+  private final AtomicInteger bareStepDownsInFlight = new AtomicInteger();
+
+  /**
+   * Whether {@code t} (or a cause) is Ratis refusing a targeted transfer because another one, to a different peer, is
+   * already pending on this leader (issue #8557). Ratis 3.3 builds that refusal in
+   * {@code TransferLeadership.createReplyFutureFromPreviousRequest} as a {@code TransferLeadershipException} reading
+   * {@code "<member>Failed to transfer leadership to <peer>: a previous <pending> exists"}, and returns it at once. A
+   * transfer to the SAME peer is chained onto the pending one instead and never produces it. Matched by message, as
+   * {@link RaftGroupCommitter#isClientClosed} is, because it reaches the client as a deserialised copy.
+   */
+  static boolean isTransferAlreadyPending(final Throwable t) {
+    Throwable cur = t;
+    for (int depth = 0; depth < 8 && cur != null; depth++) {
+      final String msg = cur.getMessage();
+      if (msg != null && msg.contains("Failed to transfer leadership to") && msg.contains(": a previous ")
+          && msg.contains(" exists"))
+        return true;
+      cur = cur.getCause();
+    }
+    return false;
   }
 
   /** Attempts of one targeted transfer whose call failed only because its client was closed under it (#8487). */
