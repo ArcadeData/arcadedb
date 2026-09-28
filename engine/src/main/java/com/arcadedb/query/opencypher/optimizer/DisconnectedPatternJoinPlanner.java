@@ -35,6 +35,7 @@ import com.arcadedb.query.opencypher.executor.operators.EquiJoinKey;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
 import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
 import com.arcadedb.query.opencypher.executor.operators.RowBuffer;
@@ -230,6 +231,10 @@ final class DisconnectedPatternJoinPlanner {
     BooleanExpression rest = unit.localFilter;
     if (unit.node != null && unit.operator instanceof NodeByLabelScan scan) {
       scan.pushDownFilter(rest);
+      rest = null;
+    } else if (unit.node != null && unit.operator instanceof NodeIndexSeek seek) {
+      // Evaluated once per vertex the seek returns (issue #8537)
+      seek.pushDownFilter(rest);
       rest = null;
     } else if (unit.anchorPushdown != null)
       rest = unit.anchorPushdown.apply(rest);

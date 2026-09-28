@@ -265,8 +265,13 @@ public class CypherOptimizer {
 
         final String componentAnchorVariable = componentAnchor.getVariable();
         units.add(new DisconnectedPatternJoinPlanner.Unit(expansion.root(), componentVariables(component), null,
-            componentAnchor, conjuncts -> componentAnchorOperator instanceof NodeByLabelScan scan ?
-            pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, scan) : conjuncts));
+            componentAnchor, conjuncts -> {
+              if (componentAnchorOperator instanceof NodeByLabelScan scan)
+                return pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, scan::pushDownFilter);
+              if (componentAnchorOperator instanceof NodeIndexSeek seek)
+                return pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, seek::pushDownFilter);
+              return conjuncts;
+            }));
       }
       if (units.size() == 1 && isolatedNodes.isEmpty())
         rootOperator = units.getFirst().operator;
