@@ -148,6 +148,16 @@ public interface CommandContext {
 
   CommandContext getParent();
 
+  /**
+   * The heap the buffers of this command's query hold, which reserves them from the budget every query in the JVM shares
+   * (issue #8591): the tracker of the root context, handed out as well by every context derived from it, so sub-queries
+   * and parallel-scan workers charge the query they work for. Null when the context belongs to no query.
+   */
+  default QueryHeapTracker getQueryHeapTracker() {
+    final CommandContext parent = getParent();
+    return parent != null ? parent.getQueryHeapTracker() : null;
+  }
+
   CommandContext setParent(CommandContext parentContext);
 
   CommandContext setChild(CommandContext context);

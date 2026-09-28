@@ -133,4 +133,10 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
       throw new IllegalArgumentException("Unsupported timestamp type: " + ts.getClass().getName());
     return millis;
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

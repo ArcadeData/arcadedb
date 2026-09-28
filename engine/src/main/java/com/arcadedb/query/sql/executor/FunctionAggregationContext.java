@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.parser.Expression;
 
@@ -29,9 +30,12 @@ import java.util.List;
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class FunctionAggregationContext implements AggregationContext {
-  private final SQLFunction      aggregateFunction;
-  private       List<Expression> params;
+public class FunctionAggregationContext implements AggregationContext, HeapBufferingFunction {
+  private final SQLFunction        aggregateFunction;
+  private       List<Expression>   params;
+  // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS (list(), percentile()...), CHARGED TO THE HEAP BUDGET OF ALL THE
+  // QUERIES THROUGH THE OPERATION OF THE STEP THAT AGGREGATES (ISSUE #8591); NULL FOR A RUNNING STATE OF FIXED SIZE
+  private       OperationHeapLimit heapLimit;
 
   public FunctionAggregationContext(final SQLFunction function, final List<Expression> params) {
     this.aggregateFunction = function;
@@ -43,6 +47,12 @@ public class FunctionAggregationContext implements AggregationContext {
     // aggregate functions and any function projected with no FROM), a second entry point FunctionCall.execute()'s
     // checkArity does not cover.
     this.aggregateFunction.checkArity(new Object[this.params.size()]);
+  }
+
+  @Override
+  public void setHeapLimit(final OperationHeapLimit owner) {
+    if (aggregateFunction instanceof SQLAggregatedFunction function && function.holdsEveryValue())
+      heapLimit = owner.child(aggregateFunction.getName() + "()");
   }
 
   @Override
@@ -68,5 +78,7 @@ public class FunctionAggregationContext implements AggregationContext {
       paramValues.add(expr.execute(next, context));
 
     aggregateFunction.execute(next, null, null, paramValues.toArray(), context);
+    if (heapLimit != null)
+      heapLimit.chargeElement(paramValues.size() == 1 ? paramValues.getFirst() : paramValues, 0);
   }
 }

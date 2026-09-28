@@ -19,12 +19,14 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -61,6 +63,10 @@ public class AggregationStep extends AbstractExecutionStep {
   private static final Integer CONFIGURED_BATCH_SIZE = System.getProperty(BATCH_SIZE_PROPERTY) != null ?
       Integer.parseInt(System.getProperty(BATCH_SIZE_PROPERTY)) : null;
 
+  // WHAT THE AGGREGATES GATHER - collect(), A DISTINCT AGGREGATE - UNDER THE HEAP BUDGET OF ALL THE QUERIES (ISSUE #8591).
+  // ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
   public AggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -72,6 +78,27 @@ public class AggregationStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("AggregationStep requires a previous step");
+    heapLimit = OperationHeapLimit.of(context, "aggregation");
+    try {
+      return aggregate(context, nRecords);
+    } catch (final RuntimeException e) {
+      releaseHeap();
+      throw e;
+    }
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
+  }
+
+  private ResultSet aggregate(final CommandContext context, final int nRecords) {
 
     // Map of aggregation functions (one per aggregation expression)
     final Map<String, StatelessFunction> aggregators = new HashMap<>();
@@ -89,8 +116,8 @@ public class AggregationStep extends AbstractExecutionStep {
       if (expr.isAggregation() && expr instanceof FunctionCallExpression) {
         final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
         // Pass the DISTINCT flag to create the appropriate function instance
-        final StatelessFunction function = functionFactory.getFunctionExecutor(
-            funcExpr.getFunctionName(), funcExpr.isDistinct());
+        final StatelessFunction function = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+            funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit);
         aggregators.put(item.getOutputName(), function);
         aggregationExpressions.put(item.getOutputName(), expr);
       } else if (expr.containsAggregation()) {
@@ -209,6 +236,8 @@ public class AggregationStep extends AbstractExecutionStep {
         return index < results.size();
       }
 
+      // NO RELEASE ONCE THE ROW IS SERVED: WHAT ITS AGGREGATES GATHERED (A collect() LIST) USUALLY LIVES ON THROUGH THE REST
+      // OF THE QUERY, AS IN WITH collect(n) AS nodes UNWIND nodes AS n. THE STEP'S CLOSE() GIVES IT BACK
       @Override
       public Result next() {
         return results.get(index++);
@@ -235,8 +264,8 @@ public class AggregationStep extends AbstractExecutionStep {
         final String key = funcExpr.getText();
         if (!innerAggs.containsKey(key)) {
           innerAggs.put(key, funcExpr);
-          innerFunctions.put(key, functionFactory.getFunctionExecutor(
-              funcExpr.getFunctionName(), funcExpr.isDistinct()));
+          innerFunctions.put(key, HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+              funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit));
         }
         return; // Don't recurse into aggregation arguments
       }
