@@ -1709,8 +1709,13 @@ public final class SnapshotInstaller {
       }
     }
 
-    throw new IOException("Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'",
-        lastException);
+    final String message = "Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'";
+    // Judged on the LAST attempt only: a 404 followed by any other failure says nothing definite about the leader, and
+    // a leader that answered 404 every time it was reachable still answers 404 (issue #8559). Retried like any other
+    // failure rather than given up on at once, so a leader still loading its databases is given the same backoff.
+    if (lastException instanceof LeaderDoesNotHoldDatabaseException)
+      throw new LeaderDoesNotHoldDatabaseException(message + ": the leader does not hold it", lastException);
+    throw new IOException(message, lastException);
   }
 
   private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
@@ -1743,6 +1748,11 @@ public final class SnapshotInstaller {
 
     try {
       final int responseCode = connection.getResponseCode();
+      // The leader's handler answers 404 exactly when it does not hold the database registered: a verdict about the
+      // cluster, not about this transfer, so it is typed apart from every other failure (issue #8559).
+      if (responseCode == HttpURLConnection.HTTP_NOT_FOUND)
+        throw new LeaderDoesNotHoldDatabaseException(
+            "Failed to download snapshot: HTTP 404, the leader does not hold database '" + databaseName + "'");
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
