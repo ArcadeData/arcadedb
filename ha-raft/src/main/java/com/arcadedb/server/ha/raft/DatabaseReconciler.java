@@ -130,10 +130,16 @@ public class DatabaseReconciler {
    * Runs a snapshot install of one database with the Raft apply thread held off that database (issue #7958). The
    * default runs the install as it is, for the unit tests that drive this class without a state machine;
    * {@link ArcadeStateMachine} installs its own.
+   * <p>
+   * {@code installedBoundaryIndex}, when {@code >= 0}, is the Raft index a leader-driven install brings this
+   * database's copy to (issue #8577): the gate implementation records it before releasing the lock, so an entry
+   * at or below it - this node's own pre-install local log being replayed after a restart - is skipped as a no-op
+   * instead of being re-applied to the copy that already covers it. {@code -1} means no such boundary applies
+   * (an operator or targeted resync, where the waiting entries are assumed newer than what gets installed).
    */
   @FunctionalInterface
   interface InstallGate {
-    void run(String databaseName, InstallAction install) throws IOException;
+    void run(String databaseName, long installedBoundaryIndex, InstallAction install) throws IOException;
   }
 
   /** One install, as {@link InstallGate} runs it. */
@@ -142,7 +148,7 @@ public class DatabaseReconciler {
     void run() throws IOException;
   }
 
-  private volatile InstallGate installGate = (databaseName, install) -> install.run();
+  private volatile InstallGate installGate = (databaseName, installedBoundaryIndex, install) -> install.run();
 
   public DatabaseReconciler() {
   }
@@ -234,6 +240,10 @@ public class DatabaseReconciler {
    * {@link AcquireState#LEADER_MISSING} alert plus the leadership-transfer flow cover the #4522 redistribution
    * edge, so this boundary is not reachable in normal operation.
    *
+   * @param installedBoundaryIndex the Raft index this install is known to bring every reconciled database's copy to
+   *                                at least (issue #8577), forwarded to {@link InstallGate#run} so it can be
+   *                                recorded on each database's install lock before releasing it; {@code -1} when no
+   *                                such boundary is known.
    * @return a {@link ReconcileFromLeaderResult} carrying the databases this pass gave up on - i.e. that failed and
    *         have exhausted their retry budget so the install is allowed to proceed without them; the caller MUST
    *         treat those as not-at-the-snapshot-index (issue #6760), empty on every clean pass and on every path
@@ -247,7 +257,7 @@ public class DatabaseReconciler {
    *                     install cannot then tell which local copies it would leave unrefreshed.
    */
   ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
-      final String clusterToken) throws IOException {
+      final String clusterToken, final long installedBoundaryIndex) throws IOException {
 
     final boolean autoAcquire = server.getConfiguration().getValueAsBoolean(
         GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES);
@@ -258,7 +268,7 @@ public class DatabaseReconciler {
       // a wrong one is never revisited (issue #8374). Fetched first, so an unreachable leader fails the install before
       // any database is downloaded.
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
       return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
 
@@ -284,7 +294,7 @@ public class DatabaseReconciler {
       // The #4799 refusal first: on an empty follower it fails the install whatever the marker read would answer.
       failInstallWhenNoLocalDatabases();
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
       return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs = bootstrapState.databases();
@@ -319,7 +329,7 @@ public class DatabaseReconciler {
         dbName -> {
           acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
           LogManager.instance().log(this, Level.INFO, "Acquiring database '%s' from leader %s...", dbName, leaderHttpAddr);
-          installGate.run(dbName,
+          installGate.run(dbName, installedBoundaryIndex,
               () -> SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken,
                   server));
         },
@@ -327,8 +337,9 @@ public class DatabaseReconciler {
           LogManager.instance().log(this, Level.INFO, "Refreshing database '%s' from leader %s...", dbName, leaderHttpAddr);
           // install() downloads with the database still open and only closes + swaps once a complete copy is on
           // disk, rolling back on failure, so a failed download never leaves the database closed.
-          installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-              leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
+          installGate.run(dbName, installedBoundaryIndex,
+              () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+                  leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
         });
 
     // Apply the status-map / failure-counter bookkeeping and decide whether to fail the overall install so Ratis
@@ -513,7 +524,7 @@ public class DatabaseReconciler {
    * unavailable.
    */
   private void refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
-      final String clusterToken) throws IOException {
+      final String clusterToken, final long installedBoundaryIndex) throws IOException {
     // Reserved internal databases (e.g. the Raft control directory '.raft') are skipped: the leader does not serve
     // them as snapshots, so an install attempt would only fail. Databases closed on this node are included (issue
     // #8464): the next request reopens their directory, so they are as present as the registered ones.
@@ -526,8 +537,9 @@ public class DatabaseReconciler {
     for (final String dbName : toRefresh) {
       LogManager.instance().log(this, Level.INFO,
           "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
-      installGate.run(dbName, () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
+      installGate.run(dbName, installedBoundaryIndex,
+          () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+              leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
     }
   }
 

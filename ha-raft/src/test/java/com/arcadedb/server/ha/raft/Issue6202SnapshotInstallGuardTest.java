@@ -278,7 +278,7 @@ class Issue6202SnapshotInstallGuardTest {
 
     @Override
     ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
-        final String clusterToken) {
+        final String clusterToken, final long installedBoundaryIndex) {
       this.httpAddr = leaderHttpAddr;
       this.httpsAddr = leaderHttpsAddr;
       return new ReconcileFromLeaderResult(givenUp, null);
