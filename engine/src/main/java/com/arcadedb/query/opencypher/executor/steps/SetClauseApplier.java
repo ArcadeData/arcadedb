@@ -244,10 +244,10 @@ public final class SetClauseApplier {
    * <p>
    * A target a MERGE action leaves untouched (an unchanged value, issue #4474) is not pinned, so a read-only match
    * stays conflict-free. The decision is taken on the values of the previous pass, so a reload can turn an item judged a
-   * no-op into a write: the caller then calls this method again, which reloads that item's target too. A map item always counts as a write, as it
-   * already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call {@code modify()}. A label write is not
-   * a reload trigger here: its right-hand side never reads the record's properties, and the rewrite reloads the vertex
-   * it copies itself ({@link LabelReplacements#replace}).
+   * no-op into a write: the caller then calls this method again, which reloads that item's target too. A map item
+   * always counts as a write, as it already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call
+   * {@code modify()}. A label write is not a reload trigger here: its right-hand side never reads the record's
+   * properties, and the rewrite reloads the vertex it copies itself ({@link LabelReplacements#replace}).
    *
    * @return whether any target was replaced in the row by its reloaded version, so the right-hand sides must be
    * evaluated again
@@ -259,7 +259,7 @@ public final class SetClauseApplier {
     for (int i = 0; i < items.size(); i++) {
       final SetClause.SetItem item = items.get(i);
       switch (item.getType()) {
-      case PROPERTY:
+      case PROPERTY: {
         if (keyIsNull[i])
           break;
         final String propertyName = item.getKeyExpression() != null ? keys[i] : item.getProperty();
@@ -276,6 +276,7 @@ public final class SetClauseApplier {
             reloaded = true;
         }
         break;
+      }
       case REPLACE_MAP:
       case MERGE_MAP:
         if (!reloadLatestTarget && values[i] != null && reloadTarget(item.getVariable(), result, writtenDocs))
@@ -536,7 +537,6 @@ public final class SetClauseApplier {
     }
     return rawDoc;
   }
-
 
   /**
    * #5227: resolves the target variable and replaces it in the result row with its mutable, latest-committed
