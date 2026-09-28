@@ -53,6 +53,20 @@ public final class PhysicalOrderRidFetcher {
    */
   static int maxBufferedRids = 1 << 20;
 
+  private final Supplier<Source>       sources;
+  private final long                   scanThreshold;
+  private final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
+  private       List<Object>           passThrough;
+  private       Source                 chunkSource;
+  private       boolean                chunkSourceExhausted;
+  private       long                   matched;
+  private       Outcome                outcome;
+  private       WorkGuard              guard;
+  // nextRecord(): the buckets of the current chunk, and the records of the one being read
+  private       List<BucketSlice>      bucketSlices;
+  private       int                    nextBucketSlice;
+  private       Iterator<Record>       records;
+
   public enum Outcome {SCAN, PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED}
 
   /**
@@ -69,19 +83,11 @@ public final class PhysicalOrderRidFetcher {
     void close();
   }
 
-  private final Supplier<Source>       sources;
-  private final long                   scanThreshold;
-  private final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
-  private       List<Object>           passThrough;
-  private       Source                 chunkSource;
-  private       boolean                chunkSourceExhausted;
-  private       long                   matched;
-  private       Outcome                outcome;
-  private       WorkGuard              guard;
-  // nextRecord(): the buckets of the current chunk, and the records of the one being read
-  private       List<BucketSlice>      bucketSlices;
-  private       int                    nextBucketSlice;
-  private       Iterator<Record>       records;
+  /** Receives one slice of the record addresses held: the positions [from, to) of a bucket, in physical order. */
+  @FunctionalInterface
+  public interface SliceConsumer {
+    void accept(int bucketId, long[] positions, int from, int to);
+  }
 
   private record BucketSlice(int bucketId, long[] positions, int from, int to) {
   }
@@ -260,12 +266,6 @@ public final class PhysicalOrderRidFetcher {
   /** The record addresses the current chunk holds, what {@link #slices} cuts. */
   public int getBufferedRids() {
     return buffer.size();
-  }
-
-  /** Receives one slice of the record addresses held: the positions [from, to) of a bucket, in physical order. */
-  @FunctionalInterface
-  public interface SliceConsumer {
-    void accept(int bucketId, long[] positions, int from, int to);
   }
 
   /** The entries the first pass matched: all of them, or one more than the threshold when it answered a scan. */
