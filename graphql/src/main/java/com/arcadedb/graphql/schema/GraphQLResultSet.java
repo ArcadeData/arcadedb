@@ -101,11 +101,6 @@ public class GraphQLResultSet implements ResultSet {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
-      final ObjectTypeDefinition returnType, final Map<String, Object> variables) {
-    this(schema, resultSet, projections, returnType, variables, GraphQLFragments.NONE);
-  }
-
-  public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
       final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
@@ -115,7 +110,7 @@ public class GraphQLResultSet implements ResultSet {
     this.projections = projections;
     this.returnType = returnType;
     this.variables = variables;
-    this.fragments = fragments != null ? fragments : GraphQLFragments.NONE;
+    this.fragments = fragments;
   }
 
   @Override

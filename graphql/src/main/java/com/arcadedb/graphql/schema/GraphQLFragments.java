@@ -44,6 +44,13 @@ import java.util.function.*;
 public final class GraphQLFragments {
   public static final GraphQLFragments NONE = new GraphQLFragments(Collections.emptyMap());
 
+  /**
+   * The longest chain of fragments spreading each other that a document may contain. Validation and expansion recurse
+   * once per link, so an unbounded chain - cheap to write, since each fragment is a single line - would end in a
+   * {@link StackOverflowError} rather than in a parsing error.
+   */
+  public static final int MAX_FRAGMENT_DEPTH = 100;
+
   private final Map<String, FragmentDefinition> definitions;
 
   private GraphQLFragments(final Map<String, FragmentDefinition> definitions) {
@@ -76,13 +83,22 @@ public final class GraphQLFragments {
    * checked, although the specification rejects an unused fragment too. It can never be expanded, so it cannot fail.
    */
   public void validate(final SelectionSet selectionSet) {
-    validate(selectionSet, new ArrayList<>(), new HashSet<>());
+    validate(selectionSet, new ArrayList<>(), new HashMap<>());
   }
 
-  private void validate(final SelectionSet selectionSet, final List<String> path, final Set<String> validated) {
+  /**
+   * @param path    the fragments being walked, outermost first
+   * @param heights for every fragment already walked, the length of the longest chain of fragments it starts. Memoized
+   *                so a fragment spread many times is walked once, while a chain split into segments walked separately
+   *                is still measured whole
+   *
+   * @return the length of the longest chain of fragments below {@code selectionSet}
+   */
+  private int validate(final SelectionSet selectionSet, final List<String> path, final Map<String, Integer> heights) {
     if (selectionSet == null)
-      return;
+      return 0;
 
+    int height = 0;
     for (final Selection selection : selectionSet.getSelections()) {
       final FragmentSpread spread = selection.getFragmentSpread();
       final InlineFragment inline = selection.getInlineFragment();
@@ -92,17 +108,30 @@ public final class GraphQLFragments {
         if (path.contains(name))
           throw new CommandParsingException(
               "GraphQL fragment '" + name + "' spreads itself through a cycle: " + String.join(" -> ", path) + " -> " + name);
-        if (!validated.add(name))
-          // ALREADY WALKED FROM ANOTHER SPREAD: WALKING IT AGAIN CANNOT FIND ANYTHING NEW AND ONLY MULTIPLIES THE WORK
-          continue;
-        path.add(name);
-        validate(fragment.getSelectionSet(), path, validated);
-        path.removeLast();
+
+        Integer fragmentHeight = heights.get(name);
+        if (fragmentHeight == null) {
+          if (path.size() >= MAX_FRAGMENT_DEPTH)
+            throw tooDeep(name);
+          path.add(name);
+          fragmentHeight = 1 + validate(fragment.getSelectionSet(), path, heights);
+          path.removeLast();
+          heights.put(name, fragmentHeight);
+        }
+        if (path.size() + fragmentHeight > MAX_FRAGMENT_DEPTH)
+          throw tooDeep(name);
+        height = Math.max(height, fragmentHeight);
       } else if (inline != null)
-        validate(inline.getSelectionSet(), path, validated);
+        height = Math.max(height, validate(inline.getSelectionSet(), path, heights));
       else
-        validate(selection.getSelectionSet(), path, validated);
+        height = Math.max(height, validate(selection.getSelectionSet(), path, heights));
     }
+    return height;
+  }
+
+  private static CommandParsingException tooDeep(final String name) {
+    return new CommandParsingException(
+        "GraphQL fragments are nested more than " + MAX_FRAGMENT_DEPTH + " levels deep, through fragment '" + name + "'");
   }
 
   /**

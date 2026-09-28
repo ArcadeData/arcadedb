@@ -20,6 +20,7 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.graphql.schema.GraphQLFragments;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
@@ -474,6 +475,63 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
     final int levels = 20;
     for (int i = 0; i < levels; i++)
       document.append("fragment F").append(i).append(" on Book { ...F").append(i + 1).append(" ...F").append(i + 1).append(" }\n");
+    document.append("fragment F").append(levels).append(" on Book { id }\n");
+    document.append("{ bookById(id: \"book-1\") { ...F0 } }");
+
+    assertSingleBook(document.toString(), record -> assertThat(record.<String>getProperty("id")).isEqualTo("book-1"));
+  }
+
+  @Test
+  void fragmentChainDeeperThanTheLimitIsRejectedAsAParsingError() {
+    // A LONG CHAIN OF ONE-LINE FRAGMENTS IS CHEAP TO SEND: IT MUST END IN A PARSING ERROR, NOT A StackOverflowError
+    final StringBuilder document = new StringBuilder();
+    final int levels = 5_000;
+    for (int i = 0; i < levels; i++)
+      document.append("fragment F").append(i).append(" on Book { ...F").append(i + 1).append(" }\n");
+    document.append("fragment F").append(levels).append(" on Book { id }\n");
+    document.append("{ bookById(id: \"book-1\") { ...F0 } }");
+
+    executeTest(database -> {
+      defineTypes(database);
+
+      assertThatThrownBy(() -> database.query("graphql", document.toString()).close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("nested more than");
+      return null;
+    });
+  }
+
+  @Test
+  void fragmentChainValidatedInSegmentsIsStillMeasuredWhole() {
+    // THE OPERATION SPREADS THE CHAIN FROM ITS TAIL BACKWARDS, EVERY 50 LINKS: EACH SEGMENT IS SHORTER THAN THE LIMIT, BUT
+    // THE CHAIN FROM F0 IS 1000 LINKS LONG AND MUST STILL BE REJECTED
+    final StringBuilder document = new StringBuilder();
+    final int levels = 1_000;
+    for (int i = 0; i < levels; i++)
+      document.append("fragment F").append(i).append(" on Book { ...F").append(i + 1).append(" }\n");
+    document.append("fragment F").append(levels).append(" on Book { id }\n");
+    document.append("{ bookById(id: \"book-1\") {");
+    for (int i = levels; i >= 0; i -= 50)
+      document.append(" ...F").append(i);
+    document.append(" } }");
+
+    executeTest(database -> {
+      defineTypes(database);
+
+      assertThatThrownBy(() -> database.query("graphql", document.toString()).close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("nested more than");
+      return null;
+    });
+  }
+
+  @Test
+  void fragmentChainAtTheLimitIsAccepted() {
+    // 99 FRAGMENTS SPREADING EACH OTHER PLUS THE LAST ONE: EXACTLY THE LIMIT
+    final StringBuilder document = new StringBuilder();
+    final int levels = GraphQLFragments.MAX_FRAGMENT_DEPTH - 1;
+    for (int i = 0; i < levels; i++)
+      document.append("fragment F").append(i).append(" on Book { ...F").append(i + 1).append(" }\n");
     document.append("fragment F").append(levels).append(" on Book { id }\n");
     document.append("{ bookById(id: \"book-1\") { ...F0 } }");
 
