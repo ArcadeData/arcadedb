@@ -49,8 +49,12 @@ import java.util.Set;
  * <p>
  * Only a buffer whose statement cannot change a record is made compact - one that reads, or only adds entities: a SET
  * or a DELETE could change what a record reads between the time the row was buffered and the time it is replayed, and
- * the result must not depend on how many rows the buffer happened to hold. A record deleted by another transaction since it was buffered can no longer be loaded, and its
- * row is gone: {@link #get(int)} answers null for it, which is what a nested loop reading the input again would see.
+ * the result must not depend on how many rows the buffer happened to hold.
+ * <p>
+ * A record deleted by another transaction since it was buffered can no longer be loaded, and its row is gone:
+ * {@link #get(int)} answers null for it, which is what a nested loop reading the input again would see. A buffer that
+ * holds its rows as they came replays the record as it was read instead: under a concurrent delete the two can answer
+ * a different number of rows, and both are answers a read-committed transaction may give.
  * <p>
  * Every row counts against {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP} (issue
  * #8585), compact or not.
