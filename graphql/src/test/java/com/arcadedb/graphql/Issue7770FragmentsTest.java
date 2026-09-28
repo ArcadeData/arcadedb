@@ -253,6 +253,92 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void typeConditionIsEvaluatedForEachRecordOfAPolymorphicResult() {
+    // THE RECORDS ARE BOOKS AND AN AUTHOR: `... on Author` APPLIES TO SOME OF THEM ONLY, SO THE EXPANSION OF ONE RECORD
+    // MUST NEVER BE REUSED FOR ANOTHER
+    executeTest(database -> {
+      database.getSchema().getOrCreateVertexType("Item");
+      database.getSchema().getType("Book").addSuperType("Item");
+      database.getSchema().getType("Author").addSuperType("Item");
+      database.command("graphql", """
+          type Query {
+            items(id: String): [Book] @sql(statement: "select from Item")
+          }
+
+          type Book {
+            id: String
+            name: String
+          }
+
+          type Author {
+            id: String
+            firstName: String
+          }""");
+
+      try (final ResultSet resultSet = database.query("graphql", "{ items { id ... on Author { firstName } } }")) {
+        int books = 0;
+        int authors = 0;
+        while (resultSet.hasNext()) {
+          final Result record = resultSet.next();
+          assertSerializable(database, record);
+          if ("Author".equals(record.getProperty("@type"))) {
+            assertThat(record.<String>getProperty("firstName")).isEqualTo("Joanne");
+            authors++;
+          } else {
+            assertThat(record.getPropertyNames()).doesNotContain("firstName");
+            books++;
+          }
+        }
+        assertThat(authors).isEqualTo(1);
+        assertThat(books).isEqualTo(2);
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void typeConditionOnAnUnmodeledInterfaceIsApplied() {
+    // INTERFACES ARE NOT MODELED, SO MEMBERSHIP CANNOT BE CHECKED: THE FIELDS ARE RETURNED RATHER THAN SILENTLY DROPPED
+    executeTest(database -> {
+      defineTypes(database);
+      database.command("graphql", "interface Node { id: String }");
+
+      try (final ResultSet resultSet = database.query("graphql", "{ bookById(id: \"book-1\") { ... on Node { id } } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        final Result record = resultSet.next();
+        assertSerializable(database, record);
+        assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void fragmentSpreadingAFragmentDeclaredAfterItIsExpanded() {
+    assertSingleBook("""
+        { bookById(id: "book-1") { ...A } }
+        fragment A on Book { name ...B }
+        fragment B on Book { id }""", record -> {
+      assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
+      assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
+    });
+  }
+
+  @Test
+  void cycleThroughAnInlineFragmentIsRejectedAsAParsingError() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      assertThatThrownBy(() -> database.query("graphql", """
+          fragment A on Book { id ... on Book { ...A } }
+          { bookById(id: "book-1") { ...A } }""").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("cycle");
+      return null;
+    });
+  }
+
+  @Test
   void fragmentInTypeIntrospectionIsExpanded() {
     executeTest(database -> {
       defineTypes(database);

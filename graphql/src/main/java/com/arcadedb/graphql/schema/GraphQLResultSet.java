@@ -187,6 +187,9 @@ public class GraphQLResultSet implements ResultSet {
         // THE SAME RESPONSE KEY SELECTED TWICE, WHICH A FRAGMENT MAKES ORDINARY (`{ authors { a } ...F }` WITH
         // `F { authors { b } }`): THE SPECIFICATION MERGES THE SUB-SELECTIONS INTO ONE FIELD RATHER THAN LETTING THE
         // LAST ONE WIN. THE MERGED LIST CAN REPEAT A KEY IN TURN, WHICH THE NEXT LEVEL MERGES THE SAME WAY
+        //
+        // TWO SELECTIONS UNDER ONE KEY THAT DO NOT RESOLVE TO THE SAME FIELD (`a: name` AND `a: id`) ARE A VALIDATION
+        // ERROR IN THE SPECIFICATION, WHICH THIS MODULE DOES NOT PERFORM: THE FIRST ONE WRITTEN IS KEPT
         final Projection first = projections.get(existing);
         if (set != null && first.set() != null) {
           final List<Selection> merged = new ArrayList<>(first.set().size() + set.getSelections().size());
@@ -213,27 +216,34 @@ public class GraphQLResultSet implements ResultSet {
 
   /**
    * Whether a fragment written {@code on typeCondition} applies to {@code current}: it does when it names the schema type
-   * the selections are written against, or the database type of the record or one of its super types. When neither type
-   * is known there is nothing to refute the condition with, and the fragment is applied.
+   * the selections are written against, or the database type of the record or one of its super types.
+   * <p>
+   * Otherwise it is refuted only when the condition names a concrete type this module can reason about - an object type
+   * of the SDL or a type of the database - and the type of what is being resolved is known. A condition on anything
+   * else, such as an SDL {@code interface} or {@code union}, which this module does not model and so cannot check
+   * membership of, is applied rather than silently dropping the fields it selects. So is any condition when neither the
+   * schema type nor the record type is known.
    */
-  private static boolean typeConditionApplies(final String typeCondition, final Result current,
+  private boolean typeConditionApplies(final String typeCondition, final Result current,
       final ObjectTypeDefinition parentType) {
-    boolean typeKnown = false;
-    if (parentType != null) {
-      if (typeCondition.equals(parentType.getName()))
-        return true;
-      typeKnown = true;
-    }
+    boolean typeKnown = parentType != null;
+    if (typeKnown && typeCondition.equals(parentType.getName()))
+      return true;
 
     if (current.getElement().isPresent()) {
-      final DocumentType recordType = current.getElement().get().getType();
+      final Document element = current.getElement().get();
+      final DocumentType recordType = element.getType();
       if (recordType != null) {
         if (recordType.instanceOf(typeCondition))
           return true;
         typeKnown = true;
       }
     }
-    return !typeKnown;
+
+    if (!typeKnown)
+      return true;
+
+    return !schema.isObjectType(typeCondition) && !schema.isDatabaseType(typeCondition);
   }
 
   private static int indexOf(final List<Projection> projections, final String responseKey) {

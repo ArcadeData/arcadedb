@@ -695,6 +695,21 @@ public class GraphQLSchema {
     };
   }
 
+  /**
+   * Whether the SDL registered so far declares an object type with this name. Interfaces, unions and input types are
+   * not modeled, so they are never reported.
+   */
+  public boolean isObjectType(final String name) {
+    return objectTypeDefinitionMap.containsKey(name);
+  }
+
+  /**
+   * Whether the database schema has a type with this name.
+   */
+  public boolean isDatabaseType(final String name) {
+    return database.getSchema().existsType(name);
+  }
+
   public ObjectTypeDefinition getTypeFromField(final FieldDefinition fieldDefinition) {
     ObjectTypeDefinition returnType = null;
     if (fieldDefinition.getType().getTypeName() != null) {
