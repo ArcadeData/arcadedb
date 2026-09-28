@@ -111,7 +111,7 @@ class FetchFromIndexStepResetTest extends TestHelper {
   void resetClosesTheCurrentCursor() {
     createReadings();
 
-    final ResultSet resultSet = database.query("sql", "SELECT id FROM " + TYPE_NAME + " WHERE id > 10 LIMIT 1");
+    final ResultSet resultSet = database.query("sql", "SELECT id FROM " + TYPE_NAME + " WHERE id > 10");
     try {
       assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
@@ -141,7 +141,7 @@ class FetchFromIndexStepResetTest extends TestHelper {
     createReadings();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0 LIMIT 1");
+        "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0");
     try {
       assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
@@ -208,7 +208,7 @@ class FetchFromIndexStepResetTest extends TestHelper {
     createReadings();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0 LIMIT 1");
+        "SELECT id FROM " + TYPE_NAME + " WHERE id IN [11, 12, 13] AND id > 0");
     assertThat(resultSet.hasNext()).isTrue();
     resultSet.next();
 

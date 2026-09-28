@@ -43,6 +43,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -62,6 +63,12 @@ import java.util.logging.Level;
  * neither which rows a LIMIT keeps nor the order an unordered query returns. It cannot wedge: the unit the consumer
  * waits on was taken before every later one, so the worker that holds it is running and never waits on a channel the
  * consumer has not reached.
+ * <p>
+ * <b>Progress under a saturated pool (#8594).</b> The producer pool is JVM-wide, and the producers of a result set
+ * read in part and left open stay parked on their full channels until it is closed or abandoned. A query must not wait
+ * for them: the consumer never waits on a unit no worker has taken, it takes and scans that unit itself, and the
+ * partial aggregation and the merge run on the caller too, which never waits for a helper the pool has not started. So
+ * a saturated pool only makes a query less parallel, never stalls it.
  * <p>
  * <b>Partial aggregation.</b> {@link #aggregate} runs the rows of every unit through a per-worker partial state
  * instead of handing them out, and returns the partials for the caller to merge: the projections and the aggregation
@@ -107,6 +114,10 @@ final class ParallelTypeScan {
   private          int                     consumerUnit;
   private          List<Result>            consumerBatch;
   private          int                     consumerBatchIndex;
+  // THE UNIT THE CONSUMER SCANS ITSELF, BECAUSE NO WORKER HAD TAKEN IT WHEN IT GOT THERE (#8594), OR NULL
+  private          AbstractExecutionStep   consumerStep;
+  private          ResultSet[]             consumerCursor;
+  private          CommandContext          consumerContext;
   private final    AtomicInteger           nextUnit = new AtomicInteger();
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
@@ -337,6 +348,7 @@ final class ParallelTypeScan {
   ResultSet pull(final CommandContext context, final int nRecords) {
     if (channels == null)
       startProducers(context);
+    final long maxBatchBytes = maxBatchBytes();
 
     return new ResultSet() {
       int    dispatched = 0;
@@ -368,6 +380,34 @@ final class ParallelTypeScan {
 
           if (consumerUnit >= channels.length)
             return false;
+
+          if (consumerStep != null) {
+            // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
+            lastConsumed = System.currentTimeMillis();
+            final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
+            if (fetched != null) {
+              consumerBatch = fetched;
+              consumerBatchIndex = 0;
+            } else {
+              chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
+              consumerStep = null;
+              consumerCursor = null;
+              ++consumerUnit;
+            }
+            continue;
+          }
+
+          // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
+          // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
+          // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
+          if (nextUnit.get() == consumerUnit && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+            channels[consumerUnit] = null;
+            if (consumerContext == null)
+              consumerContext = workerContext(context);
+            consumerStep = stepFor(units.get(consumerUnit), consumerContext);
+            consumerCursor = new ResultSet[1];
+            continue;
+          }
 
           final UnitChannel channel = channels[consumerUnit];
           lastConsumed = System.currentTimeMillis();
@@ -511,69 +551,115 @@ final class ParallelTypeScan {
 
   /**
    * Runs every row of the scan, in the workers, through a partial state each worker creates with
-   * {@code partialFactory} in its own context, and returns the partials - one per worker, in worker order - once every
-   * row has gone through one. Blocks the caller; a worker's failure cancels the others and is rethrown as it was
-   * thrown when it is unchecked.
+   * {@code partialFactory} in its own context, and returns the partials - at most one per worker, the caller's first,
+   * since the caller is one of the workers - once every row has gone through one. Blocks the caller; a worker's failure
+   * cancels the others and is rethrown as it was thrown when it is unchecked.
    *
-   * @param onWait called on the caller's thread about every 50ms while it waits, e.g. to enforce a timeout
+   * @param onWait called on the caller's thread after every batch it scans and about every 50ms while it waits, e.g. to
+   *               enforce a timeout
    */
   <P> List<P> aggregate(final CommandContext context, final Function<CommandContext, P> partialFactory, final PartialSink<P> sink,
       final Runnable onWait) {
     final long maxBatchBytes = maxBatchBytes();
-    final ExecutorService executor = ParallelScanProducerPool.getInstance().getExecutorService();
 
-    final List<Future<P>> partialFutures = new ArrayList<>(workers);
-    for (int w = 0; w < workers; w++) {
+    // THE CALLER IS ONE OF THE WORKERS: IT WOULD ONLY WAIT OTHERWISE, AND ON A SATURATED POOL IT SCANS EVERY UNIT
+    return runAssisted(workers - 1, true, onCaller -> {
       final CommandContext workerContext = workerContext(context);
-      partialFutures.add(executor.submit(() -> {
-        initWorkerThread();
-        try {
-          final P partial = partialFactory.apply(workerContext);
-          while (true) {
-            final int unitIndex = nextUnit.getAndIncrement();
-            if (unitIndex >= units.size())
-              return partial;
+      final P partial = partialFactory.apply(workerContext);
+      while (true) {
+        final int unitIndex = nextUnit.getAndIncrement();
+        if (unitIndex >= units.size())
+          return partial;
 
-            final Unit unit = units.get(unitIndex);
-            final AbstractExecutionStep step = stepFor(unit, workerContext);
-            try {
-              final ResultSet[] cursor = new ResultSet[1];
-              final long unitPosition = ((long) unitIndex) << 32;
-              long ordinal = 0;
-              List<Result> batch;
-              while ((batch = fetchBatch(step, workerContext, cursor, maxBatchBytes)) != null) {
-                if (Thread.currentThread().isInterrupted())
-                  throw new CancellationException();
-                for (final Result row : batch) {
-                  workerContext.setVariable("current", row);
-                  sink.accept(partial, row, unitPosition | ordinal++, workerContext);
-                }
-              }
-            } finally {
-              chargeProfile(unit, step, workerContext);
+        final Unit unit = units.get(unitIndex);
+        final AbstractExecutionStep step = stepFor(unit, workerContext);
+        try {
+          final ResultSet[] cursor = new ResultSet[1];
+          final long unitPosition = ((long) unitIndex) << 32;
+          long ordinal = 0;
+          List<Result> batch;
+          while ((batch = fetchBatch(step, workerContext, cursor, maxBatchBytes)) != null) {
+            if (Thread.currentThread().isInterrupted()) {
+              if (onCaller)
+                throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' interrupted");
+              throw new CancellationException();
+            }
+            if (onCaller)
+              onWait.run();
+            for (final Result row : batch) {
+              workerContext.setVariable("current", row);
+              sink.accept(partial, row, unitPosition | ordinal++, workerContext);
             }
           }
         } finally {
-          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+          chargeProfile(unit, step, workerContext);
         }
-      }));
-    }
+      }
+    }, onWait);
+  }
 
-    final List<P> partials = new ArrayList<>(workers);
+  /** One run of the work {@link #runAssisted} shares between the caller and the pool. */
+  @FunctionalInterface
+  private interface AssistedRun<T> {
+    /** @param onCaller whether this run is the caller's own, not a helper's on a pool thread */
+    T run(boolean onCaller);
+  }
+
+  /**
+   * Runs {@code body} on the caller and on up to {@code helpers} threads of the producer pool, every run taking its
+   * work from a shared counter until none is left, and returns what the runs returned - the caller's first - once every
+   * one that started is over. A helper the pool has not started by the time the caller runs out of work is skipped,
+   * never waited for: there is nothing left for it, and under a pool saturated by the parked producers of result sets
+   * left open the wait could last their whole abandonment timeout (#8594). A failed run cancels the others and is
+   * rethrown as it was thrown when it is unchecked.
+   *
+   * @param bindDatabase whether a helper binds its thread to the database as the caller
+   * @param onWait       called on the caller's thread about every 50ms while it waits for the helpers
+   */
+  private <T> List<T> runAssisted(final int helpers, final boolean bindDatabase, final AssistedRun<T> body, final Runnable onWait) {
+    final ExecutorService executor = ParallelScanProducerPool.getInstance().getExecutorService();
+    // PER HELPER: 0 = QUEUED, 1 = STARTED, 2 = SKIPPED. A HELPER STARTS ONLY BY WINNING 0 -> 1, SO ONE THE CALLER SKIPPED
+    // RETURNS AT ONCE WHENEVER THE POOL GETS TO IT
+    final AtomicIntegerArray states = new AtomicIntegerArray(helpers);
+    final List<Future<T>> futures = new ArrayList<>(helpers);
     try {
-      // WAITS ON ALL THE WORKERS AT ONCE, NOT IN SUBMISSION ORDER: A FAILED WORKER STOPS THE OTHERS AS SOON AS IT FAILS
+      for (int h = 0; h < helpers; h++) {
+        final int helper = h;
+        futures.add(executor.submit(() -> {
+          if (!states.compareAndSet(helper, 0, 1))
+            return null;
+          if (bindDatabase)
+            initWorkerThread();
+          try {
+            return body.run(false);
+          } finally {
+            if (bindDatabase)
+              DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+          }
+        }));
+      }
+
+      final List<T> results = new ArrayList<>(helpers + 1);
+      results.add(body.run(true));
+
+      for (int h = 0; h < helpers; h++)
+        states.compareAndSet(h, 0, 2);
+
+      // WAITS ON ALL THE STARTED HELPERS AT ONCE, NOT IN SUBMISSION ORDER: A FAILED ONE STOPS THE OTHERS AS SOON AS IT FAILS
       while (true) {
-        boolean allDone = true;
-        Future<P> pending = null;
-        for (final Future<P> f : partialFutures)
+        Future<T> pending = null;
+        for (int h = 0; h < helpers; h++) {
+          if (states.get(h) != 1)
+            continue;
+          final Future<T> f = futures.get(h);
           if (!f.isDone()) {
-            allDone = false;
             if (pending == null)
               pending = f;
-          } else if (!f.isCancelled())
-            // THROWS NOW IF THIS WORKER FAILED
+          } else
+            // THROWS NOW IF THIS HELPER FAILED
             f.get();
-        if (allDone)
+        }
+        if (pending == null)
           break;
         try {
           pending.get(50, TimeUnit.MILLISECONDS);
@@ -581,9 +667,10 @@ final class ParallelTypeScan {
           onWait.run();
         }
       }
-      for (final Future<P> f : partialFutures)
-        partials.add(f.get());
-      return partials;
+      for (int h = 0; h < helpers; h++)
+        if (states.get(h) == 1)
+          results.add(futures.get(h).get());
+      return results;
 
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -596,18 +683,18 @@ final class ParallelTypeScan {
         throw error;
       throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' failed", cause);
     } finally {
-      // A NO-OP ON SUCCESS; ON A FAILURE (OR A TIMEOUT onWait RAISED) IT STOPS THE WORKERS STILL SCANNING
-      for (final Future<P> f : partialFutures)
+      // A NO-OP ON SUCCESS; ON A FAILURE (OR A TIMEOUT onWait RAISED) IT STOPS THE HELPERS STILL RUNNING
+      for (final Future<T> f : futures)
         f.cancel(true);
     }
   }
 
   /**
-   * Runs independent CPU-bound tasks - the merge of partial aggregations - on the producer pool when
-   * {@code inParallel}, otherwise on the caller, and returns once all are done. The producer pool rather than one of
-   * its own: the merge runs right after this query's producers have finished, so it takes the threads they released,
-   * and it never blocks, so it keeps the pool's progress guarantee (#4948). A dedicated pool would only add threads
-   * competing for the same cores.
+   * Runs independent CPU-bound tasks - the merge of partial aggregations - on the caller and, when {@code inParallel},
+   * on the producer pool too, and returns once all are done. The producer pool rather than one of its own: the merge
+   * runs right after this query's producers have finished, so it takes the threads they released, and it never blocks,
+   * so it keeps the pool's progress guarantee (#4948). A dedicated pool would only add threads competing for the same
+   * cores. The caller takes tasks too, so a pool saturated by other queries delays nothing (#8594).
    */
   void run(final List<Runnable> tasks, final boolean inParallel) {
     if (!inParallel || tasks.size() < 2) {
@@ -616,27 +703,14 @@ final class ParallelTypeScan {
       return;
     }
 
-    final ExecutorService executor = ParallelScanProducerPool.getInstance().getExecutorService();
-    final List<Future<?>> submitted = new ArrayList<>(tasks.size());
-    try {
-      for (final Runnable task : tasks)
-        submitted.add(executor.submit(task));
-      for (final Future<?> f : submitted)
-        f.get();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' interrupted", e);
-    } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof RuntimeException runtime)
-        throw runtime;
-      if (cause instanceof Error error)
-        throw error;
-      throw new CommandExecutionException("Parallel aggregation of type '" + typeName + "' failed", cause);
-    } finally {
-      for (final Future<?> f : submitted)
-        f.cancel(true);
-    }
+    final AtomicInteger nextTask = new AtomicInteger();
+    runAssisted(Math.min(tasks.size(), ParallelScanProducerPool.getInstance().getMaxParallelism()) - 1, false, onCaller -> {
+      int i;
+      while ((i = nextTask.getAndIncrement()) < tasks.size())
+        tasks.get(i).run();
+      return null;
+    }, () -> {
+    });
   }
 
   // ---------------------------------------------------------------------------------------------------------------
