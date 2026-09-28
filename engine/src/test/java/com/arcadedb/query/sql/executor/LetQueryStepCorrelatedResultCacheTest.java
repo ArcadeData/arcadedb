@@ -27,12 +27,16 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.function.sql.math.SQLFunctionRandomInt;
 import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -130,11 +134,11 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
   }
 
   /**
-   * A subquery that reaches its outer row through {@code $parent.$current} directly: the key is the whole row, so no
-   * two rows share an entry, and every row must still get its own answer.
+   * A subquery that reaches its outer row through {@code $parent.$current.name}: the key is the row's {@code name}, a
+   * value no two leaves share, so no two rows share an entry, and every row must still get its own answer.
    */
   @Test
-  void parentCurrentReadThroughTheParentViewKeysOnTheRow() {
+  void parentCurrentPropertyUniquePerRowNeverHits() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
           "select name, $same[0].name as sameName from CacheNode " +
@@ -153,6 +157,128 @@ class LetQueryStepCorrelatedResultCacheTest extends TestHelper {
       assertThat(cache.getHits()).isZero();
       rs.close();
     });
+  }
+
+  /**
+   * Issue #8441: the most common correlated form, {@code $parent.$current.<field>}, keys on the field it reads rather
+   * than on the whole outer row, so the leaves of one office share one entry exactly as the {@code $parent.office}
+   * workaround does.
+   */
+  @Test
+  void parentCurrentPropertyKeysOnThePropertyNotOnTheRow() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "select name, office, $peers.size() as peers from CacheNode " +
+              "let $peers = (select name from CacheNode where office = $parent.$current.office and name like 'Leaf%') " +
+              "where name like 'Leaf%' order by name");
+      int rows = 0;
+      while (rs.hasNext()) {
+        assertThat(rs.next().<Integer>getProperty("peers")).isEqualTo(LEAVES_PER_OFFICE);
+        ++rows;
+      }
+      assertThat(rows).isEqualTo(OFFICES * LEAVES_PER_OFFICE);
+
+      final CorrelatedSubQueryCache cache = findLetStep(rs, "peers").getResultCache();
+      assertThat(cache).isNotNull();
+      assertThat(cache.isDisabled()).isFalse();
+      assertThat(cache.getMisses()).as("one execution per distinct office").isEqualTo(OFFICES);
+      assertThat(cache.getHits()).isEqualTo(OFFICES * LEAVES_PER_OFFICE - OFFICES);
+
+      final Set<String> members = new HashSet<>();
+      for (final CorrelatedSubQueryCache.Dependency d : cache.getDependencies()) {
+        // THE ROW ITSELF IS NOT PART OF THE KEY: ONLY THE MEMBER OF IT THE SUBQUERY READ
+        assertThat(d.access()).isEqualTo(CorrelatedSubQueryCache.Access.VARIABLE_MEMBER);
+        members.add(d.name() + "." + d.member());
+      }
+      assertThat(members).containsExactly("$current.office");
+      rs.close();
+    });
+  }
+
+  /**
+   * #8441: a chain that goes on past the member ({@code .asString()} here) is keyed on the member all the same - what
+   * follows it is a function of the member's value alone. A record attribute ({@code @rid}) is a member too.
+   */
+  @Test
+  void parentCurrentMemberFollowedByAMethodOrARecordAttributeIsKeyedOnTheMember() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "select name, $peers.size() as peers from CacheNode " +
+              "let $peers = (select name from CacheNode where office.asString() = $parent.$current.office.asString() and name like 'Leaf%') " +
+              "where name like 'Leaf%' order by name");
+      while (rs.hasNext())
+        assertThat(rs.next().<Integer>getProperty("peers")).isEqualTo(LEAVES_PER_OFFICE);
+
+      final CorrelatedSubQueryCache cache = findLetStep(rs, "peers").getResultCache();
+      assertThat(cache.getMisses()).isEqualTo(OFFICES);
+      assertThat(cache.getHits()).isEqualTo(OFFICES * LEAVES_PER_OFFICE - OFFICES);
+      rs.close();
+
+      final ResultSet byType = database.query("sql",
+          "select name, $peers.size() as peers from CacheNode " +
+              "let $peers = (select name from CacheNode where office = $parent.$current.office and @type = $parent.$current.@type and name like 'Leaf%') " +
+              "where name like 'Leaf%' order by name");
+      while (byType.hasNext())
+        assertThat(byType.next().<Integer>getProperty("peers")).isEqualTo(LEAVES_PER_OFFICE);
+
+      final CorrelatedSubQueryCache byTypeCache = findLetStep(byType, "peers").getResultCache();
+      final Set<String> members = new TreeSet<>();
+      for (final CorrelatedSubQueryCache.Dependency d : byTypeCache.getDependencies())
+        members.add(d.name() + "." + d.member());
+      assertThat(members).containsExactly("$current.@type", "$current.office");
+      assertThat(byTypeCache.getMisses()).isEqualTo(OFFICES);
+      assertThat(byTypeCache.getHits()).isEqualTo(OFFICES * LEAVES_PER_OFFICE - OFFICES);
+      byType.close();
+    });
+  }
+
+  /**
+   * #8441: {@code $parent.$current} used as a whole - here handed to a function - still keys on the whole row, even
+   * when the same subquery also reads a member of it, so no row is ever answered with another row's entry.
+   */
+  @Test
+  void parentCurrentUsedAsAWholeStillKeysOnTheRow() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "select name, $same[0].name as sameName from CacheNode " +
+              "let $same = (select name from CacheNode where office = $parent.$current.office and @rid = ifnull($parent.$current, null).@rid) " +
+              "where name like 'Leaf%' order by name");
+      int rows = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("sameName")).isEqualTo(row.<String>getProperty("name"));
+        ++rows;
+      }
+      assertThat(rows).isEqualTo(OFFICES * LEAVES_PER_OFFICE);
+
+      final CorrelatedSubQueryCache cache = findLetStep(rs, "same").getResultCache();
+      assertThat(cache).isNotNull();
+      assertThat(cache.getHits()).isZero();
+      rs.close();
+    });
+  }
+
+  /**
+   * #8441: a member read on an outer variable holding an iterator is keyed on the variable itself: re-evaluating the
+   * member to build the key would consume the iterator before the subquery could read it.
+   */
+  @Test
+  void aMemberOfAnIteratorVariableIsKeyedOnTheVariableNotReEvaluated() {
+    final BasicCommandContext outer = new BasicCommandContext();
+    outer.setDatabase((DatabaseInternal) database);
+    final Iterator<Map<String, Object>> iterator = List.<Map<String, Object>>of(Map.of("office", 1), Map.of("office", 2)).iterator();
+    outer.setVariable("$offices", iterator);
+
+    final CorrelatedSubQueryCache cache = new CorrelatedSubQueryCache(10, ((DatabaseInternal) database).getModificationCount());
+    final CorrelatedSubQueryCache.TrackingContext run = cache.newContext(outer);
+    final Object offices = ((CorrelatedSubQueryCache.ParentView) run.getParent())
+        .getVariableMember("$offices", new SuffixIdentifier(new Identifier("office")), run);
+    assertThat(offices).isEqualTo(List.of(1, 2));
+
+    cache.store(run, outer, (DatabaseInternal) database, List.of());
+    for (final CorrelatedSubQueryCache.Dependency d : cache.getDependencies())
+      assertThat(d.access()).as("an iterator is never re-read for a key").isNotEqualTo(CorrelatedSubQueryCache.Access.VARIABLE_MEMBER);
+    assertThat(cache.getDependencies()).extracting(CorrelatedSubQueryCache.Dependency::name).contains("$offices");
   }
 
   /**

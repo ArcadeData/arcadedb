@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.BucketIterator;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -41,6 +42,9 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   private             Object            order;
   private             long              totalFetched = 0L;
   private             boolean           warnedAboutSkippedRecords;
+  // #8523: the page range [fromPage, toPage) a parallel scan assigned to this step, or -1/-1 for the whole bucket
+  private             int               fromPage     = -1;
+  private             int               toPage       = -1;
 
   private Iterator<Record> iterator;
 
@@ -72,7 +76,10 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
         if (bucket == null)
           throw new CommandExecutionException("Bucket with id " + bucketId + " does not exist");
 
-        iterator = order == ORDER_DESC ? bucket.inverseIterator() : bucket.iterator();
+        if (fromPage > -1)
+          iterator = ((LocalBucket) bucket).iterator(fromPage, toPage);
+        else
+          iterator = order == ORDER_DESC ? bucket.inverseIterator() : bucket.iterator();
 
         //TODO check how to support ranges
 //        long minClusterPosition = calculateMinClusterPosition();
@@ -241,6 +248,19 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   public void setOrder(final Object order) {
     this.order = order;
+  }
+
+  /**
+   * Restricts the scan to the pages {@code [fromPage, toPage)} of the bucket, forward: the unit of work of a parallel
+   * type scan (issue #8523). {@code toPage} -1 scans to the last page.
+   */
+  public void setPageRange(final int fromPage, final int toPage) {
+    this.fromPage = fromPage;
+    this.toPage = toPage;
+  }
+
+  public int getBucketId() {
+    return bucketId;
   }
 
   @Override

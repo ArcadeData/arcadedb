@@ -1115,6 +1115,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return new BucketIterator(this, false);
   }
 
+  /**
+   * Iterates, forward, the records whose slot lives in the pages {@code [fromPage, toPage)}: one of the ranges a
+   * parallel scan splits a bucket in (issue #8523). A record spanning several pages is returned by the range holding
+   * its head chunk, and only by that one.
+   *
+   * @param toPage page to stop at, excluded, or -1 for the last page the bucket has when the iterator opens
+   */
+  public BucketIterator iterator(final int fromPage, final int toPage) {
+    database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    return new BucketIterator(this, true, fromPage, toPage);
+  }
+
   @Override
   public String toString() {
     return componentName;
@@ -4159,13 +4171,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private void compressPageInternal(final MutablePage page, final boolean forceWipeOut) throws IOException {
     final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
+    if (!forceWipeOut) {
+      // #8492: the page most commits touch has no hole at all - a record appended at its tail, one overwritten in
+      // place with a value of the same size - and packing it moves nothing. Proving that takes one walk of the slot
+      // table with no allocation, where the full path below builds, sorts and walks a list of every record. Anything
+      // the fast walk cannot vouch for (a hole, a slot to repair, an empty page) takes the full path unchanged.
+      final int contentEndInPage = packedContentEnd(page, recordCountInPage);
+      if (contentEndInPage > 0) {
+        if (CHECK_FREE_SPACE_CLAIMS)
+          verifyFreeSpaceClaim(page, page.getMaxContentSize() - contentEndInPage, recordCountInPage);
+        accountCompressedPage(page, contentEndInPage);
+        return;
+      }
+    }
+
     final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage, page);
 
     // #6396: the one moment both descriptions of this page's free tail exist at once - what the writes SAID it would
     // be, and what the page HAS. See verifyFreeSpaceClaim; the derivation has to happen BEFORE the defrag below moves
     // the records.
     if (CHECK_FREE_SPACE_CLAIMS)
-      verifyFreeSpaceClaim(page, orderedRecordContentInPage);
+      verifyFreeSpaceClaim(page, freeTailInPage(page, orderedRecordContentInPage), recordCountInPage);
 
     if (orderedRecordContentInPage.isEmpty()) {
       if (recordCountInPage > 0) {
@@ -4219,6 +4245,48 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     for (final int[] record : orderedRecordContentInPage)
       contentEndInPage += record[1];
     accountCompressedPage(page, contentEndInPage);
+  }
+
+  /**
+   * Where the free tail of a page with NO hole begins, or {@code -1} when the page is not provably such a page: its
+   * live records do not tile the content region from {@link #contentHeaderSize} without a gap, it holds no live
+   * record, or one of its slots is one {@link #getOrderedRecordsInPage(BasePage, short, MutablePage)} would repair
+   * (issue #8492). Records cannot overlap, so they tile the region up to the end of the last one exactly when their
+   * footprints add up to its length - a sum and a maximum, which is why this needs neither the list nor the sort the
+   * full walk builds. Reads only.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  int packedContentEnd(final MutablePage page, final short recordCountInPage) {
+    final int pageContentSize = page.getContentSize();
+    final int maxFootprint = getPageSize() - contentHeaderSize;
+    int footprints = 0;
+    int contentEnd = 0;
+    try {
+      for (int positionInPage = 0; positionInPage < recordCountInPage; positionInPage++) {
+        final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+        if (recordPositionInPage < 1 || recordPositionInPage >= pageContentSize)
+          // DELETED (OR CORRUPTED, WHICH THE FULL WALK SKIPS AS WELL)
+          continue;
+
+        final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+        if (recordSize[0] == 0)
+          // DELETED BY A PRE-24.1.1 ENGINE: A SLOT THE FULL WALK FREES
+          return -1;
+
+        final int footprint = recordFootprint(page, recordPositionInPage, recordSize);
+        if (footprint < 0 || footprint > maxFootprint)
+          // AN INVALID SIZE: THE FULL WALK REPORTS AND FREES IT
+          return -1;
+
+        footprints += footprint;
+        contentEnd = Math.max(contentEnd, recordPositionInPage + footprint);
+      }
+    } catch (final Exception e) {
+      // AN UNREADABLE SLOT: THE FULL WALK REPORTS IT
+      return -1;
+    }
+    return contentEnd > 0 && contentEnd - contentHeaderSize == footprints ? contentEnd : -1;
   }
 
   /**
@@ -4280,25 +4348,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * write has spoken about carries {@link MutablePage#FREE_SPACE_CLAIM_UNKNOWN} and is skipped. If this fires on a
    * NEW write path, the answer is a corrected delta or that one call, never a widening of the comparison.
    *
-   * @param orderedRecordContentInPage the page's live records in position order, as the compression read them and
-   *                                   before it moved any of them.
+   * @param freeTailInPage the free tail the page has before the compression moves any record, derived as
+   *                       {@link #freeTailInPage} does (the fast path of #8492 derives the same number without the list).
+   * @param slotsInPage    the page's record count, for the message.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
-  private void verifyFreeSpaceClaim(final MutablePage page, final List<int[]> orderedRecordContentInPage) {
+  private void verifyFreeSpaceClaim(final MutablePage page, final int freeTailInPage, final int slotsInPage) {
     final int claimed = page.getFreeSpaceClaim();
     if (claimed == MutablePage.FREE_SPACE_CLAIM_UNKNOWN)
       return;
-
-    // The tail the page has right now, through the same derivation gatherPageStatistics measures an unwritten page
-    // with: comparing a claim against a second opinion of the quantity would be the defect this check is for.
-    final int freeTailInPage = freeTailInPage(page, orderedRecordContentInPage);
 
     final boolean exact = page.isFreeSpaceClaimExact();
     assert exact ? claimed == freeTailInPage : claimed <= freeTailInPage :
         "page " + page.getPageId() + " of bucket '" + componentName + "' was reported to the free-space statistics with "
             + claimed + (exact ? " free bytes" : " free bytes or more") + ", but holds " + freeTailInPage + " ("
-            + orderedRecordContentInPage.size() + " records). A write described bytes it did not write: correct its "
+            + slotsInPage + " record slots). A write described bytes it did not write: correct its "
             + "delta, or call freedWithoutClaiming() if it gives bytes back without reporting them";
   }
 
@@ -4458,16 +4523,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           continue;
         }
 
-        if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
-          size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
-        else if (isChunkHead(recordSize[0]) || recordSize[0] == NEXT_CHUNK) {
-          final int chunkSize = page.readInt(recordPositionInPage + (int) recordSize[1]);
-          size = chunkFootprint((int) recordSize[1], chunkSize);
-        } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
-          // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
-          size = (int) (-1 * recordSize[0]) + (int) recordSize[1];
-        else
-          size = (int) recordSize[0] + (int) recordSize[1];
+        size = recordFootprint(page, recordPositionInPage, recordSize);
 
         if (size < 0 || size > getPageSize() - contentHeaderSize) {
           // INVALID SIZE. Say what was actually done with it: a read-only walk skips it and leaves it for the next
@@ -4496,6 +4552,24 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     orderedRecordContentInPage.sort(Comparator.comparingLong(a -> a[0]));
 
     return orderedRecordContentInPage;
+  }
+
+  /**
+   * The bytes a record occupies in its page from {@code recordPositionInPage}: its size marker plus whatever that
+   * marker says follows it. One derivation shared by the ordered walk and the compression's fast path, so the two can
+   * never measure a page differently.
+   *
+   * @param recordSize the marker read at {@code recordPositionInPage}, as {@link BasePage#readNumberAndSize} returns it
+   */
+  private static int recordFootprint(final BasePage page, final int recordPositionInPage, final long[] recordSize) {
+    if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
+      return LONG_SERIALIZED_SIZE + (int) recordSize[1];
+    if (isChunkHead(recordSize[0]) || recordSize[0] == NEXT_CHUNK)
+      return chunkFootprint((int) recordSize[1], page.readInt(recordPositionInPage + (int) recordSize[1]));
+    if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
+      // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
+      return (int) (-1 * recordSize[0]) + (int) recordSize[1];
+    return (int) recordSize[0] + (int) recordSize[1];
   }
 
   /**

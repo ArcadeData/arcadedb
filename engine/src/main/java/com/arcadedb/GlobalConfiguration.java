@@ -860,7 +860,9 @@ public enum GlobalConfiguration {
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
-      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling.""",
+      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling. A GROUP BY \
+      aggregated in the workers of a parallel scan checks the limit per worker while it scans and on the merged groups at the \
+      end, so its peak can reach the limit times the number of workers.""",
       Long.class, 500_000L, null, value -> {
         // Auto-scale the default with the JVM max heap: roughly one element every 2KB, never below the historical 500000 floor.
         final long maxHeap = Runtime.getRuntime().maxMemory();
@@ -913,8 +915,17 @@ public enum GlobalConfiguration {
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,
       """
       Minimum number of buckets required to trigger parallel scanning. \
-      If the type has fewer buckets than this threshold, sequential scanning is used""",
+      If the type has fewer buckets than this threshold, sequential scanning is used, unless one of its buckets \
+      is large enough to be split in page ranges (see arcadedb.queryParallelScanPagesPerUnit)""",
       Integer.class, 2),
+
+  QUERY_PARALLEL_SCAN_PAGES_PER_UNIT("arcadedb.queryParallelScanPagesPerUnit", SCOPE.DATABASE,
+      """
+      Minimum number of pages of the unit of work a parallel type scan cuts a bucket in: a bucket of at least twice \
+      as many pages is scanned by several workers, each on a range of its pages, so a type with a single bucket is \
+      scanned in parallel too. The rows are still returned in the order of a sequential scan. 0 disables the split: \
+      each bucket is then scanned by one worker""",
+      Integer.class, 32),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
       """
