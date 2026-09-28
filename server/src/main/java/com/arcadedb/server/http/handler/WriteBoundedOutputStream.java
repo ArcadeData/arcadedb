@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.ServerConnection;
 import org.xnio.IoUtils;
@@ -28,13 +29,17 @@ import org.xnio.XnioIoThread;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
- * An {@link OutputStream} on which no single call can block forever: a watchdog is armed before each one and
- * disarmed as soon as it returns (issues #7381 and #7806).
+ * An {@link OutputStream} on which no call that can reach the socket blocks forever: a watchdog is armed before
+ * each one and disarmed as soon as it returns (issues #7381 and #7806). Writes are buffered here first, so a call
+ * that only fills the buffer arms nothing, and a large write is handed on in bounded chunks, each armed on its own:
+ * what the budget bounds is one chunk of at most {@value #MAX_BOUNDED_CHUNK} bytes making no progress.
  * <p>
  * Every streamed response this server writes - the NDJSON answer of {@code POST /api/v1/batch}, the NDJSON query
  * encoding of {@code /query} and {@code /command}, the Server-Sent Events of the AI chat and of the long-running
@@ -71,12 +76,27 @@ public final class WriteBoundedOutputStream extends OutputStream {
     Runnable arm();
   }
 
+  /** Writes that fit here arm no timer: they cannot reach the socket. */
+  static final int BUFFER_SIZE       = 16 * 1024;
+  /** The most one armed call hands to the response, so a large write is bounded per chunk of progress. */
+  static final int MAX_BOUNDED_CHUNK = 64 * 1024;
+
   private final OutputStream  out;
   private final WriteWatchdog watchdog;
+  private final byte[]        buffer = new byte[BUFFER_SIZE];
+  private       int           count;
 
   WriteBoundedOutputStream(final OutputStream out, final WriteWatchdog watchdog) {
     this.out = out;
     this.watchdog = watchdog;
+  }
+
+  /**
+   * The write-side budget of every streamed response as configured on {@code server}, in milliseconds, re-read on
+   * every call so SET SERVER SETTING moves it without a restart.
+   */
+  public static int budgetMs(final HttpServer server) {
+    return server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
   }
 
   /**
@@ -86,9 +106,9 @@ public final class WriteBoundedOutputStream extends OutputStream {
    * @param timeoutMs the budget of {@link GlobalConfiguration#SERVER_HTTP_STREAMING_WRITE_TIMEOUT}; not positive
    *                  leaves the writes unbounded
    * @param what      names the response in the warning logged when the bound fires, e.g. "the streamed result of a
-   *                  query on database 'x'"
+   *                  query on database 'x'"; evaluated only then
    */
-  public static OutputStream of(final HttpServerExchange exchange, final int timeoutMs, final String what) {
+  public static OutputStream of(final HttpServerExchange exchange, final int timeoutMs, final Supplier<String> what) {
     return new WriteBoundedOutputStream(exchange.getOutputStream(), connectionWatchdog(exchange, timeoutMs, what));
   }
 
@@ -117,7 +137,8 @@ public final class WriteBoundedOutputStream extends OutputStream {
    * @return {@link WriteWatchdog#NONE} when the budget is not positive, which is how the setting switches the
    *         bound off
    */
-  static WriteWatchdog connectionWatchdog(final HttpServerExchange exchange, final int timeoutMs, final String what) {
+  static WriteWatchdog connectionWatchdog(final HttpServerExchange exchange, final int timeoutMs,
+      final Supplier<String> what) {
     if (timeoutMs <= 0)
       return WriteWatchdog.NONE;
 
@@ -133,7 +154,7 @@ public final class WriteBoundedOutputStream extends OutputStream {
         LogManager.instance().log(WriteBoundedOutputStream.class, Level.WARNING,
             "%s could not be written for %,d ms - the client is not reading it - so the connection is closed "
                 + "rather than holding a worker thread indefinitely. Raise '%s' to allow a longer block", null,
-            capitalize(what), timeoutMs, GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT.getKey());
+            capitalize(what.get()), timeoutMs, GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT.getKey());
         IoUtils.safeClose(connection);
       }, timeoutMs, TimeUnit.MILLISECONDS);
       return () -> {
@@ -145,31 +166,43 @@ public final class WriteBoundedOutputStream extends OutputStream {
 
   @Override
   public void write(final int b) throws IOException {
-    final Runnable disarm = watchdog.arm();
-    try {
-      out.write(b);
-    } finally {
-      disarm.run();
-    }
-  }
-
-  @Override
-  public void write(final byte[] b, final int off, final int len) throws IOException {
-    final Runnable disarm = watchdog.arm();
-    try {
-      out.write(b, off, len);
-    } finally {
-      disarm.run();
-    }
+    if (count == buffer.length)
+      drain();
+    buffer[count++] = (byte) b;
   }
 
   /**
-   * The call that actually reaches the socket: {@code UndertowOutputStream} accumulates into a pooled buffer and
-   * only writes through when it fills, so on a response of short lines this is where a client that stopped reading
-   * blocks the worker thread.
+   * Copies into this stream's own buffer when the bytes fit, which costs no timer at all: only a call that can reach
+   * the socket arms one. On the NDJSON query encoding that is once per {@value #BUFFER_SIZE} bytes rather than once
+   * per row. A write larger than the buffer goes through in chunks of at most {@value #MAX_BOUNDED_CHUNK} bytes, each
+   * armed on its own, so a large row sent to a slow but reading client restarts the timer as it makes progress
+   * instead of being charged its whole transfer time against one budget.
+   */
+  @Override
+  public void write(final byte[] b, final int off, final int len) throws IOException {
+    Objects.checkFromIndexSize(off, len, b.length);
+    if (len <= buffer.length - count) {
+      System.arraycopy(b, off, buffer, count, len);
+      count += len;
+      return;
+    }
+    drain();
+    if (len < buffer.length) {
+      System.arraycopy(b, off, buffer, 0, len);
+      count = len;
+      return;
+    }
+    writeThrough(b, off, len);
+  }
+
+  /**
+   * Hands everything buffered to the response and flushes it, which is where a client that stopped reading blocks
+   * the worker thread: {@code UndertowOutputStream} writes to the socket only when its own pooled buffer fills or is
+   * flushed.
    */
   @Override
   public void flush() throws IOException {
+    drain();
     final Runnable disarm = watchdog.arm();
     try {
       out.flush();
@@ -181,11 +214,37 @@ public final class WriteBoundedOutputStream extends OutputStream {
   /** Bounded as well: closing the response flushes whatever is still pending, which blocks for the same reason. */
   @Override
   public void close() throws IOException {
-    final Runnable disarm = watchdog.arm();
     try {
-      out.close();
+      drain();
     } finally {
-      disarm.run();
+      final Runnable disarm = watchdog.arm();
+      try {
+        out.close();
+      } finally {
+        disarm.run();
+      }
+    }
+  }
+
+  private void drain() throws IOException {
+    if (count == 0)
+      return;
+    final int pending = count;
+    // Reset first: a write that failed killed the response, and close() must not try to send the same bytes again.
+    count = 0;
+    writeThrough(buffer, 0, pending);
+  }
+
+  private void writeThrough(final byte[] b, final int off, final int len) throws IOException {
+    for (int pos = off, end = off + len; pos < end; ) {
+      final int chunk = Math.min(end - pos, MAX_BOUNDED_CHUNK);
+      final Runnable disarm = watchdog.arm();
+      try {
+        out.write(b, pos, chunk);
+      } finally {
+        disarm.run();
+      }
+      pos += chunk;
     }
   }
 

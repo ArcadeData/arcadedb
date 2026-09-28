@@ -85,7 +85,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLong; import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -1463,8 +1463,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * moves it without a restart.
    */
   protected int streamingWriteTimeout() {
-    return httpServer.getServer().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
+    return WriteBoundedOutputStream.budgetMs(httpServer);
   }
 
   /**
@@ -1475,7 +1474,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    *
    * @param what names the response in the warning logged when the bound fires
    */
-  protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final String what) {
+  protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final Supplier<String> what) {
     if (!exchange.isBlocking())
       exchange.startBlocking();
     return WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(), what);

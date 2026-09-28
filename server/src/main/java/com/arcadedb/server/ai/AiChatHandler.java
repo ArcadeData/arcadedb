@@ -297,7 +297,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     // Every write bounded (issue #7806): a Studio tab that stops reading - closed mid-answer behind a proxy that keeps
     // the connection open, a suspended laptop - would otherwise hold this worker thread blocked in write().
-    final OutputStream output = streamedResponseOutput(exchange, "the streamed AI chat answer");
+    final OutputStream output = streamedResponseOutput(exchange, () -> "the streamed AI chat answer");
     String gatewaySessionId = null;
 
     try (InputStream body = responseBody;

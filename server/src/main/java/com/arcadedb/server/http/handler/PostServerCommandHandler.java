@@ -672,7 +672,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
           exchange.setStatusCode(200);
           // Bounded (issue #7806): a client that stops reading the progress stream gets its connection closed
           // rather than parking the thread that runs the command inside a write.
-          out = streamedResponseOutput(exchange, "the progress stream of a server command");
+          out = streamedResponseOutput(exchange, () -> "the progress stream of a server command");
         }
         out.write(sseFrame(data).getBytes(StandardCharsets.UTF_8));
         out.flush();

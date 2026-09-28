@@ -727,7 +727,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange,
         WriteBoundedOutputStream.connectionWatchdog(exchange, streamingWriteTimeout(),
-            "the streamed answer of a batch load on database '" + databaseName + "'"));
+            () -> "the streamed answer of a batch load on database '" + databaseName + "'"));
     // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
     // an engine exception raised after the stream started - still has something honest to report.
     final long[] lastProgress = new long[2];
@@ -2054,7 +2054,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
     try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
         final OutputStream out = WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(),
-            "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
+            () -> "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
       for (String line = in.readLine(); line != null; line = in.readLine()) {
         out.write(line.getBytes(StandardCharsets.UTF_8));
         out.write('\n');

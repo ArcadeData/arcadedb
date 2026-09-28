@@ -510,9 +510,8 @@ public final class LeaderCommandForwarder {
       exchange.setStatusCode(200);
       if (!exchange.isBlocking())
         exchange.startBlocking();
-      return WriteBoundedOutputStream.of(exchange, httpServer.getServer().getConfiguration()
-          .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT), "the relayed progress stream "
-          + "of a command forwarded to the leader");
+      return WriteBoundedOutputStream.of(exchange, WriteBoundedOutputStream.budgetMs(httpServer),
+          () -> "the relayed progress stream of a command forwarded to the leader");
     };
   }
 
