@@ -227,6 +227,9 @@ class Issue7796RemoteServerAdminCommandsTest {
   /**
    * httpCommand names the failed command in the message of an untyped error. For {@code create user} the command
    * text carries the password, which must not end up in an exception message and from there in a log.
+   * <p>
+   * Only the untyped path needs this check: a typed exception ({@code SecurityException}, ...) is rebuilt from the
+   * server's {@code detail} alone and never carries the label, so the label reaches a message only here.
    */
   @Test
   void createUserErrorDoesNotEchoThePassword() throws Exception {
