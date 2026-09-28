@@ -71,7 +71,9 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       final VertexType person = database.getSchema().createVertexType("Person");
       person.createProperty("id", Type.INTEGER);
       person.createProperty("score", Type.FLOAT);
+      person.createProperty("zip", Type.LONG);
       database.getSchema().createEdgeType("KNOWS");
+      database.getSchema().createEdgeType("IN_CITY");
 
       final VertexType place = database.getSchema().createVertexType("Place");
       place.createProperty("pid", Type.INTEGER);
@@ -91,7 +93,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       final List<MutableVertex> persons = new ArrayList<>();
       for (int i = 0; i < PERSONS; i++) {
         final MutableVertex p = database.newVertex("Person").set("id", i).set("name", i % 5 == 0 ? "Ann" : "bob" + (i % 4))
-            .set("cityCode", "C" + (i % 4)).set("score", (float) (i / 20.0));
+            .set("cityCode", "C" + (i % 4)).set("score", (float) (i / 20.0)).set("zip", (long) i);
         // The cities past 399 do not exist, and persons 0 and 7 have none
         if (i % 7 != 0)
           p.set("cityId", (long) i * 70);
@@ -102,6 +104,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
         persons.get(i).newEdge("KNOWS", persons.get((i + 1) % PERSONS)).save();
       // A self loop, which two relationships of one MATCH clause must not both bind
       persons.get(5).newEdge("KNOWS", persons.get(5)).save();
+
+      // Every person is in the city of its index, which an anonymous (:City {id: ...}) is sought by
+      try (final ResultSet rs = database.query("opencypher", "MATCH (c:City) WHERE c.id < $n RETURN c ORDER BY c.id",
+          Map.of("n", PERSONS))) {
+        int i = 0;
+        while (rs.hasNext())
+          persons.get(i++).newEdge("IN_CITY", rs.next().<Vertex>getProperty("c")).save();
+      }
 
       // Persons 5 and 9 live in a village, which a seek of the index Town inherits from Place also finds
       for (int k = 1; k <= 300; k++)
@@ -206,6 +216,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
+  void aKeyDeclaredOfAnotherKindIsNotSought() {
+    // A LONG against a STRING index would read the whole label for every person: the planner knows it from the schema
+    final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.zip RETURN p.id AS a, c.id AS b";
+    assertThat(plan(query)).doesNotContain("IndexNestedLoopJoin").contains("ValueHashJoin");
+    assertThat(assertSameAsFilteredProduct(query, "c.code = p.zip")).isEmpty();
+  }
+
+  @Test
   void aFloatKeyIsSoughtThroughItsDecimalForm() {
     final String query = "MATCH (p:Person), (c:City) WHERE c.rating = p.score RETURN p.id AS a, c.id AS b";
     assertThat(plan(query)).contains("IndexNestedLoopJoin(c:City)");
@@ -264,6 +282,24 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
     try (final ResultSet rs = database.query("opencypher", "MATCH (:City), (c:City) RETURN c.id AS id LIMIT 50")) {
       while (rs.hasNext())
         assertThat(rs.next().<Integer>getProperty("id")).isNotNull();
+    }
+  }
+
+  @Test
+  void anAnonymousNodeIsSoughtByItsIndex() {
+    // The statistics of an anonymous node's label were never collected: its index read back as missing
+    final String query = "MATCH (p:Person)-[:IN_CITY]->(:City {id: 3}) RETURN p.id AS a, 0 AS b";
+    assertThat(plan(query)).containsPattern("NodeIndexSeek\\(  __anon[0-9]+:City\\)");
+    assertThat(pairs(query)).containsExactly("3/0");
+  }
+
+  @Test
+  void aPatternNamingNoNodeIsLeftToTheOrdinaryPipeline() {
+    for (final String query : List.of("MATCH (:City), (:Item) RETURN count(*) AS c", "MATCH (:City) MATCH (:Item) RETURN count(*) AS c")) {
+      try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+        assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).as(query).doesNotContain("Using Cost-Based Query Optimizer");
+      }
+      assertThat(count(query)).as(query).isEqualTo((long) (CITIES + 1) * 14);
     }
   }
 

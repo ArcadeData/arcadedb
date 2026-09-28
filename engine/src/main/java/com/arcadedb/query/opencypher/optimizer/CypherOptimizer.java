@@ -175,6 +175,11 @@ public class CypherOptimizer {
     if (!logicalPlan.hasRepresentableLabelSets())
       return null;
 
+    // 1b. A pattern that names no node at all - MATCH (:A), (:B), or (:A)-[:R]->(:B) - is left to the ordinary
+    // pipeline, as it always was: said here rather than left to the anchor selection refusing an empty plan
+    if (logicalPlan.getNodes().isEmpty())
+      return null;
+
     // 2. Collect runtime statistics
     final List<String> typeNames = extractTypeNames(logicalPlan);
     statisticsProvider.collectStatistics(typeNames);
@@ -182,8 +187,7 @@ public class CypherOptimizer {
     // Handle independent node-only patterns whether they are written as separate MATCH clauses or
     // comma-separated parts of one MATCH (e.g. MATCH (a:T), (b:T) CREATE ...). An anonymous node is one of the
     // parts too: MATCH (:T), (b:T) crosses every T with every T, and planning b alone answered |T| rows.
-    if (logicalPlan.getRelationships().isEmpty() && logicalPlan.getPatternNodes().size() > 1
-        && !logicalPlan.getNodes().isEmpty()) {
+    if (logicalPlan.getRelationships().isEmpty() && logicalPlan.getPatternNodes().size() > 1) {
       return optimizeMultiMatchIndependent(logicalPlan);
     }
 
@@ -272,7 +276,7 @@ public class CypherOptimizer {
     if (rootOperator == null) {
       for (final LogicalNode node : isolatedNodes)
         units.add(nodeUnit(node, logicalPlan));
-      final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
+      final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, logicalPlan, statisticsProvider,
           buffersMayReloadRecords());
       rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), relVarsPerClause);
       anchor = joinPlanner.getDriver().anchor;
@@ -473,7 +477,7 @@ public class CypherOptimizer {
     for (final LogicalNode node : logicalPlan.getPatternNodes().values())
       units.add(nodeUnit(node, logicalPlan));
 
-    final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
+    final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, logicalPlan, statisticsProvider,
         buffersMayReloadRecords());
     final PhysicalOperator rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), Collections.emptyMap());
 
@@ -721,8 +725,9 @@ public class CypherOptimizer {
     // Collect vertex type names. A label disjunction (n:A|B) needs every alternative collected, not just the
     // first: IndexSelectionRule's disjunction-seek path (issue #6397) asks the statistics provider for each
     // alternative's own indexes, and an alternative never collected here reads back as "no index" regardless
-    // of what the schema actually has.
-    for (final LogicalNode node : plan.getNodes().values()) {
+    // of what the schema actually has. The same holds for an anonymous node, which is anchored, sought and joined like
+    // a named one: every pattern node is collected, not only the named ones.
+    for (final LogicalNode node : plan.getPatternNodes().values()) {
       if (node.isLabelDisjunction()) {
         typeNames.addAll(node.getLabels());
         continue;

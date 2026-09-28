@@ -139,8 +139,9 @@ public class CartesianProduct extends AbstractPhysicalOperator {
               return true;
             }
           }
-          // An empty right side crosses to nothing, so there is no point walking the remaining left rows.
-          if (rightExhausted && rightBuffer.size() == 0)
+          // An empty right side crosses to nothing, so there is no point walking the remaining left rows: nor one whose
+          // compact rows were all found deleted since they were buffered.
+          if (rightExhausted && rightBuffer.liveSize() == 0)
             break;
           if (leftResults != null && leftResults.hasNext()) {
             currentLeft = leftResults.next();
