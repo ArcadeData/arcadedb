@@ -319,7 +319,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           try {
             addVertex(((Identifiable) entry).asVertex());
           } catch (final RecordNotFoundException e) {
-            // Deleted since the index answered: nothing to match
+            // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
+            // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
           }
         }
       }

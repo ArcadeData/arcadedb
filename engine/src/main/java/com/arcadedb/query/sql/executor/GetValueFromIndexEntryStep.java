@@ -211,7 +211,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final int entriesPerUnit = ParallelTypeScan.entriesPerUnit(database, fetcher.getBufferedRids());
     // Counted before the units are built: building them hands the entries that are not record addresses over, which
     // a sequential load then would not serve
-    if (first && (!ParallelTypeScan.isAllowed(database) || fetcher.slices(entriesPerUnit, null) < 2))
+    if (first && (!ParallelTypeScan.isAllowed(database)
+        || fetcher.slices(entriesPerUnit, null) + (fetcher.hasPassThrough() ? 1 : 0) < 2))
       return null;
 
     final ParallelTypeScan round = ParallelTypeScan.ofUnits(context, scanFallback.typeName(),
