@@ -380,7 +380,9 @@ class RaftClusterManager {
     // this node a follower at the same term, fail the pending transfer with it, and leave every follower naming the
     // ex-leader until its election timer fires. The transfer in flight is already the hand-off: wait for it instead.
     // The flag is raised BEFORE the counter is read, and the targeted overload raises its counter before it reads the
-    // flag, so of two callers racing, at least one sees the other and backs off (both backing off is the safe outcome).
+    // flag, so two racing callers cannot BOTH miss each other and both send. They can both see each other and both back
+    // off: then neither RPC is sent, Ratis state does not move, and each caller reports that no hand-off happened (a
+    // spurious failure the caller retries, never the leaderless window this guard exists to prevent).
     bareStepDownsInFlight.incrementAndGet();
     try {
       if (targetedTransfersInFlight.get() > 0) {

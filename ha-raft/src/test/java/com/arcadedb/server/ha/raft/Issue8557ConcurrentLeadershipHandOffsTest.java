@@ -23,8 +23,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.client.impl.ClientProtoUtils;
 import org.apache.ratis.client.api.AdminApi;
+import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.exceptions.TransferLeadershipException;
@@ -32,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -275,13 +280,19 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     final CountDownLatch release = new CountDownLatch(1);
     final AtomicReference<String> ranOn = new AtomicReference<>();
     final AtomicInteger runs = new AtomicInteger();
+    final CountDownLatch duplicateRun = new CountDownLatch(1);
     doAnswer(invocation -> {
-      runs.incrementAndGet();
+      if (runs.incrementAndGet() > 1) {
+        duplicateRun.countDown();
+        return false;
+      }
       ranOn.set(Thread.currentThread().getName());
       started.countDown();
       release.await(10, TimeUnit.SECONDS);
       return false;
     }).when(sm).handOffLeadershipWhileReplacingDatabase();
+    // queueReplacingDatabaseHandOff runs a queued hand-off only for the CURRENT state machine
+    setStateMachine(server, sm);
 
     try {
       server.queueReplacingDatabaseHandOff(sm);
@@ -293,8 +304,59 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
     } finally {
       release.countDown();
     }
-    Thread.sleep(200);
+    // A duplicate queued behind the first would run as soon as the single worker is free: wait for it, bounded. A
+    // wait expected to time out needs no stall discount.
+    assertThat(duplicateRun.await(500, TimeUnit.MILLISECONDS)).as("no second hand-off was queued").isFalse();
     assertThat(runs.get()).isEqualTo(1);
+  }
+
+  /** A hand-off queued for a state machine that restartRatis() has since replaced does not run (review of PR #8596). */
+  @Test
+  void aHandOffQueuedForAReplacedStateMachineDoesNotRun() throws Exception {
+    final RaftHAServer server = new RaftHAServer(detachedServer(), threeNodeConfig()) {
+      @Override
+      public boolean isLeader() {
+        return true;
+      }
+    };
+    final ArcadeStateMachine stale = mock(ArcadeStateMachine.class);
+    when(stale.getDatabasesBeingReplaced()).thenReturn(List.of("db-A"));
+    final ArcadeStateMachine current = mock(ArcadeStateMachine.class);
+    setStateMachine(server, current);
+    final CountDownLatch ran = new CountDownLatch(1);
+    doAnswer(invocation -> {
+      ran.countDown();
+      return false;
+    }).when(stale).handOffLeadershipWhileReplacingDatabase();
+
+    server.queueReplacingDatabaseHandOff(stale);
+
+    assertThat(ran.await(500, TimeUnit.MILLISECONDS)).isFalse();
+  }
+
+  /**
+   * The refusal survives the client boundary: Ratis serialises the reply to protobuf on the server and the client
+   * rebuilds it, so the classification must hold for the rebuilt exception, not only for the one the server created.
+   */
+  @Test
+  void theRefusalIsRecognisedAfterTheRatisWireRoundTrip() {
+    final RaftClientReply serverSide = RaftClientReply.newBuilder()
+        .setClientId(ClientId.randomId())
+        .setServerId(RaftGroupMemberId.valueOf(SELF, RaftGroupId.randomId()))
+        .setCallId(7)
+        .setException(pendingRefusal(B))
+        .build();
+
+    final RaftClientReply clientSide = ClientProtoUtils.toRaftClientReply(ClientProtoUtils.toRaftClientReplyProto(serverSide));
+
+    assertThat(clientSide.isSuccess()).isFalse();
+    assertThat(RaftClusterManager.isTransferAlreadyPending(clientSide.getException())).isTrue();
+  }
+
+  private static void setStateMachine(final RaftHAServer server, final ArcadeStateMachine sm) throws Exception {
+    final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
+    field.setAccessible(true);
+    field.set(server, sm);
   }
 
   /** Nothing to hand off: no task is queued at all (the tick stays one map read on a healthy leader). */

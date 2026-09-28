@@ -335,8 +335,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
   // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
   // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
-  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
-  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  // exactly the outage it exists to repair. A saturated queue rejects (the default AbortPolicy: each submitter
+  // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
+  // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
@@ -1766,7 +1767,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       channelRecoveryExecutor.execute(() -> {
         try {
           // The state machine re-checks leadership and the replacement itself: either may have ended in the queue.
-          if (!shutdownRequested)
+          // restartRatis() may also have replaced the state machine meanwhile; a stale one no longer speaks for this
+          // node, and the current one is asked on the next tick.
+          if (!shutdownRequested && stateMachine == sm)
             sm.handOffLeadershipWhileReplacingDatabase();
         } finally {
           replacingHandOffQueued.set(false);
