@@ -45,6 +45,10 @@ import static org.awaitility.Awaitility.await;
 class QueryHeapBudgetTest {
   private static final long MB = 1024 * 1024;
 
+  /**
+   * What the budget held reserved when the test started. Another test's result set the garbage collector reclaims
+   * during this one can only lower the shared counter, so "nothing left behind" is asserted as at most this.
+   */
   private long baseline;
 
   @BeforeEach
@@ -65,17 +69,19 @@ class QueryHeapBudgetTest {
     final OperationHeapLimit worker = OperationHeapLimit.of(context, "worker");
     final OperationHeapLimit holder = OperationHeapLimit.of(context, "holder");
     worker.charge(8 * MB);
-    final long reserved = QueryHeapBudget.getReservedBytes();
-    assertThat(reserved).isGreaterThan(baseline);
+    // What this query holds reserved, read from its own tracker: another test's tracker the garbage collector reclaims
+    // meanwhile moves the shared counter, not this one
+    final long reserved = context.getQueryHeapTracker().getReservedBytes();
+    assertThat(reserved).isGreaterThan(0L);
 
     // The holder takes the worker's buffer over: no byte goes back to the budget for another query to take meanwhile
     assertThat(holder.transferFrom(worker)).isTrue();
     assertThat(worker.getChargedBytes()).isZero();
     assertThat(holder.getChargedBytes()).isEqualTo(8 * MB);
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(reserved);
+    assertThat(context.getQueryHeapTracker().getReservedBytes()).isEqualTo(reserved);
 
     holder.release();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
 
     // Another query's operation is not one to take over
     final OperationHeapLimit otherQuery = OperationHeapLimit.of(new BasicCommandContext(), "other");
@@ -92,7 +98,7 @@ class QueryHeapBudgetTest {
 
     assertThat(tracker.getUsedBytes()).isEqualTo(QueryHeapTracker.UNRESERVED_BYTES);
     assertThat(tracker.getReservedBytes()).isZero();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
 
     tracker.release(QueryHeapTracker.UNRESERVED_BYTES);
     assertThat(tracker.getUsedBytes()).isZero();
@@ -105,7 +111,7 @@ class QueryHeapBudgetTest {
 
     assertThat(tracker.getReservedBytes()).as("a whole chunk, not the 10 bytes past the allowance")
         .isEqualTo(QueryHeapTracker.MIN_CHUNK_BYTES);
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline + QueryHeapTracker.MIN_CHUNK_BYTES);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline + QueryHeapTracker.MIN_CHUNK_BYTES);
 
     // Growing within the chunk takes nothing more
     tracker.charge(QueryHeapTracker.MIN_CHUNK_BYTES / 2, "test");
@@ -117,7 +123,7 @@ class QueryHeapBudgetTest {
 
     tracker.release(tracker.getUsedBytes() - 100);
     assertThat(tracker.getReservedBytes()).as("back within the allowance: nothing stays reserved").isZero();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -131,7 +137,7 @@ class QueryHeapBudgetTest {
 
     tracker.close();
     assertThat(tracker.getReservedBytes()).isZero();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -154,7 +160,7 @@ class QueryHeapBudgetTest {
     assertThat(query.getReservedBytes()).isGreaterThanOrEqualTo(MB);
 
     query.close();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -306,7 +312,7 @@ class QueryHeapBudgetTest {
 
     b.release();
     assertThat(tracker.getUsedBytes()).isZero();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test

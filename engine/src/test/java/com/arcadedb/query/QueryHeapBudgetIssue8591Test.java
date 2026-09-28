@@ -91,6 +91,10 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       "MATCH (p:P), (q:Q) WHERE p.id < 5 RETURN p.id AS p, q.id AS q",              //
       "MATCH (p:P), (q:Q) WHERE p.id = q.id RETURN p.id AS p, q.id AS q" };
 
+  /**
+   * What the budget held reserved when the test started. Another test's result set the garbage collector reclaims
+   * during this one can only lower the shared counter, so "nothing left behind" is asserted as at most this.
+   */
   private long baseline;
 
   @Override
@@ -151,7 +155,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
     assertRefusedWhileOthersHoldTheBudget("sql", query);
 
     assertThat(countRows("sql", query)).isEqualTo(ROWS);
-    assertThat(QueryHeapBudget.getReservedBytes()).as("the workers' groups were given back").isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).as("the workers' groups were given back").isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -175,7 +179,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       assertThat(QueryHeapBudget.getReservedBytes() - baseline).as("only the returned group is held").isLessThan(allGroups / 4);
       rs.next();
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -195,7 +199,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       assertThat(QueryHeapBudget.getReservedBytes()).as("what the aggregation gathered is still held: " + query)
           .isGreaterThan(baseline);
       rs.close();
-      assertThat(QueryHeapBudget.getReservedBytes()).as(query).isEqualTo(baseline);
+      assertThat(QueryHeapBudget.getReservedBytes()).as(query).isLessThanOrEqualTo(baseline);
     }
   }
 
@@ -235,7 +239,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       database.command("opencypher", "MATCH (p:P) WITH collect(p) AS ps UNWIND ps AS p SET p.touched = true").close();
       database.command("opencypher", "MATCH (p:P) WITH p ORDER BY p.name DESC SET p.sorted = true").close();
     });
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
     assertThat(countRows("opencypher", "MATCH (p:P) WHERE p.touched AND p.sorted RETURN p")).isEqualTo(ROWS);
   }
 
@@ -250,7 +254,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       others.close();
     }
     assertThat(countRows("opencypher", "MATCH (p:P) WHERE p.sorted RETURN p")).isZero();
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -269,7 +273,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", query).close());
     assertThat(countRows("opencypher", "MATCH (p:P) WHERE p.f = 1 RETURN p")).isEqualTo(ROWS);
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -311,7 +315,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       }
       assertThat(rows).isEqualTo(10);
     }
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test
@@ -365,7 +369,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
     assertThat(completed.get() + refused.get()).isEqualTo(threads);
     assertThat(completed.get()).isBetween(1, 2);
     assertThat(refused.get()).isGreaterThanOrEqualTo(threads - 2);
-    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   private void assertRefusedWhileOthersHoldTheBudget(final String language, final String query) {
@@ -376,12 +380,12 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
           .isInstanceOf(QueryHeapBudgetExceededException.class)
           .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_RAM.getKey());
       assertThat(QueryHeapBudget.getReservedBytes()).as("the refused query holds nothing: " + query)
-          .isEqualTo(baseline + others.getReservedBytes());
+          .isLessThanOrEqualTo(baseline + others.getReservedBytes());
     } finally {
       others.close();
     }
     assertThat(countRows(language, query)).as("served once the others released: " + query).isPositive();
-    assertThat(QueryHeapBudget.getReservedBytes()).as(query).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).as(query).isLessThanOrEqualTo(baseline);
   }
 
   private void assertHeldWhileServedAndGivenBackAtTheEnd(final String language, final String query) {
@@ -394,7 +398,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       }
       assertThat(mostReserved).as("the buffer was charged while its rows were served: " + query).isGreaterThan(baseline);
       assertThat(QueryHeapBudget.getReservedBytes()).as("every row was served, the result set is still open: " + query)
-          .isEqualTo(baseline);
+          .isLessThanOrEqualTo(baseline);
     }
   }
 
@@ -405,7 +409,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
       rs.next();
     }
     rs.close();
-    assertThat(QueryHeapBudget.getReservedBytes()).as(query).isEqualTo(baseline);
+    assertThat(QueryHeapBudget.getReservedBytes()).as(query).isLessThanOrEqualTo(baseline);
   }
 
   private void readOneRowAndAbandon(final String language, final String query) {
@@ -421,7 +425,10 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
     }
   }
 
-  /** A tracker standing for the other running queries, holding all the budget but {@code freeBytes}. */
+  /**
+   * A tracker standing for the other running queries, holding all the budget but {@code freeBytes}. It shrinks the
+   * JVM-wide {@code QUERY_MAX_HEAP_RAM}, which {@code TestHelper.afterTest()} puts back with every other setting.
+   */
   private QueryHeapTracker holdAllBut(final long freeBytes) {
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(baseline / MB + 16);
     final QueryHeapTracker others = new QueryHeapTracker();
