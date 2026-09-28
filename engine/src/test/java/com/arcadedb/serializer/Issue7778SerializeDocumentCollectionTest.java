@@ -31,6 +31,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -57,10 +58,13 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
       database.getSchema().createDocumentType("Issue7778Item");
 
       final MutableDocument d = database.newDocument("Issue7778Doc");
+      // newEmbeddedDocument() needs an owner property to attach to: build each element on a scratch property,
+      // then drop it, so the embedded documents end up only inside the list.
       final List<Object> items = new ArrayList<>();
       for (int n = 1; n <= 2; n++) {
         final MutableEmbeddedDocument item = d.newEmbeddedDocument("Issue7778Item", "tmp");
         item.set("n", n);
+        item.set("at", LocalDateTime.of(2026, 9, 29, 10, 15, 30));
         items.add(item);
       }
       d.remove("tmp");
@@ -75,6 +79,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
 
       d.set("empty", new ArrayList<>());
       d.set("scalars", List.of(1, 2, 3));
+      d.set("nonFinite", List.of(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY));
       // A primitive array (e.g. a vector embedding) is not a Collection: it must honour the same flags.
       d.set("vector", new float[] { 1.5F, 2.5F, 3.5F, 4.5F });
       rid = d.save().getIdentity();
@@ -92,6 +97,10 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
       assertThat(item.getString("@type")).isEqualTo("Issue7778Item");
       assertThat(item.getString("@cat")).isEqualTo("d");
       assertThat(item.getInt("n")).isEqualTo(i + 1);
+      // the element goes through serializeDocument, so its temporal is formatted like the query path renders it,
+      // not emitted as the epoch millis toJSON(false) produced
+      assertThat(item.get("at")).isInstanceOf(String.class);
+      assertThat(item.getString("at")).startsWith("2026-09-29");
     }
 
     final JSONObject inner = json.getJSONArray("nested").getJSONObject(0).getJSONObject("inner");
@@ -101,6 +110,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
     assertThat(json.getJSONArray("empty").length()).isEqualTo(0);
     assertThat(json.getJSONArray("scalars").toList()).containsExactly(1, 2, 3);
     assertThat(json.getJSONArray("vector").length()).isEqualTo(4);
+    assertThat(json.getJSONArray("nonFinite").toList()).containsExactly("NaN", "PosInfinity", "NegInfinity");
   }
 
   @Test
@@ -112,6 +122,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
     assertThat(json.getInt("nested")).isEqualTo(1);
     assertThat(json.getInt("empty")).isEqualTo(0);
     assertThat(json.getInt("scalars")).isEqualTo(3);
+    assertThat(json.getInt("nonFinite")).isEqualTo(3);
     assertThat(json.getInt("vector")).isEqualTo(4);
   }
 
@@ -132,11 +143,11 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
           fromQuery = serializer.serializeResult(database, rs.next());
         }
 
-        for (final String property : List.of("items", "nested", "empty", "scalars", "vector"))
-          assertThat(String.valueOf(fromDocument.get(property)))
+        for (final String property : List.of("items", "nested", "empty", "scalars", "nonFinite", "vector"))
+          assertThat(fromDocument.toMap().get(property))
               .as("property '%s' with useCollectionSize=%s useCollectionSizeForEdges=%s", property, collectionSize,
                   collectionSizeForEdges)
-              .isEqualTo(String.valueOf(fromQuery.get(property)));
+              .isEqualTo(fromQuery.toMap().get(property));
       }
     }
   }
