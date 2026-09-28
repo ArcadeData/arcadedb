@@ -335,8 +335,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
   // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
   // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
-  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
-  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  // exactly the outage it exists to repair. A saturated queue rejects (the default AbortPolicy: each submitter
+  // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
+  // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
@@ -358,6 +359,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // leadership around the cluster on every health tick. Node-local and kept across leadership changes for the same
   // reason as the channel-escalation cooldown above: it bounds that to one handoff per node per window.
   private static final long                  QUARANTINE_HANDOFF_COOLDOWN_MS = 10 * 60_000L;
+  // Whether a #8491 hand-off (a leader replacing a database) is queued or running on channelRecoveryExecutor, so a
+  // health tick does not queue a second one behind it (issue #8557).
+  private final    AtomicBoolean             replacingHandOffQueued = new AtomicBoolean();
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
   // Wall-clock of the last "no other peer to hand leadership to" report, throttled to the same window; 0 = none yet.
@@ -1737,7 +1741,47 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return;
     final ArcadeStateMachine sm = stateMachine;
     if (sm != null)
-      sm.handOffLeadershipWhileReplacingDatabase();
+      queueReplacingDatabaseHandOff(sm);
+  }
+
+  /**
+   * Runs the #8491 hand-off ({@link ArcadeStateMachine#handOffLeadershipWhileReplacingDatabase()}) on
+   * {@link #channelRecoveryExecutor}, the single worker the #8483 and #5346 hand-offs already run on, rather than inline
+   * on the health-monitor thread (issue #8557).
+   * <p>
+   * Inline, it raced them: a leader that quarantines a database arms #8483 and, once the resync install it triggers
+   * is running, #8491 too, both in the same health tick. Ratis keeps one pending transfer per leader and refuses a
+   * second one naming another peer. On one worker the automatic hand-offs cannot overlap, and the health tick no longer
+   * blocks for the length of a transfer. The state machine's own throttle still decides whether a queued run
+   * transfers; this only keeps a tick from queueing a second run while one is waiting or running.
+   * <p>
+   * Package-private for unit tests.
+   */
+  void queueReplacingDatabaseHandOff(final ArcadeStateMachine sm) {
+    // The common case, every tick on a healthy node: nothing is being replaced, so nothing is queued.
+    if (sm.getDatabasesBeingReplaced().isEmpty() || !isLeader())
+      return;
+    if (!replacingHandOffQueued.compareAndSet(false, true))
+      return;
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        try {
+          // The state machine re-checks leadership and the replacement itself: either may have ended in the queue.
+          // restartRatis() may also have replaced the state machine meanwhile; a stale one no longer speaks for this
+          // node, and the current one is asked on the next tick.
+          if (!shutdownRequested && stateMachine == sm)
+            sm.handOffLeadershipWhileReplacingDatabase();
+        } finally {
+          replacingHandOffQueued.set(false);
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      replacingHandOffQueued.set(false);
+      // Nothing was attempted, so the next health tick simply asks again.
+      LogManager.instance().log(this, Level.WARNING,
+          "Recovery queue is saturated; the leadership hand-off of a leader replacing a database is retried on the "
+              + "next health tick (issue #8491)");
+    }
   }
 
   @Override
@@ -4424,6 +4468,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Whether the transfer another caller has pending on this leader moved leadership to another peer within a
+   * step-down's budget (issue #8557); a seam for {@link #stepDown()}.
+   */
+  boolean concurrentHandOffLanded() {
+    return clusterManager.leadershipMovedAway(STEP_DOWN_TRANSFER_TIMEOUT_MS);
+  }
+
+  /** Budget of one targeted transfer of {@link #stepDown()}, and of its bare step-down fallback. */
+  private static final long STEP_DOWN_TRANSFER_TIMEOUT_MS = 10_000L;
+
+  /**
    * Steps this leader down by transferring leadership to the best eligible peer.
    * <p>
    * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
@@ -4445,8 +4500,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     boolean attempted = false;
     for (final RaftPeer peer : candidates) {
       try {
-        transferLeadership(peer.getId().toString(), 10_000);
+        transferLeadership(peer.getId().toString(), STEP_DOWN_TRANSFER_TIMEOUT_MS);
         return;
+      } catch (final LeadershipTransferInProgressException inProgress) {
+        // Another caller is handing this leadership over right now (issue #8557). Every other candidate would be
+        // refused the same way, and the bare step-down below would pull the leadership out from under that transfer,
+        // leaving the cluster leaderless for an election timeout. Its outcome is this step-down's outcome.
+        if (concurrentHandOffLanded())
+          return;
+        if (!isLeader())
+          throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+        throw new ReplicationException(
+            "Cannot step down: another leadership transfer is in progress on this node and did not complete ("
+                + inProgress.getMessage() + ")");
       } catch (final NotTheLeaderRefusalException notLeader) {
         // Leadership moved between the guard above and this attempt. When an earlier candidate's transfer was
         // already sent, that transfer may be what moved it - its call failed, yet the target won (#8487) - so a
@@ -4477,7 +4543,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // budget, the very candidates the loop above just tried (issue #8480).
     LogManager.instance().log(this, Level.INFO,
         "No explicit step-down target eligible; delegating leadership-transfer target selection to Ratis");
-    if (stepDownWithoutTarget(10_000L))
+    if (stepDownWithoutTarget(STEP_DOWN_TRANSFER_TIMEOUT_MS))
       return;
 
     // The no-target API also returns false if leadership was lost before the transfer (issue #4809).
