@@ -115,13 +115,7 @@ public class JsonSerializer {
       final String p = documentEntry.getKey();
       Object value = documentEntry.getValue();
 
-      // Issue #7778: the SAME dispatch serializeResult() uses, so a property renders identically whether the record
-      // is serialized as a document (search result builders, gRPC PROJECTION_AS_JSON, a document nested in a
-      // query row) or read through a query. This used to be a private switch whose Collection arm called
-      // serializeCollection() and discarded the result, handing the raw collection to JSONObject.put: that
-      // ignored useCollectionSize/useCollectionSizeForEdges and rendered an embedded-document element with
-      // toJSON(false), dropping its @type/@cat. It also had no array arm, so a float[]/byte[] property ignored
-      // useCollectionSize the same way. serializeObject() also applies convertNonNumbers().
+      // Issue #7778: same dispatch as serializeResult(), so both paths render a property identically
       value = serializeObject(database, value);
 
       // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
