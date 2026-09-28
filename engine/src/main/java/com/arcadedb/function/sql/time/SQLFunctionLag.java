@@ -114,4 +114,10 @@ public class SQLFunctionLag extends SQLAggregatedFunction {
   public String getSyntax() {
     return NAME + "(<value>, <offset>, <timestamp> [, <default>])";
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

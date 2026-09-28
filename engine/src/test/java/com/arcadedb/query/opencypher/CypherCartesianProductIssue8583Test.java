@@ -31,7 +31,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.RowBuffer;
 import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -87,7 +87,7 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
     }
     assertThat(given).hasSize(ITEMS - 1);
 
-    final RowBuffer buffer = new RowBuffer(database, HeapElementsLimit.of(context(), "test"), 5);
+    final RowBuffer buffer = new RowBuffer(database, OperationHeapLimit.of(context(), "test"), 5);
     for (int i = 0; i < given.size(); i++) {
       buffer.add(given.get(i));
       assertThat(buffer.isCompact()).as("compact past 5 rows, after %s", i + 1).isEqualTo(i + 1 > 5);
@@ -112,7 +112,7 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
 
   @Test
   void aRowOfAnotherShapeIsHeldAsItCame() {
-    final RowBuffer buffer = new RowBuffer(database, HeapElementsLimit.of(context(), "test"), 1);
+    final RowBuffer buffer = new RowBuffer(database, OperationHeapLimit.of(context(), "test"), 1);
     final Vertex vertex = firstItem();
     buffer.add(row("v", vertex));
     buffer.add(row("v", vertex));
@@ -129,7 +129,7 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
 
   @Test
   void aRecordDeletedSinceItWasBufferedDropsItsRow() {
-    final RowBuffer buffer = new RowBuffer(database, HeapElementsLimit.of(context(), "test"), 1);
+    final RowBuffer buffer = new RowBuffer(database, OperationHeapLimit.of(context(), "test"), 1);
     final List<RID> rids = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", "MATCH (o:Other) RETURN o")) {
       while (rs.hasNext()) {
@@ -179,7 +179,7 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
 
   @Test
   void aBufferThatMayNotCompactHoldsTheRowsItself() {
-    final RowBuffer buffer = new RowBuffer(null, HeapElementsLimit.of(context(), "test"), 1);
+    final RowBuffer buffer = new RowBuffer(null, OperationHeapLimit.of(context(), "test"), 1);
     final Result first = row("v", firstItem());
     buffer.add(first);
     buffer.add(row("v", firstItem()));

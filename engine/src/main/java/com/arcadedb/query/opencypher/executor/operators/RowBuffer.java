@@ -24,7 +24,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.ImmutableEdge;
 import com.arcadedb.graph.ImmutableVertex;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -58,7 +59,9 @@ import java.util.Set;
  * a different number of rows, and both are answers a read-committed transaction may give.
  * <p>
  * Every row counts against {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP} (issue
- * #8585), compact or not.
+ * #8585), compact or not, and charges what it takes to the heap budget of all the queries,
+ * {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_RAM} (issue #8591): its estimated size while it is held as it
+ * came, 12 bytes per record once it is compact. {@link #clear()} gives it all back.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -66,9 +69,12 @@ public final class RowBuffer {
   /** Past this many rows the buffer holds its rows compact. */
   public static final int DEFAULT_COMPACT_AFTER_ROWS = 10_000;
 
-  private final Database          database;
-  private final HeapElementsLimit limit;
-  private final int               compactAfterRows;
+  /** A record of a compact row: its bucket and its position. */
+  static final int COMPACT_RECORD_BYTES = 4 + 8;
+
+  private final Database           database;
+  private final OperationHeapLimit limit;
+  private final int                compactAfterRows;
 
   private Result[] rows = new Result[16];
   private int      size = 0;
@@ -94,11 +100,11 @@ public final class RowBuffer {
 
   /**
    * @param database         the database to load the records of a compact row from, or null to never compact
-   * @param limit            the element cap of the operation that owns the buffer
+   * @param limit            the heap limits of the operation that owns the buffer
    * @param compactAfterRows the rows held as they came before the buffer turns compact; a non-positive value never
    *                         compacts
    */
-  public RowBuffer(final Database database, final HeapElementsLimit limit, final int compactAfterRows) {
+  public RowBuffer(final Database database, final OperationHeapLimit limit, final int compactAfterRows) {
     this.database = database;
     this.limit = limit;
     this.compactAfterRows = database == null ? 0 : compactAfterRows;
@@ -119,21 +125,23 @@ public final class RowBuffer {
   }
 
   public void add(final Result row) {
-    limit.check(size + 1L);
-
     if (!compact) {
       if (compactAfterRows <= 0 || size < compactAfterRows) {
+        limit.add(size + 1L, row);
         if (size == rows.length)
           rows = Arrays.copyOf(rows, size + (size >> 1) + 1);
         rows[size++] = row;
         return;
       }
+      limit.check(size + 1L);
       toCompact();
-    }
+    } else
+      limit.check(size + 1L);
 
     ensureCapacity(size + 1);
-    store(size, row);
+    final long bytes = store(size, row);
     ++size;
+    limit.charge(bytes);
   }
 
   /**
@@ -174,7 +182,9 @@ public final class RowBuffer {
     return row;
   }
 
+  /** Empties the buffer and gives back the heap its rows were charged. */
   public void clear() {
+    limit.release();
     rows = new Result[16];
     size = 0;
     compact = false;
@@ -197,23 +207,33 @@ public final class RowBuffer {
     capacity = 0;
     ensureCapacity(size + (size >> 1) + 1);
 
+    long compactBytes = 0L;
     for (int i = 0; i < size; i++) {
-      store(i, rows[i]);
+      compactBytes += store(i, rows[i]);
       rows[i] = null;
     }
     rows = null;
     compact = true;
+
+    // THE ROWS AS THEY CAME GO, THEIR COMPACT FORM STAYS: ONE ADJUSTMENT, SO NO OTHER QUERY CAN TAKE THE HEAP IN BETWEEN
+    final long fullBytes = limit.getChargedBytes();
+    if (compactBytes < fullBytes)
+      limit.release(fullBytes - compactBytes);
+    else
+      limit.charge(compactBytes - fullBytes);
   }
 
-  private void store(final int index, final Result row) {
+  /** Stores a row at {@code index} and returns the estimated heap it takes there. */
+  private long store(final int index, final Result row) {
     final Set<String> names = row.getPropertyNames();
     if (!hasTheColumns(names)) {
       if (irregularRows == null)
         irregularRows = new HashMap<>();
       irregularRows.put(index, row);
-      return;
+      return HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.estimate(row);
     }
 
+    long bytes = 0L;
     for (int column = 0; column < columns.length; column++) {
       final Object value = row.getProperty(columns[column]);
       if (isReloadable(value)) {
@@ -225,6 +245,7 @@ public final class RowBuffer {
         }
         buckets[column][index] = rid.getBucketId();
         positions[column][index] = rid.getPosition();
+        bytes += COMPACT_RECORD_BYTES;
       } else {
         if (buckets[column] != null)
           buckets[column][index] = -1;
@@ -232,9 +253,11 @@ public final class RowBuffer {
           if (objects[column] == null)
             objects[column] = new Object[capacity];
           objects[column][index] = value;
+          bytes += HeapEstimator.REFERENCE_BYTES + HeapEstimator.estimate(value);
         }
       }
     }
+    return bytes;
   }
 
   private boolean hasTheColumns(final Set<String> names) {

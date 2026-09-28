@@ -23,7 +23,8 @@ import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -55,6 +56,10 @@ public class UnionStep extends AbstractExecutionStep {
   private final boolean removeDuplicates;
   private final QueryStatistics aggregatedStatistics = new QueryStatistics();
 
+  // THE KEYS A DISTINCT REMEMBERS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585,
+  // #8591). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
   /**
    * Creates a UnionStep.
    *
@@ -77,7 +82,7 @@ public class UnionStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private final Set<List<Object>> seenResults = removeDuplicates ? new HashSet<>() : null;
-      private final HeapElementsLimit distinctLimit = removeDuplicates ? HeapElementsLimit.of(context, "UNION") : null;
+      private final OperationHeapLimit distinctLimit = removeDuplicates ? distinctHeapLimit(context, "UNION") : null;
       private boolean finished = false;
 
       @Override
@@ -114,6 +119,11 @@ public class UnionStep extends AbstractExecutionStep {
             // Move to next query
             if (currentQueryIndex >= queryPlans.size()) {
               finished = true;
+              // Every branch is read: the UNION keys are not needed anymore, even if the consumer keeps the result set open
+              if (seenResults != null) {
+                seenResults.clear();
+                distinctLimit.release();
+              }
               break;
             }
 
@@ -137,7 +147,7 @@ public class UnionStep extends AbstractExecutionStep {
                 final List<Object> resultKey = buildResultKey(result);
                 if (!seenResults.add(resultKey))
                   continue; // Skip duplicate
-                distinctLimit.check(seenResults.size());
+                distinctLimit.add(seenResults.size(), resultKey, HeapEstimator.HASH_ENTRY_BYTES);
               }
 
               buffer.add(result);
@@ -162,8 +172,23 @@ public class UnionStep extends AbstractExecutionStep {
       public void close() {
         if (currentResultSet != null)
           currentResultSet.close();
+        if (distinctLimit != null)
+          distinctLimit.release();
       }
     };
+  }
+
+  /** The operation of the DISTINCT keys of the result set just handed out, which the step's close() releases. */
+  private OperationHeapLimit distinctHeapLimit(final CommandContext context, final String operation) {
+    heapLimit = OperationHeapLimit.of(context, operation);
+    return heapLimit;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   /**

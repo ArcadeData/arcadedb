@@ -19,7 +19,8 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -133,8 +134,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           return;
         }
 
-        rightRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null,
-            HeapElementsLimit.of(context, "hash join"), compactAfterRows);
+        // The rows and the hash table over them are charged to one operation, released with the buffer
+        final OperationHeapLimit limit = OperationHeapLimit.of(context, "hash join");
+        rightRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null, limit, compactAfterRows);
         rowsByKey = new HashMap<>();
         unhashableRows = new IntList();
 
@@ -150,11 +152,21 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
 
             final int index = rightRows.size();
             rightRows.add(row);
-            if (key == EquiJoinKey.UNHASHABLE)
+            if (key == EquiJoinKey.UNHASHABLE) {
               unhashableRows.add(index);
-            else
-              rowsByKey.merge(key, index, ValueHashJoin::appendRow);
+              limit.charge(Integer.BYTES);
+            } else {
+              final Integer boxed = index;
+              // merge() hands back the very value it was given when the key is new: the table grew by an entry
+              if (rowsByKey.merge(key, boxed, ValueHashJoin::appendRow) == boxed)
+                limit.charge(HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES + HeapEstimator.estimate(key));
+              else
+                limit.charge(Integer.BYTES);
+            }
           }
+        } catch (final RuntimeException e) {
+          releaseBuffer();
+          throw e;
         } finally {
           rightResults.close();
         }
@@ -250,15 +262,21 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           leftResults.close();
           leftResults = null;
         }
+        // No left row is left to pair: the hash table goes now, not when a close() the consumer may never call comes
+        releaseBuffer();
+      }
+
+      private void releaseBuffer() {
+        if (rightRows != null)
+          rightRows.clear();
+        rowsByKey = null;
+        unhashableRows = null;
       }
 
       @Override
       public void close() {
         pending = null;
         finish();
-        if (rightRows != null)
-          rightRows.clear();
-        rowsByKey = null;
       }
     };
   }

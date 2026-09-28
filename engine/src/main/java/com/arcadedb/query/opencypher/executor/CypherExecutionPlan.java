@@ -398,9 +398,15 @@ public class CypherExecutionPlan {
       // command deadline is tested here too - nothing downstream of it can (issue #6266).
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       final List<ResultInternal> materializedResults = new ArrayList<>();
-      while (resultSet.hasNext()) {
-        guard.check();
-        materializedResults.add((ResultInternal) resultSet.next());
+      try {
+        while (resultSet.hasNext()) {
+          guard.check();
+          materializedResults.add((ResultInternal) resultSet.next());
+        }
+      } finally {
+        // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
+        // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
+        resultSet.close();
       }
       // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
       // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
@@ -432,9 +438,13 @@ public class CypherExecutionPlan {
     // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.
     if (statement.hasFinishClause()) {
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-      while (resultSet.hasNext()) {
-        guard.check();
-        resultSet.next();
+      try {
+        while (resultSet.hasNext()) {
+          guard.check();
+          resultSet.next();
+        }
+      } finally {
+        resultSet.close();
       }
       return new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }
@@ -500,19 +510,20 @@ public class CypherExecutionPlan {
         // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext,
         // so it takes the non-union path below and does its own inherit under the same gate. A second copy
         // here would be one more thing to keep in step with that gate (issue #6977).
-        final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext);
-        while (rs.hasNext()) {
-          unionGuard.check();
-          final Result row = rs.next();
-          if (removeDuplicates) {
-            final String key = buildResultKey(row);
-            if (!seen.add(key))
-              continue;
+        try (final ResultSet rs = branchPlan.executeWithSeedRow(seedRow, outerContext)) {
+          while (rs.hasNext()) {
+            unionGuard.check();
+            final Result row = rs.next();
+            if (removeDuplicates) {
+              final String key = buildResultKey(row);
+              if (!seen.add(key))
+                continue;
+            }
+            final ResultInternal copy = new ResultInternal();
+            for (final String prop : row.getPropertyNames())
+              copy.setProperty(prop, row.getProperty(prop));
+            allResults.add(copy);
           }
-          final ResultInternal copy = new ResultInternal();
-          for (final String prop : row.getPropertyNames())
-            copy.setProperty(prop, row.getProperty(prop));
-          allResults.add(copy);
         }
       }
       return new IteratorResultSet(allResults.iterator());
@@ -1084,9 +1095,10 @@ public class CypherExecutionPlan {
       if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
         final UnionStep unionStep =
             new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
-        final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE);
-        while (resultSet.hasNext())
-          results.add(resultSet.next());
+        try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
+          while (resultSet.hasNext())
+            results.add(resultSet.next());
+        }
       } else {
         // FAST PATH: Count-push-down (same logic as execute())
         rootStep = tryCountPushDown(context, false);
@@ -1100,9 +1112,10 @@ public class CypherExecutionPlan {
         }
 
         if (rootStep != null) {
-          final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE);
-          while (resultSet.hasNext())
-            results.add(resultSet.next());
+          try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
+            while (resultSet.hasNext())
+              results.add(resultSet.next());
+          }
         }
       }
     } catch (final Exception e) {

@@ -28,7 +28,8 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -62,6 +63,10 @@ public class WithStep extends AbstractExecutionStep {
   private final ExpressionEvaluator evaluator;
   private final boolean skipLimitDeferred;
 
+  // THE KEYS A DISTINCT REMEMBERS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585,
+  // #8591). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
   public WithStep(final WithClause withClause, final CommandContext context,
                   final CypherFunctionFactory functionFactory) {
     super(context);
@@ -82,7 +87,7 @@ public class WithStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private final Set<List<Object>> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
-      private final HeapElementsLimit distinctLimit = withClause.isDistinct() ? HeapElementsLimit.of(context, "WITH DISTINCT") : null;
+      private final OperationHeapLimit distinctLimit = withClause.isDistinct() ? distinctHeapLimit(context, "WITH DISTINCT") : null;
       private int skipped = 0;
       private int returned = 0;
 
@@ -151,7 +156,7 @@ public class WithStep extends AbstractExecutionStep {
 
         // Check if LIMIT has been reached
         if (limit != null && returned >= limit) {
-          finished = true;
+          finish();
           return;
         }
 
@@ -201,7 +206,7 @@ public class WithStep extends AbstractExecutionStep {
               final List<Object> resultKey = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
               if (!seenResults.add(resultKey))
                 continue;
-              distinctLimit.check(seenResults.size());
+              distinctLimit.add(seenResults.size(), resultKey, HeapEstimator.HASH_ENTRY_BYTES);
             }
 
             // Apply SKIP (only when not deferred to downstream)
@@ -232,7 +237,16 @@ public class WithStep extends AbstractExecutionStep {
         }
 
         if (!prevResults.hasNext() || (limit != null && returned >= limit)) {
-          finished = true;
+          finish();
+        }
+      }
+
+      // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
+      private void finish() {
+        finished = true;
+        if (seenResults != null) {
+          seenResults.clear();
+          distinctLimit.release();
         }
       }
 
@@ -241,6 +255,19 @@ public class WithStep extends AbstractExecutionStep {
         WithStep.this.close();
       }
     };
+  }
+
+  /** The operation of the DISTINCT keys of the result set just handed out, which the step's close() releases. */
+  private OperationHeapLimit distinctHeapLimit(final CommandContext context, final String operation) {
+    heapLimit = OperationHeapLimit.of(context, operation);
+    return heapLimit;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   /**

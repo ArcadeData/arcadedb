@@ -21,7 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -67,6 +67,10 @@ public class EagerStep extends AbstractExecutionStep {
   private List<Result> materialized = null;
   private int          currentIndex = 0;
 
+  // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
+  // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
   public EagerStep(final CommandContext context) {
     super(context);
   }
@@ -93,7 +97,14 @@ public class EagerStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return materialized.get(currentIndex++);
+        final Result result = materialized.get(currentIndex++);
+        if (currentIndex == materialized.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          materialized.clear();
+          currentIndex = 0;
+          releaseHeap();
+        }
+        return result;
       }
 
       private void materialize() {
@@ -107,11 +118,18 @@ public class EagerStep extends AbstractExecutionStep {
           // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
           // across the writes, which is the very interleaving this step exists to prevent.
           final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
-          final HeapElementsLimit limit = HeapElementsLimit.of(context, "eager read/write barrier");
-          while (prevResults.hasNext()) {
-            guard.check();
-            materialized.add(prevResults.next());
-            limit.check(materialized.size());
+          heapLimit = OperationHeapLimit.of(context, "eager read/write barrier");
+          try {
+            while (prevResults.hasNext()) {
+              guard.check();
+              final Result row = prevResults.next();
+              materialized.add(row);
+              heapLimit.add(materialized.size(), row);
+            }
+          } catch (final RuntimeException e) {
+            materialized.clear();
+            releaseHeap();
+            throw e;
           }
           if (context.isProfiling())
             rowCount += materialized.size();
@@ -126,6 +144,17 @@ public class EagerStep extends AbstractExecutionStep {
         EagerStep.this.close();
       }
     };
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

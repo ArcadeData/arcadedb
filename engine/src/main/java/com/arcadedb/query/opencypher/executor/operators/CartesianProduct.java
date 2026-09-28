@@ -19,7 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -151,8 +151,9 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         }
         finished = true;
         // Nothing more will be pulled from either side: release both cursors now rather than waiting
-        // for a close() the consumer may never call.
+        // for a close() the consumer may never call. Same for the heap of the right rows (issue #8591).
         closeChildren();
+        rightBuffer.clear();
         return false;
       }
 
@@ -178,7 +179,13 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         // No guard.check() here: advance() checks every candidate this returns, buffered or freshly pulled.
         if (rightResults != null && rightResults.hasNext()) {
           final Result row = rightResults.next();
-          rightBuffer.add(row);
+          try {
+            rightBuffer.add(row);
+          } catch (final RuntimeException e) {
+            // Over a limit: the query fails, and the rows buffered so far give their heap back now
+            rightBuffer.clear();
+            throw e;
+          }
           ++rightIndex;
           return row;
         }
@@ -200,7 +207,7 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         leftResults = child.execute(ctx, n);
         rightResults = right.execute(ctx, n);
         rightBuffer = new RowBuffer(compactAfterRows > 0 ? ctx.getDatabase() : null,
-            HeapElementsLimit.of(ctx, "Cartesian product"), compactAfterRows);
+            OperationHeapLimit.of(ctx, "Cartesian product"), compactAfterRows);
 
         // Get first left row
         if (leftResults.hasNext())

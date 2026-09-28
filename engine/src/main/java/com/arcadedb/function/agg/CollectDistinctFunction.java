@@ -20,9 +20,11 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctNumberWrapper;
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -34,10 +36,18 @@ import java.util.Set;
  * Uses LinkedHashSet to maintain insertion order while eliminating duplicates.
  * Example: MATCH (n:Person) RETURN collect(DISTINCT n.name)
  */
-public class CollectDistinctFunction implements StatelessFunction {
-  private final Set<Object>       distinctValues = new LinkedHashSet<>();
-  /** The set is held in heap until the aggregation ends (issue #8585). */
-  private       HeapElementsLimit limit;
+public class CollectDistinctFunction implements StatelessFunction, HeapBufferingFunction {
+  private final Set<Object>        distinctValues = new LinkedHashSet<>();
+  /** The set is held in heap until the aggregation ends (issues #8585, #8591). */
+  private       OperationHeapLimit limit;
+  // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
+  private       boolean            ownLimit;
+
+  @Override
+  public void setHeapLimit(final OperationHeapLimit owner) {
+    limit = owner.child("collect(DISTINCT)");
+    ownLimit = false;
+  }
 
   @Override
   public String getName() {
@@ -60,18 +70,23 @@ public class CollectDistinctFunction implements StatelessFunction {
     final Object value = args[0];
     // Only add non-null values, and use identity for Identifiable objects
     if (value != null) {
+      final boolean added;
       if (value instanceof Identifiable)
         // Use RID as the key for deduplication to handle proxies and loaded records
-        distinctValues.add(new IdentifiableWrapper((Identifiable) value));
+        added = distinctValues.add(new IdentifiableWrapper((Identifiable) value));
       else if (value instanceof Number)
         // Canonicalize cross-type numeric equality (e.g. INTEGER 1 vs FLOAT 1.0) so DISTINCT stays
         // consistent with Cypher's `=` operator (issue #5789).
-        distinctValues.add(new DistinctNumberWrapper(value));
+        added = distinctValues.add(new DistinctNumberWrapper(value));
       else
-        distinctValues.add(value);
-      if (limit == null)
-        limit = HeapElementsLimit.of(context, "collect(DISTINCT)");
-      limit.check(distinctValues.size());
+        added = distinctValues.add(value);
+      if (limit == null) {
+        limit = OperationHeapLimit.of(context, "collect(DISTINCT)");
+        ownLimit = true;
+      }
+      if (added)
+        // THE VALUE, ITS WRAPPER AND ITS ENTRY IN THE SET
+        limit.add(distinctValues.size(), value, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
     }
     return null; // Intermediate result doesn't matter
   }
@@ -83,6 +98,9 @@ public class CollectDistinctFunction implements StatelessFunction {
 
   @Override
   public Object getAggregatedResult() {
+    if (ownLimit)
+      // THE VALUES GO TO THE CALLER, WHICH HOLDS THEM FROM NOW ON
+      limit.release();
     // Unwrap IdentifiableWrapper back to the original objects
     final List<Object> result = new ArrayList<>(distinctValues.size());
     for (final Object value : distinctValues) {

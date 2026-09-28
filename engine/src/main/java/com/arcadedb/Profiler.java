@@ -24,6 +24,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import com.sun.management.OperatingSystemMXBean;
@@ -367,6 +368,11 @@ public class Profiler {
     json.put("updateRecord", new JSONObject().put("count", updateRecord));
     json.put("deleteRecord", new JSONObject().put("count", deleteRecord));
     json.put("queries", new JSONObject().put("count", queries));
+    // #8591: THE HEAP THE BUFFERS OF THE RUNNING QUERIES HOLD RESERVED, AGAINST THE BUDGET THEY SHARE
+    json.put("queryHeapReserved", new JSONObject().put("space", QueryHeapBudget.getReservedBytes()));
+    json.put("queryHeapReservedPeak", new JSONObject().put("space", QueryHeapBudget.getPeakReservedBytes()));
+    json.put("queryHeapBudget", new JSONObject().put("space", QueryHeapBudget.getLimitBytes()));
+    json.put("queryHeapRefusals", new JSONObject().put("count", QueryHeapBudget.getRefusals()));
     json.put("commands", new JSONObject().put("count", commands));
     json.put("scanType", new JSONObject().put("count", scanType));
     json.put("scanBucket", new JSONObject().put("count", scanBucket));
@@ -635,6 +641,10 @@ public class Profiler {
         "%n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d".formatted(scanType,
           scanBucket, iterateType,
           iterateBucket, countType, countBucket));
+
+      buffer.append("%n QUERY-HEAP reserved=%s peak=%s budget=%s refusals=%d".formatted(
+          FileUtils.getSizeAsString(QueryHeapBudget.getReservedBytes()), FileUtils.getSizeAsString(QueryHeapBudget.getPeakReservedBytes()),
+          FileUtils.getSizeAsString(QueryHeapBudget.getLimitBytes()), QueryHeapBudget.getRefusals()));
 
       buffer.append("%n INDEXES compactions=%d".formatted(indexCompactions));
 
