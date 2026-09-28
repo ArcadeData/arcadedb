@@ -51,7 +51,7 @@ class PrometheusMetricsPluginNotAuthenticatedTest extends BaseGraphServerTest {
         .build();
 
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/prometheus"))
+        .uri(URI.create(getServerHttpUrl("/prometheus")))
         .GET()
         .build();
 

@@ -25,6 +25,7 @@ import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -57,8 +58,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public abstract class BaseRaftHASslTest extends BaseRaftHATest {
 
-  /** Kept clear of 2480-2489 (plain HTTP) and of the JDK-default 2490-2499 range, to make a clash obvious. */
-  private static final int BASE_HTTPS_PORT = 2590;
+  /** The HTTPS port of each node, drawn free for this test instance; see {@link #httpsPortOf(int)}. */
+  private int[] httpsPorts = new int[0];
 
   /**
    * The certificate authority of each SSL suite that has run in this JVM, keyed by its
@@ -89,9 +90,20 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
     return pki;
   }
 
-  /** The HTTPS port node {@code index} is configured to listen on. */
-  protected int httpsPortOf(final int index) {
-    return BASE_HTTPS_PORT + index;
+  /**
+   * The HTTPS port node {@code index} is configured to listen on. Drawn free through
+   * {@link #allocateFixturePorts(int)} rather than pinned to {@code 2590 + index}, so it can neither be answered by
+   * another suite holding that port nor coincide with one of this cluster's Raft ports. Drawn lazily and kept for the
+   * life of the instance, like {@link #raftPort(int)}, so a restarted node comes back on the port its peers know.
+   */
+  protected synchronized int httpsPortOf(final int index) {
+    if (index >= httpsPorts.length) {
+      final int[] more = allocateFixturePorts(Math.max(getServerCount(), index + 1) - httpsPorts.length);
+      final int[] grown = Arrays.copyOf(httpsPorts, httpsPorts.length + more.length);
+      System.arraycopy(more, 0, grown, httpsPorts.length, more.length);
+      httpsPorts = grown;
+    }
+    return httpsPorts[index];
   }
 
   @Override

@@ -245,7 +245,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
         final int cmdNum = i + 1;
         futures.add(executor.submit(() -> {
           final HttpURLConnection connection = (HttpURLConnection) new URL(
-              "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+              "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
           connection.setRequestMethod("POST");
           connection.setRequestProperty("Authorization",

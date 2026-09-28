@@ -45,7 +45,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // BEGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/begin/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -68,7 +68,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       final JSONObject payload = new JSONObject("{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
 
       // CREATE DOCUMENT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -93,15 +93,15 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // CANNOT RETRIEVE DOCUMENT OUTSIDE A TX
-      assertThatThrownBy(() -> checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null))
+      assertThatThrownBy(() -> checkDocumentWasCreated(DATABASE_NAME, getServerHttpPort(serverIndex), payload, rid, null))
           .isInstanceOf(Exception.class);
 
       // RETRIEVE DOCUMENT
-      checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
+      checkDocumentWasCreated(DATABASE_NAME, getServerHttpPort(serverIndex), payload, rid, sessionId);
 
       // QUERY IN GET
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20Person%20limit%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%20from%20Person%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -121,7 +121,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // QUERY IN POST
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -141,7 +141,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // COMMIT
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/commit/graph").openConnection();
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/commit/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -160,7 +160,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       }
 
       // RETRIEVE DOCUMENT
-      checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, sessionId);
+      checkDocumentWasCreated(DATABASE_NAME, getServerHttpPort(serverIndex), payload, rid, sessionId);
     });
   }
 
@@ -169,7 +169,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/begin/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -191,7 +191,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       // CREATE DOCUMENT
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/graph").openConnection();
 
       connection2.setRequestMethod("POST");
       connection2.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
@@ -228,12 +228,12 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     });
   }
 
-  public static void checkDocumentWasCreated(final String databaseName, final int serverIndex, final JSONObject payload,
+  public static void checkDocumentWasCreated(final String databaseName, final int httpPort, final JSONObject payload,
       final String rid, final String sessionId) throws IOException {
 
     // QUERY IN GET
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + databaseName + "/sql/select%20from%20%23" + rid.substring(
+        "http://127.0.0.1:" + httpPort + "/api/v1/query/" + databaseName + "/sql/select%20from%20%23" + rid.substring(
             1)).openConnection();
 
     connection.setRequestMethod("GET");
@@ -266,7 +266,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/begin/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

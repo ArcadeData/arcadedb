@@ -45,6 +45,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.logging.Level;
 
+import static com.arcadedb.server.StaticBaseServerTest.allocateFreePorts;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -59,12 +60,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public abstract class BaseMiniRaftTest {
 
-  /**
-   * Base HTTP port for ArcadeDBServer instances in this test (avoids port 2480 used by other tests).
-   */
-  private static final int    BASE_HTTP_PORT = 12480;
-  private static final String DB_NAME        = "mini-raft-test";
-  private static final String TARGET_DIR     = "target/mini-raft-test";
+  private static final String DB_NAME    = "mini-raft-test";
+  private static final String TARGET_DIR = "target/mini-raft-test";
 
   private MiniRaftClusterWithGrpc cluster;
   private ArcadeDBServer[]        arcadeServers;
@@ -94,6 +91,9 @@ public abstract class BaseMiniRaftTest {
 
     // Start one ArcadeDBServer per peer (HA disabled) and wire it to the ArcadeStateMachine
     arcadeServers = new ArcadeDBServer[getPeerCount()];
+    // Drawn free rather than pinned to 12480 + i: a fixed port is answered by whatever already holds it (another
+    // suite, a parallel build), and RaftBootstrapTimeoutFallbackIT relies on nothing listening on 12480.
+    final int[] httpPorts = allocateFreePorts(getPeerCount());
     for (int i = 0; i < getPeerCount(); i++) {
       final RaftPeerId peerId = peers.get(i).getId();
       final String dbDir = TARGET_DIR + "/server-" + peerId;
@@ -103,7 +103,7 @@ public abstract class BaseMiniRaftTest {
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, dbDir);
       config.setValue(GlobalConfiguration.HA_ENABLED, false);
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, BASE_HTTP_PORT + i);
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, httpPorts[i]);
       config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "testPassword");
 
       arcadeServers[i] = new ArcadeDBServer(config);

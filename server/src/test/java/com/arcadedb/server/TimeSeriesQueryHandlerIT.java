@@ -741,7 +741,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
         .openConnection();
 
@@ -761,7 +761,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   private JSONObject postTsQuery(final int serverIndex, final JSONObject request) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/query")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/query")
         .toURL()
         .openConnection();
 
@@ -785,7 +785,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   private int postTsQueryRaw(final int serverIndex, final JSONObject request) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/query")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/query")
         .toURL()
         .openConnection();
 
@@ -805,7 +805,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   private JSONObject postTsQueryError(final int serverIndex, final JSONObject request) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/query")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/query")
         .toURL()
         .openConnection();
 
@@ -832,7 +832,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   private JSONObject getTsLatestError(final int serverIndex, final String type, final String... tags)
       throws Exception {
     final StringBuilder url = new StringBuilder(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/latest?type=" + type);
     for (final String tag : tags)
       url.append("&tag=").append(URLEncoder.encode(tag, StandardCharsets.UTF_8));
 
@@ -854,7 +854,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   private JSONObject getTsLatestWithTags(final int serverIndex, final String type, final String... tags)
       throws Exception {
     final StringBuilder url = new StringBuilder(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/latest?type=" + type);
     for (final String tag : tags)
       url.append("&tag=").append(URLEncoder.encode(tag, StandardCharsets.UTF_8));
 
@@ -872,7 +872,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   private JSONObject getTsLatest(final int serverIndex, final String type, final String tag) throws Exception {
-    final StringBuilder url = new StringBuilder("http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type);
+    final StringBuilder url = new StringBuilder("http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/latest?type=" + type);
     if (tag != null)
       url.append("&tag=").append(tag);
 
@@ -892,7 +892,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   private int getTsLatestRaw(final int serverIndex, final String type, final String tag) throws Exception {
-    final StringBuilder url = new StringBuilder("http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest");
+    final StringBuilder url = new StringBuilder("http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/latest");
     if (type != null)
       url.append("?type=").append(type);
     if (tag != null)
@@ -911,7 +911,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   private JSONObject getTsLatestError(final int serverIndex, final String type) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/latest?type=" + type)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/latest?type=" + type)
         .toURL()
         .openConnection();
 

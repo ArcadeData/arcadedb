@@ -164,7 +164,7 @@ class RaftUserSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
   private int postServerCommandReturnStatus(final int serverIndex, final String command,
       final String user, final String password) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server").toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString((user + ":" + password).getBytes()));

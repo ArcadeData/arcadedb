@@ -88,7 +88,7 @@ class Issue6303AsyncDispatchedDDLIT extends BaseGraphServerTest {
   /** Sends the command with {@code awaitResponse=false} and returns the HTTP status. */
   private int post(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+        "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
         .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

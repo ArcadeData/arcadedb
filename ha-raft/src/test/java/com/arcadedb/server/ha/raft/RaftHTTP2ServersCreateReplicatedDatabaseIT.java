@@ -43,7 +43,7 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
   @Test
   void createReplicatedDatabase() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + 0 + "/api/v1/server").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(0) + "/api/v1/server").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

@@ -37,7 +37,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   void listDefaultGroups() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.connect();
@@ -75,7 +75,7 @@ class GroupManagementIT extends BaseGraphServerTest {
           .put("*", new JSONObject().put("access", new JSONArray().put("readRecord"))));
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.setDoOutput(true);
@@ -91,7 +91,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // Verify group was created
       final HttpURLConnection getConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       getConn.setRequestMethod("GET");
       getConn.setRequestProperty("Authorization", basicAuth());
       getConn.connect();
@@ -142,7 +142,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // Verify updated
       final HttpURLConnection getConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       getConn.setRequestMethod("GET");
       getConn.setRequestProperty("Authorization", basicAuth());
       getConn.connect();
@@ -180,7 +180,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // Delete it
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups?database=*&name=todelete").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups?database=*&name=todelete").openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.connect();
@@ -193,7 +193,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // Verify it's gone
       final HttpURLConnection getConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       getConn.setRequestMethod("GET");
       getConn.setRequestProperty("Authorization", basicAuth());
       getConn.connect();
@@ -214,7 +214,7 @@ class GroupManagementIT extends BaseGraphServerTest {
   void cannotDeleteAdminFromWildcard() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups?database=*&name=admin").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups?database=*&name=admin").openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.connect();
@@ -238,7 +238,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // GET should fail
       final HttpURLConnection getConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       getConn.setRequestMethod("GET");
       getConn.setRequestProperty("Authorization", nonRootAuth);
       getConn.connect();
@@ -251,7 +251,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
       // POST should fail
       final HttpURLConnection postConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
       postConn.setRequestMethod("POST");
       postConn.setRequestProperty("Authorization", nonRootAuth);
       postConn.setDoOutput(true);
@@ -272,7 +272,7 @@ class GroupManagementIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Create a test database
       final HttpURLConnection createDb = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
       createDb.setRequestMethod("POST");
       createDb.setRequestProperty("Authorization", basicAuth());
       createDb.setDoOutput(true);
@@ -288,7 +288,7 @@ class GroupManagementIT extends BaseGraphServerTest {
       try {
         // Create a type in the database
         final HttpURLConnection createType = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/command/grouptest").openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/grouptest").openConnection();
         createType.setRequestMethod("POST");
         createType.setRequestProperty("Authorization", basicAuth());
         createType.setDoOutput(true);
@@ -315,7 +315,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
         // Root user (in admin group from *) should still be able to query this database
         final HttpURLConnection query = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/query/grouptest").openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/grouptest").openConnection();
         query.setRequestMethod("POST");
         query.setRequestProperty("Authorization", basicAuth());
         query.setDoOutput(true);
@@ -331,7 +331,7 @@ class GroupManagementIT extends BaseGraphServerTest {
       } finally {
         // Cleanup: drop the database and remove the group
         final HttpURLConnection dropDb = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
         dropDb.setRequestMethod("POST");
         dropDb.setRequestProperty("Authorization", basicAuth());
         dropDb.setDoOutput(true);
@@ -346,7 +346,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
         // Clean up the database-specific group entry
         final HttpURLConnection deleteGroup = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups?database=grouptest&name=customreader").openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups?database=grouptest&name=customreader").openConnection();
         deleteGroup.setRequestMethod("DELETE");
         deleteGroup.setRequestProperty("Authorization", basicAuth());
         deleteGroup.connect();
@@ -361,7 +361,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   private void postGroup(final int serverIndex, final JSONObject payload) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/groups").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", basicAuth());
     connection.setDoOutput(true);

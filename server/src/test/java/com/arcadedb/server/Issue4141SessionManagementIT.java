@@ -50,7 +50,7 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
   @Test
   void sessionParametersFlowAcrossCommandsThenCloseInvalidates() throws Exception {
     testEachServer(serverIndex -> {
-      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String baseUrl = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1";
       final String sessionId = beginSession(baseUrl);
 
       // SESSION SET binds a parameter on the session.
@@ -77,7 +77,7 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
   @Test
   void sessionParametersDoNotBleedToNonSessionRequests() throws Exception {
     testEachServer(serverIndex -> {
-      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String baseUrl = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1";
       final String sessionId = beginSession(baseUrl);
       command(baseUrl, sessionId, "SESSION SET $threshold = 21");
 
@@ -104,7 +104,7 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
   @Test
   void sessionParametersResolveOnTheQueryEndpoint() throws Exception {
     testEachServer(serverIndex -> {
-      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String baseUrl = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1";
       final String sessionId = beginSession(baseUrl);
       command(baseUrl, sessionId, "SESSION SET $threshold = 21");
 
@@ -136,7 +136,7 @@ class Issue4141SessionManagementIT extends BaseGraphServerTest {
   @Test
   void sessionCloseAfterCommitDoesNotFail() throws Exception {
     testEachServer(serverIndex -> {
-      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String baseUrl = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1";
       final String sessionId = beginSession(baseUrl);
 
       // Commit the session transaction so it is no longer active.

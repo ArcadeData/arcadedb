@@ -468,7 +468,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   private JSONObject getPromQL(final int serverIndex, final String endpoint, final String queryString) throws Exception {
     final String separator = queryString.isEmpty() ? "" : "?";
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/prom/api/v1/" + endpoint + separator + queryString)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/prom/api/v1/" + endpoint + separator + queryString)
         .toURL()
         .openConnection();
     connection.setRequestMethod("GET");
@@ -483,7 +483,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   private JSONObject getPromQLLabelValues(final int serverIndex, final String labelName) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/prom/api/v1/label/" + labelName + "/values")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/prom/api/v1/label/" + labelName + "/values")
         .toURL()
         .openConnection();
     connection.setRequestMethod("GET");
@@ -501,7 +501,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
     final byte[] compressed = Snappy.compress(protobufBytes);
 
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/prom/write")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/prom/write")
         .toURL()
         .openConnection();
     connection.setRequestMethod("POST");

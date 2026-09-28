@@ -146,7 +146,7 @@ class TimeSeriesThreeNodeWalGapReproIT extends BaseRaftHATest {
 
   private int postLineProtocol(final int serverIndex, final String body) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/" + getDatabaseName() + "/write?precision=ms")
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/" + getDatabaseName() + "/write?precision=ms")
         .toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

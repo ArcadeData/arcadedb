@@ -159,7 +159,7 @@ class Issue8523ParallelScanAclIT extends BaseGraphServerTest {
   }
 
   private HttpURLConnection open(final int serverIndex, final String method, final String path, final String auth) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:248" + serverIndex + path).toURL()
+    final HttpURLConnection connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + getServerHttpPort(serverIndex) + path).toURL()
         .openConnection();
     connection.setRequestMethod(method);
     connection.setRequestProperty("Authorization", auth);
