@@ -313,6 +313,11 @@ public final class LabelReplacements {
    * {@code arcadedb.opencypher.labelWriteDegreeLimit} (off by default) refuses it outright above a degree, before
    * any record has moved.
    *
+   * <p>
+   * The copy is taken from the latest committed record, not from the image the row read (issue #8538): a vertex deleted
+   * concurrently since that read therefore fails the write with the record-not-found error, rather than being
+   * resurrected from a stale copy.
+   *
    * @return the vertex that now holds the identity of the original
    */
   public MutableVertex replace(final Vertex matched, final String newTypeName) {

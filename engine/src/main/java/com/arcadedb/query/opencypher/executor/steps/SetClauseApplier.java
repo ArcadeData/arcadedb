@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -70,10 +73,15 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SetClauseApplier {
+  // Evaluation rounds allowed beyond one per item before the clause is refused as a conflict (#8538)
+  private static final int MAX_EXTRA_RELOAD_ROUNDS = 16;
+
   private final CommandContext      context;
   private final ExpressionEvaluator evaluator;
   private final boolean             reloadLatestTarget;
   private final boolean             skipUnchangedPropertyWrites;
+  // The records the clause reloaded while applying the current row (#8538), reused across rows
+  private       Set<RID>            reloadedRids;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
       final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
@@ -119,6 +127,8 @@ public final class SetClauseApplier {
     labelReplacements.redirect(result);
 
     final List<SetClause.SetItem> items = setClause.getItems();
+    if (reloadedRids != null)
+      reloadedRids.clear();
 
     // Phase 1: evaluate all right-hand-side expressions against the graph state *before* the SET clause runs.
     // openCypher / Neo4j SET is a simultaneous assignment: every read must observe the pre-clause value, never a
@@ -136,15 +146,22 @@ public final class SetClauseApplier {
     final Object[] targets = new Object[items.size()];
     final String[] keys = new String[items.size()];
     final boolean[] keyIsNull = new boolean[items.size()];
+    if (skipUnchangedPropertyWrites)
+      alignAliasesOfTargets(items, result, writtenDocs);
     evaluateRightHandSides(items, result, writtenDocs, reloadLatestTarget, values, targets, keys, keyIsNull);
 
     // #8538: only values evaluated against the reloaded write targets are written, see reloadWrittenTargets(). Repeated
-    // because a reload can change what another item writes (SET c.k = c.k + 1, d.n = d.n + c.k); each round converts
-    // at least one distinct target to its mutable version, so one round per item is enough. The bound is what ends it
-    // for an expression target that loads a fresh copy of its record at each evaluation (SET (startNode(r)).n = ...).
-    for (int round = 0; round < items.size() && reloadWrittenTargets(items, result, writtenDocs, values, targets, keys,
-        keyIsNull); round++)
+    // because a reload can change what another item writes (SET c.k = c.k + 1, d.n = d.n + c.k) or which record an
+    // expression target names (SET (CASE WHEN c.k = 0 THEN c ELSE d END).n = ...). A round counts only when it reloads
+    // a record no earlier round reloaded, so the loop settles; one that keeps finding new records is refused as a
+    // retryable conflict rather than writing a value computed from a record it never reloaded.
+    int rounds = 0;
+    while (reloadWrittenTargets(items, result, writtenDocs, values, targets, keys, keyIsNull)) {
+      if (++rounds > items.size() + MAX_EXTRA_RELOAD_ROUNDS)
+        throw new ConcurrentModificationException(
+            "The SET clause did not settle on its write targets after " + rounds + " reloads. Please retry the operation");
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
+    }
 
     // Phase 2: apply the writes using the pre-computed snapshot values.
     for (int i = 0; i < items.size(); i++) {
@@ -196,10 +213,9 @@ public final class SetClauseApplier {
         }
         if (item.getKeyExpression() != null) {
           final Object keyValue = evaluator.evaluate(item.getKeyExpression(), result, context);
-          if (keyValue == null)
-            keyIsNull[i] = true;
-          else
-            keys[i] = keyValue.toString();
+          // Assigned on every pass: a re-evaluation after a reload (#8538) can turn a null key into a real one
+          keyIsNull[i] = keyValue == null;
+          keys[i] = keyIsNull[i] ? null : keyValue.toString();
         }
         // Coerce and validate HERE so an invalid value rejects the clause before any of it has been written: the
         // step rolls back only a transaction it opened itself, so a value refused halfway through would otherwise
@@ -243,7 +259,10 @@ public final class SetClauseApplier {
    * once. Every pass validates exactly like the first.
    * <p>
    * A target a MERGE action leaves untouched (an unchanged value, issue #4474) is not pinned, so a read-only match
-   * stays conflict-free. The decision is taken on the values of the previous pass, so a reload can turn an item judged a
+   * stays conflict-free. That decision is taken on the record the row read: when a concurrent commit changed the
+   * property to another value in between, the MERGE action keeps that value instead of writing its own, which a serial
+   * execution after that commit would have done. This is the price of #4474 and deliberate, not a lost update: no
+   * committed write disappears. The decision is taken on the values of the previous pass, so a reload can turn an item judged a
    * no-op into a write: the caller then calls this method again, which reloads that item's target too. A map item
    * always counts as a write, as it already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call
    * {@code modify()}. A label write is not a reload trigger here: its right-hand side never reads the record's
@@ -265,9 +284,11 @@ public final class SetClauseApplier {
         final String propertyName = item.getKeyExpression() != null ? keys[i] : item.getProperty();
         if (item.getTargetExpression() != null) {
           // An expression target (SET (CASE WHEN ... THEN n END).p = ...) names a record of the row that no variable
-          // of the item names, so a stand-alone SET did not reload it either: both reload it here, in every alias.
-          if (targets[i] instanceof Document doc && (!skipUnchangedPropertyWrites || writesProperty(doc, propertyName,
-              values[i])) && reloadDocument(doc, result))
+          // of the item names, so a stand-alone SET did not reload it either: both reload it here, in every alias. It is
+          // reloaded even when the first pass judges the write a no-op: its record is only known once evaluated, too
+          // late for alignAliasesOfTargets(), so the right-hand side may have read a different image of it through
+          // another alias. applyPropertySet() still skips the write if the value turns out unchanged.
+          if (targets[i] instanceof Document doc && reloadDocument(doc, result, null))
             reloaded = true;
         } else if (!reloadLatestTarget && item.getVariable() != null) {
           final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
@@ -294,14 +315,55 @@ public final class SetClauseApplier {
    *
    * @return whether the row now holds a different record than before
    */
-  private static boolean reloadDocument(final Document doc, final Result result) {
-    if (doc.getIdentity() == null)
+  /**
+   * Replaces {@code doc} with its mutable version, pinning its page and reloading it if the page moved on, in every
+   * alias of the row that binds the record (a row can bind it twice: WITH c, c AS d), and in {@code variable} when the
+   * record has no identity to match aliases by.
+   *
+   * @return whether the content the row held was not the one the write will be based on, so the right-hand sides
+   * evaluated against it must be evaluated again. That is the case when {@code modify()} reloaded the record (it
+   * replaces the record's buffer) or answered with the copy this transaction already modified, and only the first time
+   * the clause reaches that record: an expression target such as {@code startNode(r)} loads a fresh copy at each
+   * evaluation, and a copy of an already pinned page holds the latest committed content.
+   */
+  private boolean reloadDocument(final Document doc, final Result result, final String variable) {
+    if (doc instanceof MutableDocument)
       return false;
+    final RID rid = doc.getIdentity();
+    final Binary readImage = doc instanceof BaseRecord record ? record.getBuffer() : null;
     final MutableDocument mutable = doc.modify();
     if (mutable == doc)
       return false;
-    RowAliases.propagateUpdate(result, doc, mutable);
-    return true;
+    if (rid != null)
+      RowAliases.propagateUpdate(result, doc, mutable);
+    if (variable != null)
+      ((ResultInternal) result).setProperty(variable, mutable);
+
+    final boolean contentChanged = readImage == null || ((BaseRecord) doc).getBuffer() != readImage
+        || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
+    if (!contentChanged || rid == null)
+      return contentChanged;
+    if (reloadedRids == null)
+      reloadedRids = new HashSet<>();
+    return reloadedRids.add(rid);
+  }
+
+  /**
+   * #8538: points every alias of the row that binds the record of a variable target at that target's own instance
+   * (MATCH (d) MERGE (c) binds the same record twice, possibly read at different times). The no-op decision of a MERGE
+   * action compares a value with the target, which is only sound when the right-hand side read the same image of the
+   * record: "ON MATCH SET c.n = d.n + 1" with a stale d and a fresh c computes exactly the value c already holds, and
+   * the skipped write would lose the increment.
+   */
+  private void alignAliasesOfTargets(final List<SetClause.SetItem> items, final Result result,
+      final Map<RID, MutableDocument> writtenDocs) {
+    for (final SetClause.SetItem item : items) {
+      if (item.getVariable() == null || item.getType() == SetClause.SetType.LABELS)
+        continue;
+      final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
+      if (doc != null)
+        RowAliases.propagateUpdate(result, doc, doc);
+    }
   }
 
   /**
@@ -557,13 +619,7 @@ public final class SetClauseApplier {
     if (variable == null)
       return false;
     final Document doc = resolveLatestDoc(variable, result, writtenDocs);
-    if (doc == null)
-      return false;
-    final MutableDocument mutable = doc.modify();
-    if (mutable == doc)
-      return false;
-    ((ResultInternal) result).setProperty(variable, mutable);
-    return true;
+    return doc != null && reloadDocument(doc, result, variable);
   }
 
   /**
