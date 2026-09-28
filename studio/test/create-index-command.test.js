@@ -377,3 +377,22 @@ test("submitting the LSM_SPARSE_VECTOR branch carries its optional metadata", ()
     "CREATE INDEX ON `Doc` (`dims`, `weights`) LSM_SPARSE_VECTOR METADATA " + '{"dimensions":105000,"modifier":"IDF"}'
   );
 });
+
+test("the LSM_SPARSE_VECTOR branch carries rescoreOversample, 0 (off) included", () => {
+  openDialog([
+    { name: "dims", type: "ARRAY_OF_INTEGERS" },
+    { name: "weights", type: "ARRAY_OF_FLOATS" }
+  ]);
+
+  const command = submitDialog({
+    "#inputCreateIdxAlgorithm": "LSM_SPARSE_VECTOR",
+    "#inputCreateIdxPropsSparseIdx": "dims",
+    "#inputCreateIdxPropsSparseWeights": "weights",
+    "#inputCreateIdxSparseDimensions": "",
+    "#inputCreateIdxSparseModifier": "",
+    "#inputCreateIdxSparseWeightQuantization": "",
+    "#inputCreateIdxSparseRescoreOversample": "0"
+  });
+
+  assert.equal(command, "CREATE INDEX ON `Doc` (`dims`, `weights`) LSM_SPARSE_VECTOR METADATA " + '{"rescoreOversample":0}');
+});
