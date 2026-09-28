@@ -56,7 +56,8 @@ import java.util.logging.Level;
  * owning fetch step (a copy restricted to the range, or the step itself when the bucket is not split). A bucket too
  * small to split is one unit; a large one is cut in ranges, so a type with a single bucket - the default - is scanned
  * in parallel too. Workers, never more than the producer pool has threads, take the units in order from a shared
- * counter.
+ * counter. An index range loaded in physical order (issue #8333) is cut in units too, each one a slice of the sorted
+ * record addresses of one bucket, see {@link #ofUnits}.
  * <p>
  * <b>Rows, in the sequential order.</b> {@link #pull} hands the rows out exactly in the order the sequential scan
  * would: every unit has its own bounded channel and the consumer drains them unit after unit. So parallelism changes
@@ -92,6 +93,10 @@ final class ParallelTypeScan {
   // Units per worker a large type is cut in: more than one, so a worker that drew a slow range does not leave the
   // others idle at the end, not so many that the per-unit set-up shows.
   private static final int UNITS_PER_WORKER   = 4;
+  // Entries of an index range loaded in physical order per page of the configured unit (#8333): a unit of 32 pages
+  // holds at least 1024 of them. Loading a record by its address costs more than reading it in a page scan, so a unit
+  // of entries is smaller than the records of a unit of pages.
+  private static final int ENTRIES_PER_UNIT_PAGE = 32;
   // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
   private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
@@ -177,6 +182,38 @@ final class ParallelTypeScan {
     return new ParallelTypeScan(db, typeName, units);
   }
 
+  /**
+   * Plans a parallel execution of {@code unitSteps}, each one a unit run as it is, in their order: the slices of an
+   * index range loaded in physical order (issue #8333). Returns {@code null} when this execution must stay sequential,
+   * for the reasons {@link #plan} gives, or when there are fewer than {@code minUnits} units.
+   */
+  static ParallelTypeScan ofUnits(final CommandContext context, final String typeName,
+      final List<? extends AbstractExecutionStep> unitSteps, final int minUnits) {
+    final DatabaseInternal db = context.getDatabase();
+    if (!isAllowed(db) || unitSteps.isEmpty() || unitSteps.size() < minUnits)
+      return null;
+
+    final List<Unit> units = new ArrayList<>(unitSteps.size());
+    for (final AbstractExecutionStep step : unitSteps)
+      units.add(new Unit(step, -1, -1));
+    return new ParallelTypeScan(db, typeName, units);
+  }
+
+  /**
+   * How many of the {@code entries} of an index range loaded in physical order one unit holds (issue #8333): at least
+   * {@link #ENTRIES_PER_UNIT_PAGE} per page of {@link GlobalConfiguration#QUERY_PARALLEL_SCAN_PAGES_PER_UNIT}, and more
+   * on a large range, so it is cut in about {@link #UNITS_PER_WORKER} units per worker. {@link Integer#MAX_VALUE} when
+   * the split is disabled: every bucket is then one unit, as in a scan.
+   */
+  static int entriesPerUnit(final DatabaseInternal db, final long entries) {
+    final int pagesPerUnit = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT);
+    if (pagesPerUnit <= 0)
+      return Integer.MAX_VALUE;
+    final long unitsWanted = (long) ParallelScanProducerPool.getInstance().getMaxParallelism() * UNITS_PER_WORKER;
+    return (int) Math.min(Integer.MAX_VALUE,
+        Math.max((long) pagesPerUnit * ENTRIES_PER_UNIT_PAGE, (entries + unitsWanted - 1) / unitsWanted));
+  }
+
   static boolean isAllowed(final DatabaseInternal db) {
     return db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
         && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
@@ -184,30 +221,66 @@ final class ParallelTypeScan {
         && !db.isTransactionActive();
   }
 
-  private static List<Unit> planUnits(final DatabaseInternal db, final List<ExecutionStep> bucketSteps) {
+  /**
+   * How many workers a parallel scan of the buckets {@code bucketIds}, planned now, would run on: 1 when it would stay
+   * sequential. What an index range weighs a scan of the type by (issue #8333).
+   */
+  static int plannedWorkers(final DatabaseInternal db, final List<Integer> bucketIds) {
+    if (!isAllowed(db))
+      return 1;
+
+    final int[] pages = new int[bucketIds.size()];
+    for (int i = 0; i < pages.length; i++)
+      pages[i] = pagesOf(db, bucketIds.get(i));
+    final long pagesPerUnit = pagesPerUnit(db, pages);
+
+    long units = 0;
+    for (final int bucketPages : pages)
+      units += unitsOf(bucketPages, pagesPerUnit);
+    // THE SAME RULES AS plan()
+    final int minBuckets = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_MIN_BUCKETS);
+    if (units < 2 || (pages.length < minBuckets && units == pages.length))
+      return 1;
+    return (int) Math.min(units, ParallelScanProducerPool.getInstance().getMaxParallelism());
+  }
+
+  private static int pagesOf(final DatabaseInternal db, final int bucketId) {
+    final Bucket bucket = bucketId > -1 ? db.getSchema().getBucketByIdIfExists(bucketId) : null;
+    return bucket instanceof LocalBucket localBucket ? localBucket.getTotalPages() : 0;
+  }
+
+  /**
+   * The pages of a unit: at least the configured size, and larger on a large type, so it is cut in about
+   * UNITS_PER_WORKER units per worker rather than in thousands of small ones. {@link Long#MAX_VALUE} when the split is
+   * disabled.
+   */
+  private static long pagesPerUnit(final DatabaseInternal db, final int[] pages) {
     final int configuredPagesPerUnit = db.getConfiguration().getValueAsInteger(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT);
-
-    final int[] pages = new int[bucketSteps.size()];
+    if (configuredPagesPerUnit <= 0)
+      return Long.MAX_VALUE;
     long totalPages = 0;
-    for (int i = 0; i < bucketSteps.size(); i++) {
-      final int bucketId = bucketIdOf(bucketSteps.get(i));
-      final Bucket bucket = bucketId > -1 ? db.getSchema().getBucketByIdIfExists(bucketId) : null;
-      pages[i] = bucket instanceof LocalBucket localBucket ? localBucket.getTotalPages() : 0;
-      totalPages += pages[i];
-    }
+    for (final int bucketPages : pages)
+      totalPages += bucketPages;
+    final long unitsWanted = (long) ParallelScanProducerPool.getInstance().getMaxParallelism() * UNITS_PER_WORKER;
+    return Math.max(configuredPagesPerUnit, (totalPages + unitsWanted - 1) / unitsWanted);
+  }
 
-    // A unit is at least the configured size, and larger on a large type, so it is cut in about UNITS_PER_WORKER
-    // units per worker rather than in thousands of small ones
-    final int maxWorkers = ParallelScanProducerPool.getInstance().getMaxParallelism();
-    final long pagesPerUnit = configuredPagesPerUnit > 0 ?
-        Math.max(configuredPagesPerUnit, (totalPages + (long) maxWorkers * UNITS_PER_WORKER - 1) / ((long) maxWorkers * UNITS_PER_WORKER)) :
-        Long.MAX_VALUE;
+  /** The units a bucket of {@code pages} pages is cut in. */
+  private static long unitsOf(final int pages, final long pagesPerUnit) {
+    // pages / 2, NOT 2 * pagesPerUnit: THE LATTER OVERFLOWS WHEN THE SPLIT IS DISABLED (Long.MAX_VALUE)
+    return pages / 2 < pagesPerUnit ? 1 : (pages + pagesPerUnit - 1) / pagesPerUnit;
+  }
+
+  private static List<Unit> planUnits(final DatabaseInternal db, final List<ExecutionStep> bucketSteps) {
+    final int[] pages = new int[bucketSteps.size()];
+    for (int i = 0; i < bucketSteps.size(); i++)
+      pages[i] = pagesOf(db, bucketIdOf(bucketSteps.get(i)));
+    final long pagesPerUnit = pagesPerUnit(db, pages);
 
     final List<Unit> units = new ArrayList<>();
     for (int i = 0; i < bucketSteps.size(); i++) {
       final AbstractExecutionStep template = (AbstractExecutionStep) bucketSteps.get(i);
-      // pages / 2, NOT 2 * pagesPerUnit: THE LATTER OVERFLOWS WHEN THE SPLIT IS DISABLED (Long.MAX_VALUE)
-      if (pages[i] / 2 < pagesPerUnit) {
+      if (unitsOf(pages[i], pagesPerUnit) == 1) {
         units.add(new Unit(template, -1, -1));
         continue;
       }

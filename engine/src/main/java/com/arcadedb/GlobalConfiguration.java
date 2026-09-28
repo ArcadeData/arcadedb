@@ -915,16 +915,18 @@ public enum GlobalConfiguration {
       }),
 
   QUERY_INDEX_MAX_SELECTIVITY("arcadedb.queryIndexMaxSelectivity", SCOPE.DATABASE, """
-      Share of a type's records (0 to 1) above which an index search, in SQL or OpenCypher, is abandoned for a full \
-      scan of the type. \
+      Share of a type's records above which an index search, in SQL or OpenCypher, is abandoned for a full scan of \
+      the type, when the scan runs on one thread. \
       Before loading any record, the index entries are read alone: when more of them match than this share of the \
       records the type holds, the rows are served by a scan filtered by the same condition, otherwise the matching \
-      records are loaded in physical order rather than in index order. Fetching most of a type through an index costs \
-      one random page access per record, which grows much faster than a scan once the type outgrows the page cache. \
+      records are loaded in physical order rather than in index order, each page read once. \
+      A scan split across W workers of a parallel scan gives way sooner, at this share divided by (1 + W) / 2: \
+      the index entries are read by one thread whatever the parallelism, so the more the scan is split the sooner it \
+      wins. With the default, 60% of the type for a sequential scan, 24% on 4 workers, 6% on 18. \
       Applies only where the scan answers the same rows and the order the rows come in cannot show in the output: \
       an aggregation, or an ORDER BY the index does not serve. A query returning the rows as they come keeps the \
       index order. 0 disables it, so every index search is served in index order""",
-      Float.class, 0.25f),
+      Float.class, 0.6f),
 
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
       """

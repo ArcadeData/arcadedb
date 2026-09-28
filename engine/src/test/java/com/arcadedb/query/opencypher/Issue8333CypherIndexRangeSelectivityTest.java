@@ -96,11 +96,12 @@ class Issue8333CypherIndexRangeSelectivityTest extends TestHelper {
 
   @Test
   void anAggregationOverAWideRange() {
-    final String query = "MATCH (p:Person) WHERE p.age > 499 RETURN sum(p.age) AS s";
+    // 70% of the label: above the share a label scan, which runs on one thread, gives way at
+    final String query = "MATCH (p:Person) WHERE p.age > 299 RETURN sum(p.age) AS s";
     assertThat(profile(query, Map.of())).contains("served by label scan");
     try (final ResultSet rs = database.query("opencypher", query)) {
       long expected = 0;
-      for (int age = 500; age < PERSONS; age++)
+      for (int age = 300; age < PERSONS; age++)
         expected += age;
       assertThat(rs.next().<Number>getProperty("s").longValue()).isEqualTo(expected);
     }

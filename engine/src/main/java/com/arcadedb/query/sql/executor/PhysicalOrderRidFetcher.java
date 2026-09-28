@@ -21,10 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -76,6 +78,13 @@ public final class PhysicalOrderRidFetcher {
   private       long                   matched;
   private       Outcome                outcome;
   private       WorkGuard              guard;
+  // nextRecord(): the buckets of the current chunk, and the records of the one being read
+  private       List<BucketSlice>      bucketSlices;
+  private       int                    nextBucketSlice;
+  private       Iterator<Record>       records;
+
+  private record BucketSlice(int bucketId, long[] positions, int from, int to) {
+  }
 
   /**
    * @param sources       opens a new pass over the index search: called once, and a second time only for a range too
@@ -88,15 +97,24 @@ public final class PhysicalOrderRidFetcher {
   }
 
   /**
-   * The number of matching entries above which a search over {@code bucketIds} is better served by a scan, from
-   * {@link GlobalConfiguration#QUERY_INDEX_MAX_SELECTIVITY}, or -1 when the decision cannot or must not be taken: the
-   * setting is 0, or some bucket keeps no record count to take the share of (counting it would be a scan of the
-   * bucket, the very cost this is trying to avoid).
+   * The number of matching entries above which a search over {@code bucketIds} is better served by a scan, or -1 when
+   * the decision cannot or must not be taken: {@link GlobalConfiguration#QUERY_INDEX_MAX_SELECTIVITY} is 0, or some
+   * bucket keeps no record count to take the share of (counting it would be a scan of the bucket, the very cost this is
+   * trying to avoid).
+   * <p>
+   * The setting is the share of the records for a scan on one thread. A scan on several workers gives way sooner: it
+   * speeds up with them, while the index entries are still read by one thread and only the records are loaded in
+   * parallel. So the share is divided by {@code (1 + scanWorkers) / 2}, which is where the two meet as measured on
+   * types in and out of the page cache (issue #8333): 60% of the type for a sequential scan by default, 24% on 4
+   * workers, 6% on 18.
+   *
+   * @param scanWorkers the workers the scan would run on, 1 when it would be sequential
    */
-  public static long scanThreshold(final Database database, final Iterable<Integer> bucketIds) {
+  public static long scanThreshold(final Database database, final Iterable<Integer> bucketIds, final int scanWorkers) {
     final float maxSelectivity = database.getConfiguration().getValueAsFloat(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY);
     if (!(maxSelectivity > 0))
       return -1;
+    final double share = Math.min(1D, maxSelectivity * 2D / (1 + Math.max(1, scanWorkers)));
     long records = 0;
     for (final int bucketId : bucketIds) {
       final Bucket bucket = database.getSchema().getBucketByIdIfExists(bucketId);
@@ -107,7 +125,7 @@ public final class PhysicalOrderRidFetcher {
         return -1;
       records += count;
     }
-    return Math.max(1L, (long) Math.ceil(records * (double) Math.min(1F, maxSelectivity)));
+    return Math.max(1L, (long) Math.ceil(records * share));
   }
 
   /**
@@ -155,21 +173,99 @@ public final class PhysicalOrderRidFetcher {
   }
 
   /**
-   * @return the next entry to serve - a {@link RID} in physical order, or an entry that is not a record address as it
-   * came - or null when there is none left. Only after {@link #start(WorkGuard)} answered a physical order.
+   * Serves the matching records on this thread: those of every chunk in physical order, read through their buckets
+   * ({@link LocalBucket#iterator(long[], int, int)}, every page read once and its records built in batches), then the
+   * entries of the chunk that are not record addresses, as they came. Only after {@link #start(WorkGuard)} answered a
+   * physical order.
+   *
+   * @param database the database to load the records through, the one the index belongs to
+   *
+   * @return the next {@link Record}, or the next entry that is not a record address, or null when there is none left.
+   * A record deleted since the index returned it is skipped.
    */
-  public Object next() {
-    // The entries that are not record addresses go first, in no particular order (removeLast() is only the cheap end
-    // of the list): the fetcher serves only statements whose output cannot show the order rows arrive in
+  public Object nextRecord(final Database database) {
     while (true) {
+      if (records != null && records.hasNext())
+        return records.next();
+      records = null;
+
+      if (bucketSlices == null) {
+        // One slice per bucket: the bucket iterator already reads in batches
+        bucketSlices = new ArrayList<>();
+        buffer.slices(Integer.MAX_VALUE, (bucketId, positions, from, to) -> bucketSlices.add(new BucketSlice(bucketId, positions, from, to)));
+        nextBucketSlice = 0;
+      }
+
+      if (nextBucketSlice < bucketSlices.size()) {
+        final BucketSlice slice = bucketSlices.get(nextBucketSlice++);
+        // A bucket dropped since the index was read holds none of the records any more
+        final Bucket bucket = database.getSchema().getBucketByIdIfExists(slice.bucketId());
+        if (bucket instanceof LocalBucket localBucket)
+          records = localBucket.iterator(slice.positions(), slice.from(), slice.to());
+        continue;
+      }
+
+      // The entries that are not record addresses, in no particular order (removeLast() is only the cheap end of the
+      // list): the fetcher serves only statements whose output cannot show the order rows arrive in
       if (passThrough != null && !passThrough.isEmpty())
         return passThrough.removeLast();
-      if (buffer.hasNext())
-        return buffer.next();
-      if (chunkSource == null || chunkSourceExhausted)
+
+      if (!nextChunk())
         return null;
-      fillNextChunk();
     }
+  }
+
+  /**
+   * Cuts the record addresses of the current chunk, in physical order, in slices of at most {@code sliceSize} positions
+   * of one bucket each, for the workers of a parallel load to share instead of {@link #nextRecord(Database)} serving them on one thread.
+   * The slices share the fetcher's arrays: they are valid until {@link #nextChunk()}. Only after
+   * {@link #start(WorkGuard)} answered a physical order.
+   *
+   * @param consumer receives every slice, or null to count them only
+   *
+   * @return the number of slices
+   */
+  public int slices(final int sliceSize, final SliceConsumer consumer) {
+    return buffer.slices(sliceSize, consumer);
+  }
+
+  /**
+   * Hands over the entries of the current chunk that are not record addresses, which {@link #slices} leaves out: an
+   * embedded result, a record not stored yet. Once: a second call answers null.
+   *
+   * @return the entries, or null when there is none
+   */
+  public List<Object> takePassThrough() {
+    final List<Object> taken = passThrough != null && !passThrough.isEmpty() ? passThrough : null;
+    passThrough = null;
+    return taken;
+  }
+
+  /**
+   * Replaces the current chunk of a range too large to hold at once with the next one, for a parallel load that takes
+   * the entries by {@link #slices}. Call it only once every slice of the current chunk has been loaded: the next chunk
+   * reuses their arrays.
+   *
+   * @return false when no entry is left
+   */
+  public boolean nextChunk() {
+    if (chunkSource == null || chunkSourceExhausted)
+      return false;
+    fillNextChunk();
+    bucketSlices = null;
+    records = null;
+    return held() > 0;
+  }
+
+  /** The record addresses the current chunk holds, what {@link #slices} cuts. */
+  public int getBufferedRids() {
+    return buffer.size();
+  }
+
+  /** Receives one slice of the record addresses held: the positions [from, to) of a bucket, in physical order. */
+  @FunctionalInterface
+  public interface SliceConsumer {
+    void accept(int bucketId, long[] positions, int from, int to);
   }
 
   /** The entries the first pass matched: all of them, or one more than the threshold when it answered a scan. */
