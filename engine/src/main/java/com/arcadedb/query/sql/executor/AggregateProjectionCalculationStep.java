@@ -147,11 +147,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           return;
 
         // Memory safety: enforce memory limit for GROUP BY operations
-        if (groupsLimit.isExceededBy(aggregateResults.size() + 1L)) {
-          final int held = aggregateResults.size();
-          aggregateResults.clear();
-          checkGroupCount(held);
-        }
+        groupsLimit.check(aggregateResults.size() + 1L, aggregateResults::clear);
 
         preAggr = newGroup(projection, next, context);
         aggregateResults.put(key, preAggr);

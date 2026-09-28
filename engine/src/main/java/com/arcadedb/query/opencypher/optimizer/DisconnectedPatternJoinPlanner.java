@@ -58,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
+import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 
 /**
@@ -111,6 +112,8 @@ final class DisconnectedPatternJoinPlanner {
     final UnaryOperator<BooleanExpression> anchorPushdown;
     final List<BooleanExpression>          localConjuncts = new ArrayList<>();
     BooleanExpression localFilter;
+    /** The {@code node.property = constant} conjuncts of a lone node, by property: collected once, joined onto any part. */
+    Map<String, EquiJoinKey>               constantKeys;
 
     Unit(final PhysicalOperator operator, final Set<String> variables, final LogicalNode node, final AnchorSelection anchor,
         final UnaryOperator<BooleanExpression> anchorPushdown) {
@@ -291,9 +294,12 @@ final class DisconnectedPatternJoinPlanner {
         fromLeft.putIfAbsent(access.getPropertyName(), key);
     if (fromLeft.isEmpty())
       return null;
-    final Map<String, EquiJoinKey> constants = new HashMap<>();
-    for (final BooleanExpression conjunct : right.localConjuncts)
-      collectConstantEqualities(conjunct, variable, constants);
+    if (right.constantKeys == null) {
+      right.constantKeys = new HashMap<>();
+      for (final BooleanExpression conjunct : right.localConjuncts)
+        collectConstantEqualities(conjunct, variable, right.constantKeys);
+    }
+    final Map<String, EquiJoinKey> constants = right.constantKeys;
 
     IndexStatistics bestIndex = null;
     EquiJoinKey[] bestKeys = null;
@@ -446,17 +452,17 @@ final class DisconnectedPatternJoinPlanner {
   }
 
   private Set<String> variablesRead(final BooleanExpression expression) {
-    final Set<String> read = new LinkedHashSet<>();
-    for (final String variable : allVariables)
-      if (CypherVariableUsage.expressionReferencesVariable(expression, variable))
-        read.add(variable);
-    return read;
+    return variablesRead(variable -> CypherVariableUsage.expressionReferencesVariable(expression, variable));
   }
 
   private Set<String> variablesRead(final Expression expression) {
+    return variablesRead(variable -> CypherVariableUsage.expressionReferencesVariable(expression, variable));
+  }
+
+  private Set<String> variablesRead(final Predicate<String> reads) {
     final Set<String> read = new LinkedHashSet<>();
     for (final String variable : allVariables)
-      if (CypherVariableUsage.expressionReferencesVariable(expression, variable))
+      if (reads.test(variable))
         read.add(variable);
     return read;
   }

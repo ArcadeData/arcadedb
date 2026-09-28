@@ -127,6 +127,8 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
 
         final Result leftRow = buildLeft ? buildRow : currentProbe;
         final Result rightRow = buildLeft ? currentProbe : buildRow;
+        // The two parts of a pattern bind disjoint variables, the synthetic ones included: the right properties overwrite
+        // none of the left ones, unlike the rows NodeHashJoin merges, which share the variable they are joined on
         final ResultInternal merged = new ResultInternal();
         for (final String property : leftRow.getPropertyNames())
           merged.setProperty(property, leftRow.getProperty(property));

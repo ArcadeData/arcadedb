@@ -69,6 +69,18 @@ class CypherHeapElementsLimitIssue8585Test extends TestHelper {
   }
 
   @Test
+  void sqlMatchCartesianProductIsBounded() {
+    // The SQL MATCH buffers the rows of a disconnected pattern it replays the same way
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql", "MATCH {type: N, as: a}, {type: M, as: b} RETURN count(*) AS c")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+  }
+
+  @Test
   void hashJoinBuildSideIsBounded() {
     assertExceedsLimit("MATCH (a:N), (b:M) WHERE a.id = b.id RETURN count(*) AS c");
   }
@@ -119,6 +131,9 @@ class CypherHeapElementsLimitIssue8585Test extends TestHelper {
 
     assertThat(singleLong("MATCH (a:N), (b:M) RETURN count(*) AS c")).isEqualTo((long) ROWS * ROWS);
     assertThat(singleLong("MATCH (a:N), (b:M) WHERE a.id = b.id RETURN count(*) AS c")).isEqualTo(ROWS);
+    try (final ResultSet rs = database.query("sql", "MATCH {type: N, as: a}, {type: M, as: b} RETURN count(*) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo((long) ROWS * ROWS);
+    }
     assertThat(count("MATCH (n:N) RETURN n.id AS id ORDER BY id DESC")).isEqualTo(ROWS);
     assertThat(count("MATCH (n:N) RETURN DISTINCT n.id AS id")).isEqualTo(ROWS);
     assertThat(count("MATCH (n:N) RETURN n.grp AS grp, count(*) AS c")).isEqualTo(ROWS);
