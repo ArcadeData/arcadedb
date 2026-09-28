@@ -120,11 +120,7 @@ public class OrderByStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
-          if (heapLimit.isExceededBy(cachedResult.size())) {
-            final int held = cachedResult.size();
-            this.cachedResult.clear();
-            heapLimit.check(held);
-          }
+          heapLimit.check(cachedResult.size(), cachedResult::clear);
           sorted = false;
           // compact, only at twice as the buffer, to avoid to do it at each add
           if (this.maxResults != null) {

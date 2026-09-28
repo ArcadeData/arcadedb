@@ -49,6 +49,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
   private boolean inited = false;
   // THE ROWS OF AN INDEPENDENT LEVEL'S FIRST PASS, REPLAYED THROUGH reset() FOR EVERY LATER OUTER TUPLE
   private final List<InternalResultSet> preFetches = new ArrayList<>();
+  /** Every level's buffered rows count against queryMaxHeapElementsAllowedPerOp, as the OpenCypher product's do (#8585). */
+  private final HeapElementsLimit       heapLimit;
   private final List<Boolean>           firstPass  = new ArrayList<>();
 
   private final List<ResultSet> resultSets   = new ArrayList<>();
@@ -60,6 +62,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   public CartesianProductStep(final CommandContext context) {
     super(context);
+    this.heapLimit = HeapElementsLimit.of(context, "MATCH Cartesian product");
   }
 
   @Override
@@ -171,8 +174,11 @@ public class CartesianProductStep extends AbstractExecutionStep {
       if (rs.hasNext()) {
         final Result item = rs.next();
         currentTuple.set(level, item);
-        if (firstPass.get(level) && factories.get(level) == null)
-          preFetches.get(level).add(item);
+        if (firstPass.get(level) && factories.get(level) == null) {
+          final InternalResultSet buffered = preFetches.get(level);
+          buffered.add(item);
+          heapLimit.check(buffered.countEntries());
+        }
         return true;
       }
 

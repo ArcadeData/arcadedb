@@ -75,9 +75,17 @@ public final class HeapElementsLimit {
   }
 
   /**
-   * Whether holding {@code elements} is past the limit, for an operation that releases what it holds before
-   * {@link #check(long) failing}.
+   * Fails the query when the operation holds more elements than allowed, after {@code release} lets go of what it holds:
+   * the query fails, but the heap it took is given back at once rather than when the plan is collected.
    */
+  public void check(final long elements, final Runnable release) {
+    if (isExceededBy(elements)) {
+      release.run();
+      check(elements);
+    }
+  }
+
+  /** Whether holding {@code elements} is past the limit. */
   public boolean isExceededBy(final long elements) {
     return maxElements > 0 && elements > maxElements;
   }

@@ -54,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   private static final int PERSONS = 10;
   private static final int CITIES  = 400;
+  /** The cities, and two more: one with a code spelling a RID, one rated -0.0. */
+  private static final int ALL_CITIES = CITIES + 2;
 
   @Override
   protected void beginTest() {
@@ -89,11 +91,13 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
             .set("rating", i / 20.0).save();
       // A code spelling a RID, which a number equals when it is the id() of that RID
       database.newVertex("City").set("id", 1000).set("code", "#3:7").set("country", "IT").set("rating", 99.5).save();
+      // -0.0 = 0.0 for Cypher, while an index orders them apart
+      database.newVertex("City").set("id", 1001).set("code", "Z").set("country", "US").set("rating", -0.0d).save();
 
       final List<MutableVertex> persons = new ArrayList<>();
       for (int i = 0; i < PERSONS; i++) {
         final MutableVertex p = database.newVertex("Person").set("id", i).set("name", i % 5 == 0 ? "Ann" : "bob" + (i % 4))
-            .set("cityCode", "C" + (i % 4)).set("score", (float) (i / 20.0)).set("zip", (long) i);
+            .set("cityCode", "C" + (i % 4)).set("score", i == 7 ? -0.0f : (float) (i / 20.0)).set("zip", (long) i);
         // The cities past 399 do not exist, and persons 0 and 7 have none
         if (i % 7 != 0)
           p.set("cityId", (long) i * 70);
@@ -228,8 +232,10 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
     final String query = "MATCH (p:Person), (c:City) WHERE c.rating = p.score RETURN p.id AS a, c.id AS b";
     assertThat(plan(query)).contains("IndexNestedLoopJoin(c:City)");
     final List<String> pairs = assertSameAsFilteredProduct(query, "c.rating = p.score");
-    // Every person's score is the rating of the city of the same index, 0.05 included
-    assertThat(pairs).hasSize(PERSONS).contains("1/1", "3/3");
+    // Every person's score is the rating of the city of the same index, 0.05 included...
+    assertThat(pairs).contains("1/1", "3/3", "9/9");
+    // ...and a zero of either sign is sought under both: 0.0 finds the -0.0 city, -0.0 the 0.0 one
+    assertThat(pairs).contains("0/0", "0/1001", "7/0", "7/1001").hasSize(PERSONS - 1 + 3);
   }
 
   @Test
@@ -284,9 +290,9 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   @Test
   void anAnonymousPartIsStillCrossed() {
     // Planning the named node alone answered |City| rows, and left the anonymous one unbound
-    assertThat(count("MATCH (:City), (c:City) RETURN count(*) AS c")).isEqualTo((long) (CITIES + 1) * (CITIES + 1));
+    assertThat(count("MATCH (:City), (c:City) RETURN count(*) AS c")).isEqualTo((long) ALL_CITIES * ALL_CITIES);
     assertThat(count("MATCH (a:Person)-[:KNOWS]->(b:Person), (:City) RETURN count(*) AS c"))
-        .isEqualTo((long) (PERSONS + 1) * (CITIES + 1));
+        .isEqualTo((long) (PERSONS + 1) * ALL_CITIES);
     try (final ResultSet rs = database.query("opencypher", "MATCH (:City), (c:City) RETURN c.id AS id LIMIT 50")) {
       while (rs.hasNext())
         assertThat(rs.next().<Integer>getProperty("id")).isNotNull();
@@ -307,7 +313,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
         assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).as(query).doesNotContain("Using Cost-Based Query Optimizer");
       }
-      assertThat(count(query)).as(query).isEqualTo((long) (CITIES + 1) * 14);
+      assertThat(count(query)).as(query).isEqualTo((long) ALL_CITIES * 14);
     }
   }
 

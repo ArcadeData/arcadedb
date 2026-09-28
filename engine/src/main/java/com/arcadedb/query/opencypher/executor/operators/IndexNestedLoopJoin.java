@@ -36,6 +36,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -101,6 +102,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       private Schema    schema;
 
       private Result                         currentLeft;
+      /** The keys still to seek for the current left row, past the one {@link #cursor} walks. */
+      private List<Object[]>                 pendingKeys;
       private IndexCursor                    cursor;
       private Iterator<? extends Identifiable> scan;
       private Result                         pending;
@@ -123,6 +126,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         final Result rightRow = pending;
         pending = null;
 
+        // The sought node's variable is bound by no other part of the pattern, so it overwrites nothing
         final ResultInternal merged = new ResultInternal();
         for (final String property : currentLeft.getPropertyNames())
           merged.setProperty(property, currentLeft.getProperty(property));
@@ -176,7 +180,12 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
             identifiable = cursor.next();
           else if (scan != null && scan.hasNext())
             identifiable = scan.next();
-          else {
+          else if (pendingKeys != null && !pendingKeys.isEmpty()) {
+            if (cursor != null)
+              cursor.close();
+            cursor = seek(pendingKeys.removeLast());
+            continue;
+          } else {
             closeRight();
             return null;
           }
@@ -210,8 +219,10 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
 
         if (use == KeyUse.SEEK) {
           try {
-            // A key covering every index property is a single-entry lookup; a prefix is a range of the ordered index
-            cursor = wholeKey ? index.get(key) : index.range(true, key, true, key, true);
+            // Cypher calls -0.0 and 0.0 equal, the index orders them apart: a zero is sought under both signs
+            final List<Object[]> signedKeys = withBothZeros(key);
+            cursor = seek(signedKeys.removeLast());
+            pendingKeys = signedKeys;
             return;
           } catch (final IllegalArgumentException e) {
             // A key the index refuses to convert: read the label, where the comparison decides
@@ -223,7 +234,13 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         scan = all;
       }
 
+      // A key covering every index property is a single-entry lookup; a prefix is a range of the ordered index
+      private IndexCursor seek(final Object[] key) {
+        return wholeKey ? index.get(key) : index.range(true, key, true, key, true);
+      }
+
       private void closeRight() {
+        pendingKeys = null;
         if (cursor != null) {
           // An index cursor holds its file until closed (issue #5635)
           cursor.close();
@@ -295,6 +312,33 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
     default:
       return KeyUse.SCAN;
     }
+  }
+
+  /**
+   * The keys to seek for {@code key}: itself, and for every floating-point zero in it the same key with the other sign,
+   * since an index orders -0.0 before 0.0 while the Cypher {@code =} calls them equal. A zero against an integral
+   * property is one key already, and is left alone.
+   */
+  private static List<Object[]> withBothZeros(final Object[] key) {
+    final List<Object[]> keys = new ArrayList<>(1);
+    keys.add(key);
+    for (int i = 0; i < key.length; i++) {
+      final Object value = key[i];
+      final Object otherZero;
+      if (value instanceof Double d && d == 0.0)
+        otherZero = Double.doubleToRawLongBits(d) == 0L ? -0.0d : 0.0d;
+      else if (value instanceof Float f && f == 0.0f)
+        otherZero = Float.floatToRawIntBits(f) == 0 ? -0.0f : 0.0f;
+      else
+        continue;
+      final int existing = keys.size();
+      for (int k = 0; k < existing; k++) {
+        final Object[] signed = keys.get(k).clone();
+        signed[i] = otherZero;
+        keys.add(signed);
+      }
+    }
+    return keys;
   }
 
   /**

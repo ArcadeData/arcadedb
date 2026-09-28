@@ -116,11 +116,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
     // Store only the property values, not the full Result object
     pastItems.add(new DistinctKey(nextValue));
-    if (heapLimit.isExceededBy(pastItems.size())) {
-      final int held = pastItems.size();
-      this.pastItems.clear();
-      heapLimit.check(held);
-    }
+    heapLimit.check(pastItems.size(), pastItems::clear);
   }
 
   private boolean alreadyVisited(final Result nextValue) {
