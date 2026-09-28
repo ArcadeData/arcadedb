@@ -26,6 +26,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -154,6 +155,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // LinkedHashMap preserves insertion order, needed because ORDER BY in WITH clauses
     // may fail to resolve aggregation expressions and fall back to iteration order
     final Map<Object, SingleKeyGroupState> groups = new LinkedHashMap<>();
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -178,6 +180,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
                 aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct());
           group = new SingleKeyGroupState(keyValue, aggregators);
           groups.put(canonicalKey, group);
+          limit.check(groups.size());
         }
 
         // Feed row to aggregators using direct array access
@@ -238,6 +241,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final CommandContext context, final int nRecords) {
 
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -256,6 +260,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
           groupAgg.representativeRow = inputRow;
           groups.put(keyValues, groupAgg);
+          limit.check(groups.size());
         }
 
         // Feed row using array-indexed access for regular aggregations

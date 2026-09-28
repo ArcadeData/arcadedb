@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -81,6 +82,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
     // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -109,6 +111,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
           count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 
         final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
+        limit.check(groups.size());
         accumulator[0] += count;
       } finally {
         if (context.isProfiling())

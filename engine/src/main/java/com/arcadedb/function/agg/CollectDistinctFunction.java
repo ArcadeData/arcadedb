@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctNumberWrapper;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -34,7 +35,9 @@ import java.util.Set;
  * Example: MATCH (n:Person) RETURN collect(DISTINCT n.name)
  */
 public class CollectDistinctFunction implements StatelessFunction {
-  private final Set<Object> distinctValues = new LinkedHashSet<>();
+  private final Set<Object>       distinctValues = new LinkedHashSet<>();
+  /** The set is held in heap until the aggregation ends (issue #8585). */
+  private       HeapElementsLimit limit;
 
   @Override
   public String getName() {
@@ -66,6 +69,9 @@ public class CollectDistinctFunction implements StatelessFunction {
         distinctValues.add(new DistinctNumberWrapper(value));
       else
         distinctValues.add(value);
+      if (limit == null)
+        limit = HeapElementsLimit.of(context, "collect(DISTINCT)");
+      limit.check(distinctValues.size());
     }
     return null; // Intermediate result doesn't matter
   }

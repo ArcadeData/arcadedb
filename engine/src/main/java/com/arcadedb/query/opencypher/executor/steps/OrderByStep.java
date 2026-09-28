@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
@@ -129,8 +130,10 @@ public class OrderByStep extends AbstractExecutionStep {
             // Standard sorting: materialize all results
             sortedResults = new ArrayList<>();
             final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+            final HeapElementsLimit limit = HeapElementsLimit.of(context, "ORDER BY");
             while (prevResults.hasNext()) {
               sortedResults.add(prevResults.next());
+              limit.check(sortedResults.size());
             }
 
             // Sort results according to ORDER BY clause
@@ -179,6 +182,8 @@ public class OrderByStep extends AbstractExecutionStep {
         // Pull all results and maintain a top-K heap
         final int batchSize = Math.max(1000, k * 10);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
+        // Only a LIMIT larger than the cap can make the heap outgrow it
+        final HeapElementsLimit limit = HeapElementsLimit.of(context, "ORDER BY");
 
         while (prevResults.hasNext()) {
           final Result row = prevResults.next();
@@ -186,6 +191,7 @@ public class OrderByStep extends AbstractExecutionStep {
           if (topK.size() < k) {
             // Haven't reached K elements yet, add unconditionally
             topK.offer(row);
+            limit.check(topK.size());
           } else {
             // Heap is full, check if new element is better than worst element
             final Result worst = topK.peek();

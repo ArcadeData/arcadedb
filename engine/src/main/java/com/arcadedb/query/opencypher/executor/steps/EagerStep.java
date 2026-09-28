@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -106,9 +107,11 @@ public class EagerStep extends AbstractExecutionStep {
           // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
           // across the writes, which is the very interleaving this step exists to prevent.
           final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+          final HeapElementsLimit limit = HeapElementsLimit.of(context, "eager read/write barrier");
           while (prevResults.hasNext()) {
             guard.check();
             materialized.add(prevResults.next());
+            limit.check(materialized.size());
           }
           if (context.isProfiling())
             rowCount += materialized.size();

@@ -23,6 +23,7 @@ import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -76,6 +77,7 @@ public class UnionStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private final Set<List<Object>> seenResults = removeDuplicates ? new HashSet<>() : null;
+      private final HeapElementsLimit distinctLimit = removeDuplicates ? HeapElementsLimit.of(context, "UNION") : null;
       private boolean finished = false;
 
       @Override
@@ -133,9 +135,9 @@ public class UnionStep extends AbstractExecutionStep {
               // Apply deduplication for UNION (not UNION ALL)
               if (removeDuplicates) {
                 final List<Object> resultKey = buildResultKey(result);
-                if (seenResults.contains(resultKey))
+                if (!seenResults.add(resultKey))
                   continue; // Skip duplicate
-                seenResults.add(resultKey);
+                distinctLimit.check(seenResults.size());
               }
 
               buffer.add(result);

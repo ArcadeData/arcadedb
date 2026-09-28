@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -81,6 +82,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private final Set<List<Object>> seenResults = distinct ? new HashSet<>() : null;
+      private final HeapElementsLimit distinctLimit = distinct ? HeapElementsLimit.of(context, "RETURN DISTINCT") : null;
 
       @Override
       public boolean hasNext() {
@@ -140,6 +142,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
               }
               if (!seenResults.add(DistinctNumericKey.buildKey(names, projectedResult::getProperty)))
                 continue;
+              distinctLimit.check(seenResults.size());
             }
 
             buffer.add(projectedResult);
