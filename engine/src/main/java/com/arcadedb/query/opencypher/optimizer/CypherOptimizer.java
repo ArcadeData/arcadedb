@@ -498,19 +498,20 @@ public class CypherOptimizer {
     if (clauses == null)
       return false;
     for (final ClauseEntry entry : clauses)
-      switch (entry.getType()) {
-      case SET, REMOVE, DELETE, FOREACH, CALL, SUBQUERY:
+      if (!cannotChangeARecord(entry))
         return false;
-      case MERGE: {
-        final MergeClause merge = entry.getTypedClause();
-        if (hasActions(merge.getOnCreateSet()) || hasActions(merge.getOnMatchSet()))
-          return false;
-        break;
-      }
-      default:
-        break;
-      }
     return true;
+  }
+
+  private static boolean cannotChangeARecord(final ClauseEntry entry) {
+    return switch (entry.getType()) {
+      case SET, REMOVE, DELETE, FOREACH, CALL, SUBQUERY -> false;
+      case MERGE -> {
+        final MergeClause merge = entry.getTypedClause();
+        yield !hasActions(merge.getOnCreateSet()) && !hasActions(merge.getOnMatchSet());
+      }
+      default -> true;
+    };
   }
 
   private static boolean hasActions(final SetClause setClause) {
