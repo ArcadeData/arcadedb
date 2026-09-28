@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -435,6 +436,27 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final String weightsProperty = propertyNames.get(1);
     final boolean[] matched = new boolean[m];
     final List<RidScore> rescored = new ArrayList<>(candidates.size());
+    // This can run on a SparseVectorScoringPool worker (the per-bucket fan-out of vector.sparseNeighbors), which has
+    // no database context of its own. Established explicitly and torn down afterwards, create-only-if-absent, exactly
+    // as PaginatedSparseVectorEngine's partitioned scoring does it and for the same reasons: the task may also run
+    // inline on the caller's thread (caller-runs rejection), where an existing context must be neither re-initialised
+    // (that would roll the caller's transaction back) nor removed.
+    final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath()) == null;
+    if (contextCreated)
+      DatabaseContext.INSTANCE.init(db);
+    try {
+      rescoreInto(candidates, rescored, db, tokensProperty, weightsProperty, dims, weights, m, matched);
+    } finally {
+      if (contextCreated)
+        DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+    }
+    rescored.sort(BmwScorer.BY_SCORE_DESC);
+    return rescored.size() <= k ? rescored : new ArrayList<>(rescored.subList(0, k));
+  }
+
+  private static void rescoreInto(final List<RidScore> candidates, final List<RidScore> rescored, final DatabaseInternal db,
+      final String tokensProperty, final String weightsProperty, final int[] dims, final double[] weights, final int m,
+      final boolean[] matched) {
     for (final RidScore candidate : candidates) {
       final Document record;
       try {
@@ -463,8 +485,6 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       }
       rescored.add(new RidScore(candidate.rid(), (float) score));
     }
-    rescored.sort(BmwScorer.BY_SCORE_DESC);
-    return rescored.size() <= k ? rescored : new ArrayList<>(rescored.subList(0, k));
   }
 
   /**
@@ -593,13 +613,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // Exact rescoring (issue #8576) widens both caps: which groups win and which members fill them are decided on the
     // exact scores, so the quantized pass only has to hand over enough of each.
     final int oversample = rescoreOversample();
+    final int widening = groupedWidening((long) limit * groupSize, oversample);
     final List<RidScore> committed;
     try {
       // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
       // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
       // with candidates still available (issue #7966).
-      final List<RidScore> candidates = engine.topKGrouped(queryIndices, effectiveWeights, oversampled(limit, oversample),
-          oversampled(groupSize, oversample), groupKeyResolver, allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
+      final List<RidScore> candidates = engine.topKGrouped(queryIndices, effectiveWeights, oversampled(limit, widening),
+          oversampled(groupSize, widening), groupKeyResolver, allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
       committed = oversample > 0 ?
           admitGroups(rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE), limit, groupSize,
               groupKeyResolver) :
@@ -728,7 +749,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final Function<RID, Object> groupKeyResolver, final Set<RID> excludedRIDs, final int oversample) {
     final List<RidScore> candidates;
     try {
-      candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys, oversampled(groupSize, oversample),
+      candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys,
+          oversampled(groupSize, rowWidening((long) groupKeys.size() * groupSize, oversample)),
           oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs);
     } catch (final IOException e) {
       throw new IndexException("Sparse vector grouped top-K failed", e);
@@ -760,6 +782,29 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         out.add(candidate);
     }
     return out;
+  }
+
+  /**
+   * The factor a grouped search widens BOTH {@code limit} and {@code groupSize} by, so the rows it asks the engine for
+   * grow by its square: reduced until that product stays within {@link #MAX_OVERFETCH_ROWS} (or the caller's own
+   * {@code limit * groupSize}, when that is already larger). The SQL function sizes its memory guard on the caller's
+   * {@code k * groupSize}, before this widening, so the widening has to bound itself.
+   */
+  static int groupedWidening(final long rows, final int oversample) {
+    int widening = oversample;
+    final long budget = Math.max(rows, MAX_OVERFETCH_ROWS);
+    while (widening > 1 && rows * widening * widening > budget)
+      widening--;
+    return widening;
+  }
+
+  /** As {@link #groupedWidening}, for a search that widens only the per-group cap, so the rows grow linearly. */
+  static int rowWidening(final long rows, final int oversample) {
+    int widening = oversample;
+    final long budget = Math.max(rows, MAX_OVERFETCH_ROWS);
+    while (widening > 1 && rows * widening > budget)
+      widening--;
+    return widening;
   }
 
   /**
