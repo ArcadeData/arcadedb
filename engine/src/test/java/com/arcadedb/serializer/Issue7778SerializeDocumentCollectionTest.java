@@ -83,6 +83,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
       d.set("nonFinite", List.of(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY));
       // A primitive array (e.g. a vector embedding) is not a Collection: it must honour the same flags.
       d.set("vector", new float[] { 1.5F, 2.5F, 3.5F, 4.5F });
+      d.set("bytes", new byte[] { 1, 2, 3, 4, 5 });
       rid = d.save().getIdentity();
     });
   }
@@ -126,6 +127,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
     assertThat(json.getInt("nonFinite")).isEqualTo(3);
     assertThat(json.getInt("dates")).isEqualTo(2);
     assertThat(json.getInt("vector")).isEqualTo(4);
+    assertThat(json.getInt("bytes")).isEqualTo(5);
   }
 
   /**
@@ -148,7 +150,7 @@ class Issue7778SerializeDocumentCollectionTest extends TestHelper {
           fromQuery = serializer.serializeResult(database, rs.next());
         }
 
-        for (final String property : List.of("items", "nested", "empty", "scalars", "dates", "nonFinite", "vector"))
+        for (final String property : List.of("items", "nested", "empty", "scalars", "dates", "nonFinite", "vector", "bytes"))
           assertThat(fromDocument.toMap().get(property))
               .as("property '%s' with useCollectionSize=%s useCollectionSizeForEdges=%s", property, collectionSize,
                   collectionSizeForEdges)

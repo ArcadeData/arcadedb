@@ -113,10 +113,8 @@ public class JsonSerializer {
     final Map<String, Object> documentAsMap = document.toMap();
     for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
       final String p = documentEntry.getKey();
-      Object value = documentEntry.getValue();
-
       // Issue #7778: same dispatch as serializeResult(), so both paths render a property identically
-      value = serializeObject(database, value);
+      Object value = serializeObject(database, documentEntry.getValue());
 
       // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
       // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string. Called for an
