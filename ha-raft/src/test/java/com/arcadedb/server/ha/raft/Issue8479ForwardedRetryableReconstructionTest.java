@@ -43,9 +43,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The same exact-name lookup dropped the other refusals the leader's group committer raises BEFORE the entry reaches
  * the Raft log - {@link ReplicationQueueFullException} and a plain {@link QuorumNotReachedException} - so they are
- * rebuilt too. The two {@link QuorumNotReachedException} subtypes that mean the entry did, or may have, reached the log
+ * rebuilt too. The two outcomes that mean the entry did, or may have, reached the log
  * ({@link MajorityCommittedAllFailedException}, {@link ReplicationDispatchedTimeoutException}) are deliberately NOT: a
- * retry of either can apply the write twice, so they stay non-retryable on the follower.
+ * retry of either can apply the write twice, so they stay non-retryable on the follower (and, since issue #8481, are no
+ * longer {@link QuorumNotReachedException} subtypes on the leader either).
  */
 class Issue8479ForwardedRetryableReconstructionTest {
 
@@ -112,7 +113,8 @@ class Issue8479ForwardedRetryableReconstructionTest {
 
   /**
    * MAJORITY committed the entry: the write is durable cluster-wide. Retrying the forwarded command would run it a second
-   * time, so the follower must not rebuild it as a NeedRetryException - even though the leader answers it with 503.
+   * time, so the follower must not rebuild it as a NeedRetryException. Since issue #8481 the leader answers it 409; the 503
+   * below is what a leader that predates #8481 sends, and the rebuild keys on the exception class, not on the status.
    */
   @Test
   void aMajorityCommittedRefusalStaysNonRetryable() {

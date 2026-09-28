@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
@@ -313,7 +314,7 @@ class RaftGroupCommitter {
    * and skipping its local apply (issue #4790). A {@code PENDING}/{@code CANCELLED} entry never left
    * this node, so a plain {@link QuorumNotReachedException} (safe to roll back) is correct.
    */
-  private static QuorumNotReachedException dispatchAware(final CancellablePendingEntry pending, final String message) {
+  private static ArcadeDBException dispatchAware(final CancellablePendingEntry pending, final String message) {
     if (pending.state.get() == CancellablePendingEntry.DISPATCHED)
       return new ReplicationDispatchedTimeoutException(message + " (entry was dispatched to Raft)");
     return new QuorumNotReachedException(message);

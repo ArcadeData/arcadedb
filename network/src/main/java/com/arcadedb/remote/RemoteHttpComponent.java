@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
@@ -900,6 +901,13 @@ public class RemoteHttpComponent extends RWLockContext {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
         return new TransactionException(detail);
+      } else if (exception.equals(TransactionCommittedRemotelyException.class.getName())
+          || "com.arcadedb.server.ha.raft.MajorityCommittedAllFailedException".equals(exception)) {
+        // THE SERVER ANSWERS THESE 409: THE TRANSACTION IS COMMITTED CLUSTER-WIDE, SO IT MUST NOT BE RETRIED. REBUILT AS THE
+        // TYPED 'DO NOT RETRY' EXCEPTION INSTEAD OF AN UNTYPED RemoteException, SO A CALLER CAN TELL A WRITE THAT LANDED
+        // FROM ONE THAT FAILED. THE HA SUBCLASS (ALL QUORUM MISSED AFTER THE MAJORITY COMMITTED, ISSUE #8481) LIVES IN A
+        // SERVER MODULE THIS CLIENT DOES NOT DEPEND ON, SO ITS NAME IS MATCHED AS A STRING
+        return new TransactionCommittedRemotelyException(detail);
       } else if ("com.arcadedb.server.http.HttpSessionException".equals(exception)) {
         // SERVER-SIDE SUBCLASS OF TransactionException: THE WIRE CARRIES ONLY THE CLASS NAME, SO THE
         // SUBCLASS RELATIONSHIP MUST BE RESTORED EXPLICITLY HERE

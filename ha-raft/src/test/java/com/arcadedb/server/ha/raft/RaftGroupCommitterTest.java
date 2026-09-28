@@ -19,6 +19,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
@@ -80,7 +82,9 @@ class RaftGroupCommitterTest {
   @Test
   void allQuorumWatchFailureThrowsMajorityCommittedException() {
     final var ex = new MajorityCommittedAllFailedException("ALL quorum watch failed");
-    assertThat(ex).isInstanceOf(QuorumNotReachedException.class);
+    // #8481: the MAJORITY committed the entry, so it is a committed-remotely outcome and never a retryable one
+    assertThat(ex).isInstanceOf(TransactionCommittedRemotelyException.class);
+    assertThat(ex).isNotInstanceOf(NeedRetryException.class);
     assertThat(ex.getMessage()).contains("ALL quorum");
   }
 
