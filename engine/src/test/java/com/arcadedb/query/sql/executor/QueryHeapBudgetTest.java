@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import org.junit.jupiter.api.AfterEach;
@@ -241,6 +242,7 @@ class QueryHeapBudgetTest {
     final OperationHeapLimit limit = OperationHeapLimit.of(context, "DISTINCT");
 
     assertThatThrownBy(() -> limit.charge(OperationHeapLimit.FORWARD_BYTES)).isInstanceOf(QueryHeapBudgetExceededException.class);
+    assertThat(limit.getChargedBytes()).as("a refused charge is not counted, as the tracker does not count it").isZero();
     limit.release();
     assertThat(tracker.getUsedBytes()).isEqualTo(QueryHeapTracker.UNRESERVED_BYTES);
 
@@ -278,6 +280,46 @@ class QueryHeapBudgetTest {
     b.release();
     assertThat(tracker.getUsedBytes()).isZero();
     assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+  }
+
+  @Test
+  void aTopKHeapChargesTheRowsItKeeps() {
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final String small = "s";
+    final String large = "l".repeat(10_000);
+    limit.add(1, small);
+    final long withSmall = limit.getChargedBytes();
+
+    // A better row replacing the worst one is charged for what it takes more, or gives back what it takes less
+    limit.replace(small, large);
+    assertThat(limit.getChargedBytes()).isEqualTo(withSmall - HeapEstimator.estimate(small) + HeapEstimator.estimate(large));
+    limit.replace(large, small);
+    assertThat(limit.getChargedBytes()).isEqualTo(withSmall);
+
+    // Re-estimating the rows a top-N sort kept charges them exactly, not the average of the rows it saw
+    for (int i = 0; i < 200; i++)
+      limit.add(i + 2, small);
+    limit.rechargeAll(List.of(large, large));
+    assertThat(limit.getChargedBytes()).isEqualTo(2 * (HeapEstimator.estimate(large) + HeapEstimator.REFERENCE_BYTES));
+    limit.release();
+  }
+
+  @Test
+  void aRidBitmapReportsWhatItsWordsTake() {
+    final RidSet rids = new RidSet();
+    rids.add(new RID(0, 1));
+    assertThat(rids.getAllocatedBytes()).as("the first block").isEqualTo(4096L * Long.BYTES);
+
+    // ONE RID FAR AWAY GROWS THE BITMAP OF ITS BUCKET UP TO ITS POSITION
+    rids.add(new RID(0, 1L << 24));
+    assertThat(rids.getAllocatedBytes()).isGreaterThanOrEqualTo((1L << 24) / 64 * Long.BYTES);
+    rids.add(new RID(1, 1));
+    final long twoBuckets = rids.getAllocatedBytes();
+    rids.add(new RID(1, 2));
+    assertThat(rids.getAllocatedBytes()).as("a RID in an allocated word takes nothing more").isEqualTo(twoBuckets);
+
+    rids.clear();
+    assertThat(rids.getAllocatedBytes()).isZero();
   }
 
   @Test

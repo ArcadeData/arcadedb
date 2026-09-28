@@ -59,6 +59,7 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
   private static final int    ROWS   = 20_000;
   private static final long   MB     = 1024 * 1024;
   private static final String FILLER = "x".repeat(80);
+  private static final int    BIG_PAYLOAD = 200 * 1024;
 
   private static final String[] SQL_BUFFERS = {                                     //
       "SELECT FROM Doc ORDER BY name",                                              //
@@ -97,6 +98,14 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
     database.getSchema().createDocumentType("Doc", 4);
     database.getSchema().createVertexType("P");
     database.getSchema().createVertexType("Q");
+    database.getSchema().createVertexType("Big");
+    database.transaction(() -> {
+      // MANY SMALL ROWS, THEN A FEW LARGE ONES A TOP-N SORT BY SIZE KEEPS
+      for (int i = 0; i < 2_000; i++)
+        database.newVertex("Big").set("size", i, "payload", "x").save();
+      for (int i = 0; i < 10; i++)
+        database.newVertex("Big").set("size", 1_000_000 + i, "payload", "y".repeat(BIG_PAYLOAD)).save();
+    });
     database.transaction(() -> {
       for (int i = 0; i < ROWS; i++) {
         final String name = "name-%06d-%s".formatted(i, FILLER);
@@ -261,6 +270,24 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
     buffer.clear();
     assertThat(limit.getChargedBytes()).as("the buffer gave back its own share only").isEqualTo(MB);
     limit.release();
+  }
+
+  @Test
+  void aTopNSortChargesTheRowsItKeepsNotAnAverageOfTheOnesItSaw() {
+    // The 10 rows kept take 2MB; a share of the charge proportional to their number, or the average row size of the
+    // 2010 rows seen, would count a fraction of it
+    final String query = "SELECT FROM Big ORDER BY size DESC LIMIT 10";
+    try (final ResultSet rs = database.query("sql", query)) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(QueryHeapBudget.getReservedBytes() - baseline).isGreaterThanOrEqualTo(10L * BIG_PAYLOAD - QueryHeapTracker.UNRESERVED_BYTES);
+      long rows = 0;
+      while (rs.hasNext()) {
+        assertThat(rs.next().<Integer>getProperty("size")).isGreaterThanOrEqualTo(1_000_000);
+        ++rows;
+      }
+      assertThat(rows).isEqualTo(10);
+    }
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
   }
 
   @Test

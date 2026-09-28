@@ -22,6 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.OrderBy;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -29,10 +30,11 @@ import java.util.NoSuchElementException;
  * Created by luigidellaquila on 11/07/16.
  */
 public class OrderByStep extends AbstractExecutionStep {
-  private final OrderBy orderBy;
-  private       Integer maxResults;
-  private final long    timeoutMillis;
-  private final HeapElementsLimit heapLimit;
+  private final OrderBy            orderBy;
+  private       Integer            maxResults;
+  private final long               timeoutMillis;
+  // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
+  private       OperationHeapLimit limit;
 
   List<Result> cachedResult = null;
   int          nextElement  = 0;
@@ -49,15 +51,21 @@ public class OrderByStep extends AbstractExecutionStep {
       this.maxResults = null;
     }
     this.timeoutMillis = timeoutMillis;
-    this.heapLimit = HeapElementsLimit.of(context, "ORDER BY");
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     if (cachedResult == null) {
       cachedResult = new ArrayList<>();
-      if (prev != null)
-        init(prev, context);
+      limit = OperationHeapLimit.of(context, "ORDER BY");
+      if (prev != null) {
+        try {
+          init(prev, context);
+        } catch (final RuntimeException e) {
+          releaseBuffer();
+          throw e;
+        }
+      }
     }
 
     return new ResultSet() {
@@ -85,6 +93,9 @@ public class OrderByStep extends AbstractExecutionStep {
           final Result result = cachedResult.get(offset + currentBatchReturned);
           nextElement++;
           currentBatchReturned++;
+          if (nextElement == cachedResult.size())
+            // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+            releaseBuffer();
           return result;
         } finally {
           if( context.isProfiling() ) {
@@ -120,18 +131,13 @@ public class OrderByStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
-          if (heapLimit.isExceededBy(cachedResult.size())) {
-            final int held = cachedResult.size();
-            this.cachedResult.clear();
-            heapLimit.check(held);
-          }
+          limit.add(cachedResult.size(), item);
           sorted = false;
           // compact, only at twice as the buffer, to avoid to do it at each add
           if (this.maxResults != null) {
             final long compactThreshold = 2L * maxResults;
             if (compactThreshold < cachedResult.size()) {
-              cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
-              cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
+              keepTopResults(context);
               sorted = true;
             }
           }
@@ -148,8 +154,7 @@ public class OrderByStep extends AbstractExecutionStep {
       try {
         // compact at each batch, if needed
         if (!sorted && this.maxResults != null && maxResults < cachedResult.size()) {
-          cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
-          cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
+          keepTopResults(context);
           sorted = true;
         }
       } finally {
@@ -168,6 +173,29 @@ public class OrderByStep extends AbstractExecutionStep {
         cost += System.nanoTime() - begin;
       }
     }
+  }
+
+  /**
+   * Sorts the buffer and keeps its first {@code maxResults} rows, giving back the heap of the others: the kept rows are
+   * estimated again, since the rows dropped are not of the size of the average one.
+   */
+  private void keepTopResults(final CommandContext context) {
+    cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
+    cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
+    limit.rechargeAll(cachedResult);
+  }
+
+  private void releaseBuffer() {
+    cachedResult = Collections.emptyList();
+    if (limit != null)
+      limit.release();
+  }
+
+  @Override
+  public void close() {
+    if (cachedResult != null)
+      releaseBuffer();
+    super.close();
   }
 
   @Override

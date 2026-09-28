@@ -22,6 +22,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 
+import java.util.Collection;
+
 /**
  * The limits on the heap one operation of a query holds in its buffer: the rows a sort or a join buffers, the keys a
  * DISTINCT remembers, the groups an aggregation keeps, the values a collect() gathers.
@@ -136,21 +138,60 @@ public final class OperationHeapLimit {
       charge(estimate(element) + overheadBytes);
   }
 
-  /** Charges {@code bytes} more held by the operation, for which the query may be refused (see {@link QueryHeapTracker}). */
+  /**
+   * Charges {@code bytes} more held by the operation, for which the query may be refused (see {@link QueryHeapTracker}).
+   * A refused charge is not counted, as the tracker does not count it either: what the operation holds charged stays
+   * what it held before, so an owner that gives back its own share (a join buffer sharing its operation with a hash
+   * table) never gives back more or less than it was charged.
+   */
   public void charge(final long bytes) {
     if (tracker == null || bytes <= 0)
       return;
-    charged += bytes;
     if (parent != null) {
       parent.charge(bytes);
+      charged += bytes;
       return;
     }
     pending += bytes;
     if (pending >= FORWARD_BYTES) {
-      // ON A REFUSAL pending STAYS AS IT IS: release() THEN GIVES BACK ONLY WHAT THE TRACKER WAS REALLY CHARGED
-      tracker.charge(pending, operation);
+      try {
+        tracker.charge(pending, operation);
+      } catch (final RuntimeException e) {
+        pending -= bytes;
+        throw e;
+      }
       pending = 0L;
     }
+    charged += bytes;
+  }
+
+  /**
+   * Adjusts the charge, in one step, to what {@code elements} - everything the operation holds now - are estimated to
+   * take: a buffer that dropped some of its elements (a top-N sort keeping its best rows) gives back what the dropped
+   * ones took, whatever their size. Every element is estimated, not sampled: the ones kept are the exception, not the
+   * average of what went through.
+   */
+  public void rechargeAll(final Collection<?> elements) {
+    if (tracker == null)
+      return;
+    long bytes = 0L;
+    for (final Object element : elements)
+      bytes += HeapEstimator.estimate(element) + HeapEstimator.REFERENCE_BYTES;
+    if (bytes < charged)
+      release(charged - bytes);
+    else
+      charge(bytes - charged);
+  }
+
+  /** Adjusts the charge for {@code added} taking the place of {@code removed}: a full top-K heap keeping a better row. */
+  public void replace(final Object removed, final Object added) {
+    if (tracker == null)
+      return;
+    final long delta = HeapEstimator.estimate(added) - HeapEstimator.estimate(removed);
+    if (delta > 0)
+      charge(delta);
+    else
+      release(-delta);
   }
 
   /** Gives back {@code bytes} of what the operation charged: its buffer shrank. */

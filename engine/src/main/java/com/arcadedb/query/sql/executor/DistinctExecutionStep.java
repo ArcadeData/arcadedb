@@ -32,16 +32,22 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Optimized to store only distinct field values instead of full Result objects to reduce memory footprint.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
+  // A DistinctKey, and the entry of the set that holds it
+  private static final int DISTINCT_KEY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 24;
+
   final Set<DistinctKey> pastItems = new HashSet<>();
   final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
-  private final HeapElementsLimit heapLimit;
+  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
+  // RIDS OF THE FAST PATH ARE NOT ELEMENTS UNDER THE CAP - A BITMAP TAKES A BIT PER RECORD POSITION - BUT THE BITMAP
+  // GROWS TO THE HIGHEST POSITION OF EACH BUCKET, SO WHAT IT TAKES IS CHARGED TO THE BUDGET
+  private final OperationHeapLimit heapLimit;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
     this.pastRids = new RidSet(context);
-    heapLimit = HeapElementsLimit.of(context, "DISTINCT");
+    heapLimit = OperationHeapLimit.of(context, "DISTINCT");
   }
 
   @Override
@@ -91,6 +97,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         lastResult = getPrev().syncPull(context, nRecords);
       }
       if (lastResult == null || !lastResult.hasNext()) {
+        // EVERY INPUT ROW WAS SEEN: NO KEY IS NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+        releaseBuffer();
         return;
       }
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -111,16 +119,34 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   private void markAsVisited(final Result nextValue) {
     if (canUseRidFastPath(nextValue)) {
+      final long bitmapBytes = pastRids.getAllocatedBytes();
       pastRids.add(nextValue.getElement().get().getIdentity());
+      final long grown = pastRids.getAllocatedBytes() - bitmapBytes;
+      if (grown > 0) {
+        try {
+          heapLimit.charge(grown);
+        } catch (final RuntimeException e) {
+          releaseBuffer();
+          throw e;
+        }
+      }
       return;
     }
     // Store only the property values, not the full Result object
-    pastItems.add(new DistinctKey(nextValue));
-    if (heapLimit.isExceededBy(pastItems.size())) {
-      final int held = pastItems.size();
-      this.pastItems.clear();
-      heapLimit.check(held);
+    final DistinctKey key = new DistinctKey(nextValue);
+    pastItems.add(key);
+    try {
+      heapLimit.add(pastItems.size(), key.properties, DISTINCT_KEY_OVERHEAD_BYTES);
+    } catch (final RuntimeException e) {
+      releaseBuffer();
+      throw e;
     }
+  }
+
+  private void releaseBuffer() {
+    pastItems.clear();
+    pastRids.clear();
+    heapLimit.release();
   }
 
   private boolean alreadyVisited(final Result nextValue) {
@@ -156,6 +182,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
+    releaseBuffer();
     if (prev != null)
       prev.close();
   }

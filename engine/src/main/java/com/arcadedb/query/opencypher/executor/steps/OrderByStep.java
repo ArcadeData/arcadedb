@@ -121,7 +121,8 @@ public class OrderByStep extends AbstractExecutionStep {
         }
         final Result result = sortedResults.get(currentIndex++);
         if (currentIndex == sortedResults.size())
-          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN. THE
+          // STEP DOWNSTREAM MAY STILL HOLD THE LAST PULL BATCH OF THEM (UP TO nRecords ROWS), WHICH NO LIMIT COUNTS
           releaseBuffer();
         return result;
       }
@@ -212,7 +213,7 @@ public class OrderByStep extends AbstractExecutionStep {
 
           if (topK.size() < k) {
             // Haven't reached K elements yet, add unconditionally. Only a LIMIT larger than the cap can make the heap
-            // outgrow it; the rows replaced once it is full are charged the size of the ones they replace
+            // outgrow it
             topK.offer(row);
             heapLimit.add(topK.size(), row);
           } else {
@@ -222,6 +223,7 @@ public class OrderByStep extends AbstractExecutionStep {
               // New row is better than worst row, replace it
               topK.poll();  // Remove worst
               topK.offer(row);  // Add new
+              heapLimit.replace(worst, row);
             }
             // Otherwise discard the row (it's worse than our current top K)
           }

@@ -18,12 +18,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
-import com.arcadedb.query.sql.parser.WhereClause;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
@@ -41,10 +40,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
 
-  private final GroupBy groupBy;
-  private final long    timeoutMillis;
-  private final long    limit;
-  private final HeapElementsLimit groupsLimit;
+  private final GroupBy                   groupBy;
+  private final long                      timeoutMillis;
+  private final long                      limit;
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
+  private final OperationHeapLimit        groupsLimit;
+  // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
+  private final Queue<PartialAggregation> workerPartials = new ConcurrentLinkedQueue<>();
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
@@ -62,13 +64,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     this.limit = limit;
 
     // Memory optimization: Enforce memory limits for GROUP BY operations
-    this.groupsLimit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    this.groupsLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finalResults == null) {
-      executeAggregation(context, nRecords);
+      try {
+        executeAggregation(context, nRecords);
+      } catch (final RuntimeException e) {
+        releaseGroups();
+        throw e;
+      }
     }
 
     return new ResultSet() {
@@ -87,6 +94,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         final Result result = finalResults.get(nextItem);
         nextItem++;
         localNext++;
+        if (nextItem == finalResults.size())
+          // EVERY GROUP WAS SERVED: THEY ARE NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          releaseGroups();
         return result;
       }
     };
@@ -145,9 +155,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
         preAggr = newGroup(projection, next, context);
         aggregateResults.put(key, preAggr);
+        groupsLimit.chargeElement(key.values, groupOverheadBytes(projection));
       }
 
-      applyAggregates(projection, preAggr, next, context);
+      applyAggregates(projection, preAggr, next, context, groupsLimit);
 
       // NOTE: we must NOT clear the element reference of the input Result here (issue #4590).
       // Doing so is a destructive side effect on a row we do not own exclusively: when the same
@@ -179,6 +190,29 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     groupsLimit.check(groups + 1);
   }
 
+  /**
+   * What a group holds besides the values of its key, which are charged on their own: its key and its entry in the map
+   * of the groups, the row of its non-aggregate projections - most often the key values again - and one state per
+   * aggregate. What an aggregate that keeps every value gathers (list(), percentile()) is charged as it grows.
+   */
+  private static int groupOverheadBytes(final Projection projection) {
+    return HeapEstimator.HASH_ENTRY_BYTES + 24 + HeapEstimator.RESULT_BYTES
+        + 64 * projection.getItems().size();
+  }
+
+  private void releaseGroups() {
+    aggregateResults.clear();
+    if (finalResults != null)
+      finalResults = Collections.emptyList();
+    groupsLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseGroups();
+    super.close();
+  }
+
   /** A new group, holding the non-aggregate projections of the first row seen for it. */
   private static ResultInternal newGroup(final Projection projection, final Result next, final CommandContext context) {
     final ResultInternal group = new ResultInternal(context.getDatabase());
@@ -188,14 +222,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return group;
   }
 
+  /**
+   * Feeds a row to the aggregates of a group. An aggregate that keeps every value (list(), percentile()) charges them to
+   * {@code heapLimit}, the operation of the groups.
+   */
   private static void applyAggregates(final Projection projection, final ResultInternal group, final Result next,
-      final CommandContext context) {
+      final CommandContext context, final OperationHeapLimit heapLimit) {
     for (final ProjectionItem proj : projection.getItems()) {
       if (proj.isAggregate(context)) {
         final String alias = proj.getProjectionAlias().getStringValue();
         AggregationContext aggrCtx = (AggregationContext) group.getTemporaryProperty(alias);
         if (aggrCtx == null) {
-          aggrCtx = proj.getAggregationContext(context);
+          aggrCtx = HeapBufferingFunction.adopt(proj.getAggregationContext(context), heapLimit);
           group.setTemporaryProperty(alias, aggrCtx);
         }
         aggrCtx.apply(next, context);
@@ -204,68 +242,55 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   }
 
   /**
-   * Issue #8523: aggregates in the workers of a parallel scan instead of on this thread, when this step reads a
-   * {@link ParallelAggregationSource} directly or through the row filters an index fetch leaves behind it (issue #8333)
-   * and the projection computing the aggregates' arguments. Every worker runs those filters, that projection, the GROUP
-   * BY and the aggregation for its part of the rows on its own copy of them, building a partial group state, and the
-   * partials are merged here. The groups come out exactly as the sequential aggregation lists them - in the order the
-   * scan first meets them, each carrying the non-aggregate values of that first row - because every group remembers
-   * where in the sequential scan it was first seen; and a LIMIT keeps the same groups.
-   * <p>
-   * A source too large to hold at once - an index range loaded in physical order chunk by chunk - is aggregated round
-   * after round, the partials of one round carrying on into the next.
+   * Issue #8523: aggregates in the workers of a parallel scan instead of on this thread, when this step reads a type
+   * scan directly or through the projection computing the aggregates' arguments. Every worker runs that projection,
+   * the GROUP BY and the aggregation for its part of the rows on its own copy of them, building a partial group
+   * state, and the partials are merged here. The groups come out exactly as the sequential aggregation lists them -
+   * in the order the scan first meets them, each carrying the non-aggregate values of that first row - because every
+   * group remembers where in the sequential scan it was first seen; and a LIMIT keeps the same groups.
    *
    * @return the groups, or {@code null} when this execution aggregates sequentially: the input is not a parallel
    * scan, an aggregate cannot merge partials (only count, sum, avg, min and max can), or an expression is not one the
    * engine can evaluate on several threads
    */
   private List<ResultInternal> aggregateInParallel(final CommandContext context, final long timeoutBegin) {
-    final ParallelInput input = parallelInput(context);
-    if (input == null)
+    final ExecutionStepInternal source = parallelSource(context);
+    if (source == null)
       return null;
+    final Projection preProjection = prev != source ? ((ProjectionCalculationStep) prev).projection : null;
 
-    final ParallelTypeScan firstScan = input.source().planParallelAggregation(context);
-    if (firstScan == null)
+    final ParallelTypeScan scan = source instanceof FetchFromTypeExecutionStep fetch ?
+        fetch.planParallelAggregation(context) :
+        ((FetchFromTypeWithFilterStep) source).planParallelAggregation(context);
+    if (scan == null)
       return null;
 
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      final Projection workerPreProjection = preProjection;
       final boolean[] timedOutNotified = new boolean[1];
-      final Runnable onWait = () -> {
-        if (!timedOutNotified[0] && timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
-          timedOutNotified[0] = true;
-          sendTimeout();
-        }
-      };
-      // ONE PARTITION PER WORKER, SO THE MERGE CAN RUN IN PARALLEL TOO; WITHOUT A GROUP BY THERE IS ONE GROUP TO MERGE.
-      // SET BY THE FIRST ROUND FOR ALL OF THEM: A PARTIAL KEEPS ITS PARTITIONS FROM ROUND TO ROUND
-      final int partitions = groupBy == null ? 1 : firstScan.getWorkerCount();
+      // ONE PARTITION PER WORKER, SO THE MERGE CAN RUN IN PARALLEL TOO; WITHOUT A GROUP BY THERE IS ONE GROUP TO MERGE
+      final int partitions = groupBy == null ? 1 : scan.getWorkerCount();
+      final int groupOverhead = groupOverheadBytes(projection);
+      final List<PartialAggregation> partials = scan.aggregate(context,
+          workerContext -> {
+            final PartialAggregation partial = new PartialAggregation(
+                workerPreProjection == null ? null : workerPreProjection.copy(), projection.copy(),
+                groupBy == null ? null : groupBy.copy(), partitions, OperationHeapLimit.of(workerContext, "groups", "GROUP BY"),
+                groupOverhead);
+            workerPartials.add(partial);
+            return partial;
+          },
+          PartialAggregation::accept,
+          () -> {
+            if (!timedOutNotified[0] && timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
+              timedOutNotified[0] = true;
+              sendTimeout();
+            }
+          });
 
-      // EVERY PARTIAL OF EVERY ROUND. A ROUND TAKES THE PARTIALS OF THE PREVIOUS ONES BACK BEFORE IT CREATES ANY, SO A
-      // SOURCE SERVED IN MANY ROUNDS STILL ENDS WITH NO MORE PARTIALS THAN WORKERS TO MERGE
-      final List<PartialAggregation> partials = new ArrayList<>();
-      int workers = 0;
-      long units = 0;
-      ParallelTypeScan scan = firstScan;
-      while (scan != null) {
-        final ConcurrentLinkedQueue<PartialAggregation> idle = new ConcurrentLinkedQueue<>(partials);
-        // POSITIONS GO ON FROM ONE ROUND TO THE NEXT, AS THE SEQUENTIAL EXECUTION MEETS THE ROWS
-        final long roundPosition = units << 32;
-        final List<PartialAggregation> used = scan.aggregate(context, workerContext -> {
-              final PartialAggregation reused = idle.poll();
-              return reused != null ? reused : input.newPartial(this, partitions);
-            }, (partial, row, position, workerContext) -> partial.accept(row, roundPosition + position, workerContext),
-            onWait);
-        for (final PartialAggregation partial : used)
-          if (!containsSame(partials, partial))
-            partials.add(partial);
-
-        workers = Math.max(workers, scan.getWorkerCount());
-        units += scan.getUnitCount();
-        scan = input.source().nextParallelAggregationRound(context);
-      }
-      parallelWorkers = workers;
-      parallelUnits = (int) Math.min(Integer.MAX_VALUE, units);
+      parallelWorkers = scan.getWorkerCount();
+      parallelUnits = scan.getUnitCount();
 
       // PARTITION p OF EVERY WORKER HOLDS THE SAME KEYS, AND NO OTHER PARTITION DOES: EACH ONE IS MERGED ON ITS OWN, IN
       // PARALLEL WHEN THERE ARE ENOUGH GROUPS FOR IT TO PAY
@@ -289,12 +314,21 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
             merged.mergeFrom(partials.get(i), partition, aliases, aggregates);
         });
       }
-      firstScan.run(merges, partialGroups >= PARALLEL_MERGE_MIN_GROUPS);
+      scan.run(merges, partialGroups >= PARALLEL_MERGE_MIN_GROUPS);
 
       final List<PartialGroup> groups = new ArrayList<>();
       for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
         groups.addAll(partition.values());
       checkGroupCount(groups.size() - 1);
+
+      // THE WORKERS CHARGED THEIR OWN GROUPS WHILE THEY SCANNED; THIS STEP HOLDS THE MERGED ONES FROM HERE ON, A KEY
+      // SEVERAL WORKERS MET BEING ONE GROUP NOW. EACH MERGED GROUP IS CHARGED FOR ITSELF: A PROPORTION OF THE WORKERS'
+      // CHARGES WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
+      for (final PartialAggregation partial : partials)
+        partial.releaseHeap();
+      for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
+        for (final GroupByKey key : partition.keySet())
+          groupsLimit.chargeElement(key.values, groupOverhead);
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
       final List<ResultInternal> result = new ArrayList<>(size);
@@ -303,73 +337,44 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       return result;
 
     } finally {
+      // A NO-OP ON SUCCESS; ON A FAILURE IT GIVES BACK WHAT THE WORKERS CHARGED, THE ONES STILL STOPPING INCLUDED
+      for (final PartialAggregation partial : workerPartials)
+        partial.releaseHeap();
+      workerPartials.clear();
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
     }
   }
 
-  private static boolean containsSame(final List<PartialAggregation> partials, final PartialAggregation partial) {
-    for (final PartialAggregation existing : partials)
-      if (existing == partial)
-        return true;
-    return false;
-  }
-
   /**
-   * What a parallel aggregation reads: the source, the row filters between it and this step - the type check and the
-   * conditions an index fetch leaves behind it (issue #8333) - and the projection computing the aggregates' arguments.
+   * The type scan this step can aggregate in the workers of, reading it directly or through the plain projection that
+   * computes the aggregates' arguments, or {@code null} when it cannot: another input, an aggregate that cannot merge
+   * partials, or an expression the engine cannot evaluate on several threads.
    */
-  private record ParallelInput(ParallelAggregationSource source, List<String> types, List<WhereClause> conditions,
-                               Projection preProjection) {
-    /** A new partial aggregation, on its own copies of every expression it evaluates. */
-    PartialAggregation newPartial(final AggregateProjectionCalculationStep step, final int partitions) {
-      final WhereClause[] workerConditions = new WhereClause[conditions.size()];
-      for (int i = 0; i < workerConditions.length; i++)
-        workerConditions[i] = conditions.get(i).copy();
-      return step.new PartialAggregation(types.toArray(new String[0]), workerConditions,
-          preProjection == null ? null : preProjection.copy(), step.projection.copy(), step.groupBy == null ? null : step.groupBy.copy(),
-          partitions);
-    }
-  }
-
-  /**
-   * The input this step can aggregate in the workers of, or {@code null} when it cannot: another input, an aggregate
-   * that cannot merge partials, or an expression the engine cannot evaluate on several threads.
-   */
-  private ParallelInput parallelInput(final CommandContext context) {
-    ExecutionStepInternal step = prev;
+  private ExecutionStepInternal parallelSource(final CommandContext context) {
+    ExecutionStepInternal source = prev;
     Projection preProjection = null;
-    if (step != null && step.getClass() == ProjectionCalculationStep.class) {
-      preProjection = ((ProjectionCalculationStep) step).projection;
-      step = ((ProjectionCalculationStep) step).prev;
+    if (source != null && source.getClass() == ProjectionCalculationStep.class) {
+      preProjection = ((ProjectionCalculationStep) source).projection;
+      source = ((ProjectionCalculationStep) source).prev;
     }
-
-    final List<String> types = new ArrayList<>();
-    final List<WhereClause> conditions = new ArrayList<>();
-    while (step != null) {
-      if (step.getClass() == FilterByTypeStep.class)
-        types.add(((FilterByTypeStep) step).getTypeName());
-      else if (step.getClass() == FilterStep.class)
-        conditions.add(((FilterStep) step).getWhereClause());
-      else
-        break;
-      step = ((AbstractExecutionStep) step).prev;
-    }
-    if (!(step instanceof ParallelAggregationSource source))
+    if (!(source instanceof FetchFromTypeExecutionStep) && !(source instanceof FetchFromTypeWithFilterStep))
       return null;
 
     for (final ProjectionItem proj : projection.getItems())
       if (proj.isAggregate(context) && !proj.getAggregationContext(context).canMerge())
         return null;
-    if (!SqlAstInspector.isParallelSafe(preProjection, projection, groupBy, conditions))
+    if (!SqlAstInspector.isParallelSafe(preProjection, projection, groupBy))
       return null;
-    return new ParallelInput(source, types, conditions, preProjection);
+    return source;
   }
 
   /** Whether an execution starting now would aggregate in parallel: what an EXPLAIN shows. */
   private boolean wouldAggregateInParallel() {
-    final ParallelInput input = parallelInput(context);
-    return input != null && input.source().wouldRunInParallel(context);
+    final ExecutionStepInternal source = parallelSource(context);
+    if (source instanceof FetchFromTypeExecutionStep fetch)
+      return fetch.wouldRunInParallel(context);
+    return source instanceof FetchFromTypeWithFilterStep fetch && fetch.wouldRunInParallel(context);
   }
 
   /** A group of a partial aggregation, and where in the sequential scan its first row is. */
@@ -389,33 +394,39 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
    * merged independently of the others.
    */
   private final class PartialAggregation {
-    private final String[]                            types;
-    private final WhereClause[]                       conditions;
     private final Projection                          preProjection;
     private final Projection                          workerProjection;
     private final GroupBy                             workerGroupBy;
     private final HashMap<GroupByKey, PartialGroup>[] partitions;
+    private final OperationHeapLimit                  heapLimit;
+    private final int                                 groupOverhead;
     private       int                                 groupCount;
+    // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
+    private       boolean                             heapReleased;
 
     @SuppressWarnings("unchecked")
-    PartialAggregation(final String[] types, final WhereClause[] conditions, final Projection preProjection,
-        final Projection workerProjection, final GroupBy workerGroupBy, final int partitionCount) {
-      this.types = types;
-      this.conditions = conditions;
+    PartialAggregation(final Projection preProjection, final Projection workerProjection, final GroupBy workerGroupBy,
+        final int partitionCount, final OperationHeapLimit heapLimit, final int groupOverhead) {
       this.preProjection = preProjection;
       this.workerProjection = workerProjection;
       this.workerGroupBy = workerGroupBy;
+      this.heapLimit = heapLimit;
+      this.groupOverhead = groupOverhead;
       this.partitions = new HashMap[partitionCount];
       for (int i = 0; i < partitionCount; i++)
         partitions[i] = new HashMap<>();
+    }
+
+    /** Gives back what this worker charged for its groups, and stops it charging more. */
+    synchronized void releaseHeap() {
+      heapReleased = true;
+      heapLimit.release();
     }
 
     // THE GROUP LIMIT IS CHECKED ON THIS WORKER'S GROUPS HERE AND ON THE MERGED ONES AT THE END: AN EXACT GLOBAL COUNT
     // WHILE SCANNING WOULD NEED A KEY SET SHARED BY EVERY WORKER, SO THE PEAK CAN REACH THE LIMIT TIMES THE WORKERS
     // (DOCUMENTED ON QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP)
     void accept(final Result row, final long position, final CommandContext context) {
-      if (!matches(row, context))
-        return;
       final Result next = preProjection != null ? preProjection.calculateSingle(context, row) : row;
       final GroupByKey key = groupKey(workerGroupBy, next, context);
       final HashMap<GroupByKey, PartialGroup> groups = partitions[Math.floorMod(key.hashCode(), partitions.length)];
@@ -425,24 +436,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         group = new PartialGroup(newGroup(workerProjection, next, context), position);
         groups.put(key, group);
         ++groupCount;
+        // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
+        synchronized (this) {
+          if (!heapReleased)
+            heapLimit.chargeElement(key.values, groupOverhead);
+        }
       }
-      applyAggregates(workerProjection, group.row, next, context);
-    }
-
-    /** Whether the row passes the filters between the source and the aggregation, as their steps would decide. */
-    private boolean matches(final Result row, final CommandContext context) {
-      if (types.length > 0) {
-        final DocumentType type = row.isElement() ? row.getElement().get().getType() : null;
-        if (type == null)
-          return false;
-        for (final String name : types)
-          if (!type.isSubTypeOf(name))
-            return false;
-      }
-      for (final WhereClause condition : conditions)
-        if (!condition.matchesFilters(row, context))
-          return false;
-      return true;
+      // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
+      // AND NONE KEEPS THE VALUES IT AGGREGATES, SO NOTHING OUTSIDE THE MONITOR ABOVE EVER CHARGES THIS WORKER'S OPERATION
+      applyAggregates(workerProjection, group.row, next, context, null);
     }
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
