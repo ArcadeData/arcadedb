@@ -317,6 +317,23 @@ class Issue8576SparseExactRescoringTest extends TestHelper {
     assertThat(names).containsExactly("t19", "t18", "t17");
   }
 
+  /**
+   * The grouped widening bounds the rows it ADDS: the SQL guard is sized on the caller's k * groupSize, before the
+   * widening, so an index configured with a large rescoreOversample must not multiply that past MAX_OVERFETCH_ROWS.
+   */
+  @Test
+  void groupedWideningStaysWithinTheOverFetchBudget() {
+    assertThat(LSMSparseVectorIndex.groupedWidening(10L * 5, 2)).isEqualTo(2);
+    // k=100, groupSize=200 passes the SQL guard; 100x on both caps would ask for 200M rows.
+    final int widening = LSMSparseVectorIndex.groupedWidening(100L * 200, 100);
+    assertThat(100L * 200 * widening * widening).isLessThanOrEqualTo(100_000L);
+    assertThat(widening).isEqualTo(2);
+    // Already past the budget: no widening, but never below the caller's own request.
+    assertThat(LSMSparseVectorIndex.groupedWidening(1_000_000L, 5)).isEqualTo(1);
+    assertThat(LSMSparseVectorIndex.rowWidening(40_000L, 100)).isEqualTo(2);
+    assertThat(LSMSparseVectorIndex.rowWidening(10L, 3)).isEqualTo(3);
+  }
+
   /** compact() settles the WHOLE index: the memtable is sealed too, not left behind unquantized (issue #8576, Q3). */
   @Test
   void compactSealsTheMemtable() throws Exception {
