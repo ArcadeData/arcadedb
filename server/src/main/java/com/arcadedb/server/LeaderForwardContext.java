@@ -108,7 +108,9 @@ public final class LeaderForwardContext {
     ADDRESS_DOES_NOT_IDENTIFY_LEADER,
     /**
      * Either peer could not say - the forwarding peer sent no leader id (an older node during a rolling upgrade,
-     * or leadership changing while it resolved the address) or this node cannot name itself. Answered as before.
+     * or leadership changing while it resolved the address) or this node cannot name itself. Answered like
+     * {@link #LEADERSHIP_MOVED}, retryable and without the one-shot configuration warning (issue #8393): nothing here
+     * proves the address wrong, and an election - the usual cause - clears by itself.
      */
     UNDETERMINED
   }

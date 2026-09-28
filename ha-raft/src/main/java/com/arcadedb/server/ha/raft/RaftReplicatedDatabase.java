@@ -407,6 +407,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
 
+  /** Whether the once-per-database "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
+  }
+
   /** Logged at most once: {@code arcadedb.ha.proxyCommandTimeout} was misconfigured to 0 or negative. */
   private final AtomicBoolean commandTimeoutClampWarned = new AtomicBoolean(false);
 
@@ -3730,39 +3735,49 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // THIS node, the address was right and leadership moved while the write travelled: an ordinary election the
       // retry gets past. The refusal then names no leader, which the HTTP layer answers 503 - retryable - rather
       // than the 400 a named leader gets, and it leaves the warning latch to the misconfiguration it reports.
+      //
+      // A refusal nobody can classify is answered the same way (issue #8393). The peer names no leader when
+      // leadership changed while it resolved the address, or when it predates the header during a rolling upgrade:
+      // an election far more often than a configuration fault. Only the refusal that proves the address named the
+      // wrong node keeps the 400 and the notice.
       final RaftPeerId localPeer = raft.getLocalPeerId();
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(
           localPeer != null ? localPeer.toString() : null);
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = raft.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          throw new ServerIsNotTheLeaderException(
+              "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
+                  + "the request was in flight" + nowLeads + ". The write was not executed: retry it", null);
+
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster peer forwarded a write to this node as the leader without saying which node it meant to reach, "
+                + "and this node is not the leader (db=%s): refused as retryable", getName());
         throw new ServerIsNotTheLeaderException(
-            "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
-                + "the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
-                + ". The write was not executed: retry it", null);
+            "A cluster peer already forwarded this write to the leader and it arrived on this node, which is not the "
+                + "leader" + nowLeads + ". Leadership most likely moved while the request was in flight: the write was "
+                + "not executed, retry it. If this persists, the HTTP address that peer resolved for the leader may not "
+                + "identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+                + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents", null);
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
       // and from there to the client, so without this line the only node that can name the misconfiguration -
       // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
-                + "That peer resolved an HTTP address for the leader which does not identify it - "
-                + (misidentified ? "it meant to reach another node, so " : "unless leadership just moved, ")
-                + "declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
-                + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
+                + "That peer resolved an HTTP address for the leader which does not identify it - it meant to reach "
+                + "another node, so declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The write is refused rather than forwarded on. This notice is logged only once per database.",
             getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(misidentified ?
+      throw new ServerIsNotTheLeaderException(
           "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
               + "which is neither the leader nor the node that peer meant to reach, so the HTTP address that peer "
               + "resolved for the leader does not identify it. Declaring every node's HTTP port "
-              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-          "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
-              + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
-              + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
-              + "node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents", raft.getLeaderName());
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this",
+          raft.getLeaderName());
     }
 
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
