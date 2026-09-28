@@ -936,6 +936,17 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * another image of the page. {@code null} for a page modified by the current transaction: its version only moves
    * at commit, so neither a cached summary nor one built from it could be told apart from the committed image.
    */
+  /**
+   * Drops the cached tag summary of one data page. Called when the page is rewritten outside a transaction of this
+   * process, by WAL recovery or HA replay: a torn-write repair rewrites a page at the version it already had, which
+   * the version check in {@link #pageTagSummary} cannot see (issue #8574).
+   */
+  public void invalidatePageTagSummary(final int pageNum) {
+    final PageTagSummary[] cache = pageTagSummaries;
+    if (pageNum >= 0 && pageNum < cache.length)
+      cache[pageNum] = null;
+  }
+
   private PageTagSummary pageTagSummary(final BasePage page, final int pageNum, final int sampleCount) {
     if (page instanceof MutablePage)
       return null;
