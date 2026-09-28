@@ -43,6 +43,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 
@@ -70,6 +71,14 @@ public class TransactionManager {
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
+  /**
+   * Recovery temporarily owns the active WAL pool. Reopened files have no pending flush acknowledgements, which
+   * does not make them safe to retire before replay. This lock is only on recovery and the once-a-second timer,
+   * never on an ordinary commit. The timer skips a tick rather than waiting for a long recovery.
+   */
+  private final ReentrantLock                walMaintenanceLock  = new ReentrantLock();
+  // Guarded by walMaintenanceLock. Failed-open cleanup must preserve the input; later timer ticks must too.
+  private boolean                           recoveryFailed;
   /**
    * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
    * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
@@ -137,10 +146,7 @@ public class TransactionManager {
                 if (logContext != null)
                   LogManager.instance().setContext(logContext);
 
-                checkWALFiles();
-                // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped, so a power
-                // loss cannot lose pages that were only write()'n to the OS cache (issue #4509).
-                cleanWALFiles(true, false, true);
+                runWALHousekeeping();
               } finally {
                 taskExecuting.countDown();
               }
@@ -159,6 +165,21 @@ public class TransactionManager {
 
   public void close(final boolean drop) {
     close(drop, false);
+  }
+
+  // One timer pass, also exposed within the package for deterministic lifecycle tests.
+  void runWALHousekeeping() {
+    if (!walMaintenanceLock.tryLock())
+      return;
+    try {
+      if (!recoveryFailed) {
+        checkWALFiles();
+        // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped (issue #4509).
+        cleanWALFiles(true, false, true);
+      }
+    } finally {
+      walMaintenanceLock.unlock();
+    }
   }
 
   /**
@@ -399,7 +420,21 @@ public class TransactionManager {
   }
 
   public void checkIntegrity() {
+    walMaintenanceLock.lock();
+    try {
+      recoverWALFiles();
+      recoveryFailed = false;
+    } catch (final RuntimeException | Error failure) {
+      recoveryFailed = true;
+      throw failure;
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+  }
+
+  private void recoverWALFiles() {
     LogManager.instance().log(this, Level.WARNING, "Started recovery of database '%s'", null, database);
+    boolean completed = false;
 
     try {
       // OPEN EXISTENT WAL FILES
@@ -408,6 +443,7 @@ public class TransactionManager {
 
       if (walFiles == null || walFiles.length == 0) {
         LogManager.instance().log(this, Level.WARNING, "Recovery not possible because no WAL files were found");
+        completed = true;
         return;
       }
 
@@ -425,7 +461,7 @@ public class TransactionManager {
       boolean foreignlyLockedFileDetected = false;
       for (int i = 0; i < walFiles.length; ++i) {
         try {
-          activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.separator + walFiles[i].getName());
+          activeWALFilePool[i] = openWALFileForRecovery(database.getDatabasePath() + File.separator + walFiles[i].getName());
         } catch (final FileNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e,
               database.getDatabasePath() + walFiles[i].getName());
@@ -597,10 +633,17 @@ public class TransactionManager {
         }
         createWALFilePool();
         database.getPageManager().removeAllReadPagesOfDatabase(database);
+        completed = !walGapDetected;
       }
     } finally {
-      LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
+      LogManager.instance().log(this, Level.WARNING,
+          completed ? "Recovery of database '%s' completed" : "Recovery of database '%s' did not complete", null, database);
     }
+  }
+
+  // Package-visible seam for deterministic first-read failures without replacing the recovery loop or page replay.
+  WALFile openWALFileForRecovery(final String path) throws FileNotFoundException {
+    return new WALFile(path);
   }
 
   /**
