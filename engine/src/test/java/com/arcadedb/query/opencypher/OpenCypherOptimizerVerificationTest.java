@@ -270,7 +270,8 @@ class OpenCypherOptimizerVerificationTest extends TestHelper {
   @Test
   void complexWhereClauseWithIndex() {
     // Since issue #5362 the optimizer descends into AND branches, so an indexed equality ANDed with
-    // any other condition still anchors on the index; the whole WHERE stays applied by the Filter.
+    // any other condition still anchors on the index; the whole WHERE stays applied, and since issue #8537
+    // by the seek itself, once per seeked vertex, because every conjunct reads only the anchor.
     final String query = "MATCH (p:Person) WHERE p.id = 30 AND p.age > 25 RETURN p";
     final ResultSet results = database.query("opencypher", query);
 
@@ -291,7 +292,7 @@ class OpenCypherOptimizerVerificationTest extends TestHelper {
     assertThat(plan).contains("Using Cost-Based Query Optimizer");
     assertThat(plan).contains("NodeIndexSeek(p:Person)");
     assertThat(plan).doesNotContain("NodeByLabelScan(p:Person)");
-    assertThat(plan).contains("Filter");
+    assertThat(plan).contains("filter: ");
   }
 
   @Test

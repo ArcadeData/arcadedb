@@ -34,8 +34,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
 
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 
 import java.util.ArrayList;
@@ -69,6 +71,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
    * {@link #indexProperties} makes this a prefix scan instead of a single-entry lookup.
    */
   private final List<Object> keyValues;
+  /** Predicates reading only {@link #variable}, evaluated once per seeked vertex instead of once per expanded row. */
+  private BooleanExpression whereFilter;
 
   public NodeIndexSeek(final String variable, final String label, final String propertyName,
                       final Object propertyValue, final String indexName,
@@ -88,6 +92,22 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     this.indexName = indexName;
     this.indexProperties = indexProperties == null || indexProperties.isEmpty() ? List.of(propertyName) : indexProperties;
     this.keyValues = keyValues == null || keyValues.isEmpty() ? List.of(propertyValue) : keyValues;
+  }
+
+  /**
+   * Adds a predicate the seek can decide on its own (issue #8537). The seek already answers the equality it was built
+   * from, but only through the index, whose key conversion is not Cypher's equality: a STRING parameter is converted to
+   * a LONG key and finds the vertex Cypher's {@code =} would reject. The predicate is therefore still evaluated, here,
+   * once per vertex the index returns, rather than dropped or left to a Filter above the expansion that re-evaluates it
+   * on every row the expansion multiplies the vertex into. Several pushed predicates are ANDed together.
+   */
+  public void pushDownFilter(final BooleanExpression filter) {
+    this.whereFilter = whereFilter == null ?
+        filter : new LogicalExpression(LogicalExpression.Operator.AND, whereFilter, filter);
+  }
+
+  public BooleanExpression getWhereFilter() {
+    return whereFilter;
   }
 
   @Override
@@ -264,6 +284,11 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           // Create result with vertex bound to variable
           final ResultInternal result = new ResultInternal();
           result.setProperty(variable, vertex);
+
+          // Apply the pushed-down anchor predicates
+          if (whereFilter != null && !whereFilter.evaluate(result, context))
+            continue;
+
           buffer.add(result);
         }
       }
@@ -297,6 +322,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     for (int i = 0; i < keyValues.size(); i++)
       sb.append(", ").append(i < indexProperties.size() ? indexProperties.get(i) : propertyName)
           .append("=").append(keyValues.get(i));
+    if (whereFilter != null)
+      sb.append(", filter: ").append(whereFilter.getText());
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
