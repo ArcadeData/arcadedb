@@ -6704,8 +6704,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final LeaderDoesNotHoldDatabaseException e) {
         // Not a failed install (issue #8559): the leader does not hold it, and a quarantine - node-wide in its readiness
         // effect - would wait for an install that the same leader refuses on every retry. Reported the way the
-        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped.
-        reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped - but marked
+        // unverified, so nothing reopens it on this follower (issue #8589).
+        try {
+          reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+        } catch (final IOException markFailure) {
+          // Without the mark the copy is reopenable and unverified: fall back to the quarantine, which fails closed.
+          LogManager.instance().log(this, Level.SEVERE,
+              "Snapshot resync could not mark database '%s' as an unverified closed copy: keeping it quarantined "
+                  + "instead (issue #8589)", markFailure, dbName);
+          notInstalled.add(dbName);
+          continue;
+        }
         leaderMissing.add(dbName);
         continue;
       } catch (final IOException e) {
@@ -6766,12 +6776,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * created - so there is no committed state to hold this copy to and no install that will ever succeed. It is
    * reported {@link DatabaseReconciler.AcquireState#LEADER_MISSING}, as the auto-acquire reconcile reports it, and any
    * quarantine on it is lifted: the node was serving every other database, and this copy is not being served at all.
+   * <p>
+   * What keeps it that way is the durable {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE} mark written first (issue
+   * #8589): the leader may have closed a database the cluster still has, and this copy may be behind the committed log,
+   * so a follower must not reopen it for the next request that names it. The mark is per database, so it does not
+   * touch the node's readiness, and it goes with the install that replaces the copy or the drop that removes it.
+   *
+   * @throws IOException when the mark cannot be written: nothing else has been changed, and the caller keeps the copy
+   *                     quarantined rather than leave it reopenable
    */
-  private void reportClosedDatabaseTheLeaderDoesNotHold(final String dbName, final LeaderDoesNotHoldDatabaseException e) {
+  private void reportClosedDatabaseTheLeaderDoesNotHold(final String dbName, final LeaderDoesNotHoldDatabaseException e)
+      throws IOException {
+    SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
     LogManager.instance().log(this, Level.WARNING,
         "Snapshot resync did not reinstall database '%s', which is closed on this node: the leader does not hold it "
             + "(%s). Keeping this node's copy and not quarantining it, since no resync from this leader can replace "
-            + "it. Open it on the leader if the cluster should still have it, or remove this node's copy (issue #8559)",
+            + "it, but it is not reopened while this node is a follower: it may be behind the cluster. Open it on the "
+            + "leader if the cluster should still have it, or remove this node's copy (issues #8559, #8589)",
         dbName, e.getMessage());
     reconciler.markLeaderMissing(dbName);
     clearDivergedDatabase(dbName);
@@ -7136,7 +7157,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 // one stays quarantined: this node serves it, and the quarantine is what keeps it from serving it.
                 if (server.existsDatabase(dbName))
                   throw e;
-                reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                try {
+                  reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                } catch (final IOException markFailure) {
+                  // The quarantine stays standing: without the mark it is what keeps the copy from being reopened.
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Targeted snapshot resync could not mark database '%s' as an unverified closed copy: keeping it "
+                          + "quarantined instead (issue #8589)", markFailure, dbName);
+                }
                 return;
               }
               LogManager.instance().log(this, Level.INFO,

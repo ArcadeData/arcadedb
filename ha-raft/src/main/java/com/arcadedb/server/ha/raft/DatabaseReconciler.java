@@ -350,6 +350,12 @@ public class DatabaseReconciler {
     // re-triggers it. Extracted to a package-private method so these transitions are unit-testable without a live
     // cluster (the InstallSnapshot path is not deterministically reachable in-process - see SnapshotAcquireNewDatabaseIT).
     final ReconcileVerdict verdict = applyReconcileOutcome(plan, outcome);
+    // A copy CLOSED on this node that the leader does not hold is kept, like any LEADER_MISSING one, but it may be
+    // behind the committed log: mark it unverified so a follower does not reopen it (issue #8589). A registered one is
+    // left alone - markUnverifiedClosedCopy skips it - as this node serves it. A mark that cannot be written fails the
+    // install, so Ratis retries rather than leaving the copy reopenable.
+    for (final String dbName : plan.leaderMissing())
+      SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
     if (verdict.retryWorthwhile())
       throw new IOException(String.format("Reconcile from leader had database failure(s); will retry (acquire=%s, refresh=%s)",
           outcome.acquireFailures(), outcome.refreshFailures()));
@@ -579,6 +585,9 @@ public class DatabaseReconciler {
         // served by this node again, so the leader not holding it still fails the install, as for a registered one.
         if (server.existsDatabase(dbName))
           throw e;
+        // Kept, and marked unverified so a follower does not reopen it (issue #8589). A mark that cannot be written
+        // fails the install: the copy would otherwise stay reopenable with nothing retrying it.
+        SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
         markLeaderMissing(dbName);
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
