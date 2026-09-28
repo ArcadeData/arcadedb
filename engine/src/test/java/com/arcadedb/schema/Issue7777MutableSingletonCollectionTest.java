@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
@@ -138,5 +139,22 @@ class Issue7777MutableSingletonCollectionTest extends TestHelper {
     final List<Object> items = rid[0].asDocument().getList("items");
     assertThat(items).hasSize(2);
     assertThat(((EmbeddedDocument) items.get(1)).getInteger("n")).isEqualTo(1);
+  }
+
+  @Test
+  void embeddedDocumentAppendedToACallerSuppliedImmutableSet() {
+    // The defensive copy keeps a Set a Set, so the existing elements are neither duplicated nor reordered.
+    database.getSchema().createDocumentType("Item7777c").createProperty("n", Type.INTEGER);
+    database.getSchema().createDocumentType("Doc7777ImmSet");
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Doc7777ImmSet").set("items", Set.of("first"));
+      final MutableEmbeddedDocument emb = doc.newEmbeddedDocument("Item7777c", "items");
+      emb.set("n", 1);
+
+      final Object items = doc.get("items");
+      assertThat(items).isInstanceOf(Set.class);
+      assertThat((Set<Object>) items).containsExactly("first", emb);
+    });
   }
 }
