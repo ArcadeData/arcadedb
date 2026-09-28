@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -346,9 +347,17 @@ public final class BmwScorer {
    * O(aligned * log terms).
    */
   private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive) throws IOException {
-    final int endBucketId = endExclusive != null ? endExclusive.getBucketId() : -1;
-    final long endPosition = endExclusive != null ? endExclusive.getPosition() : -1L;
     final int n = terms.length;
+    // Keys are packed relative to the smallest bucket id any cursor starts on: cursors only move
+    // forward, so no key this traversal will ever see has a smaller one (issue #8553).
+    int base = Integer.MAX_VALUE;
+    for (final DimEntry t : terms)
+      base = Math.min(base, t.cursor.currentBucketId());
+    final KeyMirror mirror = new KeyMirror(n, base);
+    final boolean bounded = endExclusive != null;
+    final long endKey = bounded ?
+        SparseSegmentBuilder.packRidCeiling(endExclusive.getBucketId(), endExclusive.getPosition(), base) :
+        Long.MAX_VALUE;
     // prefix[i] == sum of sigma over terms [0, i). prefix[n] is the whole query's ceiling.
     final float[] prefix = new float[n + 1];
     recomputePrefix(terms, prefix);
@@ -356,17 +365,17 @@ public final class BmwScorer {
     final int[] heap = new int[n];     // essential term indices, min-heap by current RID
     final int[] aligned = new int[n];  // scratch: the term indices sitting on the current candidate
     final int[] alignedSlots = new int[n];  // scratch: the heap slots those term indices occupy
-    final long[] frontier = new long[2];    // scratch: (bucketId, position) of the next essential key
     final RID[] blockEndOut = new RID[1];   // scratch: the block end paired with each block-max probe
-    // Cursor positions, mirrored into flat arrays indexed by term. The heap reads a position far
+    // Cursor positions, mirrored into a flat array indexed by term. The heap reads a position far
     // more often than a cursor moves - about a dozen comparisons per posting consumed - and reading
-    // it off the cursor costs two dependent loads through scattered objects. Mirroring turns each
-    // comparison into two loads from a pair of arrays that stay in L1 for any realistic term count,
-    // and the mirrors are refreshed only where a cursor actually moves (issue #5467).
-    final int[] keyBucketIds = new int[n];
-    final long[] keyPositions = new long[n];
+    // it off the cursor costs two dependent loads through scattered objects (issue #5467). Each
+    // position is folded into one packed key whose natural order is the RID order (issue #8553), so a
+    // heap comparison is a single load and a single long compare rather than a bucket compare, a branch
+    // and a position compare over two arrays. The mirrors are refreshed only where a cursor actually
+    // moves; an exhausted cursor mirrors as -1.
+    final long[] keys = mirror.keys;
     for (int i = 0; i < n; i++)
-      syncKey(terms, keyBucketIds, keyPositions, i);
+      mirror.sync(terms, i);
     int heapSize = 0;
     int split = 0;
     float lastThreshold = Float.NEGATIVE_INFINITY;
@@ -374,6 +383,17 @@ public final class BmwScorer {
     boolean heapDirty = true;
 
     while (true) {
+      // MUST stay the first statement of the loop: nothing may read the heap for candidate selection between the
+      // mirror sync that sets overflow and this check.
+      if (mirror.overflow) {
+        // A cursor reached a RID the packed order cannot hold. Every mirror was valid at the end of the
+        // previous iteration, and this one completed on comparisons that stay exact against the
+        // UNPACKABLE marker, so the collector and the cursors are exactly where a traversal on RIDs
+        // would have them: it carries on from here on RID comparisons (issue #8553).
+        WIDE_FALLBACKS.incrementAndGet();
+        scanWide(terms, collector, endExclusive);
+        return;
+      }
       final float threshold = collector.threshold();
       if (splitDirty || threshold > lastThreshold) {
         lastThreshold = threshold;
@@ -389,7 +409,7 @@ public final class BmwScorer {
           heapDirty = true;
       }
       if (heapDirty) {
-        heapSize = buildHeap(terms, keyBucketIds, keyPositions, split, n, heap);
+        heapSize = buildHeap(terms, keys, split, n, heap);
         heapDirty = false;
       }
       if (heapSize == 0)
@@ -398,23 +418,19 @@ public final class BmwScorer {
       // Next candidate: the smallest current RID across the essential terms. Non-essential terms do
       // not generate candidates - a document they alone match is bounded by prefix[split], which is
       // at or below the threshold by construction of the split.
-      final int candidateBucketId = keyBucketIds[heap[0]];
-      final long candidatePosition = keyPositions[heap[0]];
+      final long candidateKey = keys[heap[0]];
 
       // Range bound: candidates are produced in ascending RID order, so the first one at or past the
       // end of this worker's range means the range is done - everything left belongs to a sibling.
-      if (endBucketId >= 0
-          && SparseSegmentBuilder.compareRid(candidateBucketId, candidatePosition, endBucketId, endPosition) >= 0)
+      if (bounded && candidateKey >= endKey)
         return;
 
       // Locate the aligned run without touching the heap.
-      final int alignedCount = collectAlignedRun(keyBucketIds, keyPositions, heap, heapSize, candidateBucketId,
-          candidatePosition, aligned, alignedSlots);
+      final int alignedCount = collectAlignedRun(keys, heap, heapSize, candidateKey, aligned, alignedSlots);
 
-      if (!tryBlockMaxSkip(terms, keyBucketIds, keyPositions, aligned, alignedSlots, alignedCount, prefix[split],
-          candidateBucketId, candidatePosition, threshold, heap, heapSize, frontier, blockEndOut))
-        scoreCandidate(terms, keyBucketIds, keyPositions, aligned, alignedCount, split, prefix, candidateBucketId,
-            candidatePosition, threshold, collector);
+      if (!tryBlockMaxSkip(terms, mirror, aligned, alignedSlots, alignedCount, prefix[split], candidateKey, threshold, heap,
+          heapSize, blockEndOut))
+        scoreCandidate(terms, mirror, aligned, alignedCount, split, prefix, candidateKey, threshold, collector);
 
       // The moved cursors are still in their slots holding keys that only ever grew, so the heap is
       // repaired in place, deepest slot first: by then every slot below it is already a valid heap.
@@ -428,7 +444,7 @@ public final class BmwScorer {
         final int idx = aligned[j];
         // The mirror holds -1 for an exhausted cursor, so asking it costs one array load instead of
         // three dependent dereferences through the term and its cursor.
-        if (keyBucketIds[idx] < 0) {
+        if (keys[idx] < 0) {
           anyCursorExhausted = true;
           exhaustedAny |= terms[idx].clearSigma();
         }
@@ -436,8 +452,10 @@ public final class BmwScorer {
       if (anyCursorExhausted)
         heapDirty = true;
       else
+        // A cursor that moved onto an unpackable RID this iteration leaves the heap ordered on UNPACKABLE: tolerated,
+        // because nothing reads the heap before the next iteration's overflow check hands the query to scanWide.
         for (int j = alignedCount - 1; j >= 0; j--)
-          siftDownFromFloyd(keyBucketIds, keyPositions, heap, heapSize, alignedSlots[j]);
+          siftDownFromFloyd(keys, heap, heapSize, alignedSlots[j]);
       if (exhaustedAny) {
         recomputePrefix(terms, prefix);
         splitDirty = true;
@@ -446,8 +464,8 @@ public final class BmwScorer {
   }
 
   /**
-   * Collect the heap slots whose key equals {@code (candidateBucketId, candidatePosition)} - the
-   * traversal's aligned run - <b>without modifying the heap</b>.
+   * Collect the heap slots whose key equals {@code candidateKey} - the traversal's aligned run -
+   * <b>without modifying the heap</b>.
    * <p>
    * Every slot holding the heap's minimum forms a connected subtree rooted at slot 0: if a slot holds
    * the minimum then so does its parent, since a parent's key is at most its child's and at least the
@@ -470,6 +488,7 @@ public final class BmwScorer {
    * element), while Floyd's spends one per level going down and pays for the climb only when the
    * element really does belong high up. See {@link #siftDownFromFloyd}.
    *
+   * @param keys         packed RID key per term (see {@link SparseSegmentBuilder#packRid(int, long, int)})
    * @param aligned      out: term indices of the run, in ascending heap-slot order
    * @param alignedSlots out: the heap slots those terms occupy, parallel to {@code aligned}
    *
@@ -477,9 +496,8 @@ public final class BmwScorer {
    */
   // Package-private rather than private so BmwScorerHeapRepairTest can pin these invariants against a
   // hand-built heap, which fails with a small counterexample instead of only as a top-K mismatch.
-  static int collectAlignedRun(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
-      final int heapSize, final int candidateBucketId, final long candidatePosition, final int[] aligned,
-      final int[] alignedSlots) {
+  static int collectAlignedRun(final long[] keys, final int[] heap, final int heapSize, final long candidateKey,
+      final int[] aligned, final int[] alignedSlots) {
     aligned[0] = heap[0];
     alignedSlots[0] = 0;
     int count = 1;
@@ -488,7 +506,7 @@ public final class BmwScorer {
       if (left >= heapSize)
         continue;  // a leaf slot, and a heap array is left-packed, so there is no right child either.
       int term = heap[left];
-      if (keyPositions[term] == candidatePosition && keyBucketIds[term] == candidateBucketId) {
+      if (keys[term] == candidateKey) {
         aligned[count] = term;
         alignedSlots[count] = left;
         count++;
@@ -496,7 +514,7 @@ public final class BmwScorer {
       final int right = left + 1;
       if (right < heapSize) {
         term = heap[right];
-        if (keyPositions[term] == candidatePosition && keyBucketIds[term] == candidateBucketId) {
+        if (keys[term] == candidateKey) {
           aligned[count] = term;
           alignedSlots[count] = right;
           count++;
@@ -507,9 +525,8 @@ public final class BmwScorer {
   }
 
   /**
-   * The smallest key in the heap that is not part of the aligned run, into
-   * {@code frontier[0]} (bucket id) and {@code frontier[1]} (position), or {@code -1} in both when the
-   * run is the whole heap.
+   * The smallest key in the heap that is not part of the aligned run, or {@code -1} when the run is
+   * the whole heap.
    * <p>
    * The candidates for that minimum are exactly the children of run slots that are not themselves in
    * the run: any slot outside the run reaches the root through one of them, and each of those is the
@@ -522,38 +539,31 @@ public final class BmwScorer {
    * comparison per heap child on every candidate to answer a question almost none of them asked
    * (issue #5467).
    */
-  static void nextEssentialKey(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
-      final int heapSize, final int[] alignedSlots, final int alignedCount, final int candidateBucketId,
-      final long candidatePosition, final long[] frontier) {
-    int bestBucketId = -1;
-    long bestPosition = -1L;
+  static long nextEssentialKey(final long[] keys, final int[] heap, final int heapSize, final int[] alignedSlots,
+      final int alignedCount, final long candidateKey) {
+    // Every key in the heap is at least the candidate, so a child that is not ON the candidate is
+    // strictly after it and Long.MAX_VALUE is a safe "none yet" marker: no valid key reaches it.
+    long best = Long.MAX_VALUE;
     for (int q = 0; q < alignedCount; q++) {
       final int left = (alignedSlots[q] << 1) + 1;
       if (left >= heapSize)
         continue;  // a leaf slot, and a heap array is left-packed, so there is no right child either.
-      int term = heap[left];
       // Skip children that are themselves in the run. A run slot's child can be another run slot, and
       // the run's key IS the candidate, so without this the walk would return the candidate as the
       // next key after itself and the block-max skip would target where it already is. Testing the
       // key rather than the slot is what keeps it O(1): no cursor has moved yet, so a child still
       // sitting on the candidate is exactly a run member (BmwScorerHeapRepairTest pins it).
-      if ((keyPositions[term] != candidatePosition || keyBucketIds[term] != candidateBucketId) && (bestBucketId < 0
-          || SparseSegmentBuilder.compareRid(keyBucketIds[term], keyPositions[term], bestBucketId, bestPosition) < 0)) {
-        bestBucketId = keyBucketIds[term];
-        bestPosition = keyPositions[term];
-      }
+      long key = keys[heap[left]];
+      if (key != candidateKey && key < best)
+        best = key;
       final int right = left + 1;
       if (right < heapSize) {
-        term = heap[right];
-        if ((keyPositions[term] != candidatePosition || keyBucketIds[term] != candidateBucketId) && (bestBucketId < 0
-            || SparseSegmentBuilder.compareRid(keyBucketIds[term], keyPositions[term], bestBucketId, bestPosition) < 0)) {
-          bestBucketId = keyBucketIds[term];
-          bestPosition = keyPositions[term];
-        }
+        key = keys[heap[right]];
+        if (key != candidateKey && key < best)
+          best = key;
       }
     }
-    frontier[0] = bestBucketId;
-    frontier[1] = bestPosition;
+    return best == Long.MAX_VALUE ? -1L : best;
   }
 
   /**
@@ -562,9 +572,10 @@ public final class BmwScorer {
    * plus the remaining non-essential ceiling can no longer beat {@code threshold}. Finally advance
    * every aligned cursor so the traversal makes progress.
    */
-  private static void scoreCandidate(final DimEntry[] terms, final int[] keyBucketIds, final long[] keyPositions,
-      final int[] aligned, final int alignedCount, final int split, final float[] prefix, final int candidateBucketId,
-      final long candidatePosition, final float threshold, final Collector collector) throws IOException {
+  private static void scoreCandidate(final DimEntry[] terms, final KeyMirror mirror, final int[] aligned,
+      final int alignedCount, final int split, final float[] prefix, final long candidateKey, final float threshold,
+      final Collector collector) throws IOException {
+    final long[] keys = mirror.keys;
     boolean alive = true;
     float score = 0.0f;
     for (int j = 0; j < alignedCount; j++) {
@@ -578,6 +589,8 @@ public final class BmwScorer {
 
     // The RID object is built once, and only for a candidate that survived the aligned-run scan -
     // the traversal itself never materialises one (issue #5467).
+    final int candidateBucketId = SparseSegmentBuilder.unpackBucketId(candidateKey, mirror.baseBucketId);
+    final long candidatePosition = SparseSegmentBuilder.unpackPosition(candidateKey);
     RID candidate = null;
     if (alive) {
       candidate = new RID(candidateBucketId, candidatePosition);
@@ -595,19 +608,19 @@ public final class BmwScorer {
         // The mirrored key answers the probe outright whenever the term's cursor already sits past
         // this document, which on a dense non-essential list is most of the time: only a cursor that
         // is still behind the candidate has to be moved. Reading it here instead of calling into the
-        // cursor turns the common case into two loads from arrays that stay in L1 (issue #5467).
-        if (keyBucketIds[i] < 0)
+        // cursor turns the common case into one load from an array that stays in L1 (issue #5467).
+        long key = keys[i];
+        if (key < 0)
           continue;  // exhausted; the mirror holds -1 for that.
-        int cmp = SparseSegmentBuilder.compareRid(keyBucketIds[i], keyPositions[i], candidateBucketId, candidatePosition);
-        if (cmp < 0) {
+        if (key < candidateKey) {
           terms[i].cursor.seekTo(candidateBucketId, candidatePosition);
-          syncKey(terms, keyBucketIds, keyPositions, i);
-          if (keyBucketIds[i] < 0)
-            continue;
-          cmp = SparseSegmentBuilder.compareRid(keyBucketIds[i], keyPositions[i], candidateBucketId, candidatePosition);
+          mirror.sync(terms, i);
+          key = keys[i];
         }
-        if (cmp != 0)
-          continue;  // this term holds no posting for this document.
+        // An UNPACKABLE key is still exact here: the cursor sits at or after the candidate, which is
+        // packable, so a RID that is not can only be strictly after it - no posting for this document.
+        if (key != candidateKey)
+          continue;  // this term holds no posting for this document (or just ran out).
         final DimCursor c = terms[i].cursor;
         if (c.isTombstone()) {
           alive = false;
@@ -622,7 +635,7 @@ public final class BmwScorer {
     for (int j = 0; j < alignedCount; j++) {
       final int idx = aligned[j];
       terms[idx].cursor.advance();
-      syncKey(terms, keyBucketIds, keyPositions, idx);
+      mirror.sync(terms, idx);
     }
   }
 
@@ -647,14 +660,16 @@ public final class BmwScorer {
    *
    * @return {@code true} if a block range was skipped, {@code false} if the caller must score.
    */
-  private static boolean tryBlockMaxSkip(final DimEntry[] terms, final int[] keyBucketIds, final long[] keyPositions,
-      final int[] aligned, final int[] alignedSlots, final int alignedCount, final float nonEssentialCeiling,
-      final int candidateBucketId, final long candidatePosition, final float threshold, final int[] heap, final int heapSize,
-      final long[] frontier, final RID[] blockEndOut) throws IOException {
+  private static boolean tryBlockMaxSkip(final DimEntry[] terms, final KeyMirror mirror, final int[] aligned,
+      final int[] alignedSlots, final int alignedCount, final float nonEssentialCeiling, final long candidateKey,
+      final float threshold, final int[] heap, final int heapSize, final RID[] blockEndOut) throws IOException {
     float bound = nonEssentialCeiling;
     if (bound > threshold)
       return false;  // no headroom at all (threshold still NEGATIVE_INFINITY, or an all-essential query).
 
+    final int base = mirror.baseBucketId;
+    final int candidateBucketId = SparseSegmentBuilder.unpackBucketId(candidateKey, base);
+    final long candidatePosition = SparseSegmentBuilder.unpackPosition(candidateKey);
     RID minBlockEnd = null;
     for (int j = 0; j < alignedCount; j++) {
       final DimEntry t = terms[aligned[j]];
@@ -671,40 +686,48 @@ public final class BmwScorer {
     if (minBlockEnd == null)
       return false;  // no finite block boundary (only loose/memtable sources) - cannot block-skip.
 
-    // RID successor is (bucket, position + 1); seekTo lands on the first real posting >= that, i.e.
-    // the first strictly greater than minBlockEnd.
+    // The skip target is the RID successor of the block end, (bucket, position + 1), kept as a RID
+    // pair because the block end need not be packable. At the very top of the position space the
+    // successor is the next bucket's first position; with nowhere left to go, score normally.
     int targetBucketId = minBlockEnd.getBucketId();
-    long targetPosition = minBlockEnd.getPosition() + 1;
+    long targetPosition = minBlockEnd.getPosition();
+    if (targetPosition == Long.MAX_VALUE) {
+      if (targetBucketId == Integer.MAX_VALUE)
+        return false;
+      targetBucketId++;
+      targetPosition = 0L;
+    } else
+      targetPosition++;
     // Only now, having committed to the skip, is the first essential cursor sitting strictly after the
-    // candidate worth locating: it bounds how far the skip may go, and nothing else needs it.
-    nextEssentialKey(keyBucketIds, keyPositions, heap, heapSize, alignedSlots, alignedCount, candidateBucketId,
-        candidatePosition, frontier);
-    final int nextEssentialBucketId = (int) frontier[0];
-    final long nextEssentialPosition = frontier[1];
-    if (nextEssentialBucketId >= 0
-        && SparseSegmentBuilder.compareRid(nextEssentialBucketId, nextEssentialPosition, targetBucketId, targetPosition) < 0) {
-      targetBucketId = nextEssentialBucketId;
-      targetPosition = nextEssentialPosition;
+    // candidate worth locating: it bounds how far the skip may go, and nothing else needs it. It is a
+    // valid heap key, so packable, and compared on RIDs against a target that may not be.
+    final long nextEssential = nextEssentialKey(mirror.keys, heap, heapSize, alignedSlots, alignedCount, candidateKey);
+    if (nextEssential >= 0) {
+      final int nextBucketId = SparseSegmentBuilder.unpackBucketId(nextEssential, base);
+      final long nextPosition = SparseSegmentBuilder.unpackPosition(nextEssential);
+      if (SparseSegmentBuilder.compareRid(nextBucketId, nextPosition, targetBucketId, targetPosition) < 0) {
+        targetBucketId = nextBucketId;
+        targetPosition = nextPosition;
+      }
     }
 
     for (int j = 0; j < alignedCount; j++) {
       final int idx = aligned[j];
       terms[idx].cursor.seekTo(targetBucketId, targetPosition);
-      syncKey(terms, keyBucketIds, keyPositions, idx);
+      mirror.sync(terms, idx);
     }
     return true;
   }
 
   // ---------- essential-term min-heap (indices into {@code terms}, ordered by current RID) ----------
 
-  private static int buildHeap(final DimEntry[] terms, final int[] keyBucketIds, final long[] keyPositions, final int split,
-      final int n, final int[] heap) {
+  private static int buildHeap(final DimEntry[] terms, final long[] keys, final int split, final int n, final int[] heap) {
     int size = 0;
     for (int i = split; i < n; i++)
       if (!terms[i].cursor.isExhausted())
         heap[size++] = i;
     for (int i = (size >> 1) - 1; i >= 0; i--)
-      siftDown(keyBucketIds, keyPositions, heap, size, i);
+      siftDown(keys, heap, size, i);
     return size;
   }
 
@@ -720,36 +743,39 @@ public final class BmwScorer {
    * down and pays for the climb only in proportion to how high the element really belongs. On a
    * learned-sparse query the essential heap holds dozens of terms and this runs millions of times per
    * query, which is why the traversal's single hottest operation is worth the asymmetry
-   * (issue #5467).
+   * (issue #5467). The element's own key is read once, and each level costs one load per child it
+   * compares, one packed key each (issue #8553).
    */
-  static void siftDownFromFloyd(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
-      final int size, final int from) {
+  static void siftDownFromFloyd(final long[] keys, final int[] heap, final int size, final int from) {
     int left = (from << 1) + 1;
     if (left >= size)
       return;  // a leaf slot: no descendant can violate the ordering.
     final int element = heap[from];
+    final long elementKey = keys[element];
     int i = from;
     while (left < size) {
       final int right = left + 1;
-      final int child = (right < size && compareByRid(keyBucketIds, keyPositions, heap[right], heap[left]) < 0) ? right : left;
+      int child = left;
+      if (right < size && keys[heap[right]] < keys[heap[left]])
+        child = right;
       heap[i] = heap[child];
       i = child;
       left = (i << 1) + 1;
     }
-    heap[i] = element;
+    // Climb back: the element sits at the leaf; move it up while it is smaller than its parent, never
+    // above the slot it started from.
     while (i > from) {
       final int parent = (i - 1) >>> 1;
-      if (compareByRid(keyBucketIds, keyPositions, heap[i], heap[parent]) >= 0)
+      final int parentTerm = heap[parent];
+      if (elementKey >= keys[parentTerm])
         break;
-      final int tmp = heap[i];
-      heap[i] = heap[parent];
-      heap[parent] = tmp;
+      heap[i] = parentTerm;
       i = parent;
     }
+    heap[i] = element;
   }
 
-  private static void siftDown(final int[] keyBucketIds, final long[] keyPositions, final int[] heap, final int size,
-      final int from) {
+  private static void siftDown(final long[] keys, final int[] heap, final int size, final int from) {
     int i = from;
     while (true) {
       final int left = (i << 1) + 1;
@@ -757,9 +783,9 @@ public final class BmwScorer {
         return;
       int smallest = left;
       final int right = left + 1;
-      if (right < size && compareByRid(keyBucketIds, keyPositions, heap[right], heap[left]) < 0)
+      if (right < size && keys[heap[right]] < keys[heap[left]])
         smallest = right;
-      if (compareByRid(keyBucketIds, keyPositions, heap[i], heap[smallest]) <= 0)
+      if (keys[heap[i]] <= keys[heap[smallest]])
         return;
       final int tmp = heap[i];
       heap[i] = heap[smallest];
@@ -768,16 +794,127 @@ public final class BmwScorer {
     }
   }
 
-  private static int compareByRid(final int[] keyBucketIds, final long[] keyPositions, final int a, final int b) {
-    return SparseSegmentBuilder.compareRid(keyBucketIds[a], keyPositions[a], keyBucketIds[b], keyPositions[b]);
+  /**
+   * The packed-key mirror of the cursor positions (issue #8553), with the bucket id the keys are packed
+   * relative to, and whether a cursor has reached a RID the packing cannot hold.
+   */
+  private static final class KeyMirror {
+    final long[] keys;
+    final int    baseBucketId;
+    boolean      overflow;
+
+    KeyMirror(final int n, final int baseBucketId) {
+      this.keys = new long[n];
+      this.baseBucketId = baseBucketId;
+    }
+
+    /** Refresh term {@code i}'s mirrored key after its cursor moved; {@code -1} once it is exhausted. */
+    void sync(final DimEntry[] terms, final int i) {
+      final DimCursor c = terms[i].cursor;
+      final long key = SparseSegmentBuilder.packRid(c.currentBucketId(), c.currentPosition(), baseBucketId);
+      if (key == SparseSegmentBuilder.UNPACKABLE)
+        overflow = true;
+      keys[i] = key;
+    }
   }
 
-  /** Refresh term {@code i}'s mirrored position after its cursor moved. */
-  private static void syncKey(final DimEntry[] terms, final int[] keyBucketIds, final long[] keyPositions, final int i) {
-    final DimCursor c = terms[i].cursor;
-    keyBucketIds[i] = c.currentBucketId();
-    keyPositions[i] = c.currentPosition();
+  /**
+   * How many traversals had to leave the packed-key path for {@link #scanWide} (issue #8553). Package-private so a test
+   * can prove it forced one; it moves only on a traversal spanning more than a million bucket ids or reading a
+   * position no bucket hands out.
+   */
+  static final AtomicLong WIDE_FALLBACKS = new AtomicLong();
+
+  /**
+   * The MaxScore traversal on RID comparisons, for the rest of a traversal whose RIDs the packed order cannot hold
+   * (issue #8553). Exact and deliberately plain - a linear minimum instead of the heap, no block-max skip - because it
+   * only runs on RIDs no real bucket produces: a traversal spanning more than a million bucket ids, or a position past
+   * {@code 2^42}. It picks up the cursors and the collector exactly where the packed traversal left them.
+   */
+  private static void scanWide(final DimEntry[] terms, final Collector collector, final RID endExclusive)
+      throws IOException {
+    final int n = terms.length;
+    final float[] prefix = new float[n + 1];
+    recomputePrefix(terms, prefix);
+    int split = 0;
+    while (true) {
+      final float threshold = collector.threshold();
+      while (split < n && prefix[split + 1] <= threshold)
+        split++;
+      if (split >= n)
+        return;
+
+      int minBucketId = -1;
+      long minPosition = -1L;
+      for (int i = split; i < n; i++) {
+        final DimCursor c = terms[i].cursor;
+        if (c.isExhausted())
+          continue;
+        if (minBucketId < 0
+            || SparseSegmentBuilder.compareRid(c.currentBucketId(), c.currentPosition(), minBucketId, minPosition) < 0) {
+          minBucketId = c.currentBucketId();
+          minPosition = c.currentPosition();
+        }
+      }
+      if (minBucketId < 0)
+        return;
+      if (endExclusive != null && SparseSegmentBuilder.compareRid(minBucketId, minPosition, endExclusive) >= 0)
+        return;
+
+      boolean alive = true;
+      float score = 0.0f;
+      for (int i = split; i < n; i++) {
+        final DimCursor c = terms[i].cursor;
+        if (!c.isExhausted() && c.currentBucketId() == minBucketId && c.currentPosition() == minPosition) {
+          if (c.isTombstone()) {
+            alive = false;
+            break;
+          }
+          score += terms[i].queryWeight * c.currentWeight();
+        }
+      }
+      RID candidate = null;
+      if (alive) {
+        candidate = new RID(minBucketId, minPosition);
+        alive = collector.accepts(candidate);
+      }
+      if (alive) {
+        for (int i = split - 1; i >= 0; i--) {
+          if (score + prefix[i + 1] <= threshold) {
+            alive = false;
+            break;
+          }
+          final DimCursor c = terms[i].cursor;
+          if (c.isExhausted())
+            continue;
+          if (SparseSegmentBuilder.compareRid(c.currentBucketId(), c.currentPosition(), minBucketId, minPosition) < 0)
+            c.seekTo(minBucketId, minPosition);
+          if (c.isExhausted() || c.currentBucketId() != minBucketId || c.currentPosition() != minPosition)
+            continue;
+          if (c.isTombstone()) {
+            alive = false;
+            break;
+          }
+          score += terms[i].queryWeight * c.currentWeight();
+        }
+        if (alive)
+          collector.collect(candidate, score);
+      }
+
+      boolean exhaustedAny = false;
+      for (int i = split; i < n; i++) {
+        final DimCursor c = terms[i].cursor;
+        if (!c.isExhausted() && c.currentBucketId() == minBucketId && c.currentPosition() == minPosition) {
+          c.advance();
+          if (c.isExhausted())
+            exhaustedAny |= terms[i].clearSigma();
+        }
+      }
+      if (exhaustedAny)
+        recomputePrefix(terms, prefix);
+    }
   }
+
 
   // ---------- setup ----------
 

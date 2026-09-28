@@ -123,6 +123,11 @@ public class FilterStep extends AbstractExecutionStep {
     };
   }
 
+  /** The condition every row must match: a parallel aggregation evaluates it in its workers (issue #8333). */
+  WhereClause getWhereClause() {
+    return whereClause;
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();

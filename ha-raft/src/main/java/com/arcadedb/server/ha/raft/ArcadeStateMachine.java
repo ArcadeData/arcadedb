@@ -2010,12 +2010,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
     }
-
-    // Wake up any threads waiting for leadership change (e.g. leaveCluster)
-    final Object notifier = raftHA.getLeaderChangeNotifier();
-    synchronized (notifier) {
-      notifier.notifyAll();
-    }
   }
 
   /**
@@ -6745,8 +6739,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final LeaderDoesNotHoldDatabaseException e) {
         // Not a failed install (issue #8559): the leader does not hold it, and a quarantine - node-wide in its readiness
         // effect - would wait for an install that the same leader refuses on every retry. Reported the way the
-        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped.
-        reportDatabaseTheLeaderDoesNotHold(dbName, true, e);
+        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped - but marked
+        // unverified, so nothing reopens it on this follower (issue #8589).
+        try {
+          reportDatabaseTheLeaderDoesNotHold(dbName, true, e);
+        } catch (final IOException markFailure) {
+          // Without the mark the copy is reopenable and unverified: fall back to the quarantine, which fails closed.
+          LogManager.instance().log(this, Level.SEVERE,
+              "Snapshot resync could not mark database '%s' as an unverified closed copy: keeping it quarantined "
+                  + "instead (issue #8589)", markFailure, dbName);
+          notInstalled.add(dbName);
+          continue;
+        }
         leaderMissing.add(dbName);
         continue;
       } catch (final IOException e) {
@@ -6818,14 +6822,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * quarantine on it is lifted, as the leader-driven install lifts it for a database its reconcile reports so: a
    * quarantine holds the WHOLE node out of the ready set and would wait for an install the same leader refuses on every
    * retry. A registered copy stays registered and served, which is what the auto-acquire path does with it too.
+   * <p>
+   * A copy closed on this node is marked first with the durable {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE}
+   * (issue #8589): the leader may have closed a database the cluster still has, and this copy may be behind the
+   * committed log, so a follower must not reopen it for the next request that names it. The mark is per database, so it
+   * does not touch the node's readiness, and it goes with the install that replaces the copy or the drop that removes
+   * it. A registered copy is never marked: it is being served, and nothing reopens it.
+   *
+   * @throws IOException when the mark of a closed copy cannot be written: nothing else has been changed, and the caller
+   *                     keeps the copy quarantined rather than leave it reopenable
    */
   private void reportDatabaseTheLeaderDoesNotHold(final String dbName, final boolean closedLocally,
-      final LeaderDoesNotHoldDatabaseException e) {
+      final LeaderDoesNotHoldDatabaseException e) throws IOException {
+    if (closedLocally)
+      SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
     LogManager.instance().log(this, Level.WARNING,
         "Snapshot resync did not reinstall database '%s'%s: the leader does not hold it (%s). Keeping this node's copy "
-            + "and not quarantining it, since no resync from this leader can replace it. Open it on the leader if the "
-            + "cluster should still have it, or remove this node's copy (issues #8559, #8588)",
-        dbName, closedLocally ? ", which is closed on this node" : "", e.getMessage());
+            + "and not quarantining it, since no resync from this leader can replace it%s. Open it on the leader if the "
+            + "cluster should still have it, or remove this node's copy (issues #8559, #8588, #8589)",
+        dbName, closedLocally ? ", which is closed on this node" : "", e.getMessage(),
+        closedLocally ? ", but it is not reopened while this node is a follower: it may be behind the cluster" : "");
     reconciler.markLeaderMissing(dbName);
     clearDivergedDatabase(dbName);
   }
@@ -7202,7 +7218,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 // health tick, holding the node out of the ready set for good - which is also how a quarantine raised
                 // before this fix, and restored from disk, gets lifted. Closed (issue #8559) or registered (issue
                 // #8588) alike: the leader-driven auto-acquire install lifts the quarantine of a registered one too.
-                reportDatabaseTheLeaderDoesNotHold(dbName, !server.existsDatabase(dbName), e);
+                try {
+                  reportDatabaseTheLeaderDoesNotHold(dbName, !server.existsDatabase(dbName), e);
+                } catch (final IOException markFailure) {
+                  // The quarantine stays standing: without the mark it is what keeps the closed copy from being
+                  // reopened (issue #8589).
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Targeted snapshot resync could not mark database '%s' as an unverified closed copy: keeping it "
+                          + "quarantined instead (issue #8589)", markFailure, dbName);
+                }
                 return;
               }
               LogManager.instance().log(this, Level.INFO,

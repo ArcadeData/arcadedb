@@ -101,7 +101,9 @@ public class Bolt7149VarLengthDetachDeleteIT extends BaseBoltServerTest {
             SET n2.marker = 'probe'
             RETURN null AS alias0""").list();
 
-        assertThat(rows).as("the issue's control case returns the 2-hop paths").hasSize(256);
+        // 222, not the 256 the reporter measured: that count walked each self-loop twice, once from each of its
+        // node's lists, where an undirected pattern takes it once (issue #8537, see CypherVarLengthDetachDeleteIssue7149Test)
+        assertThat(rows).as("the issue's control case returns the 2-hop paths").hasSize(222);
       }
     }
   }
@@ -123,7 +125,7 @@ public class Bolt7149VarLengthDetachDeleteIT extends BaseBoltServerTest {
             CALL merge.node(['ProbePerson'], {name: 'ArcadeGenerated'}, {name: 'ArcadeGenerated'}) YIELD node AS alias3
             RETURN null AS alias0""").list();
 
-        assertThat(rows).as("one projected row per traversal row").hasSize(256);
+        assertThat(rows).as("one projected row per traversal row").hasSize(222);
         assertThat(countSurvivingNodes(s)).as("only the nodes no 2-hop path reaches survive").isEqualTo(71);
       }
     }
