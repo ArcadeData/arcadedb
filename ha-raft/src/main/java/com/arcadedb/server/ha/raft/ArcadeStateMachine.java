@@ -462,7 +462,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * or targeted resync leaves the log complete). A leader cannot install from itself, and every client request on
    * that database is refused while its copy is being replaced (issue #8363), so the cluster rejects every write to it
    * with a healthy majority. {@link #handOffLeadershipWhileReplacingDatabase()} reads this set to hand leadership to
-   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition.
+   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition. {@link #startTransaction}
+   * reads it too, to refuse reserving page versions against a copy being replaced (issue #8022).
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
