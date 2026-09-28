@@ -1501,6 +1501,12 @@ function createIndex(typeName) {
   html += "</select>";
   html += "</div>";
   html += "</div>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-4'>";
+  html += "<label>Rescore oversample <small class='text-muted'>(optional)</small></label>";
+  html += "<input type='number' min='0' max='100' class='form-control mt-1' id='inputCreateIdxSparseRescoreOversample' placeholder='2 (INT8/FP16), 0 = off'>";
+  html += "</div>";
+  html += "</div>";
   html += "</div>";
 
   html += "<label for='inputCreateIdxAlgorithm'>Index Algorithm <span style='color:#dc3545'>*</span></label>";
@@ -1579,6 +1585,11 @@ function createIndex(typeName) {
       if (modifier) metadata.modifier = modifier;
       let weightQuantization = $("#inputCreateIdxSparseWeightQuantization").val();
       if (weightQuantization) metadata.weightQuantization = weightQuantization;
+      let rescoreRaw = $("#inputCreateIdxSparseRescoreOversample").val();
+      if (rescoreRaw != null && rescoreRaw !== "") {
+        let rescoreOversample = parseInt(rescoreRaw, 10);
+        if (!isNaN(rescoreOversample) && rescoreOversample >= 0) metadata.rescoreOversample = rescoreOversample;
+      }
     } else {
       let multiEl = document.getElementById("inputCreateIdxProps");
       if (multiEl) {
