@@ -100,6 +100,8 @@ public class ForeachStep extends AbstractExecutionStep {
   // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
+  // THE INPUT ROWS AN EAGER EXECUTION HOLDS UNTIL THE LAST WRITE IS APPLIED (see eagerExecution), UNDER THE SAME LIMITS
+  private OperationHeapLimit eagerHeapLimit;
 
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
@@ -143,7 +145,15 @@ public class ForeachStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return buffer.get(bufferIndex++);
+        final Result result = buffer.get(bufferIndex++);
+        if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
+          // SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          eagerHeapLimit.release();
+        }
+        return result;
       }
 
       private boolean hasMoreInput() {
@@ -197,6 +207,13 @@ public class ForeachStep extends AbstractExecutionStep {
             executeForeach(inputRow, context);
             // Pass through the input row unchanged
             buffer.add(inputRow);
+            if (eagerExecution) {
+              // HELD UNTIL THE LAST WRITE IS APPLIED, NOT JUST FOR A BATCH (a materialized input shares the rows, so they
+              // are counted twice while both hold them: conservatively)
+              if (eagerHeapLimit == null)
+                eagerHeapLimit = OperationHeapLimit.of(context, "FOREACH eager execution");
+              eagerHeapLimit.add(buffer.size(), inputRow);
+            }
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -404,6 +421,8 @@ public class ForeachStep extends AbstractExecutionStep {
   @Override
   public void close() {
     releaseHeap();
+    if (eagerHeapLimit != null)
+      eagerHeapLimit.release();
     super.close();
   }
 

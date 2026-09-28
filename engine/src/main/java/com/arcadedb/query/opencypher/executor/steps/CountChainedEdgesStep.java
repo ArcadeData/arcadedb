@@ -25,7 +25,6 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -101,6 +100,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
     heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+    final int groupOverhead = CountEdgesStep.groupOverheadBytes(aliasOutputNames.length + 1);
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -143,8 +143,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
         final int groupsBefore = groups.size();
         final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
         if (groups.size() > groupsBefore)
-          // A GROUP: ITS KEY VALUES, THE KEY THAT WRAPS THEM, ITS COUNTER AND ITS ENTRY IN THE MAP
-          heapLimit.add(groups.size(), keyValues, HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES);
+          heapLimit.add(groups.size(), keyValues, groupOverhead);
         accumulator[0] += totalCount;
       } finally {
         if (context.isProfiling())
