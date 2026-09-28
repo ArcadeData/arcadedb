@@ -85,6 +85,15 @@ final class DisconnectedPatternJoinPlanner {
    */
   static final double JOIN_BUFFER_COST_PER_ROW = 3.0;
 
+  private final DatabaseInternal        database;
+  private final StatisticsProvider      statisticsProvider;
+  /** Rows a join buffer holds in full before it turns compact; 0 when a write could change a record (see RowBuffer). */
+  private final int                     compactAfterRows;
+  private final List<BooleanExpression> crossConjuncts    = new ArrayList<>();
+  private final List<BooleanExpression> residualConjuncts = new ArrayList<>();
+  private       Set<String>             allVariables;
+  private       Unit                    driver;
+
   /** One independently matched part of the pattern. */
   static final class Unit {
     PhysicalOperator operator;
@@ -114,20 +123,11 @@ final class DisconnectedPatternJoinPlanner {
 
   private enum Strategy {CARTESIAN_PRODUCT, HASH_JOIN, INDEX_NESTED_LOOP}
 
-  private final DatabaseInternal   database;
-  private final StatisticsProvider statisticsProvider;
-  /** Rows a join buffer holds in full before it turns compact; 0 when the statement writes (see RowBuffer). */
-  private final int                compactAfterRows;
-  private final List<BooleanExpression> crossConjuncts = new ArrayList<>();
-  private final List<BooleanExpression> residualConjuncts = new ArrayList<>();
-  private Set<String> allVariables;
-  private Unit        driver;
-
   DisconnectedPatternJoinPlanner(final DatabaseInternal database, final StatisticsProvider statisticsProvider,
-      final boolean readOnlyStatement) {
+      final boolean recordsReloadable) {
     this.database = database;
     this.statisticsProvider = statisticsProvider;
-    this.compactAfterRows = readOnlyStatement ? RowBuffer.DEFAULT_COMPACT_AFTER_ROWS : 0;
+    this.compactAfterRows = recordsReloadable ? RowBuffer.DEFAULT_COMPACT_AFTER_ROWS : 0;
   }
 
   /**
