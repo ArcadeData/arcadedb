@@ -631,14 +631,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 return;
               }
 
-              final String[] authPair = authPairClear.split(":");
-
-              if (authPair.length != 2) {
+              // RFC 7617: the credential is user-id ":" password, and only the user-id is forbidden a colon, so the
+              // pair splits on the FIRST colon. Splitting on every colon refused any password containing one, and
+              // String.split's dropped trailing empty string refused an empty password, both before the credential
+              // check (issue #7783).
+              final int colonPos = authPairClear.indexOf(':');
+              if (colonPos < 0) {
                 sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
                 return;
               }
 
-              user = authenticate(authPair[0], authPair[1]);
+              user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
 
             } else {
               sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
