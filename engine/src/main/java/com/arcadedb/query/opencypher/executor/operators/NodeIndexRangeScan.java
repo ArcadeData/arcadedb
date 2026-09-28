@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -264,7 +263,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds);
+        // A label scan runs on this thread alone
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, 1);
         if (scanThreshold < 0)
           return false;
 
@@ -307,7 +307,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         }
 
         while (buffer.size() < n) {
-          final Object entry = fetcher.next();
+          // Loaded through the buckets, every page read once; a record deleted since the index answered is skipped
+          final Object entry = fetcher.nextRecord(context.getDatabase());
           if (entry == null) {
             finished = true;
             fetcher.close();
@@ -316,9 +317,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           }
           guard.check();
           try {
-            addVertex(entry instanceof RID rid ?
-                context.getDatabase().lookupByRID(rid, true).asVertex() :
-                ((Identifiable) entry).asVertex());
+            addVertex(((Identifiable) entry).asVertex());
           } catch (final RecordNotFoundException e) {
             // Deleted since the index answered: nothing to match
           }
