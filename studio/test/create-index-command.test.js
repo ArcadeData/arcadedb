@@ -416,3 +416,24 @@ test("an out-of-range rescoreOversample never reaches the server", () => {
   assert.equal(command, null, "no statement must be sent");
   assert.match(notified, /[Rr]escore oversample/);
 });
+
+test("a non-integer rescoreOversample is rejected, not truncated", () => {
+  for (const raw of ["2.5", "0.5"]) {
+    openDialog([
+      { name: "dims", type: "ARRAY_OF_INTEGERS" },
+      { name: "weights", type: "ARRAY_OF_FLOATS" }
+    ]);
+
+    const command = submitDialog({
+      "#inputCreateIdxAlgorithm": "LSM_SPARSE_VECTOR",
+      "#inputCreateIdxPropsSparseIdx": "dims",
+      "#inputCreateIdxPropsSparseWeights": "weights",
+      "#inputCreateIdxSparseDimensions": "",
+      "#inputCreateIdxSparseModifier": "",
+      "#inputCreateIdxSparseWeightQuantization": "",
+      "#inputCreateIdxSparseRescoreOversample": raw
+    });
+
+    assert.equal(command, null, raw + " must not be sent");
+  }
+});

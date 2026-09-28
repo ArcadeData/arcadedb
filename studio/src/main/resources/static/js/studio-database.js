@@ -1587,8 +1587,8 @@ function createIndex(typeName) {
       if (weightQuantization) metadata.weightQuantization = weightQuantization;
       let rescoreRaw = $("#inputCreateIdxSparseRescoreOversample").val();
       if (rescoreRaw != null && rescoreRaw !== "") {
-        let rescoreOversample = parseInt(rescoreRaw, 10);
-        if (isNaN(rescoreOversample) || rescoreOversample < 0 || rescoreOversample > 100) {
+        let rescoreOversample = Number(rescoreRaw);
+        if (!Number.isInteger(rescoreOversample) || rescoreOversample < 0 || rescoreOversample > 100) {
           globalNotify("Error", "Rescore oversample must be between 0 and 100", "danger");
           return;
         }
