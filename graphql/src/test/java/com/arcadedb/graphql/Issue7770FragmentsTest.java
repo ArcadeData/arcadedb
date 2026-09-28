@@ -129,6 +129,82 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void subSelectionsAreMergedAtEveryLevel() {
+    // `authors` IS MERGED INTO `wrote { id } wrote { name }`, WHICH HAS NO FRAGMENT LEFT IN IT: `wrote` MUST STILL BE
+    // MERGED ONE LEVEL DOWN, OR `id` IS DROPPED
+    assertSingleBook("""
+        fragment F on Book { authors { wrote { name } } }
+        { bookById(id: "book-1") { authors { wrote { id } } ...F } }""", record -> {
+      final List<Result> authors = record.getProperty("authors");
+      assertThat(authors).hasSize(1);
+      final List<Result> wrote = authors.getFirst().getProperty("wrote");
+      assertThat(wrote).hasSize(2);
+      for (final Result book : wrote) {
+        assertThat(book.<String>getProperty("id")).isNotNull();
+        assertThat(book.<String>getProperty("name")).isNotNull();
+      }
+    });
+  }
+
+  @Test
+  void fragmentsAreExpandedForEveryRecordOfTheResult() {
+    // THE PROJECTIONS OF A LEVEL ARE CACHED ACROSS RECORDS: EVERY RECORD, NOT ONLY THE FIRST, MUST CARRY THE FRAGMENT'S FIELDS
+    executeTest(database -> {
+      defineTypes(database);
+
+      try (final ResultSet resultSet = database.query("graphql", """
+          fragment AuthorName on Author { firstName }
+          fragment BookInfo on Book { name authors { ...AuthorName } }
+          { bookByName { id ...BookInfo } }""")) {
+        int count = 0;
+        while (resultSet.hasNext()) {
+          final Result record = resultSet.next();
+          assertSerializable(database, record);
+          assertThat(record.<String>getProperty("id")).isNotNull();
+          assertThat(record.<String>getProperty("name")).isNotNull();
+          final List<Result> authors = record.getProperty("authors");
+          assertThat(authors).hasSize(1);
+          assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
+          count++;
+        }
+        assertThat(count).isEqualTo(2);
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void typeConditionOnADatabaseSuperTypeApplies() {
+    executeTest(database -> {
+      defineTypes(database);
+      database.getSchema().getOrCreateVertexType("Publication");
+      database.getSchema().getType("Book").addSuperType("Publication");
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ bookById(id: \"book-1\") { id ... on Publication { name } ... on Author { firstName } } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        final Result record = resultSet.next();
+        assertSerializable(database, record);
+        assertThat(record.<String>getProperty("name")).isEqualTo("Harry Potter and the Philosopher's Stone");
+        assertThat(record.getPropertyNames()).doesNotContain("firstName");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void topLevelFragmentOnAnotherTypeSelectsNoField() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      assertThatThrownBy(() -> database.query("graphql", "fragment A on Book { id }  { ...A }").close())
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("selects no field");
+      return null;
+    });
+  }
+
+  @Test
   void inlineFragmentOnAnotherTypeDoesNotApply() {
     assertSingleBook("{ bookById(id: \"book-1\") { id ... on Author { firstName } } }", record -> {
       assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
@@ -258,7 +334,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
           fragment A on Book { name }
           { bookById(id: "book-1") { ...A } }""").close())
           .isInstanceOf(CommandParsingException.class)
-          .hasMessageContaining("A");
+          .hasMessageContaining("'A' is defined more than once");
       return null;
     });
   }

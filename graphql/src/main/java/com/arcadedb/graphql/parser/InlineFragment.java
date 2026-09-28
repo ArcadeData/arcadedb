@@ -44,3 +44,4 @@ public class InlineFragment extends SimpleNode {
     return selectionSet;
   }
 }
+/* ParserGeneratorCC - OriginalChecksum=b25dd549b07816d5a3cbcf5cf42f3a6f (do not edit this line) */
