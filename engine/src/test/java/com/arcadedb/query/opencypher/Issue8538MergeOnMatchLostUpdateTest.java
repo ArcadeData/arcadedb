@@ -126,6 +126,77 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * A MERGE action writing two records, where the first pass judges one of them a no-op only because it read the other
+   * one stale: once the reload of the other one changes the right-hand side, that record is written too, so it must be
+   * reloaded as well before the value written to it is evaluated.
+   */
+  @Test
+  void multiTargetOnMatchSetReloadsATargetTheSecondPassWrites() {
+    // d0 lives in another type, so on another page: pinning c0's page does not cover it (a record on the SAME page is
+    // already refused by the #6950 image check, since only the first record of a page is reloaded on modify()).
+    database.command("sql", "CREATE VERTEX TYPE D");
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', k: 0}), (:D {id: 'd0', n: 0})"));
+
+    // The MATCH reads d0 before the MERGE reads c0, the first C record read that triggers the concurrent commit: the
+    // MERGE holds a stale image of both.
+    final boolean committed = runWithConcurrentCommitAfterRead(() -> database.command("cypher",
+            "MATCH (d:D {id: 'd0'}) MERGE (c:C {id: 'c0'}) ON MATCH SET c.k = c.k + 1, d.n = d.n + c.k", Map.of()).close(), 1,
+        "MATCH (c:C {id: 'c0'}), (d:D {id: 'd0'}) SET c.k = c.k + 1, d.n = d.n + 1");
+
+    if (committed) {
+      assertThat(readProperty("C", "c0", "k")).isEqualTo(2);
+      assertThat(readProperty("D", "d0", "n")).as("d.n = the concurrent 1 + the reloaded c.k 1").isEqualTo(2);
+    } else {
+      assertThat(readProperty("C", "c0", "k")).isEqualTo(1);
+      assertThat(readProperty("D", "d0", "n")).isEqualTo(1);
+    }
+  }
+
+  /**
+   * An expression target that is not a row variable loads a fresh copy of its record at each evaluation, so its reload
+   * never "settles": the clause must still end, and write the value computed from the latest committed record.
+   */
+  @Test
+  void expressionTargetLoadedAtEachEvaluationTerminates() {
+    database.command("sql", "CREATE EDGE TYPE R");
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})-[:R]->(:C {id: 'c1', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MATCH (:C {id: 'c0'})-[r:R]->() SET (startNode(r)).n = startNode(r).n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * An expression target reached through a collection ({@code docs[0]}) is bound by no alias the reload can replace,
+   * so its right-hand side may keep reading the stale copy: the write must then be refused as a conflict, never commit
+   * a value computed from that copy.
+   */
+  @Test
+  void expressionTargetInsideACollectionNeverLosesTheConcurrentIncrement() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MERGE (c:C {id: 'c0'}) WITH [c] AS docs SET (docs[0]).n = docs[0].n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * The same through a MERGE action.
+   */
+  @Test
+  void onMatchSetOnATargetInsideACollectionNeverLosesTheConcurrentIncrement() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MATCH (x:C {id: 'c0'}) WITH [x] AS docs MERGE (c:C {id: 'c0'}) ON MATCH SET (docs[0]).n = docs[0].n + 1",
+        Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
@@ -133,11 +204,12 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void onMatchLabelWriteKeepsTheIncrementCommittedAfterTheMatch() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    runWithConcurrentIncrementAfterFirstRead(
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(
         () -> database.command("cypher", "MERGE (c:C {id: 'c0'}) ON MATCH SET c:Hot", Map.of()).close());
 
     // Committed or refused, the concurrent increment must survive either way.
     assertThat(readN("c0")).isEqualTo(1);
+    assertThat(countHot()).isEqualTo(committed ? 1 : 0);
   }
 
   /**
@@ -147,10 +219,11 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void labelWriteKeepsTheIncrementCommittedAfterTheMatch() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    runWithConcurrentIncrementAfterFirstRead(
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(
         () -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of()).close());
 
     assertThat(readN("c0")).isEqualTo(1);
+    assertThat(countHot()).isEqualTo(committed ? 1 : 0);
   }
 
   /**
@@ -169,21 +242,31 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
-   * Runs {@code body} in a READ_COMMITTED transaction of this thread. On the first record read by {@code body}, another
-   * transaction increments {@code c0.n} and commits before {@code body} goes on.
+   * Runs {@code body} while, right after its first record read, another transaction increments {@code c0.n} and commits.
+   */
+  private boolean runWithConcurrentIncrementAfterFirstRead(final Runnable body) {
+    return runWithConcurrentCommitAfterRead(body, 1, "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1");
+  }
+
+  /**
+   * Runs {@code body} in a READ_COMMITTED transaction of this thread. Right after the {@code readNumber}-th C record read
+   * by {@code body}, another transaction runs {@code concurrentCommand} and commits before {@code body} goes on.
    *
    * @return whether the transaction committed; {@code false} when it was refused with a retryable conflict
    */
-  private boolean runWithConcurrentIncrementAfterFirstRead(final Runnable body) {
+  private boolean runWithConcurrentCommitAfterRead(final Runnable body, final int readNumber,
+      final String concurrentCommand) {
     lastCommitted = false;
     final Thread bodyThread = Thread.currentThread();
     final AtomicBoolean armed = new AtomicBoolean(true);
+    final AtomicInteger reads = new AtomicInteger();
     final AtomicReference<Throwable> concurrentFailure = new AtomicReference<>();
     final AfterRecordReadListener interleave = record -> {
-      if (Thread.currentThread() == bodyThread && armed.compareAndSet(true, false)) {
+      if (Thread.currentThread() == bodyThread && reads.incrementAndGet() >= readNumber && armed.compareAndSet(true,
+          false)) {
         final Thread concurrent = new Thread(() -> {
           try {
-            database.transaction(() -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1"));
+            database.transaction(() -> database.command("cypher", concurrentCommand));
           } catch (final Throwable t) {
             concurrentFailure.set(t);
           }
@@ -206,11 +289,14 @@ class Issue8538MergeOnMatchLostUpdateTest {
       database.commit();
       committed = true;
       lastCommitted = true;
-    } catch (final ConcurrentModificationException e) {
+    } catch (final RuntimeException e) {
+      // The engine may report the conflict wrapped in the command's own exception
+      if (!isConflict(e))
+        throw e;
       committed = false;
+    } finally {
       if (database.isTransactionActive())
         database.rollback();
-    } finally {
       database.getSchema().getType("C").getEvents().unregisterListener(interleave);
     }
 
@@ -292,9 +378,26 @@ class Issue8538MergeOnMatchLostUpdateTest {
     }
   }
 
+  private static boolean isConflict(final Throwable e) {
+    for (Throwable t = e; t != null; t = t.getCause())
+      if (t instanceof ConcurrentModificationException)
+        return true;
+    return false;
+  }
+
   private int readN(final String id) {
-    try (final ResultSet rs = database.query("sql", "SELECT n FROM C WHERE id = ?", id)) {
-      return ((Number) rs.next().getProperty("n")).intValue();
+    return readProperty("C", id, "n");
+  }
+
+  private int readProperty(final String type, final String id, final String property) {
+    try (final ResultSet rs = database.query("sql", "SELECT " + property + " AS value FROM " + type + " WHERE id = ?", id)) {
+      return ((Number) rs.next().getProperty("value")).intValue();
+    }
+  }
+
+  private long countHot() {
+    try (final ResultSet rs = database.query("cypher", "MATCH (c:Hot {id: 'c0'}) RETURN count(c) AS total")) {
+      return ((Number) rs.next().getProperty("total")).longValue();
     }
   }
 }
