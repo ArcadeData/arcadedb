@@ -190,10 +190,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
-   * Drops the database through the {@code drop database} server command. It goes through {@code httpCommand}, like
-   * {@link RemoteServer#drop}, so it gets the election retry and failover every other command has, and a refusal
-   * reaches the caller as the typed exception the server sent instead of wrapped in a
-   * {@code DatabaseOperationException} (issue #7796).
+   * Goes through {@code httpCommand} like {@link RemoteServer#drop}, for its election retry, failover and typed exceptions.
    */
   @Override
   public void drop() {

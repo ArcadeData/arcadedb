@@ -207,6 +207,7 @@ class Issue7796RemoteServerAdminCommandsTest {
       final RemoteDatabase db = database(server.port(), new ContextConfiguration());
       try {
         assertThatThrownBy(db::drop).isExactlyInstanceOf(SecurityException.class);
+        assertThat(db.isOpen()).as("a refused drop leaves the handle open").isTrue();
       } finally {
         if (db.isOpen())
           db.close();

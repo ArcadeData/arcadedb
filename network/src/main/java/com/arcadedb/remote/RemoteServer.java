@@ -86,10 +86,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
-   * Creates a user through the {@code create user} server command. Like {@link #create} it goes through
-   * {@code httpCommand}, so it gets the same election retry and failover, and a refusal reaches the caller as the
-   * typed exception the server sent - a password-policy refusal as a {@link SecurityException} (issue #7796).
-   * The command text carries the password, so an error names the command by the user alone.
+   * The error label names the user only: the command text carries the password.
    */
   public void createUser(final String userName, final String password, final Map<String, String> databases) {
     final JSONObject jsonUser = new JSONObject();
@@ -386,9 +383,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
-   * Sends one command to {@code POST /server} through {@code httpCommand}: every server command of this class goes
-   * this way, so they all share its election retry, its failover and its rule of propagating the typed exception
-   * the server sent instead of wrapping it (issue #7796).
+   * Every server command goes through {@code httpCommand}, for its election retry, failover and typed exceptions.
    */
   private Object serverCommand(final String method, final String command, final boolean leaderIsPreferable,
       final boolean autoReconnect, final Callback callback) {
@@ -396,8 +391,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   /**
-   * As {@link #serverCommand(String, String, boolean, boolean, Callback)}, naming the command in an error message
-   * as {@code errorOperation} - for a command whose text carries a secret.
+   * As above, naming the command as {@code errorOperation} in an error message, for a command carrying a secret.
    */
   private Object serverCommand(final String method, final String command, final String errorOperation,
       final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
