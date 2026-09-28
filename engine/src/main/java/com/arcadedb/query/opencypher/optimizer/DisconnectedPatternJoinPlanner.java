@@ -127,7 +127,7 @@ final class DisconnectedPatternJoinPlanner {
                             IndexStatistics index) {
   }
 
-  private enum Strategy {CARTESIAN_PRODUCT, HASH_JOIN, INDEX_NESTED_LOOP}
+  private enum Strategy {CARTESIAN_PRODUCT, HASH_JOIN, HASH_JOIN_BUILD_LEFT, INDEX_NESTED_LOOP}
 
   DisconnectedPatternJoinPlanner(final DatabaseInternal database, final LogicalPlan logicalPlan,
       final StatisticsProvider statisticsProvider, final boolean recordsReloadable) {
@@ -254,13 +254,23 @@ final class DisconnectedPatternJoinPlanner {
 
     final EquiJoinKey[] keys = equiJoinKeys(left, right);
     if (keys.length > 0) {
-      final double build = CostModel.saturatingMultiply(rightRows, CostModel.HASH_BUILD_COST_PER_ROW + JOIN_BUFFER_COST_PER_ROW);
-      final double probe = CostModel.saturatingMultiply(leftRows, CostModel.HASH_PROBE_COST_PER_ROW);
+      // Either side can be the one held in the hash table: the smaller, since it is held for the rest of the query. The
+      // left one is what is already joined, which a pattern of three or more parts may have narrowed well below the part
+      // joined onto it
+      final long joinedRows = Math.max(leftRows, rightRows);
       best = cheaper(best, new JoinChoice(left, right, Strategy.HASH_JOIN,
-          CostModel.saturatingAdd(inputCost, CostModel.saturatingAdd(build, probe)), Math.max(leftRows, rightRows), keys, null));
+          CostModel.saturatingAdd(inputCost, hashJoinCost(rightRows, leftRows)), joinedRows, keys, null));
+      best = cheaper(best, new JoinChoice(left, right, Strategy.HASH_JOIN_BUILD_LEFT,
+          CostModel.saturatingAdd(inputCost, hashJoinCost(leftRows, rightRows)), joinedRows, keys, null));
     }
 
     return cheaper(best, indexNestedLoop(left, right, keys));
+  }
+
+  private static double hashJoinCost(final long buildRows, final long probeRows) {
+    return CostModel.saturatingAdd(
+        CostModel.saturatingMultiply(buildRows, CostModel.HASH_BUILD_COST_PER_ROW + JOIN_BUFFER_COST_PER_ROW),
+        CostModel.saturatingMultiply(probeRows, CostModel.HASH_PROBE_COST_PER_ROW));
   }
 
   /**
@@ -338,12 +348,13 @@ final class DisconnectedPatternJoinPlanner {
     final Unit left = choice.left();
     final Unit right = choice.right();
     final PhysicalOperator operator = switch (choice.strategy()) {
+      // No relationship uniqueness to test: the sought part is a lone node, which binds no relationship
       case INDEX_NESTED_LOOP -> new IndexNestedLoopJoin(left.operator, right.node.getVariable(), right.node.getFirstLabel(),
           choice.index().getIndexName(), choice.index().getPropertyNames(), choice.keys(), right.localFilter, choice.cost(),
           choice.cardinality());
-      case HASH_JOIN -> {
+      case HASH_JOIN, HASH_JOIN_BUILD_LEFT -> {
         final ValueHashJoin hashJoin = new ValueHashJoin(left.operator, right.operator, choice.keys(), choice.cost(),
-            choice.cardinality(), pairFilter);
+            choice.cardinality(), pairFilter, choice.strategy() == Strategy.HASH_JOIN_BUILD_LEFT);
         hashJoin.setCompactAfterRows(compactAfterRows);
         yield hashJoin;
       }

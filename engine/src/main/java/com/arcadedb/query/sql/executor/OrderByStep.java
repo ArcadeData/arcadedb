@@ -18,9 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.OrderBy;
 
@@ -35,7 +32,7 @@ public class OrderByStep extends AbstractExecutionStep {
   private final OrderBy orderBy;
   private       Integer maxResults;
   private final long    timeoutMillis;
-  private final long    maxElementsAllowed;
+  private final HeapElementsLimit heapLimit;
 
   List<Result> cachedResult = null;
   int          nextElement  = 0;
@@ -52,10 +49,7 @@ public class OrderByStep extends AbstractExecutionStep {
       this.maxResults = null;
     }
     this.timeoutMillis = timeoutMillis;
-    final Database db = context == null ? null : context.getDatabase();
-    this.maxElementsAllowed = db == null ?
-        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
-        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    this.heapLimit = HeapElementsLimit.of(context, "ORDER BY");
   }
 
   @Override
@@ -126,11 +120,10 @@ public class OrderByStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           cachedResult.add(item);
-          if (maxElementsAllowed > 0 && cachedResult.size() > maxElementsAllowed) {
+          if (heapLimit.isExceededBy(cachedResult.size())) {
+            final int held = cachedResult.size();
             this.cachedResult.clear();
-            throw new CommandExecutionException(
-                "Limit of allowed elements for in-heap ORDER BY in a single query exceeded (" + maxElementsAllowed + ") . You can set "
-                    + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+            heapLimit.check(held);
           }
           sorted = false;
           // compact, only at twice as the buffer, to avoid to do it at each add

@@ -34,10 +34,12 @@ import com.arcadedb.exception.CommandExecutionException;
  */
 public final class HeapElementsLimit {
   private final long   maxElements;
+  private final String elementsName;
   private final String operation;
 
-  private HeapElementsLimit(final long maxElements, final String operation) {
+  private HeapElementsLimit(final long maxElements, final String elementsName, final String operation) {
     this.maxElements = maxElements;
+    this.elementsName = elementsName;
     this.operation = operation;
   }
 
@@ -46,11 +48,18 @@ public final class HeapElementsLimit {
    * @param operation what holds the elements, as the error message names it (e.g. "ORDER BY", "Cartesian product")
    */
   public static HeapElementsLimit of(final CommandContext context, final String operation) {
+    return of(context, "elements", operation);
+  }
+
+  /**
+   * @param elementsName what the operation holds, as the error message names it (e.g. "groups")
+   */
+  public static HeapElementsLimit of(final CommandContext context, final String elementsName, final String operation) {
     final Database database = context == null ? null : context.getDatabase();
     final long maxElements = database == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
         database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
-    return new HeapElementsLimit(maxElements, operation);
+    return new HeapElementsLimit(maxElements, elementsName, operation);
   }
 
   /**
@@ -59,10 +68,18 @@ public final class HeapElementsLimit {
    * @param elements the number of elements the operation holds, the one being added included
    */
   public void check(final long elements) {
-    if (maxElements > 0 && elements > maxElements)
+    if (isExceededBy(elements))
       throw new CommandExecutionException(
-          "Limit of allowed elements for in-heap " + operation + " in a single query exceeded (" + maxElements + "). You can set "
-              + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+          "Limit of allowed " + elementsName + " for in-heap " + operation + " in a single query exceeded (" + maxElements
+              + "). You can set " + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+  }
+
+  /**
+   * Whether holding {@code elements} is past the limit, for an operation that releases what it holds before
+   * {@link #check(long) failing}.
+   */
+  public boolean isExceededBy(final long elements) {
+    return maxElements > 0 && elements > maxElements;
   }
 
   /** The maximum number of elements, or a non-positive number when there is no limit. */

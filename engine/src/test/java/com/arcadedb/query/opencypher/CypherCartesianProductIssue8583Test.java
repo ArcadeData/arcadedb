@@ -38,6 +38,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -195,6 +196,8 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
   @Test
   void compactHashJoinProducesTheSamePairs() {
     assertThat(hashJoinPairs(3)).isEqualTo(hashJoinPairs(0));
+    // Built on the left, the same pairs come out probe-major: the same set, and still left properties first
+    assertThat(sorted(hashJoinPairs(3, true))).isEqualTo(sorted(hashJoinPairs(0))).isEqualTo(sorted(hashJoinPairs(0, true)));
     // 20 items with x = i % 3: 7 + 7 + 6 of each value, paired within their value
     assertThat(hashJoinPairs(3)).hasSize(7 * 7 + 7 * 7 + 6 * 6);
   }
@@ -244,12 +247,22 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
   }
 
   private List<String> hashJoinPairs(final int compactAfterRows) {
+    return hashJoinPairs(compactAfterRows, false);
+  }
+
+  private List<String> hashJoinPairs(final int compactAfterRows, final boolean buildLeft) {
     final ValueHashJoin join = new ValueHashJoin(new NodeByLabelScan("a", "Item", 1, ITEMS),
         new NodeByLabelScan("b", "Item", 1, ITEMS),
         new EquiJoinKey[] { EquiJoinKey.of(new PropertyAccessExpression("a", "x"), new PropertyAccessExpression("b", "x")) },
-        1, ITEMS, null);
+        1, ITEMS, null, buildLeft);
     join.setCompactAfterRows(compactAfterRows);
     return pairs(join.execute(context(), 100));
+  }
+
+  private static List<String> sorted(final List<String> pairs) {
+    final List<String> copy = new ArrayList<>(pairs);
+    Collections.sort(copy);
+    return copy;
   }
 
   private static List<String> pairs(final ResultSet rs) {

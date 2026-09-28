@@ -18,9 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
@@ -77,7 +74,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final GroupBy groupBy;
   private final long    timeoutMillis;
   private final long    limit;
-  private final long    maxGroupsAllowed;
+  private final HeapElementsLimit groupsLimit;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
@@ -95,10 +92,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     this.limit = limit;
 
     // Memory optimization: Enforce memory limits for GROUP BY operations
-    final Database db = context == null ? null : context.getDatabase();
-    this.maxGroupsAllowed = db == null ?
-        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
-        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    this.groupsLimit = HeapElementsLimit.of(context, "groups", "GROUP BY");
   }
 
   @Override
@@ -173,9 +167,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           return;
 
         // Memory safety: enforce memory limit for GROUP BY operations
-        if (maxGroupsAllowed > 0 && aggregateResults.size() >= maxGroupsAllowed) {
+        if (groupsLimit.isExceededBy(aggregateResults.size() + 1L)) {
+          final int held = aggregateResults.size();
           aggregateResults.clear();
-          checkGroupCount(maxGroupsAllowed);
+          checkGroupCount(held);
         }
 
         preAggr = newGroup(projection, next, context);
@@ -211,11 +206,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   /** Refuses one group more when {@code groups} already reach the limit of groups one GROUP BY may hold in heap. */
   private void checkGroupCount(final long groups) {
-    if (maxGroupsAllowed > 0 && groups >= maxGroupsAllowed) {
-      throw new CommandExecutionException(
-          "Limit of allowed groups for in-heap GROUP BY in a single query exceeded (" + maxGroupsAllowed + "). You can set "
-              + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
-    }
+    groupsLimit.check(groups + 1);
   }
 
   /** A new group, holding the non-aggregate projections of the first row seen for it. */

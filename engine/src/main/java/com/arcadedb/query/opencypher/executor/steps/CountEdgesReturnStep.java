@@ -106,7 +106,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key
       final Map<Object, Long> groups = new LinkedHashMap<>();
-      final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
+      final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
 
       while (prevResult.hasNext()) {
         final Result inputRow = prevResult.next();
@@ -129,8 +129,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               ? evaluator.evaluate(groupingExpressions[0], inputRow, context)
               : inputRow.getProperty(groupingAliases[0]);
 
+          final int before = groups.size();
           groups.merge(key, count, Long::sum);
-          limit.check(groups.size());
+          if (groups.size() != before)
+            limit.check(groups.size());
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -150,7 +152,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // Multi-key path
     final Map<GroupKey, Long> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -174,8 +176,10 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               ? evaluator.evaluate(groupingExpressions[i], inputRow, context)
               : inputRow.getProperty(groupingAliases[i]);
 
+        final int before = groups.size();
         groups.merge(new GroupKey(keys), count, Long::sum);
-        limit.check(groups.size());
+        if (groups.size() != before)
+          limit.check(groups.size());
       } finally {
         if (context.isProfiling())
           cost += System.nanoTime() - begin;

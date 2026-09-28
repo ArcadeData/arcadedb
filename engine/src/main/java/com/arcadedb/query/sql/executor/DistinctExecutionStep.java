@@ -18,10 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Type;
 
@@ -76,15 +73,12 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
-  private final long maxElementsAllowed;
+  private final HeapElementsLimit heapLimit;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
     this.pastRids = new RidSet(context);
-    final Database db = context == null ? null : context.getDatabase();
-    maxElementsAllowed = db == null ?
-        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
-        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    heapLimit = HeapElementsLimit.of(context, "DISTINCT");
   }
 
   @Override
@@ -159,11 +153,10 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
     // Store only the property values, not the full Result object
     pastItems.add(new DistinctKey(nextValue));
-    if (maxElementsAllowed > 0 && maxElementsAllowed < pastItems.size()) {
+    if (heapLimit.isExceededBy(pastItems.size())) {
+      final int held = pastItems.size();
       this.pastItems.clear();
-      throw new CommandExecutionException(
-          "Limit of allowed elements for in-heap DISTINCT in a single query exceeded (" + maxElementsAllowed + ") . You can set "
-              + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+      heapLimit.check(held);
     }
   }
 

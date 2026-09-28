@@ -155,7 +155,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // LinkedHashMap preserves insertion order, needed because ORDER BY in WITH clauses
     // may fail to resolve aggregation expressions and fall back to iteration order
     final Map<Object, SingleKeyGroupState> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -241,7 +241,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final CommandContext context, final int nRecords) {
 
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
