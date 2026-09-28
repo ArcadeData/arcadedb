@@ -40,6 +40,10 @@ public class Statement extends SimpleNode {
   public String    originalStatementAsString;
   public Limit     limit   = null;
   public Timeout   timeout = null;
+  // Only for internal use: memo of CorrelatedSubQueryCache#isCacheable(this), null until first asked. The answer is a
+  // reflective walk of this (immutable once parsed) tree, and the same parsed instance is handed out by the statement
+  // cache to every execution of the same text, so it is computed once rather than on every execution.
+  public volatile Boolean resultCacheable;
 
   public Statement() {
   }

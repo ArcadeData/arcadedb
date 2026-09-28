@@ -20,6 +20,7 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -51,6 +52,14 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
   // a SelectorManager NIO thread that survives until the client is GC'd; per-instance
   // clients leaked dozens of threads per server start under the integration-test suite.
   private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+
+  /**
+   * How long the gateway has to answer an analysis, body included. Enforced by {@link BoundedHttpExchange#send}
+   * rather than by the request timeout alone, which on JDK 21-25 stops once the response headers arrive (issue #8473).
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
+   */
+  static volatile long gatewayTimeoutMs = 120_000L;
 
   private final ArcadeDBServer server;
   private final AiConfiguration config;
@@ -178,10 +187,11 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
         .header("Content-Type", "application/json")//
         .header("Authorization", "Bearer " + config.getSubscriptionToken())//
         .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))//
-        .timeout(Duration.ofSeconds(120))//
+        .timeout(Duration.ofMillis(gatewayTimeoutMs))//
         .build();
 
-    final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+    final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
+        HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       final JSONObject errBody = new JSONObject(response.body());

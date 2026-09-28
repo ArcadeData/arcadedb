@@ -284,7 +284,7 @@ class RaftBatchEndpointIT extends BaseRaftHATest {
   }
 
   private HttpResult postBatch(final int serverIndex, final String body, final String queryString) throws Exception {
-    String url = "http://127.0.0.1:248" + serverIndex + "/api/v1/batch/" + getDatabaseName();
+    String url = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/batch/" + getDatabaseName();
     if (queryString != null && !queryString.isEmpty())
       url += "?" + queryString;
 
@@ -316,7 +316,7 @@ class RaftBatchEndpointIT extends BaseRaftHATest {
 
   private String httpCommand(final int serverIndex, final String sql) throws Exception {
     final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName())
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName())
         .toURL().openConnection();
     try {
       conn.setRequestMethod("POST");

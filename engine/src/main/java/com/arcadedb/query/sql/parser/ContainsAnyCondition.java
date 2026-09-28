@@ -55,13 +55,10 @@ public class ContainsAnyCondition extends BooleanExpression {
         leftItems.add(leftIterator.next());
       return containsAny(leftItems, right);
     }
-    // A scalar left operand ("uuid CONTAINSANY ?") is membership on one value: treat it as a
-    // single-element collection, the same semantics IN gives to the same query shape. Before,
-    // a scalar fell through to `false`, so the condition silently matched nothing for every
-    // parameter binding (issue #8436).
-    if (left != null)
-      return containsAny(List.of(left), right);
-    return false;
+
+    // A scalar left operand is the one-element collection it stands for, so 'u1' CONTAINSANY ['u1','u2'] answers like
+    // 'u1' IN ['u1','u2'] instead of being silently false for every record (issue #8436). A missing value stays false.
+    return left != null && containsAny(Collections.singletonList(left), right);
   }
 
   /**

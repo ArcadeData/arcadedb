@@ -67,7 +67,7 @@ jobs:
       - name: Decide which issues belong together
         id: group
         if: steps.collect.outputs.count != '0'
-        uses: anthropics/claude-code-action@2261fcfc88e7de1b55f179edd588805e12de71f2 # v1.0.228
+        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1.0.234
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -114,7 +114,7 @@ jobs:
           # whitelists every number against the very same candidate set, so the worst an
           # instruction injected into an issue body can achieve is a wrong grouping among
           # issues that were already eligible.
-          claude_args: '--model claude-sonnet-5 --allowed-tools "Read(related-candidates.json)"'
+          claude_args: '--model claude-sonnet-5-5 --allowed-tools "Read(related-candidates.json)"'
 
       - name: Apply the groupings
         if: steps.group.outputs.execution_file != ''

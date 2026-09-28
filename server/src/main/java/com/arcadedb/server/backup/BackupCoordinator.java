@@ -26,7 +26,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -129,21 +128,29 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   private final Map<String, int[]> inProgress = new ConcurrentHashMap<>();
 
   /**
-   * How many callers of {@link #begin(String, Operation, long)} are currently waiting for a {@link Operation#RESTORE}
-   * on a database, indexed by database name. A value is never zero or less - the entry is removed instead.
+   * How many callers of {@link #begin(String, Operation, long)} are currently waiting for each kind of operation that
+   * {@linkplain Operation#excludesEverything() excludes everything}, per database, indexed by
+   * {@link Operation#ordinal()}. A value is never all-zero - the entry is removed instead. Copy-on-write for the same
+   * reason as {@link #inProgress}: {@link #waitingOther(String, Operation)} reads an array outside the map's lock.
    * <p>
-   * Only {@code RESTORE} ever calls that overload (the HA snapshot install, applying a committed Raft entry), and
-   * {@link Operation#RESTORE} already conflicts with everything, so this is only ever consulted to decide whether a
-   * DIFFERENT kind of new reservation should queue behind it - see the guard in {@link #begin(String, Operation)}.
+   * Two callers use that overload, both applying a committed Raft entry: the HA snapshot install as {@code RESTORE}
+   * and the replicated drop-database apply as {@code DROP} (issue #8035). Both kinds already conflict with
+   * everything, so this is only ever consulted to decide whether a NEW reservation of a different kind should queue
+   * behind a waiter - see the guard in {@link #begin(String, Operation)}.
    * <p>
-   * This is what closes issue #7646: {@link Operation#EXPORT} is the one kind {@link Operation#conflictsWith}
-   * admits without limit, so a steady stream of exports arriving after a restore started waiting could keep the
-   * per-database count above zero forever and the restore's bounded wait would expire every single time - starving
-   * it rather than merely delaying it, and silently, because the timeout expiring looks identical to an ordinary
-   * conflict that happened to outlast the wait. Once a restore is registered here, a fresh export is refused before
-   * it is ever admitted, so the exports already running are the last ones the restore has to wait out.
+   * This is what closes issue #7646, and issue #8452 for the drop: {@link Operation#EXPORT} is the one kind
+   * {@link Operation#conflictsWith} admits without limit, so a steady stream of exports arriving after a restore or a
+   * drop started waiting could keep the per-database count above zero forever and the waiter's bounded wait would
+   * expire every single time - starving it rather than merely delaying it, and silently, because the timeout expiring
+   * looks identical to an ordinary conflict that happened to outlast the wait. Once a waiter is registered here, a
+   * fresh export is refused before it is ever admitted, so the exports already running are the last ones it has to
+   * wait out.
+   * <p>
+   * Counted per KIND rather than as one number because the guard exempts a caller's own kind, and because a waiting
+   * restore and a waiting drop can coexist on one database - a snapshot install and a replicated drop are applied on
+   * different threads - and must not refuse each other: see {@link #admit(String, Operation, boolean)}.
    */
-  private final Map<String, AtomicInteger> waitingRestores = new ConcurrentHashMap<>();
+  private final Map<String, int[]> waiting = new ConcurrentHashMap<>();
 
   /**
    * The monitor a bounded wait parks on, notified by every {@link #end(String, Operation)}.
@@ -178,13 +185,30 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    */
   @Override
   public Operation begin(final String databaseName, final Operation operation) {
-    // A RESTORE ALREADY WAITING ON THIS DATABASE TAKES PRIORITY OVER EVERY NEW RESERVATION OF A DIFFERENT KIND,
-    // EVEN WHEN NOTHING IS CURRENTLY IN PROGRESS (issue #7646): OTHERWISE A FRESH Operation.EXPORT - ADMITTED
-    // WITHOUT LIMIT - CAN ALWAYS SLIP IN BETWEEN THE LAST EXPORT DRAINING AND THE WAITING RESTORE'S NEXT RE-CHECK,
-    // AND THE COUNT NEVER REACHES ZERO. RESTORE ITSELF IS EXEMPT, OR THE WAITER'S OWN RE-CHECK - CALLED FROM
-    // INSIDE ITS BOUNDED WAIT LOOP IN begin(String, Operation, long) - WOULD REFUSE ITSELF ON ITS OWN REGISTRATION.
-    if (operation != Operation.RESTORE && isRestoreWaiting(databaseName))
-      return Operation.RESTORE;
+    return admit(databaseName, operation, true);
+  }
+
+  /**
+   * The reservation itself, with or without the waiter guard.
+   * <p>
+   * With {@code guarded}, a waiter of any OTHER kind already registered on this database takes priority over this
+   * new reservation, even when nothing is currently in progress (issues #7646, #8452): otherwise a fresh
+   * {@link Operation#EXPORT} - admitted without limit - can always slip in between the last export draining and the
+   * waiter's next re-check, and the count never reaches zero. The caller's own kind is exempt, so a second restore
+   * arriving while one waits is answered by {@link Operation#conflictsWith} alone, exactly as before.
+   * <p>
+   * A waiter's own re-check inside {@link #begin(String, Operation, long)} passes {@code guarded = false}: it is not
+   * a new arrival, and it must not be refused by a waiter of another kind. If a waiting restore's registration
+   * refused a waiting drop's re-check and vice versa, neither could ever take the slot, both bounds would expire and
+   * both would proceed without it - two destroyers of one directory at once. Unguarded, the two compete through
+   * {@link Operation#conflictsWith}: whichever re-checks first takes the slot, and its release wakes the other.
+   */
+  private Operation admit(final String databaseName, final Operation operation, final boolean guarded) {
+    if (guarded) {
+      final Operation waiter = waitingOther(databaseName, operation);
+      if (waiter != null)
+        return waiter;
+    }
 
     final AtomicReference<Operation> conflict = new AtomicReference<>();
 
@@ -215,9 +239,9 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * <p>
    * Every other caller may simply be refused: a scheduled backup is covered again on the next tick, and a restore or
    * an import is an operator command that can be retried. An HA snapshot install cannot - it applies a committed
-   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). So it needs a
-   * third answer between taking the slot and giving up: wait for whatever is in the way, and take the slot the
-   * moment it lets go.
+   * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). Nor can the apply
+   * of a replicated drop database, for the same reason (issue #8035). So they need a third answer between taking the
+   * slot and giving up: wait for whatever is in the way, and take the slot the moment it lets go.
    * <p>
    * The wait is bounded because the caller's own operation is: a timeout expiring means the caller proceeds without
    * the slot, loudly, which is the same outcome it had before this existed. Bounding it is also what keeps a caller
@@ -238,19 +262,21 @@ public class BackupCoordinator implements MaintenanceCoordinator {
 
     // REGISTERED BEFORE THE FIRST WAIT, NOT AFTER: A RESERVATION ARRIVING IN THE WINDOW BETWEEN THE INITIAL
     // begin() ABOVE AND THIS LINE STILL GETS ADMITTED, BUT EVERY ONE AFTER IT IS REFUSED BY THE GUARD IN
-    // begin(String, Operation) - SO THE OPERATIONS ALREADY RUNNING (OR THIS ONE STRAGGLER) ARE THE LAST ONES THIS
-    // CALLER HAS TO WAIT OUT (issue #7646). A NO-OP FOR ANY OPERATION OTHER THAN RESTORE: ONLY RESTORE CALLS THIS
-    // OVERLOAD, BUT THE GUARD IT REGISTERS FOR ONLY EVER EXEMPTS RESTORE ITSELF, SO REGISTERING A DIFFERENT KIND
-    // HERE WOULD MERELY COST A MAP ENTRY NO CALLER EVER CONSULTS.
-    final boolean waitingAsRestore = operation == Operation.RESTORE;
-    if (waitingAsRestore)
-      restoreStartedWaiting(databaseName);
+    // admit() - SO THE OPERATIONS ALREADY RUNNING (OR THIS ONE STRAGGLER) ARE THE LAST ONES THIS CALLER HAS TO WAIT
+    // OUT (issue #7646). EVERY KIND THAT EXCLUDES EVERYTHING REGISTERS, NOT ONLY RESTORE: THE REPLICATED DROP APPLY
+    // WAITS HERE AS DROP (issue #8035) AND IS STARVED BY AN EXPORT STREAM EXACTLY THE SAME WAY (issue #8452). A KIND
+    // THAT DOES NOT EXCLUDE EVERYTHING HAS NO CALLER HERE, AND GIVING IT PRIORITY WOULD LET A WAITING BACKUP REFUSE
+    // EXPORTS IT COULD HAVE RUN BESIDE.
+    final boolean registered = operation.excludesEverything();
+    if (registered)
+      startedWaiting(databaseName, operation);
     try {
       final long deadline = System.currentTimeMillis() + timeoutMs;
       synchronized (slotReleased) {
         // Re-checked inside the monitor before every wait, and end() takes the same monitor to notify AFTER it has
         // updated the map: a release that lands between the check and the wait therefore cannot be missed.
-        while ((conflict = begin(databaseName, operation)) != null) {
+        // UNGUARDED: THIS WAITER IS NOT A NEW ARRIVAL, AND A WAITER OF ANOTHER KIND MUST NOT REFUSE IT - SEE admit()
+        while ((conflict = admit(databaseName, operation, false)) != null) {
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0)
             return conflict;
@@ -266,44 +292,63 @@ public class BackupCoordinator implements MaintenanceCoordinator {
         return null;
       }
     } finally {
-      if (waitingAsRestore)
-        restoreStoppedWaiting(databaseName);
+      if (registered)
+        stoppedWaiting(databaseName, operation);
     }
   }
 
   /**
-   * Registers a waiting {@link Operation#RESTORE} on {@code databaseName}. Pairs with {@link #restoreStoppedWaiting}.
+   * Registers a waiter of {@code operation} on {@code databaseName}. Pairs with {@link #stoppedWaiting}.
    * <p>
-   * The create-or-increment happens in ONE {@code compute}, not a {@code computeIfAbsent} followed by a separate
-   * {@code incrementAndGet}: split across two steps, a second waiter's {@link #restoreStoppedWaiting} could land
-   * between them - find the freshly created counter still at zero, decrement it to below zero and remove the map
-   * entry - and this call's increment would then apply to a counter no longer in the map, silently losing the
-   * registration the whole {@code waitingRestores} mechanism exists for (issue #7646, review of PR #7649). Two
-   * waiting restores on one database are reachable: a second {@code RESTORE} is refused by {@code conflictsWith}
-   * and then waits in {@link #begin(String, Operation, long)} exactly like the first.
+   * The create-or-increment happens in ONE {@code compute}: split across two steps, a second waiter's
+   * {@link #stoppedWaiting} could land between them and remove the entry, and this call's increment would then apply
+   * to a counter no longer in the map, silently losing the registration the whole mechanism exists for (issue #7646,
+   * review of PR #7649). Two waiters on one database are reachable: a second {@code RESTORE} is refused by
+   * {@code conflictsWith} and then waits in {@link #begin(String, Operation, long)} exactly like the first, and a
+   * restore and a drop can wait side by side.
    */
-  private void restoreStartedWaiting(final String databaseName) {
-    waitingRestores.compute(databaseName, (name, count) -> {
-      if (count == null)
-        return new AtomicInteger(1);
-      count.incrementAndGet();
-      return count;
+  private void startedWaiting(final String databaseName, final Operation operation) {
+    waiting.compute(databaseName, (name, counts) -> {
+      final int[] updated = counts == null ? new int[OPERATIONS.length] : counts.clone();
+      updated[operation.ordinal()]++;
+      return updated;
     });
   }
 
   /**
-   * Deregisters a waiting {@link Operation#RESTORE} on {@code databaseName}, whether it stopped waiting because it
-   * was admitted, because it timed out or because it was interrupted - every exit out of the wait in
+   * Deregisters a waiter of {@code operation} on {@code databaseName}, whether it stopped waiting because it was
+   * admitted, because it timed out or because it was interrupted - every exit out of the wait in
    * {@link #begin(String, Operation, long)} owes this call.
    */
-  private void restoreStoppedWaiting(final String databaseName) {
-    waitingRestores.computeIfPresent(databaseName, (name, count) -> count.decrementAndGet() > 0 ? count : null);
+  private void stoppedWaiting(final String databaseName, final Operation operation) {
+    waiting.computeIfPresent(databaseName, (name, counts) -> {
+      if (counts[operation.ordinal()] == 0)
+        return counts;
+      final int[] updated = counts.clone();
+      updated[operation.ordinal()]--;
+      return isIdle(updated) ? null : updated;
+    });
   }
 
-  /** Whether at least one caller is currently waiting for a {@link Operation#RESTORE} on this database. */
-  private boolean isRestoreWaiting(final String databaseName) {
-    final AtomicInteger count = waitingRestores.get(databaseName);
-    return count != null && count.get() > 0;
+  /**
+   * The first kind other than {@code operation} with a waiter registered on this database, or {@code null} when
+   * there is none. The one named is whichever the iteration reaches first, not a ranking: any of them refuses the
+   * caller equally.
+   */
+  private Operation waitingOther(final String databaseName, final Operation operation) {
+    final int[] counts = waiting.get(databaseName);
+    if (counts == null)
+      return null;
+    for (final Operation kind : OPERATIONS)
+      if (kind != operation && counts[kind.ordinal()] > 0)
+        return kind;
+    return null;
+  }
+
+  /** Whether at least one caller of {@link #begin(String, Operation, long)} is waiting for {@code operation} here. */
+  boolean isWaiting(final String databaseName, final Operation operation) {
+    final int[] counts = waiting.get(databaseName);
+    return counts != null && counts[operation.ordinal()] > 0;
   }
 
   /**

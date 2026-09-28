@@ -86,6 +86,7 @@ import com.arcadedb.query.sql.method.string.SQLMethodTrim;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Default method factory.
@@ -99,6 +100,7 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
   private static final DefaultSQLMethodFactory INSTANCE = new DefaultSQLMethodFactory();
 
   private final Map<String, Object> methods = new HashMap<>();
+  private final Map<String, Object> builtInMethods;
 
   public static DefaultSQLMethodFactory getInstance() {
     return INSTANCE;
@@ -176,6 +178,24 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodToLowerCase.NAME, new SQLMethodToLowerCase());
     register(SQLMethodToUpperCase.NAME, new SQLMethodToUpperCase());
     register(SQLMethodTrim.NAME, new SQLMethodTrim());
+    builtInMethods = Map.copyOf(methods);
+  }
+
+  /**
+   * The names this factory registered itself, as of construction; {@link #register} is public, so the live
+   * {@link #getMethods()} can also hold methods added later. See {@code DefaultSQLFunctionFactory#getBuiltInFunctionNames()}.
+   */
+  public Set<String> getBuiltInMethodNames() {
+    return builtInMethods.keySet();
+  }
+
+  /**
+   * Whether {@code lowercaseName} still resolves to the implementation this factory registered for it at
+   * construction: false for a name added later and for a built-in name re-registered by an application.
+   */
+  public boolean isBuiltIn(final String lowercaseName) {
+    final Object builtIn = builtInMethods.get(lowercaseName);
+    return builtIn != null && builtIn == methods.get(lowercaseName);
   }
 
   public Map<String, Object> getMethods() {

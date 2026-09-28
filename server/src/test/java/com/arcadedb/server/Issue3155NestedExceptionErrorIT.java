@@ -42,7 +42,7 @@ class Issue3155NestedExceptionErrorIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Execute a command that will produce a nested exception (invalid SQL syntax with a cause chain)
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

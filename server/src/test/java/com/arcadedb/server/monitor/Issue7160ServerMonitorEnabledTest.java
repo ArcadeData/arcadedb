@@ -41,10 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7160ServerMonitorEnabledTest extends StaticBaseServerTest {
-  // Deliberately NOT the default 2480: this test needs no HTTP client, and a server left listening by another
-  // run would otherwise take the port and the failure would read as something else entirely.
-  private static final int HTTP_PORT = 2496;
-
   private ArcadeDBServer server;
 
   @AfterEach
@@ -126,7 +122,7 @@ class Issue7160ServerMonitorEnabledTest extends StaticBaseServerTest {
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
     configuration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases0");
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
-    configuration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, HTTP_PORT);
+    configuration.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, allocateFreePorts(1)[0]);
     configuration.setValue(GlobalConfiguration.SERVER_HTTP_IO_THREADS, 2);
     configuration.setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 2);
 

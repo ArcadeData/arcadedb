@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -68,6 +67,17 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   /** Every property of the chosen index, in key order: a composite index is not registered under a single one. */
   private final List<String> indexProperties;
   private boolean adaptive;
+  /**
+   * Whether the plan relies on the rows coming in index key order, in the direction {@link #ascending} says, to answer
+   * the statement's ORDER BY without sorting (issue #8422).
+   */
+  private boolean indexOrdered;
+  private boolean ascending = true;
+  /**
+   * Whether the vertices of the label the index does not hold, those with no value for the key, follow the index entries:
+   * set on a scan with no bound that stands for a whole label, where they sort last.
+   */
+  private boolean nullKeysLast;
   /**
    * How the calling thread's last execution was served, for the PROFILE that follows it on the same thread. Per thread
    * because the operator belongs to a cached plan that concurrent executions share; null before it decided. Not cleared
@@ -121,6 +131,29 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     return adaptive;
   }
 
+  /**
+   * Makes the scan produce its rows in index key order, which the plan then uses in place of a sort (issue #8422): no
+   * adaptive serving, which loads the rows in another order.
+   *
+   * @param ascending    the direction to walk the index in
+   * @param nullKeysLast whether the vertices of the label with no value for the key follow the index entries, so that
+   *                     a scan with no bound returns the whole label in Cypher order, where null sorts last
+   */
+  public void setIndexOrder(final boolean ascending, final boolean nullKeysLast) {
+    this.indexOrdered = true;
+    this.ascending = ascending;
+    this.nullKeysLast = nullKeysLast;
+    this.adaptive = false;
+  }
+
+  public boolean isIndexOrdered() {
+    return indexOrdered;
+  }
+
+  public boolean isAscending() {
+    return ascending;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -141,6 +174,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // Adaptive mode: records served in physical order, or every vertex of the label
       private PhysicalOrderRidFetcher fetcher;
       private Iterator<Record> labelScan;
+      // Index order with the null keys last: the label scan that follows the index, for the vertices it does not hold
+      private Iterator<Record> nullKeyScan;
 
       @Override
       public boolean hasNext() {
@@ -192,8 +227,28 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         }
 
         if (!cursor.hasNext()) {
-          finished = true;
+          if (nullKeysLast)
+            fetchNullKeys(n);
+          else
+            finished = true;
         }
+      }
+
+      /**
+       * The vertices of the label with no value for the key, after the index entries: the index does not hold them,
+       * and a null sorts last. Only an ascending scan with no bound asks for them.
+       */
+      private void fetchNullKeys(final int n) {
+        if (nullKeyScan == null)
+          nullKeyScan = context.getDatabase().iterateType(label, true);
+        while (buffer.size() < n && nullKeyScan.hasNext()) {
+          guard.check();
+          final Vertex vertex = nullKeyScan.next().asVertex();
+          if (vertex.get(propertyName) == null)
+            addVertex(vertex);
+        }
+        if (!nullKeyScan.hasNext())
+          finished = true;
       }
 
       /**
@@ -208,7 +263,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds);
+        // A label scan runs on this thread alone
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, 1);
         if (scanThreshold < 0)
           return false;
 
@@ -251,7 +307,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         }
 
         while (buffer.size() < n) {
-          final Object entry = fetcher.next();
+          // Loaded through the buckets, every page read once; a record deleted since the index answered is skipped
+          final Object entry = fetcher.nextRecord(context.getDatabase());
           if (entry == null) {
             finished = true;
             fetcher.close();
@@ -260,11 +317,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           }
           guard.check();
           try {
-            addVertex(entry instanceof RID rid ?
-                context.getDatabase().lookupByRID(rid, true).asVertex() :
-                ((Identifiable) entry).asVertex());
+            addVertex(((Identifiable) entry).asVertex());
           } catch (final RecordNotFoundException e) {
-            // Deleted since the index answered: nothing to match
+            // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
+            // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
           }
         }
       }
@@ -340,9 +396,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       /**
        * Opens a pass over the range. Every bound is pushed into the cursor, an upper one alone included: the range
        * starts at the first key and stops at the bound by itself, rather than loading every vertex from the first key
-       * on to compare it with the bound.
+       * on to compare it with the bound. A descending pass starts from the upper bound.
        */
       private IndexCursor openCursor() {
+        if (!ascending)
+          return resolvedLowerBound == null && resolvedUpperBound == null ?
+              rangeIndex.iterator(false) :
+              rangeIndex.range(false,
+                  resolvedUpperBound != null ? new Object[] { resolvedUpperBound } : null, resolvedUpperInclusive,
+                  resolvedLowerBound != null ? new Object[] { resolvedLowerBound } : null, resolvedLowerInclusive);
         if (resolvedLowerBound == null && resolvedUpperBound == null)
           return rangeIndex.iterator(true);
         if (resolvedUpperBound == null)
@@ -402,6 +464,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]");
+    if (indexOrdered)
+      sb.append(ascending ? " [index order" : " [index order, descending").append(nullKeysLast ? ", then null keys]" : "]");
     if (adaptive) {
       final Boolean scan = servedByScan.get();
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :
@@ -430,6 +494,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   public String getIndexName() {
     return indexName;
+  }
+
+  public List<String> getIndexProperties() {
+    return indexProperties;
   }
 
   /**

@@ -140,9 +140,9 @@ class Issue8323SqlForwardRequestIdTest {
 
   static void forward(final RaftReplicatedDatabase db, final String command) throws Exception {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class, ContextConfiguration.class);
+        String.class, String.class, Map.class, Object[].class);
     m.setAccessible(true);
-    m.invoke(db, "sql", command, null, new Object[0], config());
+    m.invoke(db, "sql", command, null, new Object[0]);
   }
 
   static ContextConfiguration config() {

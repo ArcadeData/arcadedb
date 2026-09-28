@@ -28,6 +28,7 @@ import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -534,6 +535,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         if (exchange.getRequestHeaders().contains(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER))
           LeaderForwardContext.markAlreadyForwarded(
               exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER));
+        // The command budget the forwarding node waits for, enforced here in place of this node's own database setting
+        // (issue #8313). Under the same gate: from a client it would lift the budget the database imposes.
+        CommandTimeoutOverride.set(CommandTimeoutOverride.parse(
+            exchange.getRequestHeaders().getFirst(LeaderForwardContext.FORWARDED_COMMAND_TIMEOUT_HEADER)));
         trustedForwardOrdinal = ForwardedRequestIdContext.parseForwardOrdinal(
             exchange.getRequestHeaders().getFirst(ForwardedRequestIdContext.FORWARD_ORDINAL_HEADER));
         trustedClientKey = ForwardedRequestIdContext.parseClientKey(
@@ -832,6 +837,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       ProtocolContext.clear();
       LeaderForwardContext.clear();
       ForwardedRequestIdContext.clear();
+      CommandTimeoutOverride.clear();
       LogManager.instance().setContext(null);
       // Invariant: the correlation context stays populated until here, AFTER observation.stop() above
       // has fired the tracing/observation handlers. LogCorrelationIT relies on reading the requestId
@@ -979,8 +985,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TransactionCommittedRemotelyException committedRemotely = firstOf(e, cause,
             TransactionCommittedRemotelyException.class);
     if (committedRemotely != null) {
-      return new ErrorClassification(409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-              committedRemotely, null, ErrorLogKind.USER);
+      // A subtype is a committed outcome whose local apply did NOT fail - the HA leader's "ALL quorum missed after the
+      // MAJORITY committed", which it completes locally before reporting (issue #8481) - so it gets a label that does
+      // not claim otherwise. The exception field names the exact type either way.
+      final String label = committedRemotely.getClass() == TransactionCommittedRemotelyException.class ?
+              "Transaction committed cluster-wide but the local apply failed - do not retry" :
+              "Transaction committed cluster-wide - do not retry";
+      return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
 
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation

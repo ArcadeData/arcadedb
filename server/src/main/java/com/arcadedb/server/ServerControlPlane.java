@@ -123,6 +123,22 @@ public class ServerControlPlane {
    * window: a node that converges and later opens a fresh window has a fresh decision to report.
    */
   private volatile boolean securityConvergenceGiveUpLogged   = false;
+  /**
+   * The highest {@link HAServerPlugin#getRuntimeJoinIndex()} an armed reading of this gate has seen, {@code -1}
+   * before any (issue #8414). The window is per join, not per process: when a re-add moves the join index forward
+   * the window and the give-up flag are cleared exactly as convergence clears them, so the new join is held for a
+   * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
+   * index - a Raft server that is not readable this tick - never restarts the bound. On an unarmed node held after
+   * a snapshot install (issue #8432) it is that install's index instead: both are log positions that only move
+   * forward, and a later one of either is a fresh window. One reading reports one or the other, never both: the
+   * hold is consulted only while the node is unarmed, and arming is one-way.
+   */
+  private volatile long    securityConvergenceJoinIndex      = -1L;
+  /**
+   * The {@link #securityConvergenceJoinIndex} for which the "leading, so nobody can confirm" line was last emitted,
+   * {@code -1} before any (issue #8465): once per join or install, not once per probe.
+   */
+  private volatile long    securityConvergenceLeaderLoggedFor = -1L;
 
   public ServerControlPlane(final ArcadeDBServer server) {
     this.server = server;
@@ -483,6 +499,31 @@ public class ServerControlPlane {
    * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, and when it expires the node reports READY with a
    * single SEVERE line naming the documents - the explicit, logged decision, rather than a silent deadlock or a
    * silent pass. {@code 0} still disables the gate entirely.
+   * <p>
+   * <b>The bound is per join (issue #8414).</b> The window is cleared by convergence and by the join index moving
+   * forward ({@link HAServerPlugin#getRuntimeJoinIndex()}): a re-add, or a snapshot install that moves the join
+   * boundary (issue #8353), is a new join with a window and a give-up decision of its own. Nothing else clears it,
+   * and a disarmed reading does not even look at it, so a Raft server that is briefly unreadable cannot restart
+   * the bound.
+   * <p>
+   * <b>A static member caught up by snapshot install is held too, without being armed (issue #8432).</b> Removed
+   * while down, re-added and caught up past the leader's compaction point, it never observes the re-add, so the
+   * runtime-join event above never happens for it, while no snapshot carries the security documents. On an unarmed
+   * node that installed a snapshot from the leader ({@link HAServerPlugin#getLastSnapshotInstallIndex()}) and has not
+   * had its documents confirmed since - in this process or, through the hold marker, a previous one (issue #8465) -
+   * the gate waits for {@link HAServerPlugin#securityDocumentsNotConfirmedSinceSnapshotInstall()}: the leader-confirmed
+   * match the install asks for, or the seed a mismatch triggers. The fingerprints are not consulted there, and the
+   * same bounded window applies, keyed by the install index the way an armed node's is keyed by its join index.
+   * <p>
+   * <b>A leader is not held (issue #8465).</b> Every piece of evidence that releases the gate comes from a leader
+   * that is not this node: the seed it submits, a later change it replicates, or the match it answers to
+   * {@code SecurityCatchUp}, which asks nobody while this node leads. A node that wins an election while still
+   * unconfirmed - right after its install, or right after a restart that restored its hold - would therefore wait
+   * out the whole window for evidence that cannot arrive, and then report a give-up whose advice does not apply. It
+   * is also not protected by the hold: the followers forward their writes to it whatever its readiness says. So a
+   * leader reports READY with one WARNING per join or install naming the unconfirmed documents, the window is
+   * restarted rather than spent, and the hold itself is left in place: when this node steps down, the catch-up asks
+   * the new leader and the gate holds it, with a full window, until that answer arrives.
    */
   private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
     final long window = server.getConfiguration()
@@ -491,17 +532,40 @@ public class ServerControlPlane {
       return null;
 
     final List<String> unconverged;
-    final boolean joinedAtRuntime;
+    final long joinIndex;
+    final boolean armed;
+    final boolean leading;
     try {
-      joinedAtRuntime = ha.hasJoinedClusterAtRuntime();
-      final ServerSecurity security = server.getSecurity();
-      final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
-      // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
-      // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
-      // the document must also have been installed after the change that (last) added it.
-      unconverged = joinedAtRuntime ?
-          unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin()) :
-          neverInstalled;
+      // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
+      // fault (issue #7819). Not gated, and decided BEFORE anything is read or reset (issue #8414, #8388): a node
+      // that reads false here because its Raft state was unreadable this tick - RaftHAPlugin answers false while
+      // raftHAServer is null - keeps the deadline it already opened. Deciding the convergence reset first would
+      // let such a reading clear it on a re-added node, whose fingerprints from its previous membership make the
+      // disarmed union empty.
+      if (!ha.hasJoinedClusterAtRuntime()) {
+        // Issue #8432: a static member removed while down, re-added and caught up by a snapshot install past the
+        // leader's compaction point is never armed, yet it may hold documents the cluster has since changed. Every
+        // such install holds it until they are confirmed. Read FIRST, and nothing is held or reset
+        // without one: an unreadable Raft server reports none, so the #8414 rule above holds here too. The
+        // fingerprints are not consulted - a cluster that never replicated a security document has none anywhere,
+        // which is exactly what #7819 must not hold - only the installs and matches recorded since the install.
+        final long installIndex = ha.getLastSnapshotInstallIndex();
+        if (installIndex <= 0)
+          return null;
+        unconverged = ha.securityDocumentsNotConfirmedSinceSnapshotInstall();
+        joinIndex = installIndex;
+        armed = false;
+      } else {
+        final ServerSecurity security = server.getSecurity();
+        final List<String> neverInstalled = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+        // A recorded fingerprint says the cluster installed a document here at SOME point, which a node re-added
+        // with its config volume retained satisfies from its previous membership (issue #8317). On a runtime joiner
+        // the document must also have been installed after the change that (last) added it.
+        unconverged = unionInDocumentOrder(neverInstalled, ha.securityDocumentsNotInstalledSinceRuntimeJoin());
+        joinIndex = ha.getRuntimeJoinIndex();
+        armed = true;
+      }
+      leading = !unconverged.isEmpty() && ha.isLeader();
     } catch (final Exception e) {
       // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
@@ -510,22 +574,45 @@ public class ServerControlPlane {
       return null;
     }
 
+    // A later join is a fresh window (issue #8414, #8382): a node whose first window expired unconverged and that
+    // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
+    // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
+    // counts, so a reading that reports none cannot restart the bound.
+    if (joinIndex > securityConvergenceJoinIndex) {
+      securityConvergenceJoinIndex = joinIndex;
+      securityConvergenceWindowOpenedAt = 0L;
+      securityConvergenceGiveUpLogged = false;
+    }
+
     if (unconverged.isEmpty()) {
-      // Converged: forget the window, which is the only condition that may reset it. A disarmed reading must
-      // NOT, and that is not a detail - hasJoinedClusterAtRuntime() answers false whenever the Raft server is
-      // not readable this tick (RaftHAPlugin returns it literally while raftHAServer is null), so resetting on
-      // it would restart the bound on every such blip and a node whose HA layer is flapping would never reach
-      // the give-up branch at all. The bound has to be a bound.
+      // Converged on an armed reading, or on an unarmed one that reports an install (issue #8432): forget the
+      // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
+      // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
+      // flapping would never reach the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
       securityConvergenceGiveUpLogged = false;
       return null;
     }
 
-    // Not a runtime joiner: a member of a cluster that has never replicated a security document, which is not a
-    // fault (issue #7819). Not gated, and the window is left exactly as it was: a node that reads false here
-    // because its Raft state was unreadable keeps the deadline it already opened.
-    if (!joinedAtRuntime)
+    if (leading) {
+      // Nobody can confirm a leader's documents (issue #8465): time spent leading is not time spent waiting, so the
+      // window restarts, and a step-down is held for a full one while its catch-up asks the new leader. A window that
+      // already gave up stays given up: its give-up is the bound's final answer for this join, and restarting it would
+      // pull a node that has been READY for hours out of the Service because it once led an election.
+      if (!securityConvergenceGiveUpLogged)
+        securityConvergenceWindowOpenedAt = 0L;
+      if (securityConvergenceLeaderLoggedFor != joinIndex) {
+        securityConvergenceLeaderLoggedFor = joinIndex;
+        LogManager.instance().log(this, Level.WARNING,
+            "This node leads the cluster while its security documents are still unconfirmed since %s: %s. Nobody can "
+                + "confirm them while it leads, so readiness is not held for them; its security catch-up asks the next "
+                + "leader it observes, and readiness is held again until that answer arrives. Reissue the change if "
+                + "this node may hold a user dropped, a group narrowed or a token revoked while it was away",
+            armed ? "it was added to the cluster" : "its snapshot install at index " + joinIndex,
+            String.join(", ", unconverged));
+      }
       return null;
+    }
 
     final long now = System.currentTimeMillis();
     if (securityConvergenceWindowOpenedAt == 0L)
@@ -537,13 +624,25 @@ public class ServerControlPlane {
 
     if (!securityConvergenceGiveUpLogged) {
       securityConvergenceGiveUpLogged = true;
-      LogManager.instance().log(this, Level.SEVERE,
-          "Reporting READY after waiting %dms for the cluster's security documents, which never reached this node: "
-              + "%s. This node is a cluster member enforcing its own copy of them - a user dropped since, a group "
-              + "narrowed since or a token revoked since is still good here. Re-run 'connect cluster' or re-POST "
-              + "/api/v1/cluster/peer for this node to reissue the seed, or reissue the change. Readiness is not "
-              + "held any longer because a node that is never seeded must not stall a rolling restart; raise "
-              + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
+      if (!armed)
+        // A static member (issue #8465): it was never admitted, so 'connect cluster' is not its remedy. What asks the
+        // leader again is its own catch-up - on the next leader change, or once per start - or an admission route.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Reporting READY after waiting %dms for the leader to confirm this node's security documents, which it "
+                + "has not done since the snapshot install at index %d: %s. No snapshot carries them, so this node may "
+                + "be enforcing a user dropped, a group narrowed or a token revoked while it was away. Restart this "
+                + "node or re-POST it to /api/v1/cluster/peer on any member to ask again, or reissue the change. "
+                + "Readiness is not held any longer because a node the leader never answers must not stall a rolling "
+                + "restart; raise arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, joinIndex,
+            String.join(", ", unconverged));
+      else
+        LogManager.instance().log(this, Level.SEVERE,
+            "Reporting READY after waiting %dms for the cluster's security documents, which never reached this node: "
+                + "%s. This node is a cluster member enforcing its own copy of them - a user dropped since, a group "
+                + "narrowed since or a token revoked since is still good here. Re-run 'connect cluster' or re-POST "
+                + "/api/v1/cluster/peer for this node to reissue the seed, or reissue the change. Readiness is not "
+                + "held any longer because a node that is never seeded must not stall a rolling restart; raise "
+                + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
     }
     return null;
   }

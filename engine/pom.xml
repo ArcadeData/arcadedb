@@ -64,7 +64,7 @@
             .github/scripts/check-native-graalvm-pin.py fails the always-on `lint` job whenever
             native.graalvm.version and native-image.yml disagree.
         -->
-        <graalvm.version>25.3.4.1</graalvm.version>
+        <graalvm.version>25.0.2</graalvm.version>
         <!--
             Bumping this requires re-checking several things LSMVectorIndex relies on that jvector does not
             contractually guarantee across versions:
@@ -81,7 +81,7 @@
               View.close() is a documented no-op as of 4.0.0-rc.9 - re-verify that close() still touches no
               live state before relying on it after a version bump.
         -->
-        <jvector.version>4.0.0-rc.9</jvector.version>
+        <jvector.version>4.0.1</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
         <jts-core.version>1.20.0</jts-core.version>
         <buildnumber-maven-plugin.version>3.3.1</buildnumber-maven-plugin.version>
@@ -93,7 +93,7 @@
              converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>7.34.8</cucumber.version>
+        <cucumber.version>7.34.9</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 

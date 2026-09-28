@@ -39,6 +39,7 @@ public class PhysicalPlan {
   private final PhysicalOperator rootOperator;
   private final double totalEstimatedCost;
   private final long totalEstimatedCardinality;
+  private final boolean indexOrdered;
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
@@ -48,11 +49,26 @@ public class PhysicalPlan {
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final PhysicalOperator rootOperator,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
+    this(logicalPlan, anchor, rootOperator, totalEstimatedCost, totalEstimatedCardinality, false);
+  }
+
+  public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
+                     final PhysicalOperator rootOperator,
+                     final double totalEstimatedCost, final long totalEstimatedCardinality, final boolean indexOrdered) {
     this.logicalPlan = logicalPlan;
     this.anchor = anchor;
     this.rootOperator = rootOperator;
     this.totalEstimatedCost = totalEstimatedCost;
     this.totalEstimatedCardinality = totalEstimatedCardinality;
+    this.indexOrdered = indexOrdered;
+  }
+
+  /**
+   * Whether the operator tree produces its rows in the order the statement's ORDER BY asks for, read from an index, so
+   * the plan needs no sort (issue #8422).
+   */
+  public boolean isIndexOrdered() {
+    return indexOrdered;
   }
 
   /**

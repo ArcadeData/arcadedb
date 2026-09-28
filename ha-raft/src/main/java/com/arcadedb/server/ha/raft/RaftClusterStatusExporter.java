@@ -89,17 +89,24 @@ class RaftClusterStatusExporter {
   static final class FollowerReplicationState {
     final long    matchIndex;
     final boolean matchIndexKnown;
+    final long    nextIndex;
+    final boolean nextIndexKnown;
     final long    lastRpcMs;
 
-    FollowerReplicationState(final long matchIndex, final boolean matchIndexKnown, final long lastRpcMs) {
+    FollowerReplicationState(final long matchIndex, final boolean matchIndexKnown, final long nextIndex,
+        final boolean nextIndexKnown, final long lastRpcMs) {
       this.matchIndex = matchIndex;
       this.matchIndexKnown = matchIndexKnown;
+      this.nextIndex = nextIndex;
+      this.nextIndexKnown = nextIndexKnown;
       this.lastRpcMs = lastRpcMs;
     }
 
     static FollowerReplicationState of(final Map<String, Object> state) {
       return new FollowerReplicationState(RaftHAServer.followerStateIndex(state, "matchIndex"),
           RaftHAServer.hasFollowerStateIndex(state, "matchIndex"),
+          RaftHAServer.followerStateIndex(state, "nextIndex"),
+          RaftHAServer.hasFollowerStateIndex(state, "nextIndex"),
           RaftHAServer.followerStateIndex(state, "lastRpcElapsedMs"));
     }
   }
@@ -429,6 +436,10 @@ class RaftClusterStatusExporter {
       if (!haServer.isLeader())
         return;
       clusterMonitor.updateLeaderCommitIndex(haServer.getCommitIndex());
+      // This leader's own compacted log start, read once per tick (issue #8457): a follower whose nextIndex
+      // has fallen at or below it can no longer be caught up by ordinary AppendEntries, whatever the numeric
+      // lag says - see ClusterMonitor#updateReplicaMatchIndex.
+      final long leaderLogStartIndex = haServer.getRaftLogStartIndex();
       for (final Map<String, Object> fs : haServer.getFollowerStates()) {
         final FollowerReplicationState state = FollowerReplicationState.of(fs);
         // A degraded entry (issue #4842) carries no match index. Feeding the monitor a placeholder would
@@ -441,7 +452,11 @@ class RaftClusterStatusExporter {
               fs.get("peerId"));
           continue;
         }
-        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), state.matchIndex, state.lastRpcMs);
+        // nextIndex is degraded independently of matchIndex (same #4842 window); -1 tells the monitor to skip
+        // the install-snapshot-loop check for this tick rather than compare against a fabricated value.
+        final long nextIndex = state.nextIndexKnown ? state.nextIndex : -1;
+        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), state.matchIndex, state.lastRpcMs,
+            nextIndex, leaderLogStartIndex);
       }
       // Issue #5304: with the per-replica classifications refreshed, re-emit the CLUSTER CONFIGURATION
       // table when the stable picture (membership, roles, statuses, term) changed since the last

@@ -109,6 +109,27 @@ class Issue5064CommittedRemotelyHttpStatusTest {
         .isEqualTo(TransactionCommittedRemotelyException.class.getName());
   }
 
+  /**
+   * Issue #8481: a committed outcome raised as a SUBTYPE - the HA leader's "ALL quorum missed after the MAJORITY
+   * committed" - keeps the 409 and its own type on the wire, with a label that does not claim a local apply failure it
+   * never had.
+   */
+  @Test
+  void committedRemotelySubtypeMapsTo409WithoutClaimingALocalApplyFailure() {
+    final class CommittedButNotConfirmedByEveryPeer extends TransactionCommittedRemotelyException {
+      CommittedButNotConfirmedByEveryPeer(final String message) {
+        super(message);
+      }
+    }
+    final HandledResponse response = handle(new TransactionException("Error on transaction commit",
+        new CommittedButNotConfirmedByEveryPeer("ALL quorum not reached after MAJORITY commit at logIndex=42")));
+
+    assertThat(response.statusCode).as("body=%s", response.body).isEqualTo(409);
+    final JSONObject json = new JSONObject(response.body);
+    assertThat(json.getString("error")).isEqualTo("Transaction committed cluster-wide - do not retry");
+    assertThat(json.getString("exception")).isEqualTo(CommittedButNotConfirmedByEveryPeer.class.getName());
+  }
+
   @Test
   void plainTransactionExceptionStillMapsTo500() {
     // Guards the catch ORDER: the committed-remotely arm precedes the generic TransactionException arm.

@@ -58,6 +58,8 @@ import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -153,6 +155,28 @@ public final class SnapshotInstaller {
    * HTTP because no HTTPS endpoint could be resolved for the leader.
    */
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
+
+  /**
+   * The lowest Raft applied index a snapshot this thread downloads may be served at (issue #8454), or {@code -1}
+   * for no floor. Set by {@link #runRequiringSourceAppliedIndex} for the length of one install, which runs its
+   * download on the calling thread.
+   * <p>
+   * A thread-local rather than a parameter because the floor belongs to the install lock the caller holds
+   * ({@code ArcadeStateMachine.runUnderInstallGate}), and every install that lock guards reaches the download
+   * through a different chain of {@link #install} and {@link #acquireNewDatabase} overloads - the reconciler's
+   * three among them. Setting it where the lock is taken covers all of them at once, and an install that takes no
+   * lock gets no floor, which is exactly what it got before.
+   */
+  private static final ThreadLocal<Long> REQUIRED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
+
+  /** Logged at most once: a leader predating issue #8454 cannot say how current its copy is. */
+  private static final AtomicBoolean APPLIED_INDEX_HEADER_MISSING_WARNED = new AtomicBoolean(false);
+
+  /**
+   * Test-only hook called with the database name when a download is refused because the leader's copy is behind the
+   * entries this node already applied (issue #8454). {@code null} in production.
+   */
+  static volatile Consumer<String> sourceBehindForTesting = null;
 
   /**
    * Absolute database directory paths with installs currently in flight, and how many. The lifecycle assumes
@@ -286,6 +310,15 @@ public final class SnapshotInstaller {
    * registration too.
    */
   static volatile Runnable existsDatabaseRaceBarrierForTesting = null;
+
+  /**
+   * Test-only barrier invoked with the database name once the leader's snapshot is fully staged in
+   * {@code .snapshot-new} and before {@link #swapAndReopen} takes the registry lock, i.e. while the live copy is
+   * still open. {@code null} in production (one reference read per install). The issue-#7958 regression test
+   * pauses here to commit a write on the leader in the window between the leader serving the snapshot and this
+   * node swapping it in, and proves the entry is not applied to the copy about to be discarded.
+   */
+  static volatile Consumer<String> snapshotStagedForTesting = null;
 
   /**
    * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
@@ -459,17 +492,20 @@ public final class SnapshotInstaller {
     final boolean keepMarkerIfDownloadFails = Files.exists(pendingMarker) && !looksLikeADatabaseDirectory(dbPath);
 
     // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
-    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
+    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state. The pending marker
+    // is NOT part of it: over a torn directory it is the only thing keeping that directory unopenable, and deleting
+    // it here left a window - the staging directory creation and the marker rewrite below, both writes on what is
+    // often a full volume - in which a failure or a crash stripped it for good (issue #8381). It is rewritten in
+    // place instead, so a marker present on entry stays present at every instant.
     deleteDirectoryIfExists(snapshotNew);
     deleteDirectoryIfExists(snapshotBackup);
-    Files.deleteIfExists(pendingMarker);
     deleteSwapState(dbPath);
 
     Files.createDirectories(snapshotNew);
 
     // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
     // directory so a crash right after this point still leaves the marker on disk for startup
-    // recovery to find (issue #4830).
+    // recovery to find (issue #4830). Over an existing marker this truncates it in place.
     writeMarkerDurable(pendingMarker);
 
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
@@ -506,6 +542,10 @@ public final class SnapshotInstaller {
     // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
     // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
     writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
+
+    final Consumer<String> staged = snapshotStagedForTesting;
+    if (staged != null)
+      staged.accept(databaseName);
 
     // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
     // while the files are being moved.
@@ -783,6 +823,47 @@ public final class SnapshotInstaller {
     } catch (final RuntimeException e) {
       throw new IOException("downloaded snapshot failed to open: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * The databases this node holds on disk but not in the server registry, sorted (issue #8464): what {@code close
+   * database} leaves behind. That command closes the instance and deregisters it, leaves its directory in place and is
+   * not leader-forwarded, so it can run on any follower - and {@code ArcadeDBServer.getDatabase} reopens the directory
+   * on the next request that names it. A resync that walks only {@code getDatabaseNames()} therefore skips a copy
+   * this node will serve again, and then records the gap it was run to close as applied.
+   * <p>
+   * A directory counts when the server would load it under that name: not reserved (the {@code .raft} control
+   * directory, the {@code .acquire-} and {@code .dropped-} staging directories all start with the reserved prefix),
+   * a valid database name, and not empty. An empty directory holds nothing to reopen - it is how a failed install
+   * leaves the directory it created (issue #8045) - so installing over it would only pull a database this node never
+   * had. A directory carrying the {@code .snapshot-pending} marker of an interrupted install IS listed: the boot scan
+   * deferred it rather than registering it, and an install is exactly what reconciles it.
+   *
+   * @throws IOException when the databases directory cannot be listed: the caller cannot then tell which copies it
+   *                     would be skipping, so it must fail rather than report every database reinstalled
+   */
+  static Set<String> closedDatabaseNames(final ArcadeDBServer server) throws IOException {
+    final Set<String> names = new TreeSet<>();
+    final Path databasesDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    if (!Files.isDirectory(databasesDir))
+      return names;
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(databasesDir)) {
+      for (final Path entry : entries) {
+        final String name = entry.getFileName().toString();
+        if (ArcadeDBServer.isReservedDatabaseName(name) || !Files.isDirectory(entry) || server.existsDatabase(name))
+          continue;
+        try {
+          server.checkDatabaseNameIsValid(name);
+        } catch (final IllegalArgumentException e) {
+          continue; // getDatabase would refuse to open it under this name, so nothing serves it
+        }
+        try (final DirectoryStream<Path> content = Files.newDirectoryStream(entry)) {
+          if (content.iterator().hasNext())
+            names.add(name);
+        }
+      }
+    }
+    return names;
   }
 
   /**
@@ -1628,8 +1709,13 @@ public final class SnapshotInstaller {
       }
     }
 
-    throw new IOException("Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'",
-        lastException);
+    final String message = "Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'";
+    // Judged on the LAST attempt only: a 404 followed by any other failure says nothing definite about the leader, and
+    // a leader that answered 404 every time it was reachable still answers 404 (issue #8559). Retried like any other
+    // failure rather than given up on at once, so a leader still loading its databases is given the same backoff.
+    if (lastException instanceof LeaderDoesNotHoldDatabaseException)
+      throw new LeaderDoesNotHoldDatabaseException(message + ": the leader does not hold it", lastException);
+    throw new IOException(message, lastException);
   }
 
   private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
@@ -1662,8 +1748,17 @@ public final class SnapshotInstaller {
 
     try {
       final int responseCode = connection.getResponseCode();
+      // The leader's handler answers 404 exactly when it does not hold the database registered: a verdict about the
+      // cluster, not about this transfer, so it is typed apart from every other failure (issue #8559).
+      if (responseCode == HttpURLConnection.HTTP_NOT_FOUND)
+        throw new LeaderDoesNotHoldDatabaseException(
+            "Failed to download snapshot: HTTP 404, the leader does not hold database '" + databaseName + "'");
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
+
+      // Before anything else about the body: a copy behind what this node already applied is not worth reading.
+      checkSourceAppliedIndex(databaseName, connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER),
+          requiredSourceAppliedIndex());
 
       // A leader on issue #4831 or later advertises a completeness manifest via this header; when present
       // the manifest becomes mandatory, so a truncated download (manifest dropped) fails loudly. A leader
@@ -1703,6 +1798,68 @@ public final class SnapshotInstaller {
   private static void purgeRaftLogBeforeInstall(final String databaseName, final ArcadeDBServer server) {
     if (server != null && server.getHA() instanceof RaftHAPlugin plugin && plugin.getRaftHAServer() != null)
       plugin.getRaftHAServer().compactRaftLogBeforeSnapshotInstall(databaseName);
+  }
+
+  /**
+   * Runs {@code install} with {@code floor} as the lowest applied index a snapshot it downloads may be served at
+   * (issue #8454). Restores the previous floor afterwards, because the apply thread installs reentrantly.
+   */
+  static void runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
+      throws IOException {
+    final Long previous = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    REQUIRED_SOURCE_APPLIED_INDEX.set(floor);
+    try {
+      install.run();
+    } finally {
+      if (previous == null)
+        REQUIRED_SOURCE_APPLIED_INDEX.remove();
+      else
+        REQUIRED_SOURCE_APPLIED_INDEX.set(previous);
+    }
+  }
+
+  /** The floor {@link #runRequiringSourceAppliedIndex} set on this thread, or {@code -1} when there is none. */
+  static long requiredSourceAppliedIndex() {
+    final Long floor = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    return floor != null ? floor : -1L;
+  }
+
+  /**
+   * Refuses a snapshot served at an applied index below {@code floor} (issue #8454), before a byte of its body is
+   * read. This node applied every entry up to {@code floor} to the copy the install is about to replace, and nothing
+   * applies them again once the swap is done, so a copy that lacks one of them loses it on this node for good - the
+   * #7958 divergence, reached from the leader's side instead of this one's. The leader publishes an entry's pages on
+   * its own apply thread, which can trail this node's. The refusal is an {@link IOException}, so the download is
+   * retried with backoff, which gives that apply thread time to catch up.
+   * <p>
+   * An absent or malformed header is accepted: a leader predating #8454 during a rolling upgrade cannot say, and
+   * refusing every copy it serves would fail every install until the upgrade is done.
+   */
+  static void checkSourceAppliedIndex(final String databaseName, final String header, final long floor)
+      throws IOException {
+    if (floor < 0)
+      return;
+    final long served;
+    try {
+      served = header == null || header.isBlank() ? Long.MIN_VALUE : Long.parseLong(header.trim());
+    } catch (final NumberFormatException e) {
+      return;
+    }
+    if (served == Long.MIN_VALUE) {
+      if (APPLIED_INDEX_HEADER_MISSING_WARNED.compareAndSet(false, true))
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "The leader serving the snapshot of '%s' does not report its applied index: it cannot be checked to carry "
+                + "every entry this node already applied. Upgrade every node to close this window", null, databaseName);
+      return;
+    }
+    if (served < floor) {
+      final Consumer<String> hook = sourceBehindForTesting;
+      if (hook != null)
+        hook.accept(databaseName);
+      throw new IOException("The leader's snapshot of '" + databaseName + "' was served at applied index " + served
+          + ", behind index " + floor + " this node already applied to the copy it would replace: refusing it so "
+          + "those entries are not lost, and asking again once the leader has applied them");
+    }
   }
 
   /** Parses the {@link SnapshotManager#UNCOMPRESSED_BYTES_HEADER} value; absent or malformed reads as unknown ({@code -1}). */

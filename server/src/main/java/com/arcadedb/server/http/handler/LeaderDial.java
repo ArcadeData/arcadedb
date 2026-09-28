@@ -21,11 +21,15 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -186,6 +190,39 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * one-time notices about an SSL cluster's peer transport.
    */
   private static final AtomicBoolean HTTPS_CLIENT_UNAVAILABLE_WARNED = new AtomicBoolean(false);
+
+  /**
+   * Sends {@code request} and waits for the answer for at most {@code deadlineMs}, then cancels the exchange and throws
+   * {@link java.net.http.HttpTimeoutException} (issue #8325). Otherwise it behaves like {@link HttpClient#send}: the answer, or the
+   * exception the exchange failed with, of its own type ({@link java.net.http.HttpConnectTimeoutException},
+   * {@link java.net.ConnectException}, ...), so a caller's existing catch arms keep telling those apart.
+   * <p>
+   * {@code HttpRequest.timeout} cannot be relied on for the same bound, because what it covers depends on the JDK. On
+   * JDK 21-25 it stops at the response HEADERS: a leader that sends headers and then stalls inside its body leaves a
+   * {@code BodyHandlers.ofString()} read with no bound at all. On JDK 26+ it covers the body too. Awaiting the future
+   * applies one bound on every JDK, and what it covers is decided by the body handler: the whole body for a buffered
+   * handler, which completes the future only once the body is read; the headers alone for a streaming one such as
+   * {@code ofInputStream()}, whose body the caller then has to bound itself.
+   * <p>
+   * The future is cancelled on the deadline and on an interrupt, which aborts the exchange and closes its connection
+   * rather than leaving it to the leader.
+   *
+   * @param deadlineMs the longest to wait, floored at {@link #MIN_FORWARD_TIMEOUT_MS}
+   */
+  public static <T> HttpResponse<T> sendBounded(final HttpClient client, final HttpRequest request,
+      final HttpResponse.BodyHandler<T> handler, final long deadlineMs) throws IOException, InterruptedException {
+    // Shared with the Java remote client and the AI handlers since issue #8473, hence its home in `network`.
+    return BoundedHttpExchange.send(client, request, handler, Math.max(deadlineMs, MIN_FORWARD_TIMEOUT_MS));
+  }
+
+  /**
+   * Closes the body of an answer that completed but will never be read; see {@link BoundedHttpExchange#closeBodyOf}.
+   */
+  // Package-private so a test can hand it a future that failed, which a live interrupt race cannot reliably produce.
+  // @VisibleForTesting
+  static void closeBodyOf(final CompletableFuture<? extends HttpResponse<?>> done) {
+    BoundedHttpExchange.closeBodyOf(done);
+  }
 
   /** True when the cluster requires TLS for this forward and it cannot be established; {@link #refusal} says why. */
   public boolean refused() {

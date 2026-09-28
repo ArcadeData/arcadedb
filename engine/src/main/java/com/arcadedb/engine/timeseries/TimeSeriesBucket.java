@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Mutable TimeSeries bucket backed by paginated storage.
@@ -128,6 +129,39 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private boolean[]                     dictEncoded;
   // The ordinals of the dictionary-encoded columns, so the ingest path can walk only those.
   private int[]                         dictColumns;
+  // Byte offset of each dictionary-encoded column inside a row, parallel to dictColumns, or -1 when a
+  // variable-width column precedes it and the offset has to be walked per row.
+  private int[]                         dictColumnRowOffsets;
+  // Per data page, the distinct dictionary ids the page holds, indexed by page number (issue #8574).
+  // Replaced wholesale on growth and on a layout change; a lost race only costs a rebuild.
+  private volatile PageTagSummary[]     pageTagSummaries = new PageTagSummary[0];
+  // Bumped when a replay rewrites a page at the version it already had. A summary is trusted only under the
+  // generation a scan read before fetching any page, so one built from the pre-replay image is never reused after.
+  private final AtomicLong              summaryGeneration = new AtomicLong();
+
+  /**
+   * The distinct dictionary ids one data page holds for each dictionary-encoded TAG column, so a scan with a tag
+   * condition can drop a page that cannot hold the tag without reading a single row of it (issue #8574).
+   * <p>
+   * It is only ever trusted for the exact page image it was built from: the page version changes on every commit
+   * that writes the page (an append, a compaction clearing it, a follower applying the leader's copy), and the
+   * sample count is checked too. A page the current transaction has modified is never summarised or checked,
+   * because its version does not move until commit.
+   */
+  private static final class PageTagSummary {
+    private final long    version;
+    private final int     sampleCount;
+    private final long    generation;
+    // Indexed like dictColumns; each array sorted ascending, without duplicates.
+    private final int[][] ids;
+
+    private PageTagSummary(final long version, final int sampleCount, final long generation, final int[][] ids) {
+      this.version = version;
+      this.sampleCount = sampleCount;
+      this.generation = generation;
+      this.ids = ids;
+    }
+  }
 
   /**
    * Factory handler for loading existing .tstb files during schema load.
@@ -227,12 +261,27 @@ public class TimeSeriesBucket extends PaginatedComponent {
     }
 
     this.dictColumns = new int[dictCount];
+    this.dictColumnRowOffsets = new int[dictCount];
     int d = 0;
-    for (int i = 0; i < valueColumnCount; i++)
-      if (dictEncoded[i])
-        dictColumns[d++] = i;
+    int rowOffset = 8;
+    colIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (dictEncoded[colIdx]) {
+        dictColumns[d] = colIdx;
+        dictColumnRowOffsets[d++] = rowOffset;
+      }
+      if (rowOffset >= 0) {
+        final int fixed = dictEncoded[colIdx] ? DICT_ID_SIZE : col.getFixedSize();
+        // An inline STRING is written packed, so whatever follows it moves from row to row.
+        rowOffset = fixed > 0 ? rowOffset + fixed : -1;
+      }
+      colIdx++;
+    }
 
     this.rowSize = calculateRowSize(columns);
+    this.pageTagSummaries = new PageTagSummary[0];
   }
 
   /**
@@ -439,6 +488,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return results;
@@ -455,6 +506,12 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
       // Skip pages outside range
       if (pageMaxTs < fromTs || pageMinTs > toTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -510,6 +567,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
@@ -546,6 +605,13 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
       // Skip pages that cannot beat the rows already collected
       if (held >= need && pageMaxTs <= cutoffTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      // Skip pages that hold no row of the tag, without reading their rows (issue #8574)
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -616,6 +682,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
@@ -652,6 +720,13 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
       // Skip pages that cannot beat the rows already collected
       if (held >= need && pageMinTs >= cutoffTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      // Skip pages that hold no row of the tag, without reading their rows (issue #8574)
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -708,12 +783,16 @@ public class TimeSeriesBucket extends PaginatedComponent {
     // Non-null only for a dictionary-encoded column: the candidates resolved to ids once, so the
     // per-row test is an int compare against a tiny array.
     private final int[]    dictIds;
+    // Position of the column in dictColumns, which is where a PageTagSummary keeps its ids; -1 when not encoded.
+    private final int      dictSlot;
 
-    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values, final int[] dictIds) {
+    private TagMatcher(final int columnIndex, final Set<?> values, final byte[][] utf8Values, final int[] dictIds,
+        final int dictSlot) {
       this.columnIndex = columnIndex;
       this.values = values;
       this.utf8Values = utf8Values;
       this.dictIds = dictIds;
+      this.dictSlot = dictSlot;
     }
   }
 
@@ -752,7 +831,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
         }
         if (found == 0)
           return null;
-        matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), null, Arrays.copyOf(resolved, found));
+        final int[] dictIds = Arrays.copyOf(resolved, found);
+        Arrays.sort(dictIds);
+        matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), null, dictIds, dictSlotOf(cond.columnIndex()));
         continue;
       }
 
@@ -771,7 +852,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
           utf8Values[v++] = ((String) value).getBytes(StandardCharsets.UTF_8);
       }
 
-      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values, null);
+      matchers[i] = new TagMatcher(cond.columnIndex(), cond.matchValues(), utf8Values, null, -1);
     }
     return matchers;
   }
@@ -813,6 +894,137 @@ public class TimeSeriesBucket extends PaginatedComponent {
         return false;
     }
     return true;
+  }
+
+  private int dictSlotOf(final int columnIndex) {
+    for (int d = 0; d < dictColumns.length; d++)
+      if (dictColumns[d] == columnIndex)
+        return d;
+    return -1;
+  }
+
+  /**
+   * Whether the page can hold a row satisfying every dictionary-encoded condition, answered from the page's
+   * {@link PageTagSummary} instead of its rows (issue #8574). {@code true} whenever it cannot tell: no dictionary
+   * condition, or a page this transaction has modified.
+   * <p>
+   * The conditions are a conjunction, so one condition none of whose candidates the page holds rules the page out.
+   * Without this a scan for a tag had nothing to stop it on a page that did not hold the tag: the descending walk
+   * prunes on a cut-off, and a shard or a stretch of pages with no row of the tag never produces one, so every row
+   * of it was read and tag-checked to find nothing.
+   */
+  private boolean pageMayHoldTags(final BasePage page, final int pageNum, final int sampleCount, final TagMatcher[] matchers,
+      final long generation) {
+    boolean anyDict = false;
+    for (final TagMatcher matcher : matchers)
+      if (matcher.dictSlot >= 0) {
+        anyDict = true;
+        break;
+      }
+    if (!anyDict)
+      return true;
+
+    final PageTagSummary summary = pageTagSummary(page, pageNum, sampleCount, generation);
+    if (summary == null)
+      return true;
+
+    for (final TagMatcher matcher : matchers) {
+      if (matcher.dictSlot < 0)
+        continue;
+      final int[] present = summary.ids[matcher.dictSlot];
+      boolean found = false;
+      for (final int candidate : matcher.dictIds)
+        if (Arrays.binarySearch(present, candidate) >= 0) {
+          found = true;
+          break;
+        }
+      if (!found)
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns the tag summary of the page, building and caching it when the cached one is missing or describes
+   * another image of the page. {@code null} for a page modified by the current transaction: its version only moves
+   * at commit, so neither a cached summary nor one built from it could be told apart from the committed image.
+   */
+  /**
+   * Drops the cached tag summary of one data page. Called when the page is rewritten outside a transaction of this
+   * process, by WAL recovery or HA replay: a torn-write repair rewrites a page at the version it already had, which
+   * the version check in {@link #pageTagSummary} cannot see (issue #8574).
+   */
+  public void invalidatePageTagSummary(final int pageNum) {
+    // First the generation, so a summary a concurrent scan builds from the pre-replay image and publishes after the
+    // slot below is cleared carries a generation no later scan accepts.
+    summaryGeneration.incrementAndGet();
+    final PageTagSummary[] cache = pageTagSummaries;
+    if (pageNum >= 0 && pageNum < cache.length)
+      cache[pageNum] = null;
+  }
+
+  private PageTagSummary pageTagSummary(final BasePage page, final int pageNum, final int sampleCount, final long generation) {
+    if (page instanceof MutablePage)
+      return null;
+
+    final long version = page.getVersion();
+    PageTagSummary[] cache = pageTagSummaries;
+    if (pageNum < cache.length) {
+      final PageTagSummary cached = cache[pageNum];
+      if (cached != null && cached.version == version && cached.sampleCount == sampleCount && cached.generation == generation)
+        return cached;
+    }
+
+    final PageTagSummary summary = new PageTagSummary(version, sampleCount, generation, collectDictIds(page, sampleCount));
+
+    cache = pageTagSummaries;
+    if (pageNum >= cache.length) {
+      cache = Arrays.copyOf(cache, Math.max(pageNum + 1, cache.length * 2));
+      cache[pageNum] = summary;
+      pageTagSummaries = cache;
+    } else
+      // A plain element store, not a volatile publication: another thread may not see it and rebuild the summary
+      // itself. That is the only cost - PageTagSummary is immutable (final fields) and checked against the page
+      // version before use, so no thread can read a half-built or stale one.
+      cache[pageNum] = summary;
+    return summary;
+  }
+
+  private int[][] collectDictIds(final BasePage page, final int sampleCount) {
+    final int[][] result = new int[dictColumns.length][];
+    final int[] ids = new int[sampleCount];
+    for (int d = 0; d < dictColumns.length; d++) {
+      final int fixedOffset = dictColumnRowOffsets[d];
+      for (int row = 0; row < sampleCount; row++) {
+        final int rowOffset = DATA_ROWS_OFFSET + row * rowSize;
+        ids[row] = page.readInt(fixedOffset >= 0 ? rowOffset + fixedOffset : columnOffset(page, rowOffset, dictColumns[d]));
+      }
+      Arrays.sort(ids, 0, sampleCount);
+      int distinct = 0;
+      for (int i = 0; i < sampleCount; i++)
+        if (distinct == 0 || ids[i] != ids[distinct - 1])
+          ids[distinct++] = ids[i];
+      result[d] = Arrays.copyOf(ids, distinct);
+    }
+    return result;
+  }
+
+  /**
+   * Walks the row's stored columns to the one at ordinal {@code columnIndex}, the way {@link #matchesTagFilter} does.
+   */
+  private int columnOffset(final BasePage page, final int rowOffset, final int columnIndex) {
+    int colOffset = rowOffset + 8;
+    int colIdx = 0;
+    for (int c = 0; c < columns.size(); c++) {
+      final ColumnDefinition col = columns.get(c);
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (colIdx == columnIndex)
+        return colOffset;
+      colOffset += getColumnStorageSize(page, colOffset, col, colIdx);
+      colIdx++;
+    }
+    throw new IllegalStateException("Column " + columnIndex + " not found in TimeSeries bucket '" + getName() + "'");
   }
 
   private static boolean matchesDictId(final int id, final int[] candidates) {

@@ -21,6 +21,7 @@ package com.arcadedb.server.ai;
 import com.arcadedb.Constants;
 import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -72,6 +73,28 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   // a SelectorManager NIO thread that survives until the client is GC'd; per-instance
   // clients leaked dozens of threads per server start under the integration-test suite.
   private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+
+  /**
+   * How long the gateway has to answer a buffered chat request, body included. Enforced by
+   * {@link BoundedHttpExchange#send} rather than by the request timeout alone, which on JDK 21-25 stops once the
+   * response headers arrive (issue #8473).
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
+   */
+  static volatile long gatewayTimeoutMs = 120_000L;
+
+  /** The same bound on the POST that hands a tool result back to the gateway; mutable for the same reason. */
+  static volatile long toolResultTimeoutMs = 15_000L;
+
+  /**
+   * The streamed chat: how long the gateway may take to send its headers, and then how long it may stay silent while
+   * this server waits on the next event. A bound on silence, not on length: a conversation that keeps producing events
+   * runs as long as it needs to. The request carries no timeout of its own, since on JDK 26+ that would cap the whole
+   * stream (issue #8473).
+   * Mutable and package-private only so a test can shorten it; JVM-wide, so such a test restores it afterwards and
+   * relies on the module's tests not running in parallel.
+   */
+  static volatile long streamSilenceMs = 5 * 60_000L;
 
   private final ArcadeDBServer server;
   private final AiConfiguration config;
@@ -240,13 +263,14 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         .header("Content-Type", "application/json")//
         .header("Authorization", "Bearer " + config.getSubscriptionToken())//
         .POST(HttpRequest.BodyPublishers.ofString(gatewayRequest.toString()))//
-        .timeout(Duration.ofMinutes(5))//
         .build();
 
-    final HttpResponse<InputStream> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    final HttpResponse<InputStream> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
+        HttpResponse.BodyHandlers.ofInputStream(), streamSilenceMs);
+    final InputStream responseBody = BoundedHttpExchange.silenceBounded(response.body(), streamSilenceMs);
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
-      try (InputStream body = response.body()) {
+      try (InputStream body = responseBody) {
         final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
         final JSONObject errBody = new JSONObject(bodyStr);
         final String code = errBody.getString("code", "token_invalid");
@@ -259,7 +283,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     }
 
     if (response.statusCode() != 200) {
-      try (InputStream body = response.body()) {
+      try (InputStream body = responseBody) {
         final String bodyStr = new String(body.readAllBytes(), StandardCharsets.UTF_8);
         throw new RuntimeException("Gateway returned status " + response.statusCode() + ": " + bodyStr);
       }
@@ -278,7 +302,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     final OutputStream output = exchange.getOutputStream();
     String gatewaySessionId = null;
 
-    try (InputStream body = response.body();
+    try (InputStream body = responseBody;
          BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
       String line;
       while ((line = reader.readLine()) != null) {
@@ -403,10 +427,11 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         .header("Content-Type", "application/json")
         .header("Authorization", "Bearer " + config.getSubscriptionToken())
         .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-        .timeout(Duration.ofSeconds(15))
+        .timeout(Duration.ofMillis(toolResultTimeoutMs))
         .build();
     try {
-      final HttpResponse<String> resp = HTTP_CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> resp = BoundedHttpExchange.send(HTTP_CLIENT, req, HttpResponse.BodyHandlers.ofString(),
+          toolResultTimeoutMs);
       if (resp.statusCode() != 200) {
         LogManager.instance().log(this, Level.WARNING,
             "AI gateway tool_result POST returned %d: %s", resp.statusCode(), resp.body());
@@ -460,10 +485,11 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         .header("Content-Type", "application/json")//
         .header("Authorization", "Bearer " + config.getSubscriptionToken())//
         .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))//
-        .timeout(Duration.ofSeconds(120))//
+        .timeout(Duration.ofMillis(gatewayTimeoutMs))//
         .build();
 
-    final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+    final HttpResponse<String> response = BoundedHttpExchange.send(HTTP_CLIENT, request,
+        HttpResponse.BodyHandlers.ofString(), gatewayTimeoutMs);
 
     if (response.statusCode() == 401 || response.statusCode() == 403) {
       // Parse the gateway error to get the specific code (token_invalid, token_expired, etc.)

@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.function.BiFunction;
@@ -106,8 +107,9 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
   private final    AtomicLong                        totalPagesWrittenSize                 = new AtomicLong();
-  private final    AtomicLong                        cacheHits                             = new AtomicLong();
-  private final    AtomicLong                        cacheMiss                             = new AtomicLong();
+  // #8523: LongAdder, NOT AtomicLong: BUMPED ON EVERY PAGE ACCESS OF EVERY THREAD, READ ONLY BY THE STATISTICS
+  private final    LongAdder                         cacheHits                             = new LongAdder();
+  private final    LongAdder                         cacheMiss                             = new LongAdder();
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
@@ -226,6 +228,9 @@ public class PageManager extends LockContext {
    */
   private static volatile PageReadFaultInjector pageReadFaultInjector = null;
 
+  /** The installed test-only page-write fault injector, {@code null} when there is none. See {@link PageWriteFaultInjector}. */
+  private static volatile PageWriteFaultInjector pageWriteFaultInjector = null;
+
   /**
    * TEST-ONLY fault injection on the logical page-read funnel (#6282, item 4).
    * <p>
@@ -267,6 +272,27 @@ public class PageManager extends LockContext {
   /** The installed test-only page-read fault injector, {@code null} when there is none - which is the steady state. */
   public static PageReadFaultInjector getPageReadFaultInjector() {
     return pageReadFaultInjector;
+  }
+
+  /**
+   * TEST-ONLY fault injection on the asynchronous page flush, the write-side twin of {@link PageReadFaultInjector}: it
+   * makes {@link #flushPage} fail for a chosen page exactly as a disk that refused the write would (a full volume, an
+   * I/O error), which is the one path whose consequence - a committed page that never reached the file - no test could
+   * otherwise produce on demand. Same cost when nothing is installed (one read of a null {@code static volatile}), same
+   * JVM-wide scope, and tests MUST clear it in a {@code finally}.
+   */
+  @ExcludeFromJacocoGeneratedReport
+  @FunctionalInterface
+  public interface PageWriteFaultInjector {
+    /**
+     * @throws IOException to make this page write fail. Return normally to let it proceed.
+     */
+    void onPageWrite(PageId pageId) throws IOException;
+  }
+
+  /** Installs (or, with {@code null}, removes) the test-only page-write fault injector. See {@link PageWriteFaultInjector}. */
+  public static void setPageWriteFaultInjector(final PageWriteFaultInjector injector) {
+    pageWriteFaultInjector = injector;
   }
 
   @ExcludeFromJacocoGeneratedReport
@@ -367,6 +393,11 @@ public class PageManager extends LockContext {
     public long   deferredRAMBytes;
     /** See {@link PageManager#getFlushQueueWaits()} (#6259): commits held waiting for room in the flush queue. */
     public long   flushQueueWaits;
+    /**
+     * Committed pages whose write to disk failed and that are waiting for a retry. Non-zero means the files are behind
+     * what the database serves: the pages are still read from memory and still recovered from the WAL on restart.
+     */
+    public long   pagesFailedToFlush;
   }
 
   private PageManager() {
@@ -1875,8 +1906,8 @@ public class PageManager extends LockContext {
     stats.pagesWrittenSize = totalPagesWrittenSize.get();
     stats.pageFlushQueueLength = flushThread != null ? flushThread.queue.size() : 0;
     stats.pageFlushQueueMaxPerDatabase = flushThread != null ? flushThread.maxSlotsUsedByAnyDatabase() : 0;
-    stats.cacheHits = cacheHits.get();
-    stats.cacheMiss = cacheMiss.get();
+    stats.cacheHits = cacheHits.sum();
+    stats.cacheMiss = cacheMiss.sum();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
@@ -1899,6 +1930,8 @@ public class PageManager extends LockContext {
     stats.snapshotBarriersFailedFlush = totalSnapshotBarriersFailedFlush.get();
     stats.deferredRAMBytes = getDeferredRAMBytes();
     stats.flushQueueWaits = getFlushQueueWaits();
+    final PageManagerFlushThread thread = flushThread;
+    stats.pagesFailedToFlush = thread != null ? thread.getFailedFlushPageCount() : 0L;
     collectSnapshotGauges(stats);
     return stats;
   }
@@ -2092,7 +2125,11 @@ public class PageManager extends LockContext {
       thread.releaseQueueReservation(pages.getFirst().getPageId().getDatabase());
   }
 
-  protected void flushPage(final MutablePage page) throws IOException {
+  /**
+   * @return {@code true} when the page reached its file, {@code false} when there was nothing to write it to (a closed,
+   * fenced or dropped database or file) and it was released instead.
+   */
+  protected boolean flushPage(final MutablePage page) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
     if (!database.isOpen() || database.isFencedForRecovery()) {
@@ -2111,7 +2148,7 @@ public class PageManager extends LockContext {
       final WALFile walFile = page.takeWALFile();
       if (walFile != null)
         walFile.notifyPageFlushed();
-      return;
+      return false;
     }
 
     final FileManager fileManager = database.getFileManager();
@@ -2129,13 +2166,17 @@ public class PageManager extends LockContext {
         // volatile, so whichever of the two this thread observes first it sees a consistent pair.
         if (file.isDropped()) {
           discardPageOfDroppedFile(page, file, null);
-          return;
+          return false;
         }
         throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
       }
 
       LogManager.instance()
           .log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().threadId());
+
+      final PageWriteFaultInjector faultInjector = pageWriteFaultInjector;
+      if (faultInjector != null)
+        faultInjector.onPageWrite(page.pageId);
 
       try {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
@@ -2164,7 +2205,7 @@ public class PageManager extends LockContext {
         if (!file.isDropped() || page.pageId.getPageNumber() < 0)
           throw e;
         discardPageOfDroppedFile(page, file, e);
-        return;
+        return false;
       }
 
       try {
@@ -2198,8 +2239,11 @@ public class PageManager extends LockContext {
           walFile.notifyPageFlushed();
       }
 
-    } else
-      discardPageOfDroppedFile(page, null, null);
+      return true;
+    }
+
+    discardPageOfDroppedFile(page, null, null);
+    return false;
   }
 
   /**
@@ -2434,7 +2478,7 @@ public class PageManager extends LockContext {
       // #4958: count the miss BEFORE returning the freshly loaded page. The counter used to be bumped
       // only on the page-not-found fall-through below, so cacheMiss stayed at ~0 forever and the
       // hit/miss ratio in the stats was meaningless.
-      cacheMiss.incrementAndGet();
+      cacheMiss.increment();
 
       page = loadPage(pageId, pageSize, createIfNotExists, true);
       if (page == null) {
@@ -2444,7 +2488,7 @@ public class PageManager extends LockContext {
         return page;
 
     } else {
-      cacheHits.incrementAndGet();
+      cacheHits.increment();
       page.updateLastAccesses();
     }
 

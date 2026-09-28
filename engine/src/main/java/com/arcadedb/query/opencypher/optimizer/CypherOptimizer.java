@@ -22,14 +22,21 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.OrderByClause;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
@@ -37,10 +44,12 @@ import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
+import com.arcadedb.query.opencypher.executor.operators.GAVEdgeRef;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
@@ -60,11 +69,17 @@ import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -72,6 +87,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -106,6 +122,10 @@ public class CypherOptimizer {
   // TODO: replace with runtime statistics once histogram-based selectivity estimation is implemented
   private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
   private static final double DEFAULT_FILTER_SELECTIVITY      = 0.5;
+  /** The key types whose index order is the order Cypher sorts their values in. */
+  private static final Set<Type> INDEX_ORDERED_KEY_TYPES = EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
+      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
+      Type.DATETIME_MICROS, Type.DATETIME_NANOS);
 
   private final DatabaseInternal    database;
   private final CypherStatement     statement;
@@ -184,6 +204,7 @@ public class CypherOptimizer {
     PhysicalOperator anchorOperator;
     PhysicalOperator rootOperator;
     final List<RelationshipComponent> components = relationshipComponents(logicalPlan.getRelationships());
+    final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
     if (components.isEmpty()) {
       anchor = anchorSelector.selectAnchor(logicalPlan);
@@ -195,8 +216,9 @@ public class CypherOptimizer {
       rootOperator = null;
       final Set<LogicalRelationship> needsEdgeTracking =
           computeNeedsEdgeTracking(logicalPlan.getRelationships());
+      final Map<LogicalRelationship, GraphTraversalProvider> gavTracked =
+          computeGavTrackedRelationships(logicalPlan.getRelationships(), needsEdgeTracking);
       final int[] syntheticEdgeVarCounter = { 0 };
-      final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
       // A disconnected relationship component gets its own selective anchor and expansion chain.
       // The components are combined only after each chain has applied its local constraints.
@@ -221,7 +243,7 @@ public class CypherOptimizer {
 
         final PhysicalOperator componentAnchorOperator = createAnchorOperator(componentAnchor);
         final ExpansionPlan expansion = buildExpansionChain(logicalPlan, component.relationships(),
-            componentAnchor, componentAnchorOperator, needsEdgeTracking, syntheticEdgeVarCounter);
+            componentAnchor, componentAnchorOperator, needsEdgeTracking, gavTracked, syntheticEdgeVarCounter);
 
         if (anchor == null) {
           anchor = componentAnchor;
@@ -270,17 +292,177 @@ public class CypherOptimizer {
 
     // 8. Fuse consecutive GAVExpandAll operators into a single GAVFusedChainOperator
     // This eliminates ALL intermediate ResultInternal/HashMap/Vertex allocations
-    rootOperator = fuseGAVExpandChain(rootOperator);
+    rootOperator = fuseGAVExpandChain(rootOperator, relVarsPerClause);
 
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
+
+    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422)
+    final PhysicalOperator indexOrdered = components.size() <= 1 && isolatedNodes.isEmpty() ?
+        orderByIndex(logicalPlan, rootOperator, anchorOperator) : null;
+    if (indexOrdered != null)
+      rootOperator = indexOrdered;
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 11. Build physical plan with complete operator tree
-    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality);
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality, indexOrdered != null);
+  }
+
+  /**
+   * Makes the anchor produce the rows in the order the statement's ORDER BY asks for, when an index holds that order,
+   * so the plan leaves the sort out and the LIMIT stops the scan after its first rows instead of after the whole range
+   * (issue #8422). Two anchors qualify:
+   * <ul>
+   *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
+   *   direction, and a null key never matches the range predicate the scan stands for;</li>
+   *   <li>a scan of a whole label, with no predicate at all, and an index on the single ORDER BY item, ascending: the
+   *   index entries in order and then the vertices with no key, which is where a null sorts. Taken only here, where the
+   *   first rows of the index are the answer: with a filter, the index order could read the whole label one random
+   *   access at a time to find the few rows a sort of the label would have found.</li>
+   * </ul>
+   * Only under a LIMIT: without one the whole range is read anyway, and the adaptive range scan of #8333 reads it faster
+   * out of index order and sorts it.
+   *
+   * @return the root operator, replaced when the anchor had to be, or null when the statement keeps its sort
+   */
+  private PhysicalOperator orderByIndex(final LogicalPlan logicalPlan, final PhysicalOperator rootOperator,
+      final PhysicalOperator anchorOperator) {
+    final String variable;
+    final String label;
+    if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      variable = rangeScan.getVariable();
+      label = rangeScan.getLabel();
+    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator
+        && labelScan.getWhereFilter() == null) {
+      variable = labelScan.getVariable();
+      label = labelScan.getLabel();
+    } else
+      return null;
+
+    if (!rowsKeepTheMatchOrder() || !preservesInputOrder(rootOperator, anchorOperator))
+      return null;
+
+    final List<String> orderedProperties = new ArrayList<>();
+    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties);
+    if (ascending == null)
+      return null;
+
+    if (!(database.getSchema().getType(label) instanceof VertexType type))
+      return null;
+    for (final String property : orderedProperties) {
+      final Property schemaProperty = type.getPolymorphicPropertyIfExists(property);
+      if (schemaProperty == null || !INDEX_ORDERED_KEY_TYPES.contains(schemaProperty.getType()))
+        return null;
+    }
+
+    if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      final List<String> indexProperties = rangeScan.getIndexProperties();
+      if (orderedProperties.size() > indexProperties.size()
+          || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
+          || !rangeScan.getPropertyName().equals(indexProperties.getFirst()))
+        return null;
+      rangeScan.setIndexOrder(ascending, false);
+      return rootOperator;
+    }
+
+    // A whole label: nothing may filter it, the index must hold every non-null key, and the null keys it leaves out
+    // come last, so only ascending
+    if (!ascending || orderedProperties.size() != 1 || !logicalPlan.getWhereFilters().isEmpty()
+        || statement.getWhereClause() != null || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
+      return null;
+    for (final MatchClause matchClause : statement.getMatchClauses())
+      if (matchClause.hasWhereClause())
+        return null;
+    final String property = orderedProperties.getFirst();
+    final TypeIndex index = type.getPolymorphicIndexByProperties(property);
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+      return null;
+    final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
+        index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
+    scan.setIndexOrder(true, true);
+    return scan;
+  }
+
+  /**
+   * Whether the rows reach the ORDER BY in the order the MATCH produced them: a single statement of MATCH clauses and a
+   * RETURN that neither aggregates nor is fed by a WITH, UNWIND or a clause that writes (a SET could rewrite the very
+   * key the rows are ordered by), under a LIMIT.
+   */
+  private boolean rowsKeepTheMatchOrder() {
+    if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty())
+      return false;
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.hasAggregations())
+      return false;
+    final List<WithClause> withClauses = statement.getWithClauses();
+    if (withClauses != null && !withClauses.isEmpty())
+      return false;
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return false;
+    for (final ClauseEntry entry : clauses) {
+      if (entry.getType() == ClauseEntry.ClauseType.RETURN)
+        continue;
+      if (entry.getType() != ClauseEntry.ClauseType.MATCH || entry.<MatchClause>getTypedClause().isOptional())
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether every operator from the root down to the anchor hands its rows on in the order it received them: a filter
+   * drops rows, and an expansion emits all the rows of one input row before reading the next.
+   */
+  private static boolean preservesInputOrder(final PhysicalOperator rootOperator, final PhysicalOperator anchorOperator) {
+    PhysicalOperator operator = rootOperator;
+    while (operator != anchorOperator) {
+      if (!(operator instanceof FilterOperator || operator instanceof ExpandAll || operator instanceof ExpandInto
+          || operator instanceof VarLengthExpand))
+        return false;
+      operator = operator.getChild();
+    }
+    return true;
+  }
+
+  /**
+   * Collects the properties of the variable the ORDER BY items sort on, directly ({@code ORDER BY n.id}) or through
+   * the RETURN column that projects one ({@code RETURN n.id AS id ORDER BY id}).
+   *
+   * @return the direction all the items share, or null when an item is not a property of the variable, or the items
+   * mix directions
+   */
+  private Boolean orderedPropertiesOf(final String variable, final List<String> properties) {
+    final List<ReturnClause.ReturnItem> returnItems = statement.getReturnClause().getReturnItems();
+    for (final ReturnClause.ReturnItem item : returnItems)
+      // A column named like the variable hides it from the ORDER BY: n.id would read a property of that column
+      if (!item.isStar() && variable.equals(item.getOutputName())
+          && !(item.getExpression() instanceof VariableExpression v && variable.equals(v.getVariableName())))
+        return null;
+
+    Boolean ascending = null;
+    for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+      if (ascending != null && ascending != item.isAscending())
+        return null;
+      ascending = item.isAscending();
+
+      Expression expression = item.getExpressionAST();
+      if (expression instanceof VariableExpression column) {
+        expression = null;
+        for (final ReturnClause.ReturnItem returnItem : returnItems)
+          if (!returnItem.isStar() && column.getVariableName().equals(returnItem.getOutputName())) {
+            expression = returnItem.getExpression();
+            break;
+          }
+      }
+      if (!(expression instanceof PropertyAccessExpression access) || !variable.equals(access.getVariableName()))
+        return null;
+      properties.add(access.getPropertyName());
+    }
+    return ascending;
   }
 
   /**
@@ -347,6 +529,74 @@ public class CypherOptimizer {
       rootOperator = new CartesianProduct(rootOperator, nodeOperator, cost, cardinality);
     }
     return rootOperator;
+  }
+
+  /**
+   * Picks the MATCH clauses whose colliding relationships are all walked through a Graph Analytical View, and the
+   * view serving each of them (issue #8394).
+   * <p>
+   * A view holds adjacency ids, not edge records, so a hop walked through it binds a {@link GAVEdgeRef} label instead
+   * of an edge, and labels compare only with labels. Relationship uniqueness therefore holds either when every
+   * relationship of the clause that could collide binds a label, or when every one of them binds an edge record - never
+   * a mix. A clause qualifies when each of those relationships is anonymous (a named one is materialized so that it can
+   * be tracked), has a fixed length (variable-length expansion walks edge records) and is covered by a ready view, and
+   * none of the edge types it walks has a sub-type. Otherwise all of them walk the edge records.
+   *
+   * @return the view for every relationship that binds a label; the others must not be walked through a view
+   */
+  private Map<LogicalRelationship, GraphTraversalProvider> computeGavTrackedRelationships(
+      final List<LogicalRelationship> relationships, final Set<LogicalRelationship> needsEdgeTracking) {
+    if (needsEdgeTracking.isEmpty())
+      return Collections.emptyMap();
+
+    final Map<Integer, List<LogicalRelationship>> byClause = new HashMap<>();
+    for (final LogicalRelationship rel : relationships)
+      if (needsEdgeTracking.contains(rel))
+        byClause.computeIfAbsent(rel.getClauseIndex(), k -> new ArrayList<>()).add(rel);
+
+    final Map<LogicalRelationship, GraphTraversalProvider> result = new HashMap<>();
+    for (final List<LogicalRelationship> clauseRels : byClause.values()) {
+      final Map<LogicalRelationship, GraphTraversalProvider> clauseProviders = new HashMap<>();
+      boolean eligible = true;
+      for (final LogicalRelationship rel : clauseRels) {
+        if (rel.isVariableLength() || (rel.getVariable() != null && !rel.getVariable().isEmpty())) {
+          eligible = false;
+          break;
+        }
+        final String[] edgeTypes = rel.getTypes().toArray(new String[0]);
+        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+        if (provider == null || !walksOnlyLeafEdgeTypes(edgeTypes)) {
+          eligible = false;
+          break;
+        }
+        // One view for the whole clause: occurrences numbered in two views, built at different times, need not agree
+        // on how many parallel relationships a pair has
+        if (!clauseProviders.isEmpty() && clauseProviders.values().iterator().next() != provider) {
+          eligible = false;
+          break;
+        }
+        clauseProviders.put(rel, provider);
+      }
+      if (eligible)
+        result.putAll(clauseProviders);
+    }
+    return result;
+  }
+
+  /**
+   * Whether every edge type a tracked hop would walk has no sub-type. A view builds a type's adjacency polymorphically,
+   * so the slice of a type with sub-types holds their edges too, under the parent's name: two hops asking for the parent
+   * and for the sub-type would then label one edge twice, under two names, and never see the collision (#8394). A leaf
+   * type's slice holds exactly its own edges, which is what makes the type part of a label an identity. An untyped hop
+   * walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have to be leaves.
+   */
+  private boolean walksOnlyLeafEdgeTypes(final String[] edgeTypes) {
+    for (final String type : GAVEdgeRef.trackedEdgeTypes(database, edgeTypes)) {
+      final DocumentType schemaType = database.getSchema().getTypeOrNull(type);
+      if (schemaType == null || !schemaType.getSubTypes().isEmpty())
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -639,8 +889,8 @@ public class CypherOptimizer {
    * which callers rely on; one with a WITH is left alone, whatever its shape, since a WITH can hand the rows on in
    * their order under a LIMIT. Shared by every rewrite that changes the order the MATCH produces its rows in.
    * <p>
-   * Relies on the Cypher plan always sorting for an ORDER BY (an OrderByStep, never elided because the MATCH already
-   * produced its rows sorted): a future sort elision must not treat an adaptive scan as sorted.
+   * An ORDER BY answered from the index order instead ({@link #orderByIndex}) turns the adaptive serving off again:
+   * the plan leaves the sort out only for a scan that produces its rows in key order.
    */
   public static boolean rowOrderIsInvisible(final CypherStatement statement) {
     if (statement == null || statement.getReturnClause() == null)
@@ -693,6 +943,7 @@ public class CypherOptimizer {
    * @param anchor               the selected anchor
    * @param anchorOperator       the anchor operator to build upon
    * @param needsEdgeTracking    relationships whose identity can collide in their MATCH clause
+   * @param gavTracked           the colliding relationships walked through a view, with the view (#8394)
    * @param syntheticEdgeCounter plan-wide counter for anonymous tracking bindings
    *
    * @return root operator and relationship bindings of the expansion chain
@@ -700,7 +951,7 @@ public class CypherOptimizer {
   private ExpansionPlan buildExpansionChain(final LogicalPlan logicalPlan,
       final List<LogicalRelationship> relationships, final AnchorSelection anchor,
       final PhysicalOperator anchorOperator, final Set<LogicalRelationship> needsEdgeTracking,
-      final int[] syntheticEdgeCounter) {
+      final Map<LogicalRelationship, GraphTraversalProvider> gavTracked, final int[] syntheticEdgeCounter) {
     // Get optimization rules
     final JoinOrderRule joinOrderRule = (JoinOrderRule) rules.get(3);
     final ExpandIntoRule expandIntoRule = (ExpandIntoRule) rules.get(2);
@@ -754,29 +1005,34 @@ public class CypherOptimizer {
       } else if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
         currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding, needsEdgeTracking.contains(rel),
-            edgeIsMaterialized);
+            edgeIsMaterialized, gavTracked.get(rel));
 
         // An anonymous hop still binds a relationship, and a later same-clause hop must not reuse it.
         // Must run before anything wraps currentOp.
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
-            && needsEdgeTracking.contains(rel)
-            && currentOp instanceof ExpandInto expandInto) {
+            && needsEdgeTracking.contains(rel)) {
           final String synVar = "  anon_e_" + (syntheticEdgeCounter[0]++);
-          expandInto.setEdgeTrackingVar(synVar);
+          if (currentOp instanceof ExpandInto expandInto)
+            expandInto.setEdgeTrackingVar(synVar);
+          else if (currentOp instanceof GAVExpandInto gavExpandInto)
+            gavExpandInto.setEdgeTracking(synVar, Set.copyOf(sameClausePreceding));
           relVarsPerClause
               .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
               .add(synVar);
         }
       } else {
         // Use ExpandAll for unbounded patterns
-        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding, edgeIsMaterialized);
+        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding, edgeIsMaterialized,
+            !needsEdgeTracking.contains(rel), gavTracked.get(rel));
 
         // Must run before addTargetLabelFilter wraps currentOp.
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
-            && needsEdgeTracking.contains(rel)
-            && currentOp instanceof ExpandAll expand) {
+            && needsEdgeTracking.contains(rel)) {
           final String synVar = "  anon_e_" + (syntheticEdgeCounter[0]++);
-          expand.setEdgeTrackingVar(synVar);
+          if (currentOp instanceof ExpandAll expand)
+            expand.setEdgeTrackingVar(synVar);
+          else if (currentOp instanceof GAVExpandAll gavExpand)
+            gavExpand.setEdgeTracking(synVar, Set.copyOf(sameClausePreceding));
           relVarsPerClause
               .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
               .add(synVar);
@@ -848,22 +1104,19 @@ public class CypherOptimizer {
    * @param input          the input operator
    * @param boundVariables the currently bound variables
    *
+   * @param allowGav       whether a hop that cannot collide may be walked through any ready view
+   * @param trackedGavView the view a colliding hop is walked through, binding a {@link GAVEdgeRef} (#8394), or null
+   *
    * @return ExpandAll operator
    */
   private PhysicalOperator createExpandAllOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
       final Set<String> boundVariables,
-      final Set<String> sameClausePrecedingRelVars) {
-    return createExpandAllOperator(relationship, input, boundVariables, sameClausePrecedingRelVars, true);
-  }
-
-  private PhysicalOperator createExpandAllOperator(
-      final LogicalRelationship relationship,
-      final PhysicalOperator input,
-      final Set<String> boundVariables,
       final Set<String> sameClausePrecedingRelVars,
-      final boolean edgeIsMaterialized) {
+      final boolean edgeIsMaterialized,
+      final boolean allowGav,
+      final GraphTraversalProvider trackedGavView) {
     // Extract parameters from relationship. A variable nobody reads binds nothing worth carrying.
     String sourceVariable = relationship.getSourceVariable();
     final String edgeVariable = edgeIsMaterialized ? relationship.getVariable() : null;
@@ -904,9 +1157,11 @@ public class CypherOptimizer {
     final double expansionCost = inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW;
     final double totalCost = input.getEstimatedCost() + expansionCost;
 
-    // Check for GAV provider: use CSR-backed expand when edge variable is not captured
-    if (edgeVariable == null) {
-      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
+    // Check for GAV provider: use CSR-backed expand when edge variable is not captured. A hop that may collide with
+    // another one of its clause is walked through a view only when the whole clause binds labels (#8394).
+    if (edgeVariable == null && (allowGav || trackedGavView != null)) {
+      final GraphTraversalProvider provider = trackedGavView != null ? trackedGavView :
+          GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
       if (provider != null) {
         // GAV expand: ~10x cheaper (array access vs linked list traversal)
         final double gavCost =
@@ -956,7 +1211,8 @@ public class CypherOptimizer {
       final PhysicalOperator input,
       final Set<String> sameClausePrecedingRelVars,
       final boolean needsEdgeTracking,
-      final boolean edgeIsMaterialized) {
+      final boolean edgeIsMaterialized,
+      final GraphTraversalProvider trackedGavView) {
     // Extract parameters from relationship. A variable nobody reads binds nothing worth carrying -
     // same rule createExpandAllOperator applies, so a named-but-unread variable does not keep this
     // hop off the CSR-backed GAVExpandInto path below.
@@ -984,9 +1240,14 @@ public class CypherOptimizer {
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
     // Check for GAV provider: use CSR-backed expand-into when no edge object is needed. The CSR holds
-    // adjacency ids, not edge identities, so it can count the relationships joining the pair but
-    // cannot tell one of them from an edge a preceding same-clause hop already bound. A hop that has
-    // to answer that question walks the edge list instead.
+    // adjacency ids, not edge identities, so a hop that may collide with another one of its clause is walked
+    // through a view only when the whole clause binds GAVEdgeRef labels, which the caller then arms (#8394);
+    // otherwise it walks the edge list.
+    if (trackedGavView != null) {
+      final double gavCost = input.getEstimatedCost() + inputCardinality * 0.1;
+      return new GAVExpandInto(input, trackedGavView, sourceVariable, targetVariable, direction, edgeTypes,
+          gavCost, outputCardinality);
+    }
     if (edgeVariable == null && !needsEdgeTracking
         && (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())) {
       final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
@@ -1069,8 +1330,14 @@ public class CypherOptimizer {
     for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
       BooleanExpression filterExpression = whereClause.getConditionExpression();
 
-      if (anchorOperator instanceof NodeByLabelScan scan && anchorVariable != null)
-        filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan);
+      // An index seek takes them too (issue #8537): its own equality is still evaluated, but once per seeked vertex
+      // instead of once per row of the expansion above it
+      if (anchorVariable != null) {
+        if (anchorOperator instanceof NodeByLabelScan scan)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan::pushDownFilter);
+        else if (anchorOperator instanceof NodeIndexSeek seek)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
+      }
 
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
@@ -1094,20 +1361,20 @@ public class CypherOptimizer {
   }
 
   /**
-   * Hands the anchor scan every top-level conjunct that reads the anchor variable and nothing else,
+   * Hands the anchor operator every top-level conjunct that reads the anchor variable and nothing else,
    * and returns what is left for the Filter above, or null when everything was pushed down.
    */
   private BooleanExpression pushAnchorOnlyConjuncts(final BooleanExpression expression,
-      final String anchorVariable, final LogicalPlan logicalPlan, final NodeByLabelScan scan) {
+      final String anchorVariable, final LogicalPlan logicalPlan, final Consumer<BooleanExpression> anchor) {
     if (expression == null)
       return null;
 
     if (expression instanceof BooleanWrapperExpression wrapper)
-      return pushAnchorOnlyConjuncts(wrapper.getBooleanExpression(), anchorVariable, logicalPlan, scan);
+      return pushAnchorOnlyConjuncts(wrapper.getBooleanExpression(), anchorVariable, logicalPlan, anchor);
 
     if (expression instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
-      final BooleanExpression left = pushAnchorOnlyConjuncts(logical.getLeft(), anchorVariable, logicalPlan, scan);
-      final BooleanExpression right = pushAnchorOnlyConjuncts(logical.getRight(), anchorVariable, logicalPlan, scan);
+      final BooleanExpression left = pushAnchorOnlyConjuncts(logical.getLeft(), anchorVariable, logicalPlan, anchor);
+      final BooleanExpression right = pushAnchorOnlyConjuncts(logical.getRight(), anchorVariable, logicalPlan, anchor);
       if (left == null)
         return right;
       if (right == null)
@@ -1118,7 +1385,7 @@ public class CypherOptimizer {
     if (!readsOnlyTheAnchor(expression, anchorVariable, logicalPlan))
       return expression;
 
-    scan.pushDownFilter(expression);
+    anchor.accept(expression);
     return null;
   }
 
@@ -1156,8 +1423,14 @@ public class CypherOptimizer {
    * with int nodeIds from CSR arrays.
    * <p>
    * Requires at least 2 consecutive GAVExpandAll operators sharing the same provider.
+   * <p>
+   * The fused chain binds no relationship labels in its rows, so a chain with hops that enforce relationship
+   * uniqueness (#8394) is fused only when it holds every colliding relationship of their MATCH clauses; the chain then
+   * enforces it internally.
+   *
+   * @param relVarsPerClause the relationship variables, synthetic tracking ones included, of every MATCH clause
    */
-  private PhysicalOperator fuseGAVExpandChain(PhysicalOperator rootOperator) {
+  private PhysicalOperator fuseGAVExpandChain(PhysicalOperator rootOperator, final Map<Integer, Set<String>> relVarsPerClause) {
     // Walk from root down to collect the GAVExpandAll chain
     final List<GAVExpandAll> chain = new ArrayList<>();
     PhysicalOperator current = rootOperator;
@@ -1202,6 +1475,16 @@ public class CypherOptimizer {
         expectedSource = gav.getTargetVariable();
       }
     }
+
+    // Relationship uniqueness: every variable of a clause a tracked hop belongs to must be bound inside the chain
+    final Set<String> chainTrackingVars = new HashSet<>();
+    for (final GAVExpandAll gav : chain)
+      if (gav.getEdgeTrackingVar() != null)
+        chainTrackingVars.add(gav.getEdgeTrackingVar());
+    if (!chainTrackingVars.isEmpty())
+      for (final Set<String> clauseVars : relVarsPerClause.values())
+        if (!Collections.disjoint(clauseVars, chainTrackingVars) && !chainTrackingVars.containsAll(clauseVars))
+          return rootOperator;
 
     // Build hop arrays (in traversal order: innermost → outermost)
     final Vertex.DIRECTION[] hopDirs = new Vertex.DIRECTION[chainLen];
@@ -1256,6 +1539,32 @@ public class CypherOptimizer {
         hopDirs, hopEdgeTypes, hopTargetVars, hopTargetBuckets, materialize,
         rootOperator.getEstimatedCost() * 0.5, // fusion is cheaper
         rootOperator.getEstimatedCardinality());
+
+    // A source the view does not map is expanded through these instead of being dropped
+    final List<GAVExpandAll> unfusedHops = new ArrayList<>(chainLen);
+    for (int i = chainLen - 1; i >= 0; i--)
+      unfusedHops.add(chain.get(i));
+    fused.setUnfusedHops(unfusedHops);
+
+    if (!chainTrackingVars.isEmpty()) {
+      final boolean[] hopTracked = new boolean[chainLen];
+      final int[][] hopConflictsWith = new int[chainLen][];
+      for (int i = 0; i < chainLen; i++) {
+        final GAVExpandAll gav = chain.get(chainLen - 1 - i);
+        hopTracked[i] = gav.getEdgeTrackingVar() != null;
+        if (!hopTracked[i])
+          continue;
+        final Set<String> preceding = gav.getSameClausePrecedingRelVars();
+        final List<Integer> earlier = new ArrayList<>();
+        for (int j = 0; j < i; j++) {
+          final String earlierVar = chain.get(chainLen - 1 - j).getEdgeTrackingVar();
+          if (earlierVar != null && preceding != null && preceding.contains(earlierVar))
+            earlier.add(j);
+        }
+        hopConflictsWith[i] = earlier.stream().mapToInt(Integer::intValue).toArray();
+      }
+      fused.setEdgeTracking(hopTracked, hopConflictsWith);
+    }
 
     // Push filter INTO the fused chain (evaluated via column store, before creating output objects)
     if (topFilter instanceof FilterOperator) {

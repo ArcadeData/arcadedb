@@ -188,7 +188,7 @@ class Issue7043AbsentMinMaxOverHttpIT extends BaseGraphServerTest {
   }
 
   private JSONObject postJson(final int serverIndex, final String path, final JSONObject body) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI("http://127.0.0.1:248" + serverIndex + path)
+    final HttpURLConnection connection = (HttpURLConnection) new URI("http://127.0.0.1:" + getServerHttpPort(serverIndex) + path)
         .toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

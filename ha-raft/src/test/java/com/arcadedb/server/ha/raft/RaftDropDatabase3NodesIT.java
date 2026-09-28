@@ -117,11 +117,48 @@ class RaftDropDatabase3NodesIT extends BaseRaftHATest {
   }
 
   /**
+   * Issue #8451: {@code close database} is not leader-forwarded and deregisters the database on the follower it runs
+   * on while leaving its files there. A drop committed afterwards used to see that follower's registry say "absent",
+   * skip the delete, and leave a directory the next request would reopen.
+   */
+  @Test
+  void dropDatabaseRemovesTheDirectoryOfAFollowerThatClosedItFirst() throws Exception {
+    final String dbName = "RaftDropClosed8451";
+    postServerCommand(0, "create database " + dbName);
+    Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+        .until(() -> {
+          for (int i = 0; i < getServerCount(); i++)
+            if (!getServer(i).existsDatabase(dbName))
+              return false;
+          return true;
+        });
+
+    final int leaderIndex = findLeaderIndex();
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    postServerCommand(followerIndex, "close database " + dbName);
+    assertThat(getServer(followerIndex).existsDatabase(dbName)).as("precondition: closed on the follower").isFalse();
+    final File followerDir = new File(
+        getServer(followerIndex).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        dbName);
+    assertThat(followerDir).as("precondition: its files stay on disk").isDirectory();
+
+    postServerCommand(leaderIndex, "drop database " + dbName);
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final File dir = new File(
+          getServer(i).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), dbName);
+      Awaitility.await().atMost(15, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
+          .untilAsserted(() -> assertThat(dir).as("database directory on %s", dir).doesNotExist());
+    }
+    assertThat(getServer(followerIndex).existsDatabase(dbName)).isFalse();
+  }
+
+  /**
    * POSTs a server command against /api/v1/server and asserts HTTP 200.
    */
   private void postServerCommand(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/server")).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(
@@ -142,7 +179,7 @@ class RaftDropDatabase3NodesIT extends BaseRaftHATest {
    */
   private void commandOnDatabase(final int serverIndex, final String dbName, final String sql) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + dbName).toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/command/" + dbName)).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(
@@ -164,7 +201,7 @@ class RaftDropDatabase3NodesIT extends BaseRaftHATest {
    */
   private int postServerCommandExpectError(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server").toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/server")).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(

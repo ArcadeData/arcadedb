@@ -1730,7 +1730,7 @@ public class SelectExecutionPlanner {
           if (item.getExpression() != null)
             plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), context));
           else
-            plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), context));
+            plan.chain(new LetQueryStep(item.getVarName(), item.getQuery(), statement, context));
         }
       } else {
 
@@ -1741,7 +1741,7 @@ public class SelectExecutionPlanner {
                 new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), context));
           } else {
             info.fetchExecutionPlan.chain(
-                new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), context));
+                new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), statement, context));
             containsSubQuery = true;
           }
         }
@@ -4499,6 +4499,15 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block,
       final DocumentType clazz) {
+    // Only a key index answers "the value equals the key". A FULL_TEXT index - BY ITEM included - answers by analyzer
+    // token (so `txt = 'two'` also matched the item 'two words' and 'Two') and parses the key as a query (so '--', '-two'
+    // or 'a:b' find nothing), and the vector and geospatial families answer a similarity or a shape. Handing them `=`,
+    // IN, CONTAINS, CONTAINSANY, CONTAINSALL and dropping the condition from the residual filter was answering them
+    // wrong in both directions; a recheck could remove the extra rows but never bring back the missing ones. CONTAINSTEXT
+    // reaches a FULL_TEXT index through buildIndexSearchDescriptorForFulltext instead (issues #8435, #8438).
+    if (!index.getType().isExactKeyLookup())
+      return null;
+
     final List<String> indexFields = index.getPropertyNames();
     boolean found = false;
 
@@ -4510,6 +4519,13 @@ public class SelectExecutionPlanner {
 
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
+
+      // A FULL_TEXT index answers a key by analyzer tokens OR-ed together, not by value: handing it `name = 'x'` (or
+      // IN, CONTAINS, IS NULL...) and dropping the condition from the residual filter returned every row sharing a
+      // single token with 'x'. On a plain property only CONTAINSTEXT may reach it, through
+      // buildIndexSearchDescriptorForFulltext (issue #8435). A BY ITEM property keeps its item-lookup behaviour.
+      if (index.getType() == FULL_TEXT && !isIndexByItem(index, baseFieldName))
+        break;
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));

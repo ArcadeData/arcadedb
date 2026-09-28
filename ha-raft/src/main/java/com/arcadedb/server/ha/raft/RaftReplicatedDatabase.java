@@ -76,13 +76,16 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
+import com.arcadedb.network.binary.ReplicationQueueFullException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.select.Select;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -346,6 +349,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
       Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
+      // #8479: the refusals the leader answers a forwarded commit with BEFORE its entry reaches the Raft log, so the
+      // leader rolled it back and a retry runs it for the first time. The lookup is by exact class name, so without
+      // these entries they fell through to a plain, non-retryable TransactionException: the follower's retry loop
+      // gave up on the first attempt and its HTTP client got a 500 for a conflict that a retry resolves. The page
+      // conflict's (String) constructor parses its '[6965 ...]' header back, so the page and version survive the hop.
+      // #8481: neither of the two outcomes that follow a DISPATCHED entry is retryable, and neither is a
+      // NeedRetryException any more: MajorityCommittedAllFailedException means the entry IS committed (the leader answers
+      // it 409 "do not retry", as the TransactionCommittedRemotelyException it now is, and it is rebuilt as itself so this
+      // node answers its client the same), and ReplicationDispatchedTimeoutException that it may yet be. The latter keeps
+      // the TransactionException fallback, which is non-retryable too.
+      Map.entry(MajorityCommittedAllFailedException.class.getName(), MajorityCommittedAllFailedException::new),
+      Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
+      Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
+      Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
       Map.entry(TransactionException.class.getName(), TransactionException::new),
       // #5064: preserves the 'committed cluster-wide, do NOT retry' contract when a follower forwards a
@@ -389,6 +406,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * wrong also says so in its own log (issue #6191).
    */
   private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+
+  /** Whether the once-per-database "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
+  }
 
   /** Logged at most once: {@code arcadedb.ha.proxyCommandTimeout} was misconfigured to 0 or negative. */
   private final AtomicBoolean commandTimeoutClampWarned = new AtomicBoolean(false);
@@ -1188,7 +1210,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // see issue #4039), where the local page cache lags behind the asynchronous state
       // machine apply and produces inconsistent IDs across the cluster.
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, null, args, configuration);
+        return forwardCommandToLeaderViaRaft(language, query, null, args);
       // Read-only command executed locally on this follower: honor the read-consistency header
       // exactly like query() does. /api/v1/command can carry read-only statements (a SELECT), and
       // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
@@ -1229,7 +1251,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
-        return forwardCommandToLeaderViaRaft(language, query, args, null, configuration);
+        return forwardCommandToLeaderViaRaft(language, query, args, null);
       // Read-only command executed locally on this follower: honor the read-consistency header.
       applyReadConsistencyForReadOnlyCommand(analyzed);
       // Executed here, so a write it forwards is a part of the client's request, not the whole of it (issue #8347).
@@ -1348,6 +1370,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Map<String, Object> getStats() {
     return proxied.getStats();
+  }
+
+  @Override
+  public long getModificationCount() {
+    return proxied.getModificationCount();
   }
 
   @Override
@@ -3649,14 +3676,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * caller's slot is about to be released regardless (the {@code finally} in {@code ServerControlPlane}) - so
    * silently returning would hand out the "drop finished" guarantee on nothing but hope. Throwing surfaces a
    * clear failure instead of a directory that might still be there when the next operation starts.
+   * <p>
+   * The caller must hold this database's maintenance slot as an exclusive operation ({@code DROP}, or
+   * {@code RESTORE} for the drop a restore performs): the local apply of the entry relies on it rather than
+   * reserving the slot a second time (issue #8035, see {@link LocalDropVerbs}).
    */
   @Override
   public void dropInReplicas() {
     final long committedLogIndex;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
-      raft.waitForAppliedIndex(getName(), committedLogIndex, true);
+      // Registered for the length of the submit and the wait (issue #8035): the caller holds this database's
+      // maintenance slot, and the apply of this entry on THIS node reserves the same slot before it drops the
+      // database. The registration is how the apply knows the slot is already held for it, rather than waiting on
+      // the request thread that is waiting on it.
+      final LocalDropVerbs localDropVerbs = raft.getLocalDropVerbs();
+      final LocalDropVerbs.Registration registration = localDropVerbs.register(getName());
+      try {
+        committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName());
+        raft.waitForAppliedIndex(getName(), committedLogIndex, true);
+      } finally {
+        localDropVerbs.release(getName(), registration);
+      }
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -3676,7 +3717,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link ResultSet} so the caller sees results transparently.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
-      final Map<String, Object> mapArgs, final Object[] positionalArgs, final ContextConfiguration configuration) {
+      final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final RaftHAServer raft = requireRaftServer();
 
     // This request is already the result of a peer redirecting it to what it believed was the leader, and it
@@ -3694,39 +3735,49 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // THIS node, the address was right and leadership moved while the write travelled: an ordinary election the
       // retry gets past. The refusal then names no leader, which the HTTP layer answers 503 - retryable - rather
       // than the 400 a named leader gets, and it leaves the warning latch to the misconfiguration it reports.
+      //
+      // A refusal nobody can classify is answered the same way (issue #8393). The peer names no leader when
+      // leadership changed while it resolved the address, or when it predates the header during a rolling upgrade:
+      // an election far more often than a configuration fault. Only the refusal that proves the address named the
+      // wrong node keeps the 400 and the notice.
       final RaftPeerId localPeer = raft.getLocalPeerId();
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(
           localPeer != null ? localPeer.toString() : null);
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = raft.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          throw new ServerIsNotTheLeaderException(
+              "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
+                  + "the request was in flight" + nowLeads + ". The write was not executed: retry it", null);
+
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster peer forwarded a write to this node as the leader without saying which node it meant to reach, "
+                + "and this node is not the leader (db=%s): refused as retryable", getName());
         throw new ServerIsNotTheLeaderException(
-            "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
-                + "the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
-                + ". The write was not executed: retry it", null);
+            "A cluster peer already forwarded this write to the leader and it arrived on this node, which is not the "
+                + "leader" + nowLeads + ". Leadership most likely moved while the request was in flight: the write was "
+                + "not executed, retry it. If this persists, the HTTP address that peer resolved for the leader may not "
+                + "identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+                + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents", null);
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
       // and from there to the client, so without this line the only node that can name the misconfiguration -
       // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
-                + "That peer resolved an HTTP address for the leader which does not identify it - "
-                + (misidentified ? "it meant to reach another node, so " : "unless leadership just moved, ")
-                + "declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
-                + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
+                + "That peer resolved an HTTP address for the leader which does not identify it - it meant to reach "
+                + "another node, so declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The write is refused rather than forwarded on. This notice is logged only once per database.",
             getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(misidentified ?
+      throw new ServerIsNotTheLeaderException(
           "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
               + "which is neither the leader nor the node that peer meant to reach, so the HTTP address that peer "
               + "resolved for the leader does not identify it. Declaring every node's HTTP port "
-              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-          "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
-              + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
-              + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
-              + "node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents", raft.getLeaderName());
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this",
+          raft.getLeaderName());
     }
 
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
@@ -3848,7 +3899,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // leader's own TimeoutException naming arcadedb.command.timeout could never reach the client. The headroom
     // is the leader's quorum wait (arcadedb.ha.quorumTimeout) plus this dial's connect budget, which bounds the
     // round trip on the same order of magnitude, so the leader always gets to answer first.
-    final long configuredCommandTimeout = configuration.getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+    //
+    // The budget is the one this command would run under here - this database's arcadedb.command.timeout - resolved by
+    // the same rule every command context applies, and it travels with the forward so the leader enforces that number
+    // rather than whatever its own configuration holds (issue #8313). It used to be read from the configuration the
+    // caller passed to command(), which no command context reads and which the convenience overloads fill with the
+    // SERVER configuration: the two sides agreed only when all of those happened to hold the same number.
+    final long configuredCommandTimeout = CommandTimeoutOverride.effectiveTimeout(proxied);
     final long resolvedTimeoutMs;
     if (configuredCommandTimeout > 0)
       resolvedTimeoutMs = commandTimeoutWithHeadroom(configuredCommandTimeout,
@@ -3882,6 +3939,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // flight from an address that names the wrong node (issue #7603). Same gate as the marker.
       if (intendedLeaderId != null)
         builder.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeaderId);
+      // The budget the deadline above is sized from, so the leader aborts the command when this node would expect it
+      // to (issue #8313). Not sent when unbounded: the leader then applies its own setting, and this node still waits
+      // for arcadedb.ha.proxyCommandTimeout. Same gate as the marker: the leader honours it under the token only.
+      if (configuredCommandTimeout > 0)
+        builder.header(LeaderForwardContext.FORWARDED_COMMAND_TIMEOUT_HEADER, Long.toString(configuredCommandTimeout));
     }
 
     String proxiedUser = proxied.getCurrentUserName();
@@ -3941,10 +4003,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     try {
-      final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-      if (response.statusCode() != 200)
-        throw reconstructLeaderException(response.statusCode(), response.body(),
+      // Bounded over the whole exchange, body included, on every JDK (issue #8325): the request timeout above stops at
+      // the response headers on JDK 21-25, so a leader that stalled inside its body parked this thread unbounded. The
+      // request timeout stays: on JDK 26+ it covers the same span with the same value, and either one firing lands in
+      // the HttpTimeoutException arm below.
+      final HttpResponse<String> response = LeaderDial.sendBounded(dialClient, builder.build(),
+          HttpResponse.BodyHandlers.ofString(), deadlineMs);
+      if (response.statusCode() != 200) {
+        final RuntimeException refusal = reconstructLeaderException(response.statusCode(), response.body(),
             response.headers().firstValue("Retry-After").orElse(null));
+        // The node this write was sent to as the leader answered that it is not the leader and could name none. Until
+        // this node's own view stops naming it, a retry would go straight back to it and be refused the same way,
+        // hundreds of times a second for a caller that retries without back-off (issue #8480). Hold the refusal
+        // until the view moves, bounded by the same wait a leaderless forward gets, so the retry dials the new one.
+        if (refusedByTheLeaderItNamedNoOther(refusal, intendedLeaderId))
+          awaitLeaderViewMovedFrom(raft::getLeaderId, intendedLeaderId, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
+        throw refusal;
+      }
 
       final ResultSet resultSet = parseResultSetFromJson(response.body());
       // The answer to the client's own body, in the rendering it asked for (issue #8359): the handler sends it as it is.
@@ -4071,6 +4146,34 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       addr = leaderAddressProbe.get();
     }
     return addr;
+  }
+
+  /**
+   * Whether {@code refusal} is the node this write was forwarded to as the leader saying it is not the leader, without
+   * naming another one (issue #8480). That is the answer of a leader that stepped down while this node still names
+   * it: the only refusal worth holding back, since a retry would dial the very same node until this node's view
+   * moves. A refusal that names a leader is left alone, and so is one received without a stable intended leader.
+   */
+  static boolean refusedByTheLeaderItNamedNoOther(final RuntimeException refusal, final String intendedLeaderId) {
+    if (intendedLeaderId == null || !(refusal instanceof ServerIsNotTheLeaderException notTheLeader))
+      return false;
+    final String named = notTheLeader.getLeaderAddress();
+    return named == null || named.isBlank();
+  }
+
+  /**
+   * Waits until {@code leaderIdProbe} stops naming {@code refusingLeaderId} - a different leader, or none while an
+   * election runs - or {@code timeoutMs} elapses (issue #8480). Either outcome returns: the caller rethrows the
+   * refusal regardless, and its retry then waits for, or dials, whatever this node now believes.
+   *
+   * @return true when the view moved within the timeout
+   */
+  static boolean awaitLeaderViewMovedFrom(final Supplier<RaftPeerId> leaderIdProbe, final String refusingLeaderId,
+      final long timeoutMs, final long pollIntervalMs) {
+    return awaitLeaderAddress(() -> {
+      final RaftPeerId current = leaderIdProbe.get();
+      return current == null || !current.toString().equals(refusingLeaderId) ? "moved" : null;
+    }, timeoutMs, pollIntervalMs) != null;
   }
 
   /**

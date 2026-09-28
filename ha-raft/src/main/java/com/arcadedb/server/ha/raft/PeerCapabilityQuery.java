@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 
 import java.io.IOException;
 import java.net.URI;
@@ -150,13 +151,14 @@ public final class PeerCapabilityQuery {
     builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
     final HttpRequest request = builder.build();
 
-    if (url.startsWith("https://"))
-      // The client carrying the cluster trust context, built once per server and reused until its truststore
-      // changes (issue #7301). Owned by the caller rather than by this class, so several servers in one JVM - the
-      // shape every HA test takes - cannot invalidate and close each other's (issue #7314 review).
-      return parse(expectedPeerId, httpsClients.clientFor(server).send(request, HttpResponse.BodyHandlers.ofString()),
-          url);
-    return parse(expectedPeerId, HTTP.send(request, HttpResponse.BodyHandlers.ofString()), url);
+    // The client carrying the cluster trust context, built once per server and reused until its truststore changes
+    // (issue #7301). Owned by the caller rather than by this class, so several servers in one JVM - the shape every
+    // HA test takes - cannot invalidate and close each other's (issue #7314 review).
+    final HttpClient client = url.startsWith("https://") ? httpsClients.clientFor(server) : HTTP;
+    // Bounded by sendBounded rather than by the request timeout alone, which on JDK 21-25 stops at the response
+    // headers: a peer that stalls inside its body would otherwise park the probe with no bound at all (issue #8472).
+    return parse(expectedPeerId, LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(),
+        timeoutMs), url);
   }
 
   /**

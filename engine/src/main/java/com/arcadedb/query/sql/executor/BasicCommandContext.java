@@ -287,10 +287,10 @@ public class BasicCommandContext implements CommandContext {
     if (commandTimeout == UNRESOLVED) {
       if (parent != null)
         commandTimeout = parent.getCommandTimeout();
-      else {
-        final DatabaseInternal db = getDatabase();
-        commandTimeout = db == null ? 0L : db.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-      }
+      else
+        // The budget a peer forwarded this request with takes the place of this node's own setting, so the node that
+        // forwarded it and this one enforce the same number (issue #8313).
+        commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase());
     }
     return commandTimeout;
   }
@@ -499,7 +499,15 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public CommandContext copy() {
-    final BasicCommandContext copy = new BasicCommandContext();
+    return copyInto(new BasicCommandContext());
+  }
+
+  /**
+   * Copies this context's state into {@code copy} and returns it: the body of {@link #copy()}, split out so that a
+   * subclass can hand back a copy of its OWN type (a parallel bucket-scan worker must keep a subclass's behaviour,
+   * not silently fall back to a plain context) without duplicating the field list below.
+   */
+  protected BasicCommandContext copyInto(final BasicCommandContext copy) {
     copy.init();
 
     if (variables != null && !variables.isEmpty())

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
@@ -43,10 +45,27 @@ public class LetQueryStep extends AbstractExecutionStep {
   // the per-row createExecutionPlan below) when the plan reports it cannot be cached.
   private InternalExecutionPlan cachedSubPlanTemplate;
 
+  // The statement this LET belongs to. Its own calls run between two rows' subqueries, so a side-effecting call there
+  // (a user-defined function) rules the result cache out as surely as one inside the subquery does. Null when the
+  // step was built without it, which only makes the check look at the subquery alone.
+  private final Statement               enclosingStatement;
+  // Plan reuse (above) stops re-PLANNING the subquery every row; this stops re-EXECUTING it for a binding already
+  // seen, when many rows feed it the same outer values (issue #8400). Created on the first row, null when the
+  // subquery or the enclosing statement is not cacheable or the cache is disabled by configuration. One instance per
+  // execution: this step is never copied into another execution (it does not implement copy()), so a cached result
+  // can never outlive the execution, and with it the input parameters and database state, it was computed under.
+  private       CorrelatedSubQueryCache resultCache;
+  private       boolean                 resultCacheInitialized;
+
   public LetQueryStep(final Identifier varName, final Statement query, final CommandContext context) {
+    this(varName, query, null, context);
+  }
+
+  public LetQueryStep(final Identifier varName, final Statement query, final Statement enclosingStatement, final CommandContext context) {
     super(context);
     this.varName = varName;
     this.query = query;
+    this.enclosingStatement = enclosingStatement;
   }
 
   @Override
@@ -73,20 +92,35 @@ public class LetQueryStep extends AbstractExecutionStep {
       private void calculate(final Result result, final CommandContext context) {
         final long beginTime = System.nanoTime();
 
-        final BasicCommandContext subCtx = new BasicCommandContext();
-        subCtx.setDatabase(context.getDatabase());
-        subCtx.setParentWithoutOverridingChild(context);
+        final DatabaseInternal database = context.getDatabase();
+        final CorrelatedSubQueryCache cache = getResultCache(database);
 
-        final InternalExecutionPlan subExecutionPlan;
-        if (cachedSubPlanTemplate != null) {
-          subExecutionPlan = cachedSubPlanTemplate.copy(subCtx);
-        } else {
-          subExecutionPlan = query.createExecutionPlan(subCtx);
-          if (subExecutionPlan.canBeCached())
-            cachedSubPlanTemplate = subExecutionPlan;
+        // NO ROW CAN HIT A DISABLED CACHE: STOP PAYING FOR THE TRACKING CONTEXT TOO
+        final boolean useCache = cache != null && !cache.isDisabled();
+        List<Result> value = useCache ? cache.lookup(context, database) : null;
+        if (value == null) {
+          final BasicCommandContext subCtx;
+          if (useCache)
+            subCtx = cache.newContext(context);
+          else {
+            subCtx = new BasicCommandContext();
+            subCtx.setDatabase(database);
+            subCtx.setParentWithoutOverridingChild(context);
+          }
+
+          final InternalExecutionPlan subExecutionPlan;
+          if (cachedSubPlanTemplate != null) {
+            subExecutionPlan = cachedSubPlanTemplate.copy(subCtx);
+          } else {
+            subExecutionPlan = query.createExecutionPlan(subCtx);
+            if (subExecutionPlan.canBeCached())
+              cachedSubPlanTemplate = subExecutionPlan;
+          }
+
+          value = toList(new LocalResultSet(subExecutionPlan));
+          if (useCache)
+            cache.store((CorrelatedSubQueryCache.TrackingContext) subCtx, context, database, value);
         }
-
-        final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
         // Not every upstream Result is a ResultInternal (e.g. wrapper Results): guard the cast to avoid a
         // ClassCastException. When the row cannot carry per-row metadata, the LET value is still exposed through
         // the context variable below, so $varName keeps resolving.
@@ -116,6 +150,21 @@ public class LetQueryStep extends AbstractExecutionStep {
     };
   }
 
+  private CorrelatedSubQueryCache getResultCache(final DatabaseInternal database) {
+    if (!resultCacheInitialized) {
+      resultCacheInitialized = true;
+      if (database != null)
+        resultCache = CorrelatedSubQueryCache.create(query, enclosingStatement, database,
+            database.getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_LET_SUBQUERY_CACHE_SIZE));
+    }
+    return resultCache;
+  }
+
+  /** The per-execution result cache, or null when it is not in use. Exposed for tests. */
+  CorrelatedSubQueryCache getResultCache() {
+    return resultCache;
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
@@ -123,8 +172,12 @@ public class LetQueryStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (")
         .append(query).append(")");
-    if (context.isProfiling())
+    if (context.isProfiling()) {
       result.append(" (").append(getCostFormatted()).append(")");
+      if (resultCache != null)
+        result.append("\n").append(spaces).append("  result cache: ").append(resultCache.getHits()).append(" hits, ")
+            .append(resultCache.getMisses()).append(" misses").append(resultCache.isDisabled() ? " (disabled)" : "");
+    }
     return result.toString();
   }
 }

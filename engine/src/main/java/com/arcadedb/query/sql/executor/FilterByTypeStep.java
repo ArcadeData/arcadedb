@@ -123,6 +123,11 @@ public class FilterByTypeStep extends AbstractExecutionStep {
     };
   }
 
+  /** The type every row must be an instance of: a parallel aggregation checks it in its workers (issue #8333). */
+  String getTypeName() {
+    return identifier.getStringValue();
+  }
+
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();

@@ -326,7 +326,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   private HttpURLConnection createPromConnection(final int serverIndex, final String path) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/" + path)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/" + path)
         .toURL()
         .openConnection();
     connection.setRequestMethod("POST");

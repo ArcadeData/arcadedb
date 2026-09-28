@@ -51,6 +51,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.arcadedb.server.StaticBaseServerTest.allocateFreePorts;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -60,7 +61,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("IntegrationTest")
 class RaftHAServerIT {
 
-  private static final int BASE_PORT = 19860;
 
   private final List<RaftServer>           servers       = new ArrayList<>();
   private final List<CountingStateMachine> stateMachines = new ArrayList<>();
@@ -70,6 +70,8 @@ class RaftHAServerIT {
   @BeforeEach
   void setUp() throws Exception {
     tempDir = Files.createTempDirectory("ratis-test-");
+    // Drawn free rather than pinned to a fixed base: Ratis answers a bind failure with System.exit(1).
+    final int[] ports = allocateFreePorts(3);
 
     // Define 3 peers
     final List<RaftPeer> peers = new ArrayList<>();
@@ -77,7 +79,7 @@ class RaftHAServerIT {
       final RaftPeerId peerId = RaftPeerId.valueOf("node" + i);
       peers.add(RaftPeer.newBuilder()
           .setId(peerId)
-          .setAddress("localhost:" + (BASE_PORT + i))
+          .setAddress("localhost:" + ports[i])
           .build());
     }
 
@@ -93,7 +95,7 @@ class RaftHAServerIT {
       Files.createDirectories(storagePath);
       RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
 
-      GrpcConfigKeys.Server.setPort(properties, BASE_PORT + i);
+      GrpcConfigKeys.Server.setPort(properties, ports[i]);
       properties.set("raft.server.rpc.type", "GRPC");
 
       // Fast election for tests

@@ -156,15 +156,25 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // Deliberately the raw Ratis applied index, not getTrustedAppliedIndex(): reporting paths keep the raw
     // value (see the module's CLAUDE.md). On a node holding a stale snapshot marker that value covers entries
     // it does not have - which is exactly what localResync.snapshotAppliedFloor below says out loud.
+    //
+    // The lag is measured against the leader's commit index when this follower has learned a larger one than its own
+    // (issue #8321). Ratis clamps a follower's commit index to the entries it holds, so a follower whose replication
+    // channel is wedged reported a lag of 0 here - "caught up" - to the operator polling it as the suspect.
+    // localCommitIndex stays this node's own figure, and leaderCommitIndex below the leader's.
     final long localAppliedIndex = raftHAServer.getLastAppliedIndex();
     final long localCommitIndex = raftHAServer.getCommitIndex();
+    // Derived from the figures already read above rather than through RaftHAServer.getFollowerCommitIndex(), which would
+    // read the commit index and the leadership a second time: the lag must be computed from the localCommitIndex and
+    // isLeader this response reports, not from a later instant of the Raft state.
+    final long lagCommitIndex = isLeader ? localCommitIndex :
+        RaftHAServer.followerCommitIndex(localCommitIndex, raftHAServer.getLeaderReportedCommitIndex());
     response.put("localAppliedIndex", localAppliedIndex);
     response.put("localCommitIndex", localCommitIndex);
     response.put("localReplicationLag",
-        localAppliedIndex >= 0 && localCommitIndex >= 0 ? localCommitIndex - localAppliedIndex : -1L);
+        localAppliedIndex >= 0 && lagCommitIndex >= 0 ? lagCommitIndex - localAppliedIndex : -1L);
 
     // This node stuck at a stale term after a snapshot install (issue #8289): it has applied everything it
-    // could locally commit, so localReplicationLag above reads 0 and this node looks caught up, yet it keeps
+    // could locally commit, so localReplicationLag above can read 0 and this node looks caught up, yet it keeps
     // rejecting the leader's current-term entries and does not count toward quorum. Debounced (see
     // RaftHAServer.isFollowerStuckAtStaleTermConfirmed) so a normal leader change is not reported as one.
     final boolean stuckAtStaleTerm = raftHAServer.isFollowerStuckAtStaleTermConfirmed();
@@ -469,13 +479,13 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
   /**
    * Writes {@code peer}'s capabilities into its row, and says whether anything was written (issue #7301).
    * <p>
-   * There are exactly two sources of a TRUE answer, and no third. The registry, which only a leader fills because
-   * it is the only node that probes; and this node's own advertised set, which is true for this node's own row
-   * whatever role it holds. The first version of this guard tested "the peer being rendered is the leader" and
-   * published the LOCAL set under the leader's id, which on a follower - where the registry is empty by design -
-   * is the local node's answer wearing another node's id. That defeats the field's whole documented purpose: an
-   * operator diffing the rows during a rolling upgrade is told the wrong node is holding the cluster back, and
-   * there is no {@code version} field on such a row to contradict it.
+   * There are exactly two sources of a TRUE answer, and no third. The registry, which this node fills by probing
+   * its peers (every node probes since issue #7549, whatever its role); and this node's own advertised set, which
+   * is true for this node's own row whatever role it holds. The first version of this guard tested "the peer being
+   * rendered is the leader" and published the LOCAL set under the leader's id, which on a follower - whose
+   * registry was empty by design at the time - is the local node's answer wearing another node's id. That defeats
+   * the field's whole documented purpose: an operator diffing the rows during a rolling upgrade is told the wrong
+   * node is holding the cluster back, and there is no {@code version} field on such a row to contradict it.
    * <p>
    * The local row is published whether or not this node leads, since it is a true statement either way and the
    * one row every node can answer for. It carries {@code version} for the same reason the registry-backed rows

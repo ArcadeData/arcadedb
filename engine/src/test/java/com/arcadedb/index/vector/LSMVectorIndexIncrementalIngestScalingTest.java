@@ -192,7 +192,7 @@ class LSMVectorIndexIncrementalIngestScalingTest extends TestHelper {
         database.command("sql", "INSERT INTO Paper SET embedding = ?", (Object) randomVector(random));
     });
     idx.buildVectorGraphNow();
-    assertThat(idx.getStats().get("deltaVectorsCount")).isZero();
+    assertThat(PendingDeltaVectors.of(idx)).isZero();
 
     // Ingest more, then trigger exactly one search: it starts an async rebuild for the vectors persisted so far
     database.transaction(() -> {
@@ -227,7 +227,7 @@ class LSMVectorIndexIncrementalIngestScalingTest extends TestHelper {
           // (issue #7190) and which no later rebuild removes - a Vamana build orphans a fresh set. They are
           // already IN the graph, so they are not what "absorbs every pending vector" is about, and asserting a
           // flat zero made a build that orphaned one node read as a rebuild that stopped early (issue #7742).
-          assertThat(stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes")).isZero();
+          assertThat(PendingDeltaVectors.of(stats)).isZero();
           assertThat(stats.get("graphNodeCount")).isEqualTo(2_800L);
         });
   }

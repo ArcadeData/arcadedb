@@ -31,6 +31,9 @@
  <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml">
       <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml/badge.svg">
     </a>
+ <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml">
+      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/native-image.yml/badge.svg">
+    </a>
 
   <a href="https://codecov.io/github/ArcadeData/arcadedb">
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>

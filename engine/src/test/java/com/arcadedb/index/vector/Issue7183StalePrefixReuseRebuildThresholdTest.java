@@ -139,7 +139,7 @@ class Issue7183StalePrefixReuseRebuildThresholdTest {
             .as("the vector the write-only session added must come back from the delta scan")
             .contains(COUNT);
         final LSMVectorIndex index = vectorIndex(db);
-        assertThat(index.getStats().get("deltaVectorsCount"))
+        assertThat(PendingDeltaVectors.of(index))
             .as("...which is where it is: queued, not folded into the graph")
             .isEqualTo(1L);
         assertThat(index.getStats().get("graphRebuildCount")).isZero();

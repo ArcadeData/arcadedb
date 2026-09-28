@@ -18,12 +18,24 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 
@@ -44,7 +56,14 @@ import java.util.regex.Pattern;
  *   literal is never backslash-interpreted here, and a driver that reads {@code off} back would escape for a parser
  *   this server does not have;</li>
  *   <li>{@code DateStyle} keeps the field order the client asks for, but its output style is always {@code ISO}: that
- *   is the only format {@code PostgresType} writes a date or timestamp in.</li>
+ *   is the only format {@code PostgresType} writes a date or timestamp in;</li>
+ *   <li>{@code role} and {@code session_authorization} (also {@code SET ROLE}, {@code SET SESSION AUTHORIZATION}) are
+ *   accepted only to reset them: a connection always runs with the privileges of the user it authenticated as, and a
+ *   client told its role changed would believe it had dropped privileges it still holds (issue #8392);</li>
+ *   <li>{@code transaction_isolation} and {@code default_transaction_isolation} (also {@code SET TRANSACTION} and
+ *   {@code SET SESSION CHARACTERISTICS AS TRANSACTION}) are accepted for the level the transactions really run at and
+ *   refused with {@code 0A000} for any other; {@code transaction_read_only} and {@code default_transaction_read_only}
+ *   are accepted only as {@code off}, since this server has no read-only transactions (issue #8392).</li>
  * </ul>
  * <b>Transaction scope</b> (issue #8242), as in PostgreSQL: a {@code SET} made inside a transaction that is then rolled
  * back is undone by the rollback, and a {@code SET LOCAL} lasts only until the end of the transaction it was made in,
@@ -59,6 +78,14 @@ import java.util.regex.Pattern;
  * changed since the last report - the value {@code SHOW} answers, never the raw {@code SET} text, which is what keeps
  * pgjdbc's checks on a reported {@code DateStyle} and {@code client_encoding} satisfied.
  * <p>
+ * <b>Names</b> (issue #8573): a name PostgreSQL does not know is refused with {@code 42704}, by {@code SET},
+ * {@code SHOW} and {@code RESET} alike, instead of being invented: the recognized names are PostgreSQL 17's own
+ * ({@code postgresql-parameters.txt}, generated from its {@code pg_settings}), plus any name the startup packet named.
+ * A name qualified with a dot ({@code myapp.tenant}) is a custom placeholder, which PostgreSQL accepts for any prefix:
+ * {@code SET} and {@code RESET} always accept it, and {@code SHOW} answers it once this connection has set it. A
+ * parameter PostgreSQL only lets the server configuration change (its {@code internal}, {@code postmaster},
+ * {@code sighup} and {@code backend} contexts) is refused with {@code 55P02} as PostgreSQL refuses it.
+ * <p>
  * Not thread-safe: a connection is served by one thread.
  */
 final class PostgresSessionSettings {
@@ -71,6 +98,9 @@ final class PostgresSessionSettings {
   static final String[] REPORTED_PARAMETERS = { "application_name", "client_encoding", "DateStyle", "integer_datetimes",
       "IntervalStyle", "is_superuser", "server_encoding", "server_version", "standard_conforming_strings", "TimeZone" };
 
+  private static final String  PARAMETERS_RESOURCE = "postgresql-parameters.txt";
+  // PostgreSQL's parameters by lower-cased name: canonical spelling and pg_settings context (issue #8573)
+  private static final Map<String, String[]> KNOWN_PARAMETERS = loadKnownParameters();
   private static final String  DEFAULT_DATE_ORDER  = "MDY";
   private static final Pattern DATESTYLE_SEPARATOR = Pattern.compile("[,\\s]+");
 
@@ -80,7 +110,19 @@ final class PostgresSessionSettings {
    */
   record Assignment(String name, String value, boolean local) {
     static final Assignment RESET_ALL = new Assignment(null, null, false);
+    /**
+     * A {@code SET} PostgreSQL accepts and that changes nothing here, as it changes nothing in PostgreSQL either (e.g.
+     * {@code SET CONSTRAINTS ALL DEFERRED} with no deferrable constraint). Compared by identity.
+     */
+    static final Assignment NO_OP     = new Assignment("", null, false);
   }
+
+  static final String SQLSTATE_FEATURE_NOT_SUPPORTED = "0A000";
+  static final String SQLSTATE_INVALID_VALUE         = "22023";
+  static final String SQLSTATE_UNDEFINED_OBJECT      = "42704";
+  static final String SQLSTATE_CANT_CHANGE_RUNTIME   = "55P02";
+  static final String READ_ONLY_NOT_SUPPORTED        =
+      "read-only transactions are not supported by this server: a transaction declared READ ONLY would still accept writes";
 
   /**
    * Thrown when a {@code SET} is refused, carrying the SQLSTATE PostgreSQL answers the same refusal with.
@@ -102,7 +144,15 @@ final class PostgresSessionSettings {
   private       Map<String, String> rollbackValues = null;
   // SET LOCAL values of the open transaction; a null value is a SET LOCAL ... TO DEFAULT.
   private final Map<String, String> localValues    = new HashMap<>();
+  // The custom (dotted) parameters this connection has set, which SHOW answers from then on, as PostgreSQL does once
+  // a placeholder exists; null until the first one.
+  private       Set<String>         placeholders   = null;
   private       boolean             superuser      = false;
+  private       String              sessionUser    = "";
+  // The isolation level the open transaction runs at (the default one when none is open), and the default level of
+  // every new transaction. Read at SET time, because a database's default level can change while connected.
+  private       Supplier<Database.TRANSACTION_ISOLATION_LEVEL> currentIsolation = () -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Supplier<Database.TRANSACTION_ISOLATION_LEVEL> defaultIsolation = () -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   // Bumped on every change, so reportChanges() costs one int comparison on the statements that change nothing.
   private       int                 version        = 0;
   private       int                 reportedVersion = -1;
@@ -124,6 +174,8 @@ final class PostgresSessionSettings {
    * @throws SettingException if PostgreSQL would refuse the same command; nothing changes then
    */
   void apply(final Assignment assignment) {
+    if (assignment == Assignment.NO_OP)
+      return;
     if (assignment.name() == null)
       resetAll();
     else
@@ -137,8 +189,13 @@ final class PostgresSessionSettings {
    */
   void set(final String name, final String value, final boolean local) {
     final String key = name.toLowerCase(Locale.ENGLISH);
-    if (!isStored(key))
+    if (!isStored(key, value, false))
       return;
+    if (isPlaceholder(key) && value != null) {
+      if (placeholders == null)
+        placeholders = new HashSet<>();
+      placeholders.add(key);
+    }
     final String normalized = normalize(key, value);
     if (local)
       localValues.put(key, normalized);
@@ -172,7 +229,7 @@ final class PostgresSessionSettings {
   void setFromStartup(final String name, final String value) {
     final String key = name.toLowerCase(Locale.ENGLISH);
     try {
-      if (!isStored(key))
+      if (!isStored(key, value, true))
         return;
       final String normalized = normalize(key, value);
       if (normalized != null)
@@ -191,6 +248,23 @@ final class PostgresSessionSettings {
       this.superuser = superuser;
       ++version;
     }
+  }
+
+  /**
+   * The user the connection authenticated as, which {@code session_authorization} answers.
+   */
+  void setSessionUser(final String sessionUser) {
+    this.sessionUser = sessionUser != null ? sessionUser : "";
+  }
+
+  /**
+   * Where the isolation levels a {@code SET TRANSACTION} / {@code SET SESSION CHARACTERISTICS} is checked against come
+   * from: the level of the open transaction (the default one when none is open) and the default level.
+   */
+  void setIsolationLevels(final Supplier<Database.TRANSACTION_ISOLATION_LEVEL> currentIsolation,
+      final Supplier<Database.TRANSACTION_ISOLATION_LEVEL> defaultIsolation) {
+    this.currentIsolation = currentIsolation;
+    this.defaultIsolation = defaultIsolation;
   }
 
   /**
@@ -227,6 +301,50 @@ final class PostgresSessionSettings {
    */
   String show(final String name) {
     final String key = name.toLowerCase(Locale.ENGLISH);
+    if (!isKnown(key) && (placeholders == null || !placeholders.contains(key)))
+      throw unrecognized(name);
+    return answer(key);
+  }
+
+  /**
+   * The name PostgreSQL spells {@code name} with, which is also the column {@code SHOW} answers under (e.g.
+   * {@code DateStyle}, {@code TimeZone}); the name as given when PostgreSQL does not know it.
+   */
+  static String canonicalName(final String name) {
+    final String[] known = KNOWN_PARAMETERS.get(name.toLowerCase(Locale.ENGLISH));
+    return known != null ? known[0] : name;
+  }
+
+  /**
+   * {@code SHOW ALL}: name and value of every parameter this server answers for - the ones it reports or answers from
+   * its own state, and every one this connection or its startup packet set - in name order.
+   * <p>
+   * Deliberately NOT PostgreSQL's full list: PostgreSQL lists every GUC with its actual value, and this server has no
+   * actual value for most of them ({@code work_mem}, {@code shared_buffers}, ...), which nothing here implements. Listing
+   * them with an empty value would be the "unset or nonexistent?" ambiguity issue #8573 removed; {@link #show} still
+   * accepts every name PostgreSQL knows.
+   */
+  List<String[]> showAll() {
+    final Set<String> names = new LinkedHashSet<>();
+    for (final String reported : REPORTED_PARAMETERS)
+      names.add(reported.toLowerCase(Locale.ENGLISH));
+    names.addAll(List.of("role", "session_authorization", "transaction_isolation", "default_transaction_isolation",
+        "transaction_read_only", "default_transaction_read_only"));
+    names.addAll(resetValues.keySet());
+    names.addAll(sessionValues.keySet());
+    for (final Map.Entry<String, String> local : localValues.entrySet())
+      if (local.getValue() != null)
+        names.add(local.getKey());
+    if (placeholders != null)
+      names.addAll(placeholders);
+    final List<String[]> rows = new ArrayList<>(names.size());
+    for (final String key : names)
+      rows.add(new String[] { canonicalName(key), answer(key) });
+    rows.sort((a, b) -> a[0].compareToIgnoreCase(b[0]));
+    return rows;
+  }
+
+  private String answer(final String key) {
     return switch (key) {
       // Server facts: nothing a client sets changes them.
       case "server_version" -> PostgresNetworkExecutor.PG_SERVER_VERSION;
@@ -234,6 +352,11 @@ final class PostgresSessionSettings {
       case "integer_datetimes", "standard_conforming_strings" -> "on";
       case "is_superuser" -> superuser ? "on" : "off";
       case DATESTYLE -> "ISO, " + currentDateOrder();
+      case "role" -> "none";
+      case "session_authorization" -> sessionUser;
+      case "transaction_isolation" -> isolationName(currentIsolation.get());
+      case "default_transaction_isolation" -> isolationName(defaultIsolation.get());
+      case "transaction_read_only", "default_transaction_read_only" -> "off";
       default -> {
         final String value = current(key);
         if (value != null)
@@ -258,7 +381,7 @@ final class PostgresSessionSettings {
       return;
     reportedVersion = version;
     for (int i = 0; i < REPORTED_PARAMETERS.length; i++) {
-      final String value = show(REPORTED_PARAMETERS[i]);
+      final String value = answer(REPORTED_PARAMETERS[i].toLowerCase(Locale.ENGLISH));
       if (!value.equals(reportedValues[i])) {
         reportedValues[i] = value;
         sink.accept(REPORTED_PARAMETERS[i], value);
@@ -268,16 +391,149 @@ final class PostgresSessionSettings {
 
   /**
    * False for the parameters a {@code SET} is accepted for but that are never stored, since {@code SHOW} answers what
-   * the server really does; throws for the read-only ones.
+   * the server really does; throws for the read-only ones, and for a value the server cannot honour: a {@code SET}
+   * answered with success must have done what it asked (issue #8392). A null {@code value} is the reset value, which
+   * is what these parameters already hold.
    */
-  private static boolean isStored(final String key) {
+  private boolean isStored(final String key, final String value, final boolean startup) {
     return switch (key) {
       case "server_version", "server_encoding", "integer_datetimes", "is_superuser" ->
-          throw new SettingException("parameter \"" + key + "\" cannot be changed", "55P02"); // cant_change_runtime_param
+          throw new SettingException("parameter \"" + key + "\" cannot be changed", SQLSTATE_CANT_CHANGE_RUNTIME);
       // Accepted, as drivers send them routinely, but not stored: show() answers what the server really does.
       case "client_encoding", "standard_conforming_strings" -> false;
-      default -> true;
+      case "role" -> {
+        if (value != null && !"none".equalsIgnoreCase(value.trim()))
+          throw new SettingException("SET ROLE is not supported by this server: the session keeps the privileges of the user it "
+              + "authenticated as (\"" + sessionUser + "\")", SQLSTATE_FEATURE_NOT_SUPPORTED);
+        yield false;
+      }
+      case "session_authorization" -> {
+        if (value != null)
+          throw new SettingException("SET SESSION AUTHORIZATION is not supported by this server: the session keeps the privileges "
+              + "of the user it authenticated as (\"" + sessionUser + "\")", SQLSTATE_FEATURE_NOT_SUPPORTED);
+        yield false;
+      }
+      case "transaction_isolation" -> {
+        checkIsolation(key, value, currentIsolation.get());
+        yield false;
+      }
+      case "default_transaction_isolation" -> {
+        checkIsolation(key, value, defaultIsolation.get());
+        yield false;
+      }
+      case "transaction_read_only", "default_transaction_read_only" -> {
+        if (value != null && parseBoolean(key, value))
+          throw new SettingException(READ_ONLY_NOT_SUPPORTED, SQLSTATE_FEATURE_NOT_SUPPORTED);
+        yield false;
+      }
+      default -> {
+        final String[] known = KNOWN_PARAMETERS.get(key);
+        if (known == null) {
+          // A dotted name is a custom placeholder, and a name the startup packet named stays usable on the connection
+          if (startup || isPlaceholder(key) || resetValues.containsKey(key))
+            yield true;
+          throw unrecognized(key);
+        }
+        checkContext(known, startup);
+        yield true;
+      }
     };
+  }
+
+  /**
+   * Refuses a {@code SET} of a parameter PostgreSQL does not let a session change, with PostgreSQL's own message for
+   * its context. The {@code backend} ones can still be named in the startup packet, as in PostgreSQL.
+   */
+  private static void checkContext(final String[] known, final boolean startup) {
+    final String reason = switch (known[1]) {
+      case "internal" -> "cannot be changed";
+      case "postmaster" -> "cannot be changed without restarting the server";
+      case "sighup" -> "cannot be changed now";
+      case "backend", "superuser-backend" -> startup ? null : "cannot be set after connection start";
+      default -> null;
+    };
+    if (reason != null)
+      throw new SettingException("parameter \"" + known[0] + "\" " + reason, SQLSTATE_CANT_CHANGE_RUNTIME);
+  }
+
+  /**
+   * True for a name {@code SHOW} can answer: one PostgreSQL knows, one this server adds, or one the startup packet
+   * named. A custom placeholder is answered only once set, which {@link #show} checks separately.
+   */
+  private boolean isKnown(final String key) {
+    return KNOWN_PARAMETERS.containsKey(key) || switch (key) {
+      case "role", "session_authorization", "is_superuser" -> true;
+      default -> resetValues.containsKey(key);
+    };
+  }
+
+  private static boolean isPlaceholder(final String key) {
+    final int dot = key.indexOf('.');
+    return dot > 0 && dot < key.length() - 1;
+  }
+
+  private static SettingException unrecognized(final String name) {
+    return new SettingException("unrecognized configuration parameter \"" + name + "\"", SQLSTATE_UNDEFINED_OBJECT);
+  }
+
+  private static Map<String, String[]> loadKnownParameters() {
+    final Map<String, String[]> parameters = new HashMap<>(512);
+    try (final InputStream in = PostgresSessionSettings.class.getResourceAsStream(PARAMETERS_RESOURCE)) {
+      if (in == null)
+        throw new IllegalStateException("Missing resource " + PARAMETERS_RESOURCE);
+      final BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+      for (String line; (line = reader.readLine()) != null; ) {
+        line = line.trim();
+        if (line.isEmpty() || line.charAt(0) == '#')
+          continue;
+        final int space = line.indexOf(' ');
+        final String name = line.substring(0, space);
+        parameters.put(name.toLowerCase(Locale.ENGLISH), new String[] { name, line.substring(space + 1).trim() });
+      }
+    } catch (final IOException e) {
+      throw new IllegalStateException("Cannot read " + PARAMETERS_RESOURCE, e);
+    }
+    return parameters;
+  }
+
+  /**
+   * Accepts an isolation level only when it is the one the transactions really run at. {@code read uncommitted} is
+   * {@code read committed}, as in PostgreSQL, whose READ UNCOMMITTED behaves as READ COMMITTED.
+   */
+  private static void checkIsolation(final String key, final String value, final Database.TRANSACTION_ISOLATION_LEVEL actual) {
+    if (value == null)
+      return;
+    final String level = value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ENGLISH);
+    final String effective = switch (level) {
+      case "read uncommitted", "read committed" -> "read committed";
+      case "repeatable read", "serializable" -> level;
+      default -> throw new SettingException("invalid value for parameter \"" + key + "\": \"" + value + "\"", SQLSTATE_INVALID_VALUE);
+    };
+    final String actualName = isolationName(actual);
+    if (!effective.equals(actualName))
+      throw new SettingException(
+          "transaction isolation level \"" + level + "\" is not supported here: transactions run at \"" + actualName + "\"",
+          SQLSTATE_FEATURE_NOT_SUPPORTED);
+  }
+
+  /**
+   * An isolation level spelled as PostgreSQL reports it, e.g. {@code read committed}.
+   */
+  static String isolationName(final Database.TRANSACTION_ISOLATION_LEVEL level) {
+    return level.name().replace('_', ' ').toLowerCase(Locale.ENGLISH);
+  }
+
+  /**
+   * A PostgreSQL boolean parameter value: {@code on}/{@code off}, {@code true}/{@code false}, {@code yes}/{@code no},
+   * {@code 1}/{@code 0}, or an unambiguous prefix of one of the words.
+   */
+  private static boolean parseBoolean(final String key, final String value) {
+    final String v = value.trim().toLowerCase(Locale.ENGLISH);
+    if (v.equals("1") || v.equals("on") || (!v.isEmpty() && ("true".startsWith(v) || "yes".startsWith(v))))
+      return true;
+    if (v.equals("0") || v.equals("of") || v.equals("off") || (!v.isEmpty() && ("false".startsWith(v) || "no".startsWith(v))))
+      return false;
+    throw new SettingException("parameter \"" + key + "\" requires a Boolean value", SQLSTATE_INVALID_VALUE);
   }
 
   /**

@@ -324,7 +324,11 @@ class Issue7519BootstrapWindowGateTest {
     assertThat(sm.getBootstrapInstallsInFlight()).containsExactly(DB_NAME);
     // One settle - here the DROP of the database, the cheapest path that settles one in this harness - releases it
     // entirely: with a stacked second holder the entry would outlive the database it names.
+    // Absent from the registry AND from disk: since issue #8451 a deregistered name whose directory is still there is
+    // a closed database the drop has to delete, which is not the already-absent path this harness relies on.
     when(server.existsDatabase(DB_NAME)).thenReturn(false);
+    localDb.close();
+    FileUtils.deleteRecursively(new File(DB_PATH));
     sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
     assertThat(sm.getPendingBootstrapReplacements()).isEmpty();
     assertThat(sm.getBootstrapInstallsInFlight())

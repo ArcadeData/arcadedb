@@ -225,6 +225,11 @@ public class ClusterAlerts {
       // The other half of the #7519 bootstrap window, which the readiness body pointed at this document for and
       // this document did not carry (issue #8044).
       addBootstrapInstallAlert(nodeStatus.bootstrapInstalls(), visibleDatabases, alerts);
+      // A leader replacing one of its own databases (issue #8491): Raft reports it healthy, and it rejects every write
+      // to that database until leadership moves.
+      final RaftHAServer raftHA = stateMachine.getRaftHAServer();
+      addLeaderReplacingDatabaseAlert(raftHA != null && raftHA.isLeader(), stateMachine.getDatabasesBeingReplaced(),
+          visibleDatabases, alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
@@ -262,8 +267,8 @@ public class ClusterAlerts {
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node is stuck at a stale term and not counting toward quorum")
         .put("message", "This node recognizes a leader at a newer term but keeps rejecting its current-term "
-            + "entries: it has applied everything it could locally commit, so this document's localReplicationLag "
-            + "reads 0 and every other field here still looks healthy, but this node makes no further progress and "
+            + "entries: it has applied everything it could locally commit, so this document's localCommitIndex and "
+            + "localAppliedIndex agree and only localStuckAtStaleTerm reports it, but this node makes no further progress and "
             + "does not count toward the Raft quorum. If the cluster loses one more node while this persists, "
             + "writes stop entirely even though a leader exists and every reachable node knows it. The usual cause "
             + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
@@ -284,7 +289,8 @@ public class ClusterAlerts {
    * {@code critical}, like the leader's {@code lagging-followers} alert for a {@code STALLED} replica, which is the
    * same condition seen from the other side: this node does not count toward the quorum while it lasts. Before this
    * alert only the leader's answer carried it, and this node's own answer read healthy with a
-   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds.
+   * {@code localReplicationLag} of 0, because Ratis clamps a follower's commit index to the entries it holds (that lag
+   * is measured against the leader's commit index too since issue #8321).
    * <p>
    * Suppressed while {@code stuckAtStaleTerm} holds: a node stuck at a stale term is stalled too, and that alert
    * already names the cause and the recovery. Two critical alerts for one condition would read as two incidents.
@@ -301,7 +307,7 @@ public class ClusterAlerts {
         .put("message", "This node is " + stall.lag() + " entries behind the commit index its leader reported ("
             + stall.leaderCommitIndex() + ") and has applied nothing and received no new log entry for "
             + stall.stalledForMs() / 1000 + "s. Its own commit index only covers the entries it holds, so this "
-            + "document's localReplicationLag can read 0 and every other field here can look healthy. While this "
+            + "document's localCommitIndex and localAppliedIndex can agree and only localStalledBehindLeader reports it. While this "
             + "lasts the node does not count toward the Raft quorum, and if the cluster loses one more node, writes "
             + "stop. The leader reports the same replica as STALLED in its own lagging-followers alert.")
         .put("recommendation", "If arcadedb.ha.stalledReplicaResyncDurationMs is enabled (the default), the leader "
@@ -416,8 +422,8 @@ public class ClusterAlerts {
         .put("recommendation", "Read this node's log from the first restart in the loop rather than the last - the "
             + "escalation reports the loop, not the fault that started it. A node still escalated after a restart "
             + "has a persistent cause: a term-inverted log or snapshot served by the leader needs a coordinated "
-            + "full-cluster Raft-storage reformat. Deleting the 'crash-loop-escalated' file in the Raft storage "
-            + "directory re-arms the automatic recovery for the next start.")
+            + "full-cluster Raft-storage reformat. Deleting the '<raft-storage-dir>.crash-loop-escalated' file next to "
+            + "the Raft storage directory re-arms the automatic recovery for the next start.")
         .put("details", new JSONObject().put("escalated", true)));
   }
 
@@ -844,6 +850,40 @@ public class ClusterAlerts {
         .put("details", new JSONObject()
             .put("databases", namesArray(visible(installs, visibleDatabases)))
             .put("count", installs.size())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the leader-replacing-database alert iff this node
+   * is the leader and {@code replacing} is non-empty (issue #8491).
+   * <p>
+   * {@code critical}: every other signal reads healthy - there is a leader, its followers are at lag 0, the majority
+   * is intact - while every write to those databases is refused, because the leader is replacing its own copy and
+   * can neither download it from itself nor serve the database until it has one. The health monitor hands leadership
+   * to a peer on its own; this alert is what says why writes fail until it has.
+   * <p>
+   * Node-scoped like {@link #addBootstrapInstallAlert}: the alert fires on the raw count and only the NAMES are
+   * reduced to {@code visibleDatabases}.
+   */
+  static void addLeaderReplacingDatabaseAlert(final boolean isLeader, final List<String> replacing,
+      final Set<String> visibleDatabases, final JSONArray alerts) {
+    if (!isLeader || replacing == null || replacing.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "leader-replacing-database")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "The leader is replacing database(s) with the leader's copy and cannot serve them")
+        .put("message", "This node is the leader and is replacing " + replacing.size() + " database(s) with the "
+            + "leader's snapshot (an operator or automatic resync that was running when it was elected). A leader cannot download a copy from "
+            + "itself, and it refuses every request on a database whose copy is being replaced, so every write to "
+            + "those databases fails although the Raft majority is healthy.")
+        .put("recommendation", "The health monitor hands leadership to a peer that holds the data (arcadedb.ha."
+            + "healthCheckInterval must be above 0), and the install then completes from the new leader. If this "
+            + "alert does not clear, transfer leadership by hand (POST /api/v1/cluster/leader) to a node whose "
+            + "applied index covers the commit index.")
+        .put("details", new JSONObject()
+            .put("databases", namesArray(visible(replacing, visibleDatabases)))
+            .put("count", replacing.size())));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */

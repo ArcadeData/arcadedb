@@ -160,7 +160,7 @@ class UngatedHandlerPerTypeAclIT extends BaseGraphServerTest {
 
   private HttpURLConnection openPost(final int serverIndex, final String path, final String auth) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + path).openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + path).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", auth);
     return connection;

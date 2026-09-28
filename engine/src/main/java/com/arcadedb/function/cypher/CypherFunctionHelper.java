@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -342,7 +343,7 @@ public final class CypherFunctionHelper {
     if (a instanceof Number && b instanceof Number)
       return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
     if (a instanceof String && b instanceof String)
-      return ((String) a).compareTo((String) b);
+      return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
       return Boolean.compare((Boolean) a, (Boolean) b);
     if (a instanceof List && b instanceof List) {
@@ -473,13 +474,13 @@ public final class CypherFunctionHelper {
     // Optimized: single map lookup instead of containsKey() + get()
     Object value = map.get("year");
     if (value != null)
-      date = date.withYear(((Number) value).intValue());
+      date = date.withYear(TemporalUtil.toIntField("year", value));
     value = map.get("month");
     if (value != null)
-      date = date.withMonth(((Number) value).intValue());
+      date = date.withMonth(TemporalUtil.toIntField("month", value));
     value = map.get("day");
     if (value != null)
-      date = date.withDayOfMonth(((Number) value).intValue());
+      date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
     value = map.get("dayOfWeek");
     if (value != null)
       date = date.with(WeekFields.ISO.dayOfWeek(), ((Number) value).longValue());
@@ -495,13 +496,13 @@ public final class CypherFunctionHelper {
     // Optimized: single map lookup instead of containsKey() + get()
     Object value = map.get("hour");
     if (value != null)
-      time = time.withHour(((Number) value).intValue());
+      time = time.withHour(TemporalUtil.toIntField("hour", value));
     value = map.get("minute");
     if (value != null)
-      time = time.withMinute(((Number) value).intValue());
+      time = time.withMinute(TemporalUtil.toIntField("minute", value));
     value = map.get("second");
     if (value != null)
-      time = time.withSecond(((Number) value).intValue());
+      time = time.withSecond(TemporalUtil.toIntField("second", value));
     time = time.withNano(TemporalUtil.computeNanos(map, time.getNano()));
     return time;
   }

@@ -102,6 +102,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
@@ -220,6 +221,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    WALFileFactory                            walFactory;
   protected final    DocumentIndexer                           indexer;
   protected final    DatabaseStats                             stats                     = new DatabaseStats();
+  // SEE getModificationCount(): A DEDICATED COUNTER, NOT A SUM OF STATISTICS THAT MISS SOME WRITE PATHS (#8400)
+  private final      AtomicLong                                modificationCount         = new AtomicLong();
   protected          FileManager                               fileManager;
   protected          LocalSchema                               schema;
   protected          TransactionManager                        transactionManager;
@@ -589,6 +592,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   @Override
+  public long getModificationCount() {
+    return modificationCount.get();
+  }
+
+  /**
+   * Moves {@link #getModificationCount()}. Called at every write boundary: a record created, updated or deleted, a
+   * write transaction committed, a replicated or recovered transaction applied to the files, and a command (which
+   * may be DDL or a bulk operation that bypasses the record paths). Over-counting only costs a memoized result;
+   * under-counting serves a stale one, so a NEW write path that bypasses all of these must call this too.
+   */
+  public void markModified() {
+    modificationCount.incrementAndGet();
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
@@ -692,6 +710,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public void incrementStatsWriteTx() {
     stats.writeTx.incrementAndGet();
+    markModified();
   }
 
   public void incrementStatsReadTx() {
@@ -711,9 +730,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
         final Binary result = current.getLastTransaction().commit();
-        if (result != null)
+        if (result != null) {
           stats.writeTx.incrementAndGet();
-        else
+          markModified();
+        } else
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
@@ -1089,6 +1109,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (idx == null)
         throw new IllegalArgumentException(
             "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
+      if (!idx.getType().isExactKeyLookup())
+        // A FULL_TEXT (or vector, geospatial) index does not answer "value equals key": handing its answer back as one
+        // attached edges to every vertex sharing a token with the key, and to none when the key has no token (#8439)
+        throw new IllegalArgumentException(
+            "No key index has been created on type '" + type + "' properties " + Arrays.toString(keyNames) + ": index '"
+                + idx.getName() + "' is " + idx.getType() + " and cannot look up a record by exact key");
 
       return idx.get(keyValues);
     });
@@ -1220,6 +1246,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
+    markModified();
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already " +
           "persistent");
@@ -1580,6 +1607,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // record this transaction already deleted - both leave without reaching it. Both also skip the after-update
       // events right below, so the two stay in step.
       stats.updateRecord.incrementAndGet();
+      // THE IN-TRANSACTION BRANCH DEFERS THE WRITE TO COMMIT AND NEVER REACHES updateRecordNoLock()
+      markModified();
 
       // INVOKE EVENT CALLBACKS
       events.onAfterUpdate(record);
@@ -1614,6 +1643,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
+    markModified();
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
@@ -1690,6 +1720,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                         and always {@code null} on the ordinary delete path.
    */
   private boolean deleteRecordNoLock(final Record record, final RID skipEdgeEndpoint) {
+    markModified();
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
@@ -2255,6 +2286,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration());
@@ -2267,6 +2299,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
@@ -2280,6 +2313,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
@@ -2298,6 +2332,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Map<String, Object> parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
+    markModified();
     final long start = QueryMetricsRecorder.Holder.startNanos();
     try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
@@ -2808,6 +2843,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   static volatile Runnable TEST_CLOSE_HOOK = null;
 
+  /**
+   * Test-only hook (issue #8316): when set, invoked inside the write-locked teardown right after the instance is
+   * marked closed, so a test can make a close fail at the point where it already reports itself closed.
+   */
+  static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
+
   private void closeInternal(final boolean drop) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
@@ -2936,6 +2977,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
+    try {
+      closeUnderWriteLock(drop);
+    } finally {
+      // In a finally, and on the flag rather than on how the teardown ended (issue #8316): a close that marked this
+      // instance closed and then threw used to skip everything below, leaving a CLOSED instance in the factory's
+      // active-instance registry. The next open of the path was refused as "already in use", and the server's
+      // lookup reused the dead instance instead of opening the files. An instance that is still open - the teardown
+      // failed before marking it closed - keeps its registration and its PageManager reference, which is what it
+      // still holds.
+      if (!open)
+        unregisterClosedInstance();
+    }
+  }
+
+  private void closeUnderWriteLock(final boolean drop) {
     executeInWriteLock(() -> {
       if (!open)
         return null;
@@ -2975,19 +3031,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       open = false;
 
-      // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
-      // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge them
-      // so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
-      // #6133: done on EVERY close, not only the give-up one. On a clean close the page purge itself is a
-      // no-op - the wait above proved this database's pipeline empty - but this call is also where the
-      // JVM-wide flush thread FORGETS the database: its suspend and replay-drain locks, its deferred batches,
-      // its flush-progress counter and its pending-page counter are all keyed by the Database instance, as is
-      // the page manager's snapshot barrier monitor. Skipping it on the common path pinned one dead
-      // LocalDatabase (and everything it references) per closed database for the lifetime of
-      // PageManager.INSTANCE, which any process cycling through databases pays forever.
-      PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+      // From here on the instance reports itself closed, so every step below must run whatever the one before it did
+      // (issue #8316): the files, the WAL and the lock file are released at the end, and a failure that skipped them
+      // left a closed instance holding the lock - a later close() is a no-op and cannot finish the job, and the next
+      // open of the path failed on the lock. A step that throws is recorded and rethrown once the teardown is done.
+      Throwable teardownFailure = null;
+      try {
+        final Runnable afterMarkedClosedHook = TEST_AFTER_MARKED_CLOSED_HOOK;
+        if (afterMarkedClosedHook != null)
+          afterMarkedClosedHook.run();
 
-      PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+        // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
+        // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge them
+        // so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
+        // #6133: done on EVERY close, not only the give-up one. On a clean close the page purge itself is a
+        // no-op - the wait above proved this database's pipeline empty - but this call is also where the
+        // JVM-wide flush thread FORGETS the database: its suspend and replay-drain locks, its deferred batches,
+        // its flush-progress counter and its pending-page counter are all keyed by the Database instance, as is
+        // the page manager's snapshot barrier monitor. Skipping it on the common path pinned one dead
+        // LocalDatabase (and everything it references) per closed database for the lifetime of
+        // PageManager.INSTANCE, which any process cycling through databases pays forever.
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+      } catch (final Throwable t) {
+        teardownFailure = t;
+      }
 
       try {
         final List<DatabaseContext.DatabaseContextTL> dbContexts =
@@ -3011,8 +3080,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 '%s'""", e, name);
       }
 
-      for (QueryEngine e : reusableQueryEngines.values())
-        e.close();
+      // One engine that fails to close must not skip the rest of the teardown below: the files, the WAL and the lock
+      // file would stay held by an instance that already reports itself closed (issue #8316).
+      for (final QueryEngine e : reusableQueryEngines.values()) {
+        try {
+          e.close();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING, "Error on closing query engine '%s' during closing operation "
+              + "for database '%s'", t, e.getLanguage(), name);
+        }
+      }
 
       // Whether the WAL was ACTUALLY preserved: either this close's flush wait gave up, or the
       // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
@@ -3065,8 +3142,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
+      if (teardownFailure instanceof RuntimeException runtime)
+        throw runtime;
+      if (teardownFailure instanceof Error error)
+        throw error;
+      if (teardownFailure != null)
+        throw new DatabaseOperationException("Error on closing database '" + name + "'", teardownFailure);
       return null;
     });
+  }
+
+  private void unregisterClosedInstance() {
+    // A no-op after a teardown that completed (its own finally already did it), and the only unregistration a teardown
+    // that threw part way gets (issue #8316): a closed instance left in the JVM-wide profiler fails every stats read.
+    Profiler.INSTANCE.unregisterDatabase(this);
 
     // Unconditional on purpose: a KILLED database (crash simulation) reaches close() with open == false and
     // must still unregister - removeActiveDatabaseInstance is naturally idempotent (false on the second
@@ -3355,16 +3444,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 
-    final long now = System.currentTimeMillis();
-
+    // #8523: THIS RUNS ON EVERY SCHEMA LOOKUP AND RECORD READ OF EVERY THREAD, SO IT READS THE COARSE CLOCK (A VOLATILE)
+    // RATHER THAN THE SYSTEM ONE, AND WRITES THE STAMPS ONLY WHEN THE TICK CHANGED. AN UNCONDITIONAL STORE MADE EACH CORE TAKE
+    // THE CACHE LINE (SHARED WITH open AND fenceReason, READ JUST ABOVE) AWAY FROM ALL THE OTHERS: A SCAN ON 12 THREADS
+    // RAN NO FASTER THAN ON ONE
+    final long now = CoarseClock.currentTimeMillis();
     if (updateIntent) {
       if (mode == ComponentFile.MODE.READ_ONLY)
         throw new DatabaseIsReadOnlyException(databaseReadOnlyErrorMessage);
 
-      lastUpdatedOn = now;
+      if (lastUpdatedOn != now)
+        lastUpdatedOn = now;
     }
 
-    lastUsedOn = now;
+    if (lastUsedOn != now)
+      lastUsedOn = now;
   }
 
   private void setDefaultValues(final Record record) {

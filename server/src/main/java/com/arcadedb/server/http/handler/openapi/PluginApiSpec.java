@@ -299,14 +299,18 @@ public class PluginApiSpec implements OpenApiContributor {
         """
             Discards this server's copy of one database and installs a fresh snapshot from the \
             leader. Refuses to run on the leader itself. Answers 503 when no leader is currently \
-            reachable. """ + RAFT_REQUIRED);
+            reachable. The body is ignored for an operator's resync. The leader's automatic resync of a \
+            stalled replica sends its view at decision time instead (leaderTerm, observedMatchIndex, \
+            leaderCommitIndex), and the server answers 409, keeping its copy, when that view no longer \
+            holds: it is already in a later term, has applied up to the leader's commit index, or has \
+            progressed past the observed matchIndex. """ + RAFT_REQUIRED);
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     // No 404: unlike the verify handler, this handler never checks existsDatabase() - an unknown or
     // invalid name simply fails inside resyncDatabaseFromLeader, which is caught locally and reported
     // as 500.
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Database resynced", "ClusterActionResponse"),
-        "400", "401", "403", "500", "503"));
+        "400", "401", "403", "409", "500", "503"));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -517,17 +521,19 @@ public class PluginApiSpec implements OpenApiContributor {
     peer.addProperty("replicationRttP99Ms", SpecBuilders.integer(
         "99th percentile replication round-trip time. Absent when no sample exists."));
     peer.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
-        "Optional wire-format sections this peer can decode, as last observed by the leader (issue #7219). "
-            + "Absent on a follower, which does not poll, and on the leader for a peer it has not reached: an "
-            + "absent array means 'not known', which the leader treats exactly like 'cannot decode'."));
+        "Optional wire-format sections this peer can decode, as last observed by the answering node (issue "
+            + "#7219). Every node polls its peers since issue #7549, so a follower answers for every peer too. Absent "
+            + "for a peer the answering node has no fresh answer from: an absent array means 'not known', which the "
+            + "leader treats exactly like 'cannot decode'."));
     peer.addProperty("version", SpecBuilders.string(
-        "Server version this peer reported alongside its capabilities. Absent when the leader has no fresh "
-            + "answer from it."));
+        "Server version this peer reported alongside its capabilities. Absent when the answering node has no "
+            + "fresh answer from it."));
     peer.addProperty("capabilitiesUnknownReason", SpecBuilders.string("""
-        Why 'capabilities' is absent for this peer, when the leader knows why. An absent capabilities array \
-        otherwise reads the same whether the peer runs a build that predates the capability route or was never \
-        asked because its address identifies no single peer, and the two have nothing alike as remedies \
-        (issue #7256). Written by the leader only."""));
+        Why 'capabilities' is absent for this peer, when the answering node knows why. An absent capabilities \
+        array otherwise reads the same whether the peer runs a build that predates the capability route or was \
+        never asked because its address identifies no single peer, and the two have nothing alike as remedies \
+        (issue #7256). Written by any node since issue #7549; absent while the answering node has not finished \
+        its first probe round."""));
     // Only these three are written for every peer; every other member above is conditional on a health sample,
     // on a resolvable endpoint, or on this node being the leader (issue #7578).
     peer.setRequired(List.of("id", "address", "role"));
@@ -577,17 +583,21 @@ public class PluginApiSpec implements OpenApiContributor {
             + "restart"));
     schema.addProperty("localCommitIndex", SpecBuilders.integer(
         "Last Raft index this node knows to be committed. -1 under the same condition"));
+    // Issue #8321: on a follower the lag is measured against 'leaderCommitIndex' when that is the larger figure, so a
+    // follower whose replication channel is wedged - its own commit index clamped to what it received - no longer
+    // reads 0 here.
     schema.addProperty("localReplicationLag", SpecBuilders.integer(
-        "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex'. -1 rather than a "
-            + "fabricated difference whenever either side is unknown"));
+        "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex', where on a follower "
+            + "'localCommitIndex' is replaced by 'leaderCommitIndex' when the leader reported a larger one. -1 rather "
+            + "than a fabricated difference whenever either side is unknown"));
     // Issue #8289: this node stuck at a stale term after a snapshot install applies everything it could
-    // locally commit, so 'localReplicationLag' above reads 0 and this node looks caught up, yet it keeps
+    // locally commit, so 'localReplicationLag' above can read 0 and this node looks caught up, yet it keeps
     // rejecting the leader's current-term entries and does not count toward the Raft quorum. Debounced
     // (seen on two consecutive health-monitor ticks) so a normal leader change is not reported as one.
     schema.addProperty("localStuckAtStaleTerm", SpecBuilders.bool(
         "True when this node recognizes a leader at a newer term but keeps rejecting its current-term entries "
             + "although it has applied everything it could locally commit. It does not count toward quorum while "
-            + "this is true, even though 'localReplicationLag' reads 0. See the 'follower-stuck-at-stale-term' "
+            + "this is true, even though 'localReplicationLag' can read 0. See the 'follower-stuck-at-stale-term' "
             + "alert for the operator-facing explanation"));
     // Issue #8342: a follower whose log stops receiving entries while the term does not change also reads
     // 'localReplicationLag' 0 and 'localStuckAtStaleTerm' false; only the leader's commit index shows the gap.

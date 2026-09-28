@@ -36,6 +36,7 @@ import org.junit.jupiter.api.TestInfo;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -235,7 +236,7 @@ class Issue7357DeltaBufferHeapBoundTest {
               .as("precondition: the reuse must actually have run, or nothing re-queued a gap and this test "
                   + "asserts nothing")
               .isEqualTo(1L);
-          assertThat(index.getStats().get("deltaVectorsCount"))
+          assertThat(PendingDeltaVectors.of(index))
               .as("precondition: the whole gap is buffered - the bound drops payloads, never entries")
               .isEqualTo((long) GAP_VECTORS);
 
@@ -312,12 +313,16 @@ class Issue7357DeltaBufferHeapBoundTest {
         final LSMVectorIndex index = vectorIndex(db);
         index.buildVectorGraphNow();
 
-        assertThat(index.getStats().get("deltaVectorsCount"))
+        // The build itself may orphan nodes and re-queue them, payloads included (issues #7190, #8200): those are the
+        // baseline the forced re-queue below adds to, not a sign the build left writes behind.
+        final Map<String, Long> built = index.getStats();
+        final long buildOrphans = built.get("unreachableGraphNodes");
+        assertThat(PendingDeltaVectors.of(built))
             .as("precondition: the build drained the buffer, so what follows is only the re-queue")
             .isZero();
-        assertThat(index.getStats().get("deltaResidentVectors"))
-            .as("precondition: and gave every payload back")
-            .isZero();
+        assertThat(built.get("deltaResidentVectors"))
+            .as("precondition: and gave every payload back but those of the nodes it orphaned")
+            .isLessThanOrEqualTo(buildOrphans);
 
         int requeued = 0;
         for (int id = 0; id < ORPHAN_RECORDS && requeued < ORPHAN_BUDGET * 3; id++) {
@@ -330,7 +335,7 @@ class Issue7357DeltaBufferHeapBoundTest {
             .isGreaterThan(ORPHAN_BUDGET);
         assertThat(index.getStats().get("deltaVectorsCount"))
             .as("every re-queued orphan is buffered - the bound drops payloads, never entries")
-            .isEqualTo((long) requeued);
+            .isEqualTo(buildOrphans + requeued);
         assertThat(index.getStats().get("deltaResidentVectors"))
             .as("but the heap holds at most the budget, the same as for a write (issue #7357)")
             .isLessThanOrEqualTo((long) ORPHAN_BUDGET);

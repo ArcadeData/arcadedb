@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -226,8 +227,16 @@ class BootstrapElection {
     final List<String> committed = new ArrayList<>();
     Outcome outcome = Outcome.FAILED;
     try {
+      // Issue #8409: the leader holds its own copies from the start of the pass, like every follower its probe
+      // reaches. Until decideAndAct has elected a source it cannot know its copy is the baseline, and it is the only
+      // node still serving while its followers are held: a read there may return a copy the pass then rejects, and a
+      // write commits an application entry that closes first formation on every node - so after a transfer the
+      // elected source's own pass skips and no baseline is ever committed. The common case, where the leader is the
+      // source, costs only the collection itself: its conclusion below releases every database it did not commit a
+      // baseline for, and the apply of each baseline it did commit releases that one.
+      holdOwnCopies(passId, pending);
       final Map<String, List<PeerState>> states = collectStates(pending, passId);
-      outcome = decideAndAct(states, passId, committed);
+      outcome = decideAndAct(states, pending, passId, committed);
       return outcome;
     } catch (final Throwable t) {
       LogManager.instance().log(this, Level.WARNING,
@@ -241,6 +250,22 @@ class BootstrapElection {
       if (outcome != Outcome.TRANSFERRED)
         concludePass(passId, committed);
     }
+  }
+
+  /**
+   * Holds this node's own copies of {@code dbNames} for the pass {@code passId} it is running (issue #8409), with no
+   * deadline at all - see {@link ArcadeStateMachine#holdOwnBootstrapPass}.
+   * <p>
+   * A follower's hold needs a deadline because a leader that dies mid-pass sends it no conclusion. This hold is taken
+   * by the pass itself, on its own thread, and every way out of {@link #runIfEligible} settles it: the conclusion in
+   * its {@code finally} releases it, and a transfer replaces it with a bounded one before leadership moves. A deadline
+   * here could only lapse while the pass is still running - in the fingerprinting of the local copies, which reads
+   * every file and has no time bound, or in a slow collection - and let a client reach a copy the pass may reject.
+   */
+  private void holdOwnCopies(final String passId, final Collection<String> dbNames) {
+    final ArcadeStateMachine stateMachine = haServer.getStateMachine();
+    if (stateMachine != null)
+      stateMachine.holdOwnBootstrapPass(passId, dbNames);
   }
 
   /**
@@ -278,16 +303,10 @@ class BootstrapElection {
     try {
       final boolean useSSL = server != null
           && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-      final RaftPeerId localId = haServer.getLocalPeerId();
-      final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
       final List<String> urls = new ArrayList<>();
-      for (final RaftPeer peer : haServer.getLivePeers()) {
-        if (peer.getId().equals(localId))
-          continue;
-        final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
+      for (final String url : peerProbeUrls(useSSL).values())
         if (url != null)
           urls.add(url);
-      }
       if (urls.isEmpty())
         return;
 
@@ -310,8 +329,17 @@ class BootstrapElection {
           final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
         }
-        CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
-            .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        try {
+          CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
+              .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+        } finally {
+          // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
+          // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
+          // JDK 21-25, where the request timeout stops at the response headers (issue #8472). A send that already
+          // completed ignores the cancel.
+          for (final CompletableFuture<HttpResponse<String>> send : sends)
+            send.cancel(true);
+        }
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -409,9 +437,7 @@ class BootstrapElection {
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
     final RaftPeerId localId = haServer.getLocalPeerId();
-    final Collection<RaftPeer> peers = haServer.getLivePeers();
     final Set<String> dbFilter = new HashSet<>(dbNames);
-    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
     final String announceBody = announcePassBody(passId, dbNames);
 
     // Self state computed locally to avoid a self-loop HTTP call.
@@ -426,16 +452,15 @@ class BootstrapElection {
     final boolean useSSL = server != null
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> peerAddresses = new LinkedHashMap<>();
-    for (final RaftPeer peer : peers) {
-      if (peer.getId().equals(localId))
-        continue;
-      final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
-      if (url == null) {
+    for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet()) {
+      if (entry.getValue() == null) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: peer %s has no known HTTP address; the election assumes it holds NO local data", peer.getId());
+            "Bootstrap: peer %s has no known HTTP address that identifies it and is not this node's own; the election "
+                + "assumes it holds NO local data. Declare each node's 'http' port explicitly in %s", entry.getKey(),
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
         continue;
       }
-      peerAddresses.put(peer.getId(), url);
+      peerAddresses.put(entry.getKey(), entry.getValue());
     }
 
     // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
@@ -584,6 +609,58 @@ class BootstrapElection {
   }
 
   /**
+   * The bootstrap-state URL of every live peer but this node, in peer order, for the two fan-outs of a pass: the
+   * state collection and the conclusion broadcast. A peer with no endpoint this node may dial maps to {@code null}
+   * rather than being left out, so the collection can name it in its warning and count it as holding no data.
+   * <p>
+   * Both halves are asked the two questions every other peer dial asks ({@link PeerDialAddress}): does the address
+   * identify this peer alone, and is it this node's own? An endpoint that fails either is withheld, because a probe
+   * sent to it is answered by the wrong node - most often by this one, with its own state - and the election would
+   * file that answer under the peer's id and pick a baseline from it without a line in the log.
+   * <ul>
+   * <li>The HTTPS half goes through {@link PeerDialAddress#encryptedEndpointOf}. The raw resolver derives a missing
+   * {@code https} port as the peer's Raft host plus <em>this</em> node's HTTPS port, so on a cluster whose nodes
+   * differ by port and declare only their {@code http} ports every peer collapsed onto this node's own listener, and
+   * {@link #chooseUrl} preferred that over the declared HTTP endpoint (issue #8033). Withheld, the probe falls back
+   * to the plain-HTTP half.</li>
+   * <li>The plain-HTTP half stays restricted to the {@code http} endpoint each peer DECLARED in
+   * {@link GlobalConfiguration#HA_SERVER_LIST}, as it always was, and is additionally withheld when that declared
+   * endpoint is shared with another peer or is this node's own spelled another way ({@code 127.0.0.1} against
+   * {@code localhost}).</li>
+   * </ul>
+   */
+  Map<RaftPeerId, String> peerProbeUrls(final boolean useSSL) {
+    final RaftPeerId localId = haServer.getLocalPeerId();
+    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
+    // Resolved once for the whole fan-out rather than once per peer.
+    final String localHttpAddress = haServer.getLocalHttpAddress();
+    final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
+    for (final RaftPeer peer : haServer.getLivePeers()) {
+      final RaftPeerId peerId = peer.getId();
+      if (peerId.equals(localId))
+        continue;
+      final String httpAddress = declaredHttpEndpointOf(peerId, httpAddresses.get(peerId), localHttpAddress);
+      final String httpsAddress = useSSL ? PeerDialAddress.encryptedEndpointOf(haServer, peerId) : null;
+      urls.put(peerId, chooseUrl(httpAddress, httpsAddress, useSSL));
+    }
+    return urls;
+  }
+
+  /**
+   * {@code declared} when it identifies {@code peerId} alone and is not this node's own endpoint, {@code null}
+   * otherwise. The same checks {@link PeerDialAddress#resolve} makes on its HTTP arm, restricted to the declared
+   * endpoint: the unambiguous accessor answers with the declared address whenever there is one, so any other answer
+   * means the declaration identifies nobody.
+   */
+  private String declaredHttpEndpointOf(final RaftPeerId peerId, final String declared, final String localHttpAddress) {
+    if (declared == null || !declared.equals(haServer.getUnambiguousPeerHttpAddress(peerId)))
+      return null;
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, declared))
+      return null;
+    return declared;
+  }
+
+  /**
    * Picks the URL this probe is sent to. Prefers the peer's HTTPS endpoint when SSL is enabled and one
    * resolves; otherwise plain HTTP. {@code null} when no usable address was provided. Package-private and
    * pure for unit testing.
@@ -699,13 +776,16 @@ class BootstrapElection {
       PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
     try {
       final HttpRequest request = bootstrapStateRequestTo(url, clusterToken, timeoutMs);
+      // Bounded by sendBounded rather than by the request timeout alone, which on JDK 21-25 stops at the response
+      // headers: a leader that stalls inside its body would otherwise park the state-machine thread asking for its
+      // bootstrap baselines with no bound at all (issue #8472).
       final HttpResponse<String> response;
       if (url.startsWith("https://"))
         try (final HttpClient client = newTrustingClient(server)) {
-          response = client.send(request, HttpResponse.BodyHandlers.ofString());
+          response = LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
         }
       else
-        response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        response = LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs);
       if (response.statusCode() != 200) {
         LogManager.instance().log(BootstrapElection.class, Level.INFO,
             "bootstrap-state probe of %s answered HTTP %d", url, response.statusCode());
@@ -820,7 +900,7 @@ class BootstrapElection {
    * without committing anything (when a remote peer is elected). See the class Javadoc for why a
    * single source is both correct and sufficient under ArcadeDB's one-leader-per-cluster model.
    */
-  private Outcome decideAndAct(final Map<String, List<PeerState>> states, final String passId,
+  private Outcome decideAndAct(final Map<String, List<PeerState>> states, final List<String> held, final String passId,
       final List<String> committedOut) {
     final RaftPeerId localId = haServer.getLocalPeerId();
     final long timeoutMs = server.getConfiguration()
@@ -840,10 +920,16 @@ class BootstrapElection {
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: transferring leadership to elected source %s (freshest copy of the cluster)", source);
       // This node is about to become a follower of a pass that may reject its copies (issue #8368). The elected
-      // source's pass announces to it too, but only after the transfer and its own collection: hold them from now.
+      // source's pass announces to it too, but only after the transfer and its own collection. The hold this pass
+      // took at its start (issue #8409) has no deadline, because this pass concludes it; from here the new source's
+      // pass does, and a source that dies sends no conclusion, so the hold is replaced by a bounded one.
+      // Every database this pass holds, not only those the collection reported: one missing from the states (dropped
+      // locally mid-pass) would otherwise keep its unbounded self-hold, since a transfer concludes nothing here.
+      final Set<String> toHold = new HashSet<>(states.keySet());
+      toHold.addAll(held);
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
       if (stateMachine != null)
-        stateMachine.announceBootstrapPass(passId, states.keySet(), 2L * timeoutMs);
+        stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
       try {
         haServer.transferLeadership(source.toString(), timeoutMs);
       } catch (final Exception e) {

@@ -170,11 +170,7 @@ public class ExpandInto extends AbstractPhysicalOperator {
           if (currentInputUsedEdgeRids != null && currentInputUsedEdgeRids.contains(edge.getIdentity()))
             continue;
 
-          final ResultInternal result = new ResultInternal();
-
-          // Copy all properties from input
-          for (final String prop : currentInputResult.getPropertyNames())
-            result.setProperty(prop, currentInputResult.getProperty(prop));
+          final ResultInternal result = ResultInternal.copyBindings(currentInputResult, 2);
 
           if (edgeVariable != null)
             result.setProperty(edgeVariable, edge);

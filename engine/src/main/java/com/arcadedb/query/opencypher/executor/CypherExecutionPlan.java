@@ -1490,8 +1490,8 @@ public class CypherExecutionPlan {
       }
     }
 
-    // Step 8: ORDER BY (if any)
-    if (statement.getOrderByClause() != null) {
+    // Step 8: ORDER BY (if any), unless the operators already produce the rows in that order from an index (issue #8422)
+    if (statement.getOrderByClause() != null && !physicalPlan.isIndexOrdered()) {
       // Evaluate LIMIT before creating OrderByStep for Top-K optimization
       // When SKIP is also present, TopK must keep SKIP + LIMIT results so SKIP can discard from them
       Integer limitVal = statement.getLimit() != null ?

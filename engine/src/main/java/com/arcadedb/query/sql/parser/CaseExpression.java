@@ -299,6 +299,24 @@ public class CaseExpression extends MathExpression {
     return new Object[] { caseExpression, alternatives, elseExpression };
   }
 
+  /**
+   * CASE branches sit outside {@code childExpressions}, so the inherited list was empty: {@link #refersToParent()}
+   * answered false and {@link #isCacheable()} true for a CASE that reads {@code $parent} or runs a subquery in a branch
+   * (issue #8442, same shape as the parenthesized boolean). List every branch.
+   */
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    final SimpleNode[] elements = new SimpleNode[2 + alternatives.size() * 2];
+    int i = 0;
+    elements[i++] = caseExpression;
+    for (final CaseAlternative alternative : alternatives) {
+      elements[i++] = alternative.isSimpleForm() ? alternative.getWhenCondition() : alternative.getWhenExpression();
+      elements[i++] = alternative.getThenExpression();
+    }
+    elements[i] = elseExpression;
+    return elements;
+  }
+
   @Override
   public CaseExpression copy() {
     if (caseExpression != null) {

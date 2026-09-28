@@ -299,6 +299,60 @@ public interface HAServerPlugin extends ServerPlugin {
     return List.of();
   }
 
+  /**
+   * The log index of the configuration change that (last) added this node at runtime - the join boundary
+   * {@link #securityDocumentsNotInstalledSinceRuntimeJoin()} is measured from - or {@code -1} when none is known
+   * (issue #8414).
+   * <p>
+   * It is what makes the security-convergence readiness window per join rather than per process: a re-add moves it
+   * forward, and the gate opens a fresh window for the new join instead of inheriting the one the previous join
+   * already spent. It only ever moves forward within a membership; a value that does not (the {@code -1} of a Raft
+   * server that is not readable this tick) is no evidence of a join.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code true}. {@code -1} when this HA
+   * implementation has no such concept, which leaves the window reset by convergence alone, as before issue #8414.
+   *
+   * @return the join index, {@code -1} when unknown
+   */
+  default long getRuntimeJoinIndex() {
+    return -1L;
+  }
+
+  /**
+   * On a node that did NOT join at runtime, the cluster-replicated security documents it has not installed from a
+   * replicated entry, nor had confirmed by the leader, since its latest unconfirmed leader-driven snapshot install, in
+   * the order users, groups, API tokens (issue #8432). An install whose documents were not confirmed before a restart
+   * is still reported after it (issue #8465).
+   * <p>
+   * A statically configured member removed while it was down, re-added with its config volume retained and caught up
+   * by a snapshot install past the leader's compaction point never observes the re-add, so it is never armed (see
+   * {@link #hasJoinedClusterAtRuntime()}), yet it may still enforce a user dropped, a group narrowed or a token revoked
+   * while it was out: no snapshot carries the security documents. It cannot tell that case from a member that merely
+   * lagged, so every such install holds readiness until the documents are confirmed, without arming the node.
+   * <p>
+   * Consulted only when {@link #hasJoinedClusterAtRuntime()} is {@code false} and {@link #getLastSnapshotInstallIndex()}
+   * reports an install. Empty when this HA implementation has no such concept, which leaves an unarmed node ungated,
+   * as before issue #8432.
+   *
+   * @return the document names, empty when all three have been confirmed since the install, or there was none
+   */
+  default List<String> securityDocumentsNotConfirmedSinceSnapshotInstall() {
+    return List.of();
+  }
+
+  /**
+   * The log index of this node's latest leader-driven snapshot install while it had not joined at runtime, or
+   * {@code -1} when none is known (issue #8432) - including one a previous run left unconfirmed (issue #8465). It is
+   * both what opens the hold of
+   * {@link #securityDocumentsNotConfirmedSinceSnapshotInstall()} and the key of its window: a later install opens a
+   * fresh one, the way a later join does on an armed node (issue #8414). Only moves forward.
+   *
+   * @return the install index, {@code -1} when unknown
+   */
+  default long getLastSnapshotInstallIndex() {
+    return -1L;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();

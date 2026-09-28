@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server;
 
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
 /**
  * Records, for the duration of one HTTP request, that a cluster peer already redirected this request to
  * what it believed to be the leader. A node serving a marked request must execute it or refuse it, never
@@ -79,6 +82,14 @@ public final class LeaderForwardContext {
   public static final String FORWARDED_LEADER_ID_HEADER = "X-ArcadeDB-Forwarded-Leader-Id";
 
   /**
+   * Request header carrying the {@code arcadedb.command.timeout} budget, in milliseconds, the forwarding node resolved
+   * for the command and waits for (issue #8313). The receiving node enforces it in place of its own database setting,
+   * so the two sides of a forward agree on the budget. Honoured under the same cluster-token gate as the headers
+   * above: from a client it would let a request lift the budget its database imposes.
+   */
+  public static final String FORWARDED_COMMAND_TIMEOUT_HEADER = "X-ArcadeDB-Command-Timeout";
+
+  /**
    * Why a request that arrived already forwarded to the leader landed on a node that is not the leader
    * (issue #7603). The one-hop refusal used to answer both causes the same way - HTTP 400 blaming
    * {@code arcadedb.ha.serverList} - which told every client not to retry a routine election.
@@ -97,10 +108,15 @@ public final class LeaderForwardContext {
     ADDRESS_DOES_NOT_IDENTIFY_LEADER,
     /**
      * Either peer could not say - the forwarding peer sent no leader id (an older node during a rolling upgrade,
-     * or leadership changing while it resolved the address) or this node cannot name itself. Answered as before.
+     * or leadership changing while it resolved the address) or this node cannot name itself. Answered like
+     * {@link #LEADERSHIP_MOVED}, retryable and without the one-shot configuration warning (issue #8393): nothing here
+     * proves the address wrong, and an election - the usual cause - clears by itself.
      */
     UNDETERMINED
   }
+
+  /** Ceiling of {@link #awaitLeaderViewMovedFrom}'s wait, however large the configured timeout. */
+  private static final long MAX_LEADER_VIEW_WAIT_MS = TimeUnit.DAYS.toMillis(365);
 
   private static final ThreadLocal<Boolean> ALREADY_FORWARDED  = new ThreadLocal<>();
   private static final ThreadLocal<String>  INTENDED_LEADER_ID = new ThreadLocal<>();
@@ -154,6 +170,49 @@ public final class LeaderForwardContext {
     if (leaderIdBefore == null || leaderIdBefore.isBlank() || !leaderIdBefore.equals(leaderIdAfter))
       return null;
     return leaderIdBefore;
+  }
+
+  /**
+   * Waits until {@code leaderIdProbe} stops naming {@code refusingLeaderId} - it names a different leader, or none while
+   * an election runs - or {@code timeoutMs} elapses (issue #8486). The {@code server}-module counterpart of the wait
+   * {@code RaftReplicatedDatabase} gives a SQL write (issue #8480), for the forwarders that cannot see Raft types: a
+   * probe of {@link HAServerPlugin#getLeaderPeerId()} names the leader in the same form the forwards send in
+   * {@link #FORWARDED_LEADER_ID_HEADER}.
+   * <p>
+   * Either outcome returns and the caller relays the refusal regardless: what the wait buys is that the client's
+   * retry, when it comes, is routed by a view that no longer names the node that just refused it. A thread
+   * interrupted while waiting stops waiting and keeps its interrupt flag.
+   *
+   * @param timeoutMs      the longest to wait; 0 or less reads the view once and never sleeps
+   * @param pollIntervalMs how often to re-read the view
+   *
+   * @return true when the view moved within the timeout
+   */
+  public static boolean awaitLeaderViewMovedFrom(final Supplier<String> leaderIdProbe, final String refusingLeaderId,
+      final long timeoutMs, final long pollIntervalMs) {
+    if (movedFrom(leaderIdProbe.get(), refusingLeaderId))
+      return true;
+    if (timeoutMs <= 0)
+      return false;
+
+    // Capped so that a huge setting cannot overflow the deadline into the past (TimeUnit.toNanos saturates at
+    // Long.MAX_VALUE, and adding that to nanoTime() wraps negative): a year is "wait for the view" in any practical sense.
+    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.min(timeoutMs, MAX_LEADER_VIEW_WAIT_MS));
+    for (long remainingNanos = deadline - System.nanoTime(); remainingNanos > 0; remainingNanos = deadline - System.nanoTime()) {
+      try {
+        Thread.sleep(Math.max(1L, Math.min(pollIntervalMs, remainingNanos / 1_000_000L)));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      if (movedFrom(leaderIdProbe.get(), refusingLeaderId))
+        return true;
+    }
+    return false;
+  }
+
+  private static boolean movedFrom(final String currentLeaderId, final String refusingLeaderId) {
+    return currentLeaderId == null || !currentLeaderId.equals(refusingLeaderId);
   }
 
   /**
