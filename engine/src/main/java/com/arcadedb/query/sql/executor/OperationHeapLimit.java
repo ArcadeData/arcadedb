@@ -210,6 +210,24 @@ public final class OperationHeapLimit {
       tracker.release(released - fromPending);
   }
 
+  /**
+   * Takes over what {@code other} charged - its buffer is now held by this operation - without the tracker seeing it:
+   * the query holds the same bytes before and after, so no other query can take them in between. Only between the top
+   * operations of one query, as the workers of a parallel scan and the step merging their partials are.
+   *
+   * @return false, taking nothing over, when the two do not charge the same query: the budget was switched on or off
+   * between their creations
+   */
+  public boolean transferFrom(final OperationHeapLimit other) {
+    if (tracker == null || other.tracker != tracker || parent != null || other.parent != null)
+      return false;
+    charged += other.charged;
+    pending += other.pending;
+    other.charged = 0L;
+    other.pending = 0L;
+    return true;
+  }
+
   /** Gives back everything the operation charged: its buffer is gone. Idempotent. */
   public void release() {
     release(charged);

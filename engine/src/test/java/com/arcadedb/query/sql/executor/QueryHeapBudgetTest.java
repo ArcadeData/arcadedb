@@ -59,6 +59,33 @@ class QueryHeapBudgetTest {
   }
 
   @Test
+  void chargesMoveBetweenOperationsOfOneQueryWithoutTouchingTheBudget() {
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1024L);
+    final BasicCommandContext context = new BasicCommandContext();
+    final OperationHeapLimit worker = OperationHeapLimit.of(context, "worker");
+    final OperationHeapLimit holder = OperationHeapLimit.of(context, "holder");
+    worker.charge(8 * MB);
+    final long reserved = QueryHeapBudget.getReservedBytes();
+    assertThat(reserved).isGreaterThan(baseline);
+
+    // The holder takes the worker's buffer over: no byte goes back to the budget for another query to take meanwhile
+    assertThat(holder.transferFrom(worker)).isTrue();
+    assertThat(worker.getChargedBytes()).isZero();
+    assertThat(holder.getChargedBytes()).isEqualTo(8 * MB);
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(reserved);
+
+    holder.release();
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+
+    // Another query's operation is not one to take over
+    final OperationHeapLimit otherQuery = OperationHeapLimit.of(new BasicCommandContext(), "other");
+    otherQuery.charge(MB);
+    assertThat(holder.transferFrom(otherQuery)).isFalse();
+    assertThat(otherQuery.getChargedBytes()).isEqualTo(MB);
+    otherQuery.release();
+  }
+
+  @Test
   void aQueryBufferingLittleNeverTouchesTheBudget() {
     final QueryHeapTracker tracker = new QueryHeapTracker();
     tracker.charge(QueryHeapTracker.UNRESERVED_BYTES, "test");

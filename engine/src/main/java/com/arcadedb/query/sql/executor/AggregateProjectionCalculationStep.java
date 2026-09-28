@@ -317,19 +317,26 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         groups.addAll(partition.values());
       checkGroupCount(groups.size() - 1);
 
-      // THE WORKERS CHARGED THEIR OWN GROUPS WHILE THEY SCANNED; THIS STEP HOLDS THE MERGED ONES FROM HERE ON, A KEY
-      // SEVERAL WORKERS MET BEING ONE GROUP NOW. EACH MERGED GROUP IS CHARGED FOR ITSELF: A PROPORTION OF THE WORKERS'
-      // CHARGES WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
-      for (final PartialAggregation partial : partials)
-        partial.releaseHeap();
-      for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
-        for (final GroupByKey key : partition.keySet())
-          groupsLimit.chargeElement(key.values, groupOverhead);
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
       final List<ResultInternal> result = new ArrayList<>(size);
       for (int i = 0; i < size; i++)
         result.add(groups.get(i).row);
+
+      // THE WORKERS CHARGED THEIR OWN GROUPS WHILE THEY SCANNED; THIS STEP HOLDS THE GROUPS IT RETURNS FROM HERE ON: A KEY
+      // SEVERAL WORKERS MET IS ONE GROUP NOW, AND THE ONES PAST A LIMIT ARE GONE. THE STEP TAKES THE WORKERS' CHARGES OVER
+      // WITHOUT GIVING THEM BACK TO THE BUDGET IN BETWEEN, WHERE ANOTHER QUERY COULD TAKE THEM WHILE THE GROUPS ARE STILL
+      // HELD, THEN ADJUSTS THEM TO THE GROUPS IT KEEPS, EACH ESTIMATED FOR ITSELF: A PROPORTION OF THE WORKERS' CHARGES
+      // WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
+      for (final PartialAggregation partial : partials)
+        partial.handOverHeap(groupsLimit);
+      long kept = 0L;
+      for (int i = 0; i < size; i++)
+        kept += HeapEstimator.estimate(groups.get(i).keyValues) + groupOverhead;
+      if (kept < groupsLimit.getChargedBytes())
+        groupsLimit.release(groupsLimit.getChargedBytes() - kept);
+      else
+        groupsLimit.charge(kept - groupsLimit.getChargedBytes());
       return result;
 
     } finally {
@@ -376,10 +383,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   /** A group of a partial aggregation, and where in the sequential scan its first row is. */
   private static final class PartialGroup {
     final ResultInternal row;
+    /** The values of the group's key, which the group is charged for. */
+    final Object[]       keyValues;
     long                 firstSeen;
 
-    PartialGroup(final ResultInternal row, final long firstSeen) {
+    PartialGroup(final ResultInternal row, final Object[] keyValues, final long firstSeen) {
       this.row = row;
+      this.keyValues = keyValues;
       this.firstSeen = firstSeen;
     }
   }
@@ -419,6 +429,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       heapLimit.release();
     }
 
+    /** Hands what this worker charged for its groups over to {@code holder}, which holds them now, and stops charging. */
+    synchronized void handOverHeap(final OperationHeapLimit holder) {
+      heapReleased = true;
+      if (!holder.transferFrom(heapLimit))
+        heapLimit.release();
+    }
+
     // THE GROUP LIMIT IS CHECKED ON THIS WORKER'S GROUPS HERE AND ON THE MERGED ONES AT THE END: AN EXACT GLOBAL COUNT
     // WHILE SCANNING WOULD NEED A KEY SET SHARED BY EVERY WORKER, SO THE PEAK CAN REACH THE LIMIT TIMES THE WORKERS
     // (DOCUMENTED ON QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP)
@@ -429,7 +446,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       PartialGroup group = groups.get(key);
       if (group == null) {
         checkGroupCount(groupCount);
-        group = new PartialGroup(newGroup(workerProjection, next, context), position);
+        group = new PartialGroup(newGroup(workerProjection, next, context), key.values, position);
         groups.put(key, group);
         ++groupCount;
         // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW

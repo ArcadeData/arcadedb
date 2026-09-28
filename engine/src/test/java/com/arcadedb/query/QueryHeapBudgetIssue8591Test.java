@@ -155,6 +155,30 @@ class QueryHeapBudgetIssue8591Test extends TestHelper {
   }
 
   @Test
+  void aParallelGroupByWithALimitHoldsOnlyTheGroupsItReturns() {
+    final String all = "SELECT name, count(*) AS c FROM Doc GROUP BY name";
+    final String one = all + " LIMIT 1";
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + one)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("CALCULATE AGGREGATE PROJECTIONS (parallel");
+    }
+
+    final long allGroups;
+    try (final ResultSet rs = database.query("sql", all)) {
+      rs.next();
+      allGroups = QueryHeapBudget.getReservedBytes() - baseline;
+    }
+    assertThat(allGroups).as("every group is held while the rows are served").isGreaterThan(MB);
+
+    // The groups past the LIMIT are gone once the merged ones are listed: their charges must not stay behind them
+    try (final ResultSet rs = database.query("sql", one)) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(QueryHeapBudget.getReservedBytes() - baseline).as("only the returned group is held").isLessThan(allGroups / 4);
+      rs.next();
+    }
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+  }
+
+  @Test
   void buffersGiveTheirHeapBackOnceEveryRowIsServed() {
     for (final String query : SQL_BUFFERS)
       assertHeldWhileServedAndGivenBackAtTheEnd("sql", query);
