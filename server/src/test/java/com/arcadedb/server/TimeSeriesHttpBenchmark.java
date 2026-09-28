@@ -171,7 +171,7 @@ class TimeSeriesHttpBenchmark extends BaseGraphServerTest {
 
   private int postLineProtocol(final int serverIndex, final String body, final String precision) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/graph/write?precision=" + precision)
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/graph/write?precision=" + precision)
         .toURL()
         .openConnection();
 

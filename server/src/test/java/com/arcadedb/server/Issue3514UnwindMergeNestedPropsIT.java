@@ -107,7 +107,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
           .put("params", params);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -171,7 +171,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
       // First call: creates the edge
       for (int call = 0; call < 2; call++) {
         final HttpURLConnection connection = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Authorization",
@@ -193,7 +193,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
 
       // Verify only one edge was created
       final HttpURLConnection countConn = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
       countConn.setRequestMethod("POST");
       countConn.setRequestProperty("Authorization",
@@ -249,7 +249,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
           .put("params", params);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -310,7 +310,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
           .put("params", params);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -371,7 +371,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
             .put("params", params);
 
         final HttpURLConnection connection = (HttpURLConnection) new URL(
-            "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+            "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Authorization",
@@ -420,7 +420,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
           .put("params", params);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
