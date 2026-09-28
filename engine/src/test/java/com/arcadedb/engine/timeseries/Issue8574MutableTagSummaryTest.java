@@ -19,6 +19,12 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ImmutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -27,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 
@@ -252,6 +259,57 @@ class Issue8574MutableTagSummaryTest extends TestHelper {
     assertThat(deep(engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "host_1"), 3, null)))
         .isEqualTo(deep(before))
         .isEqualTo(deep(expected(engine, "host_1", true, 3)));
+  }
+
+  /**
+   * Drives the real replay path: {@code TransactionManager.applyChanges} re-applies a data page at the version it
+   * already has, as the torn-write repair does, with different tag ids in it. The page's summary was cached for that
+   * version beforehand, and must not be reused to skip the page afterwards.
+   */
+  @Test
+  void anEqualVersionReplayOfAPageInvalidatesItsSummary() throws Exception {
+    final TimeSeriesEngine engine = create(1);
+    // Put "replayed" into the dictionary, then seal it away so no mutable page holds it
+    appendOne(engine, "replayed", 0);
+    engine.compactAll();
+    appendTimeMajor(engine, 1, 50);
+
+    final TimeSeriesBucket bucket = engine.getShard(0).getMutableBucket();
+    assertThat(bucket.getDataPageCount()).isEqualTo(1);
+    // Caches page 1's summary, which holds no "replayed"
+    assertThat(bucket.scanRangeDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "replayed"), 1, null)).isEmpty();
+
+    // Page 1 at its current version, with the first row's host id replaced by the id of "replayed"
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final PageId pageId = new PageId(db, bucket.getFileId(), 1);
+    final ImmutablePage page = db.getPageManager().getImmutablePage(pageId, bucket.getPageSize(), false, true);
+    final byte[] content = new byte[page.getContentSize()];
+    page.readByteArray(0, content);
+    final int replayedId = bucket.getTagDictionary().getId("replayed");
+    // Data page content: sample count (2) + min ts (8) + max ts (8), then rows of [ts(8) | host id(4) | value(8)]
+    final int hostIdOffset = 18 + 8;
+    content[hostIdOffset] = (byte) (replayedId >>> 24);
+    content[hostIdOffset + 1] = (byte) (replayedId >>> 16);
+    content[hostIdOffset + 2] = (byte) (replayedId >>> 8);
+    content[hostIdOffset + 3] = (byte) replayedId;
+
+    final WALFile.WALPage walPage = new WALFile.WALPage();
+    walPage.fileId = bucket.getFileId();
+    walPage.pageNumber = 1;
+    walPage.changesFrom = BasePage.PAGE_HEADER_SIZE;
+    walPage.changesTo = BasePage.PAGE_HEADER_SIZE + content.length - 1;
+    walPage.currentContent = new Binary(content);
+    walPage.currentPageVersion = (int) page.getVersion();
+    walPage.currentPageSize = page.getContentSize() + BasePage.PAGE_HEADER_SIZE;
+    final WALFile.WALTransaction tx = new WALFile.WALTransaction();
+    tx.txId = -1;
+    tx.pages = new WALFile.WALPage[] { walPage };
+    db.getTransactionManager().applyChanges(tx, new HashMap<>(), false);
+
+    assertThat(db.getPageManager().getImmutablePage(pageId, bucket.getPageSize(), false, true).getVersion())
+        .isEqualTo(page.getVersion());
+    assertThat(bucket.scanRangeDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "replayed"), 1, null))
+        .as("the page now holds the tag: its pre-replay summary must not be reused").hasSize(1);
   }
 
   @Test

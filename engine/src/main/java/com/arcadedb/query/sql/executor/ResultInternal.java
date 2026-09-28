@@ -85,6 +85,16 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * The one rule every property getter of a row applies to a stored value, shared with {@link #copyBindings} so the
+   * two can never diverge: an {@link Identifiable} that is not a loaded {@link Record} is answered as its identity.
+   */
+  private static Object toPropertyValue(final Object value) {
+    if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      return identifiable.getIdentity();
+    return value;
+  }
+
+  /**
    * A new row carrying every binding of {@code source}, for an operator that extends a row with further bindings - a
    * graph expansion does it once per row it produces (issue #8537).
    * <p>
@@ -109,10 +119,7 @@ public class ResultInternal implements Result {
           if (removed != null && removed.contains(entry.getKey()))
             // A removed binding is not a property of the row: getPropertyNames() leaves it out, and so does the copy
             continue;
-          Object value = entry.getValue();
-          if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
-            value = identifiable.getIdentity();
-          copy.setProperty(entry.getKey(), value);
+          copy.setProperty(entry.getKey(), toPropertyValue(entry.getValue()));
         }
         return copy;
       }
@@ -231,12 +238,7 @@ public class ResultInternal implements Result {
     else
       result = null;
 
-    if (!(result instanceof Record) &&
-            result instanceof Identifiable identifiable &&
-            identifiable.getIdentity() != null)
-      result = (T) identifiable.getIdentity();
-
-    return result;
+    return (T) toPropertyValue(result);
   }
 
   /**
@@ -257,9 +259,7 @@ public class ResultInternal implements Result {
     else
       result = (T) defaultValue;
 
-    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
-      result = (T) identifiable.getIdentity();
-    return result;
+    return (T) toPropertyValue(result);
   }
 
   /**
@@ -439,9 +439,7 @@ public class ResultInternal implements Result {
     } else
       return absentValue;
 
-    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
-      result = identifiable.getIdentity();
-    return result;
+    return toPropertyValue(result);
   }
 
   @Override
