@@ -42,7 +42,7 @@ import java.util.logging.Level;
  * transferring leadership, and graceful cluster leave.
  * <p>
  * Delegates to {@link RaftHAServer} for shared state (live peers, leader status,
- * HTTP address map, leader-change notifier). All Raft configuration changes go
+ * HTTP address map). All Raft configuration changes go
  * through {@link #setConfigurationWithRetry} which retries bounded times to
  * survive the window where a newly elected leader has not yet committed from
  * its current term.
@@ -276,6 +276,16 @@ class RaftClusterManager {
    *         leadership moved away on its own while the transfer was being attempted, or no handoff happened in time
    */
   boolean transferLeadership(final long timeoutMs) {
+    return transferLeadership(timeoutMs, true);
+  }
+
+  /**
+   * {@link #transferLeadership(long)} with the last resort made optional. With {@code bareStepDownFallback} false, a
+   * leader with no eligible peer, or whose every targeted transfer failed, returns false instead of stepping down
+   * with no target: the caller has a better way to give the leadership up, the way {@link #leaveCluster(boolean)}
+   * does by removing this node from the configuration (issue #8592).
+   */
+  boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
     final RaftClient client = raftHAServer.getClient();
     if (client == null)
       return false;
@@ -341,6 +351,8 @@ class RaftClusterManager {
       }
     }
 
+    if (!bareStepDownFallback)
+      return false;
     final long remaining = deadline - System.currentTimeMillis();
     if (remaining <= 0)
       return false;
@@ -448,6 +460,9 @@ class RaftClusterManager {
     return confirmLeadershipMovedAway(raftHAServer.getLocalPeerId(), Math.max(waitMs, leaderConfirmGraceMs));
   }
   private static final long LEADER_CONFIRM_POLL_MS     = 50;
+
+  /** The whole budget {@link #leaveCluster(boolean)} gives the leadership hand-off before it removes this node. */
+  static final long LEAVE_HANDOFF_TIMEOUT_MS = 10_000;
 
   /**
    * Confirms that leadership has settled on a peer OTHER than {@code selfId} within {@code waitMs}. Used by
@@ -672,32 +687,25 @@ class RaftClusterManager {
     ensureQuorumPreserved(localPeerId.toString(), currentPeers.size(), currentPeers.size() - 1, force);
 
     if (raftHAServer.isLeader()) {
-      final Object leaderChangeNotifier = raftHAServer.getLeaderChangeNotifier();
-      for (final RaftPeer peer : currentPeers) {
-        if (!peer.getId().equals(localPeerId)) {
-          HALog.log(this, HALog.BASIC,
-              "Leaving cluster: transferring leadership to %s before removal", peer.getId());
-          try {
-            transferLeadership(peer.getId().toString(), 10_000);
-            final long deadline = System.currentTimeMillis() + 5_000;
-            synchronized (leaderChangeNotifier) {
-              while (raftHAServer.isLeader()) {
-                final long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0)
-                  break;
-                leaderChangeNotifier.wait(remaining);
-              }
-            }
-          } catch (final InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new ConfigurationException("Interrupted while leaving cluster", ie);
-          } catch (final Exception e) {
-            HALog.log(this, HALog.BASIC,
-                "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
-          }
-          break;
-        }
+      // The same ranked, screened candidates every other hand-off uses (RaftHAServer.selectStepDownTargets), not the
+      // first peer in configuration order (issue #8592): a targeted transfer to a peer that cannot win stays pending
+      // for its whole budget, and while it is pending this leader refuses every write on every database. With no
+      // eligible peer, or when every candidate fails, no bare step-down follows: the removal below demotes this
+      // leader itself once the new configuration commits, and the remaining voters elect among themselves.
+      HALog.log(this, HALog.BASIC, "Leaving cluster: handing leadership off before removal");
+      boolean moved = false;
+      try {
+        moved = transferLeadership(LEAVE_HANDOFF_TIMEOUT_MS, false);
+      } catch (final Exception e) {
+        HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
       }
+      // transferLeadership() never lets an InterruptedException out: every wait it reaches catches it, restores the
+      // flag and returns. That is what makes the flag, and not a catch, the way to learn the leave was interrupted.
+      if (Thread.currentThread().isInterrupted())
+        throw new ConfigurationException("Interrupted while leaving cluster");
+      if (!moved)
+        HALog.log(this, HALog.BASIC,
+            "Leaving cluster: no peer took the leadership over, proceeding with removal (it demotes this leader)");
     }
 
     HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
