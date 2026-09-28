@@ -858,6 +858,7 @@ public class PageManagerFlushThread extends Thread {
                   }
                   break;
                 }
+                boolean keepIndexed = false;
                 try {
                   if (pageManager.flushPage(page))
                     supersedeFailedFlush(page);
@@ -928,12 +929,25 @@ public class PageManagerFlushThread extends Thread {
                       "Unexpected error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e,
                       page);
                   registerFailedFlush(page);
+                } catch (final Error e) {
+                  // An Error (typically OutOfMemoryError, which the JVM can raise at any allocation of a starved heap) still
+                  // goes to the top-level handler, but NOT at the price of the page: the finally below used to drop it from
+                  // the index unwritten, so once the read cache evicted it the next read - and the next commit's version
+                  // probe - got the stale file image, and that commit silently overwrote this one. Kept readable instead:
+                  // as a failed flush when that can be recorded, and in the index when even that fails.
+                  try {
+                    registerFailedFlush(page);
+                  } catch (final Throwable registration) {
+                    keepIndexed = true;
+                  }
+                  throw e;
                 } finally {
                   // Remove from index AFTER flushing: the page is now on disk and will be
                   // found in the read cache (putPageInReadCache was called at commit time).
                   // Reference identity ensures a NEWER MutablePage for the same PageId (queued
                   // by a later TX while this batch was waiting) is NOT removed from the index.
-                  removeFromFlushIndex(page);
+                  if (!keepIndexed)
+                    removeFromFlushIndex(page);
                   bumpFlushProgress(pagesToFlush);
                 }
               }
