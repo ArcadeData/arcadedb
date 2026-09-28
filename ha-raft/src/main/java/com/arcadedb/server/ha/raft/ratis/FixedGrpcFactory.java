@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft.ratis;
 
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.grpc.GrpcFactory;
+import org.apache.ratis.grpc.server.GrpcServices;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.leader.FollowerInfo;
 import org.apache.ratis.server.leader.LeaderState;
@@ -30,8 +31,11 @@ import org.apache.ratis.server.leader.LogAppender;
  * {@code GrpcLogAppender}, working around RATIS-2523. See {@link FixedGrpcLogAppender} for the
  * detailed bug description and the conditions under which the fix kicks in.
  * <p>
+ * It also hands the gRPC services a {@link TransfereeCatchUp#wrap(RaftServer) wrapped} server, so the target of a
+ * leadership transfer catches up with the commit it was sent to campaign on before it campaigns (issue #8533).
+ * <p>
  * Wired in via {@link FixedGrpcRpcType}. Both classes are intended to be deleted once
- * RATIS-2523 ships upstream.
+ * RATIS-2523 ships upstream (and the #8533 wrapper is no longer needed, see {@link TransfereeCatchUp}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -44,5 +48,10 @@ public class FixedGrpcFactory extends GrpcFactory {
   @Override
   public LogAppender newLogAppender(final RaftServer.Division server, final LeaderState state, final FollowerInfo f) {
     return new FixedGrpcLogAppender(server, state, f);
+  }
+
+  @Override
+  public GrpcServices newRaftServerRpc(final RaftServer server) {
+    return super.newRaftServerRpc(TransfereeCatchUp.wrap(server));
   }
 }
