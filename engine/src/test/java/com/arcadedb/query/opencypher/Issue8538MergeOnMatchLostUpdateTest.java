@@ -57,7 +57,6 @@ class Issue8538MergeOnMatchLostUpdateTest {
   private static final String MERGE_MANY = "UNWIND $ids AS id MERGE (c:C {id: id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.id AS id, c.n AS n";
 
   private Database database;
-  private boolean  lastCommitted;
 
   @BeforeEach
   void setUp() {
@@ -106,10 +105,10 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void onMatchSetOnAnExpressionTargetSeesTheIncrementCommittedAfterTheMatch() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
         "MERGE (c:C {id: 'c0'}) ON MATCH SET (CASE WHEN true THEN c END).n = c.n + 1", Map.of()).close());
 
-    assertThat(readN("c0")).isEqualTo(lastCommitted ? 2 : 1);
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
   }
 
   /**
@@ -119,10 +118,10 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void setOnAnExpressionTargetSeesTheIncrementCommittedAfterTheMatch() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
         "MATCH (c:C {id: 'c0'}) SET (CASE WHEN true THEN c END).n = c.n + 1", Map.of()).close());
 
-    assertThat(readN("c0")).isEqualTo(lastCommitted ? 2 : 1);
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
   }
 
   /**
@@ -197,6 +196,104 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * An expression target whose choice depends on a record the reload refreshes: re-evaluated against the reloaded c,
+   * the CASE switches to d, which must then be reloaded too before its value is computed, however late in the rounds
+   * the switch happens.
+   */
+  @Test
+  void expressionTargetSwitchingToAnotherRecordReloadsItToo() {
+    database.command("sql", "CREATE VERTEX TYPE D");
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', k: 0, n: 0}), (:D {id: 'd0', n: 0})"));
+
+    // The MATCH reads d0 before the MERGE reads c0, which triggers the concurrent commit: both images are stale.
+    final boolean committed = runWithConcurrentCommitAfterRead(() -> database.command("cypher",
+            "MATCH (d:D {id: 'd0'}) MERGE (c:C {id: 'c0'}) "
+                + "ON MATCH SET (CASE WHEN c.k = 0 THEN c ELSE d END).n = CASE WHEN c.k = 0 THEN c.n ELSE d.n END + 1",
+            Map.of()).close(), 1,
+        "MATCH (c:C {id: 'c0'}), (d:D {id: 'd0'}) SET c.k = 1, d.n = d.n + 1");
+
+    assertThat(readProperty("C", "c0", "n")).as("c0 is no longer the target").isEqualTo(0);
+    assertThat(readProperty("D", "d0", "n")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * A dynamic key that is null against the stale record but not against the reloaded one: the re-evaluation must
+   * write it.
+   */
+  @Test
+  void dynamicKeyNullOnlyAgainstTheStaleRecordIsWritten() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0, k: 0})"));
+
+    final boolean committed = runWithConcurrentCommitAfterRead(() -> database.command("cypher",
+            "MERGE (c:C {id: 'c0'}) ON MATCH SET c.n = c.n + 1, c[CASE WHEN c.k = 0 THEN null ELSE 'm' END] = 5",
+            Map.of()).close(), 1,
+        "MATCH (c:C {id: 'c0'}) SET c.k = 1, c.n = c.n + 1");
+
+    assertThat(committed).isTrue();
+    assertThat(readN("c0")).isEqualTo(2);
+    assertThat(readProperty("C", "c0", "m")).isEqualTo(5);
+  }
+
+  /**
+   * A row binding the record twice (c and its alias d): the reload must reach the alias the right-hand side reads.
+   */
+  @Test
+  void setReadingTheTargetThroughAnAliasSeesTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MATCH (c:C {id: 'c0'}) WITH c, c AS d SET c.n = d.n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * The same through a MERGE action, whose record is also bound by an earlier MATCH.
+   */
+  @Test
+  void onMatchSetReadingTheTargetThroughAnAliasSeesTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MATCH (d:C {id: 'c0'}) MERGE (c:C {id: 'c0'}) ON MATCH SET c.n = d.n + 1", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * A map item ({@code +=}) in a MERGE action is a write too, so its right-hand side must be evaluated against the
+   * reloaded record.
+   */
+  @Test
+  void onMatchMapMergeSeesTheIncrementCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    final boolean committed = runWithConcurrentIncrementAfterFirstRead(() -> database.command("cypher",
+        "MERGE (c:C {id: 'c0'}) ON MATCH SET c += {n: c.n + 1}", Map.of()).close());
+
+    assertThat(readN("c0")).isEqualTo(committed ? 2 : 1);
+  }
+
+  /**
+   * A label write on a vertex deleted concurrently since the read must not resurrect it from the copy the row holds.
+   */
+  @Test
+  void labelWriteOnAConcurrentlyDeletedVertexDoesNotResurrectIt() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    try {
+      runWithConcurrentCommitAfterRead(() -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of())
+          .close(), 1, "MATCH (c:C {id: 'c0'}) DETACH DELETE c");
+    } catch (final RuntimeException e) {
+      // Refusing the write is the expected outcome; what must never happen is the vertex coming back
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM C")) {
+      assertThat(((Number) rs.next().getProperty("total")).longValue()).isZero();
+    }
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
@@ -207,7 +304,8 @@ class Issue8538MergeOnMatchLostUpdateTest {
     final boolean committed = runWithConcurrentIncrementAfterFirstRead(
         () -> database.command("cypher", "MERGE (c:C {id: 'c0'}) ON MATCH SET c:Hot", Map.of()).close());
 
-    // Committed or refused, the concurrent increment must survive either way.
+    // Committed or refused, the concurrent increment must survive either way. The rewritten vertex is still found
+    // through C: the composite type of C + Hot extends C.
     assertThat(readN("c0")).isEqualTo(1);
     assertThat(countHot()).isEqualTo(committed ? 1 : 0);
   }
@@ -256,7 +354,6 @@ class Issue8538MergeOnMatchLostUpdateTest {
    */
   private boolean runWithConcurrentCommitAfterRead(final Runnable body, final int readNumber,
       final String concurrentCommand) {
-    lastCommitted = false;
     final Thread bodyThread = Thread.currentThread();
     final AtomicBoolean armed = new AtomicBoolean(true);
     final AtomicInteger reads = new AtomicInteger();
@@ -288,7 +385,6 @@ class Issue8538MergeOnMatchLostUpdateTest {
       body.run();
       database.commit();
       committed = true;
-      lastCommitted = true;
     } catch (final RuntimeException e) {
       // The engine may report the conflict wrapped in the command's own exception
       if (!isConflict(e))
@@ -314,7 +410,8 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void concurrentMergeIncrementsAreNeverLost() throws Exception {
     final int writers = 8;
     final int batches = 50;
-    // One hot record: the one each transaction touches first, which is the record the reporter saw lose
+    // One hot record: the one each transaction touches first, which is the record the reporter saw lose. The query
+    // keeps the reporter's UNWIND shape.
     final List<String> ids = List.of("c0");
 
     for (int round = 0; round < 2; round++) {
