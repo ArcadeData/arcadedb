@@ -97,6 +97,16 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   }
 
   /**
+   * Whether the function keeps every value it aggregates until it hands out its result - list(), percentile(), the
+   * windows of the time-series functions - rather than a running state of a fixed size. What such a function holds is
+   * charged to the heap budget all the running queries share (issue #8591). {@code false} unless a function says
+   * otherwise.
+   */
+  public boolean holdsEveryValue() {
+    return false;
+  }
+
+  /**
    * Folds into this instance the state of {@code other}, an instance of the same function configured with the same
    * parameters and fed rows this one was not. Only called when {@link #canMergePartials()} is {@code true}.
    */

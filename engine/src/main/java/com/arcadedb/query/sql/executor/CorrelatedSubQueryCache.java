@@ -492,6 +492,12 @@ public final class CorrelatedSubQueryCache {
       return outer.getParent();
     }
 
+    /** The outer query's tracker: not a read of its state, so it neither escapes nor is recorded (issue #8591). */
+    @Override
+    public QueryHeapTracker getQueryHeapTracker() {
+      return outer.getQueryHeapTracker();
+    }
+
     @Override
     public CommandContext setParent(final CommandContext parentContext) {
       escape();

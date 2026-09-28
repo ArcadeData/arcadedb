@@ -31,7 +31,7 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -95,6 +95,10 @@ public class DeleteStep extends AbstractExecutionStep {
    * {@code -[*]->} over a dense graph, would still pay that memory cost in full.
    */
   private final boolean eagerMaterialize;
+
+  // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
+  // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -163,10 +167,17 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            final HeapElementsLimit limit = HeapElementsLimit.of(context, "DELETE of a disconnected pattern");
-            while (prevResults.hasNext()) {
-              materializedInput.add(prevResults.next());
-              limit.check(materializedInput.size());
+            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            try {
+              while (prevResults.hasNext()) {
+                final Result row = prevResults.next();
+                materializedInput.add(row);
+                heapLimit.add(materializedInput.size(), row);
+              }
+            } catch (final RuntimeException e) {
+              materializedInput = null;
+              releaseHeap();
+              throw e;
             }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
@@ -213,6 +224,11 @@ public class DeleteStep extends AbstractExecutionStep {
 
         if (!hasMoreInput()) {
           finished = true;
+          // EVERY INPUT ROW WAS PROCESSED: THE MATERIALIZED INPUT IS NOT NEEDED ANYMORE (THE UPSTREAM IS DRAINED)
+          if (materializedInput != null) {
+            materializedInput = null;
+            releaseHeap();
+          }
         }
       }
 
@@ -617,6 +633,17 @@ public class DeleteStep extends AbstractExecutionStep {
     edge.delete();
     context.getStatistics().incRelationshipsDeleted();
     deleted.add(edge);
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

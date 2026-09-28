@@ -33,7 +33,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -96,6 +96,10 @@ public class ForeachStep extends AbstractExecutionStep {
    * be a fix - a smaller chunk only moves the boundary the reader sees the writes at.
    */
   private final boolean eagerExecution;
+
+  // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
+  // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
 
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
@@ -166,10 +170,17 @@ public class ForeachStep extends AbstractExecutionStep {
             // eagerMaterialize field doc and DeleteStep's identical mechanism for issue #6491.
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            final HeapElementsLimit limit = HeapElementsLimit.of(context, "FOREACH of a disconnected pattern");
-            while (prevResults.hasNext()) {
-              materializedInput.add(prevResults.next());
-              limit.check(materializedInput.size());
+            heapLimit = OperationHeapLimit.of(context, "FOREACH of a disconnected pattern");
+            try {
+              while (prevResults.hasNext()) {
+                final Result row = prevResults.next();
+                materializedInput.add(row);
+                heapLimit.add(materializedInput.size(), row);
+              }
+            } catch (final RuntimeException e) {
+              materializedInput = null;
+              releaseHeap();
+              throw e;
             }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
@@ -192,8 +203,14 @@ public class ForeachStep extends AbstractExecutionStep {
           }
         }
 
-        if (!hasMoreInput())
+        if (!hasMoreInput()) {
           finished = true;
+          // EVERY INPUT ROW WAS PROCESSED: THE MATERIALIZED INPUT IS NOT NEEDED ANYMORE (THE UPSTREAM IS DRAINED)
+          if (materializedInput != null) {
+            materializedInput = null;
+            releaseHeap();
+          }
+        }
       }
 
       @Override
@@ -377,6 +394,17 @@ public class ForeachStep extends AbstractExecutionStep {
       default:
         return null;
     }
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

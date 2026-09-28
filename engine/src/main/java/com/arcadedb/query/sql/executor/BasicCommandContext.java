@@ -75,6 +75,8 @@ public class BasicCommandContext implements CommandContext {
   protected volatile boolean              commandDeadlinePartial  = false;
   /** Absolute {@link System#nanoTime()} deadline for regex evaluation. See {@link #getRegexDeadline()}. */
   protected volatile long                 regexDeadline           = UNRESOLVED;
+  /** Created by the root context on first use. See {@link #getQueryHeapTracker()}. */
+  private volatile   QueryHeapTracker     queryHeapTracker;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -424,6 +426,23 @@ public class BasicCommandContext implements CommandContext {
     return parent;
   }
 
+  @Override
+  public QueryHeapTracker getQueryHeapTracker() {
+    final QueryHeapTracker tracker = queryHeapTracker;
+    if (tracker != null)
+      return tracker;
+    if (parent != null) {
+      final QueryHeapTracker parentTracker = parent.getQueryHeapTracker();
+      if (parentTracker != null)
+        return parentTracker;
+    }
+    synchronized (this) {
+      if (queryHeapTracker == null)
+        queryHeapTracker = new QueryHeapTracker();
+      return queryHeapTracker;
+    }
+  }
+
   public CommandContext setParent(final CommandContext iParentContext) {
     if (parent != iParentContext) {
       parent = iParentContext;
@@ -531,6 +550,9 @@ public class BasicCommandContext implements CommandContext {
     // Share the same statistics accumulator so mutations performed through the copied context
     // aggregate into one place instead of silently vanishing.
     copy.statistics = statistics;
+    // Same for the heap the buffers hold: a parallel-scan worker charges the query it works for, whose budget it shares
+    // and whose release gives its buffers back (issue #8591)
+    copy.queryHeapTracker = getQueryHeapTracker();
     return copy;
   }
 
