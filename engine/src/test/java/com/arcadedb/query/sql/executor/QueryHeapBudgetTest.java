@@ -249,6 +249,38 @@ class QueryHeapBudgetTest {
   }
 
   @Test
+  void aRefusedOperationLeavesTheShareOfItsSiblingsAlone() {
+    setBudgetAboveBaseline(4);
+    final BasicCommandContext context = new BasicCommandContext();
+    final QueryHeapTracker tracker = context.getQueryHeapTracker();
+
+    // B, a sibling operation of the same query, holds a share of the tracker that is still in use
+    final OperationHeapLimit b = OperationHeapLimit.of(context, "ORDER BY");
+    b.charge(QueryHeapTracker.UNRESERVED_BYTES + MB);
+    final long siblingShare = tracker.getUsedBytes();
+    assertThat(siblingShare).isEqualTo(QueryHeapTracker.UNRESERVED_BYTES + MB);
+    final long reservedWithSibling = QueryHeapBudget.getReservedBytes();
+
+    // A charges some, then is refused, then releases on the way out, as every step does on a failure
+    final QueryHeapTracker others = holdAllBut(64 * 1024);
+    final OperationHeapLimit a = OperationHeapLimit.of(context, "GROUP BY");
+    a.charge(OperationHeapLimit.FORWARD_BYTES);
+    assertThatThrownBy(() -> {
+      for (int i = 0; i < 100; i++)
+        a.charge(OperationHeapLimit.FORWARD_BYTES);
+    }).isInstanceOf(QueryHeapBudgetExceededException.class);
+    a.release();
+
+    assertThat(tracker.getUsedBytes()).as("the tracker still counts all of B").isEqualTo(siblingShare);
+    others.close();
+    assertThat(QueryHeapBudget.getReservedBytes()).as("B's reservation is still held").isGreaterThanOrEqualTo(reservedWithSibling);
+
+    b.release();
+    assertThat(tracker.getUsedBytes()).isZero();
+    assertThat(QueryHeapBudget.getReservedBytes()).isEqualTo(baseline);
+  }
+
+  @Test
   void theElementCapStillApplies() {
     GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(3L);
     try {

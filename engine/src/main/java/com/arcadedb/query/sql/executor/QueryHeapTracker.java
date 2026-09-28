@@ -117,7 +117,11 @@ public final class QueryHeapTracker {
     }
   }
 
-  /** Gives everything back to the budget: the query holds no buffer anymore. */
+  /**
+   * Gives everything back to the budget: the query holds no buffer anymore. The engine does not need to call it - every
+   * operation releases its own share when its buffer goes, and the {@link Cleaner} takes back what an abandoned query
+   * held - so it is for an embedder or a test that owns a tracker directly.
+   */
   public synchronized void close() {
     used = 0L;
     final long reserved = reservation.bytes;
