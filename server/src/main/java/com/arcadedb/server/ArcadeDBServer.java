@@ -1697,7 +1697,8 @@ public class ArcadeDBServer {
 
         // A copy closed on this node that the last resync could not verify - the leader did not hold it - may be behind
         // the committed log, and reopening it here would serve it unclamped (issue #8589). Refused on a follower, for
-        // every caller: the snapshot installer's own reopen never meets the marker, because its swap moved it out.
+        // every caller, underSnapshotRecovery included: a successful install never meets the marker, because its swap
+        // moved it out with the old files, and a rolled-back one restores it with them and stays closed.
         final File databaseDirectory = new File(path);
         if (refusesUnverifiedClosedCopy(databaseDirectory))
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available on this node: it "
@@ -1705,7 +1706,6 @@ public class ArcadeDBServer {
               + "It may be behind the cluster, so it is not reopened on a follower. It is reinstalled by the next resync "
               + "that finds the leader holding it; open it on the leader, or remove this node's copy (or its '"
               + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
-        clearUnverifiedClosedCopyMarker(databaseDirectory, databaseName);
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
@@ -1749,6 +1749,10 @@ public class ArcadeDBServer {
 
         databases.put(databaseName, db);
         loaded = true;
+
+        // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed
+        // would leave the copy reopenable by this node as a follower, never having been verified.
+        clearUnverifiedClosedCopyMarker(databaseDirectory, databaseName);
       }
     }
 

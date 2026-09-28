@@ -7182,7 +7182,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 // one stays quarantined: this node serves it, and the quarantine is what keeps it from serving it.
                 if (server.existsDatabase(dbName))
                   throw e;
-                reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                try {
+                  reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                } catch (final IOException markFailure) {
+                  // The quarantine stays standing: without the mark it is what keeps the copy from being reopened.
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Targeted snapshot resync could not mark database '%s' as an unverified closed copy: keeping it "
+                          + "quarantined instead (issue #8589)", markFailure, dbName);
+                }
                 return;
               }
               LogManager.instance().log(this, Level.INFO,
