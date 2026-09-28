@@ -47,6 +47,10 @@ import java.util.Set;
  * A record several rows hold is counted once per row, so the estimate errs on the high side for rows that repeat a
  * record (the start node of an expansion); rows of distinct records - the ones that fill a heap - are counted as
  * they are.
+ * <p>
+ * It reads a value through its ordinary accessors, so a row that is not a {@link ResultInternal} may load its record
+ * to answer a property and a lazy collection may count or iterate its elements: the operations estimate the first
+ * elements they hold and then one in several (see {@link OperationHeapLimit}), which keeps that cost to a sample.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

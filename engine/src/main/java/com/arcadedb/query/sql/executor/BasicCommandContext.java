@@ -426,6 +426,11 @@ public class BasicCommandContext implements CommandContext {
     return parent;
   }
 
+  /**
+   * The tracker of the query: the parent's, or this context's own when it is the root. A derived context has to be given
+   * its parent before its first call, since a context that has none yet creates and keeps a tracker of its own, and
+   * would then account the query's buffers apart from the rest of it.
+   */
   @Override
   public QueryHeapTracker getQueryHeapTracker() {
     final QueryHeapTracker tracker = queryHeapTracker;
