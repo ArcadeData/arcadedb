@@ -4624,7 +4624,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           entry);
       if (!state.matchIndexKnown || state.matchIndex < 0)
         continue;
-      if (!hasFollowerStateIndex(entry, "lastRpcElapsedMs") || state.lastRpcMs < 0 || state.lastRpcMs >= contactWindowMs)
+      // An absent last-RPC time reads as -1 (followerStateIndex), so it fails the first test.
+      if (state.lastRpcMs < 0 || state.lastRpcMs >= contactWindowMs)
         continue;
       reachable.add(peerId.toString());
     }

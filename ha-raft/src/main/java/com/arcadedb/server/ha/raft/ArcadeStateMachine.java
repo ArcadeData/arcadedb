@@ -485,6 +485,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Longest interval the back-off of failed hand-offs of a leader replacing a database reaches (issue #8556). */
   static final long REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS = 120_000L;
 
+  /**
+   * Where the count of failed hand-offs in a row stops growing (issue #8556). Any count past the one that reaches
+   * {@link #REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS} gives the same interval; the cap only keeps the counter bounded.
+   */
+  static final int REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED = 30;
+
   /** Budget of one leadership hand-off of a leader replacing a database (issue #8491). */
   static final long REPLACING_LEADER_HAND_OFF_TIMEOUT_MS = 10_000L;
 
@@ -4637,7 +4643,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // between attempts rather than a period that a slow attempt can fill end to end.
       if (attempted) {
         lastReplacingLeaderHandOffEndMs = Math.max(1L, replacingLeaderHandOffClock.getAsLong());
-        replacingLeaderHandOffFailures = moved ? 0 : Math.min(replacingLeaderHandOffFailures + 1, 30);
+        replacingLeaderHandOffFailures = moved ? 0 : Math.min(replacingLeaderHandOffFailures + 1,
+            REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED);
       }
       replacingLeaderHandOffRunning.set(false);
     }
