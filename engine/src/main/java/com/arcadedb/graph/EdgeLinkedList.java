@@ -203,12 +203,7 @@ public class EdgeLinkedList {
       if (current.containsLightEdge(edgeTypeBucketId, vertexRID))
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current);
     }
 
     return false;
@@ -220,12 +215,7 @@ public class EdgeLinkedList {
       if (current.containsEdge(rid))
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current);
     }
 
     return false;
@@ -242,7 +232,7 @@ public class EdgeLinkedList {
         for (int i = 0; i < a.length(); ++i)
           array.put(a.getString(i));
       }
-      current = current.getPrevious();
+      current = previousOf(current);
     }
 
     return array;
@@ -255,12 +245,7 @@ public class EdgeLinkedList {
       if (edgeConnectedToVertex != null)
         return edgeConnectedToVertex;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current);
     }
 
     return null;
@@ -295,15 +280,30 @@ public class EdgeLinkedList {
       if (edgeConnectedToVertex != null)
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current);
     }
 
     return false;
+  }
+
+  /**
+   * The chunk before {@code current} in the chain, or null at the head of the list AND on a chunk whose previous
+   * pointer names the chunk itself: that corruption ENDS the walk instead of looping forever, the policy every walker
+   * of the chain shares (see {@link ResettableIteratorBase#moveToPreviousChunk()}) and {@code CHECK DATABASE} reports.
+   * Every walk in this class hops through here or {@link #previousRIDOf}, so none can be the one left without the
+   * guard: {@link #count} was, and hung the thread running an ordinary degree query on such a chain (issue #8568).
+   */
+  private EdgeSegment previousOf(final EdgeSegment current) {
+    final RID previousRID = previousRIDOf(current);
+    return previousRID == null ? null : (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(previousRID, true);
+  }
+
+  /**
+   * {@link #previousOf} for the walks that hop by RID; null on a self-referencing chunk.
+   */
+  private static RID previousRIDOf(final EdgeSegment current) {
+    final RID previousRID = current.getPreviousRID();
+    return previousRID == null || previousRID.equals(current.getIdentity()) ? null : previousRID;
   }
 
   /**
@@ -334,7 +334,7 @@ public class EdgeLinkedList {
     EdgeSegment current = lastSegment;
     while (current != null) {
       total += current.count(fileIdToFilter);
-      current = current.getPrevious();
+      current = previousOf(current);
     }
 
     return total;
@@ -477,7 +477,7 @@ public class EdgeLinkedList {
       }
 
       prevBrowsedRID = current.getIdentity();
-      final RID prevRID = current.getPreviousRID();
+      final RID prevRID = previousRIDOf(current);
       current = prevRID == null ? null : readChunk(prevRID);
     }
   }
@@ -495,7 +495,7 @@ public class EdgeLinkedList {
         }
       }
       prevBrowsedRID = current.getIdentity();
-      final RID prevRID = current.getPreviousRID();
+      final RID prevRID = previousRIDOf(current);
       current = prevRID == null ? null : readChunk(prevRID);
     }
   }
@@ -504,7 +504,7 @@ public class EdgeLinkedList {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
     while (current != null) {
-      final RID nextRID = current.getPreviousRID();
+      final RID nextRID = previousRIDOf(current);
       // #5155: a chunk with no edge to the vertex is read-only during this removal - probe unanchored and skip
       // anchoring it. Only when the chunk holds at least one matching edge do we anchor and drain it.
       if (current.getFirstEdgeConnectedToVertex(vertexRID, null) != null) {
@@ -598,11 +598,7 @@ public class EdgeLinkedList {
       EdgeSegment segment = lastSegment;
       for (int walked = 0; segment != null && walked < 4096; ++walked) {
         totalBytes += segment.getRecordSize();
-        final EdgeSegment prev = segment.getPrevious();
-        if (prev != null && prev.getIdentity().equals(segment.getIdentity()))
-          // CURRENT POINT TO ITSELF, AVOID LOOPS
-          break;
-        segment = prev;
+        segment = previousOf(segment);
       }
       estimatedEdges = totalBytes / 8;
       if (estimatedEdges < threshold)
@@ -705,7 +701,7 @@ public class EdgeLinkedList {
     final TransactionContext tx = ((DatabaseInternal) vertex.getDatabase()).getTransactionIfExists();
     EdgeSegment current = lastSegment;
     while (current != null) {
-      final EdgeSegment prev = current.getPrevious();
+      final EdgeSegment prev = previousOf(current);
       // Deleting a chunk does not commute with a concurrent append on its page: exclude the page from the
       // append-merge so a rebase can never re-derive it from committed-state + appends and lose the deletion
       // (uniformly enforces the "every non-append edge-list write poisons its page" invariant).
