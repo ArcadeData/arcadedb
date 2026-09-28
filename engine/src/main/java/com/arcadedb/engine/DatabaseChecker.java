@@ -271,7 +271,7 @@ public class DatabaseChecker {
     result.put("totalDeletedConstraintViolatingRecords", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
-    // DEEP and FIX: records whose storage is sound but whose content does not decode
+    // Records whose storage is sound but whose content does not decode
     result.put("undecodableRecords", new LinkedHashSet<RID>());
     result.put("totalUndecodableRecords", 0L);
     result.put("distinctMissingReferences", 0L);
@@ -390,7 +390,7 @@ public class DatabaseChecker {
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0)
-          + (deep || fix ? 1 : 0); // record content decoding
+          + 1; // record content decoding
 
       checkEdges(edgeTypes);
 
@@ -418,11 +418,10 @@ public class DatabaseChecker {
 
       checkBuckets(result);
 
-      // AFTER the bucket pass: what it repaired or removed is decoded in the shape it left. FIX runs it too: a repair
-      // that cannot say which records it could NOT make whole is not finished, and the cost is one read of every
-      // record's properties - small next to the graph pass every run already makes.
-      if (deep || fix)
-        checkRecordContent(edgeTypes, vertexTypes, documentTypes);
+      // AFTER the bucket pass: what a FIX repaired or removed is decoded in the shape it left. On every run, not only
+      // DEEP: content that no longer decodes is the corruption nothing structural can see, and the cost is one read
+      // of every record's properties - small next to the graph pass every run already makes.
+      checkRecordContent(edgeTypes, vertexTypes, documentTypes);
 
       checkExternalProperties();
 
@@ -718,11 +717,11 @@ public class DatabaseChecker {
    * rebuild rescans the bucket, so the record left behind destroyed the very index the flag asked to repair.
    */
   /**
-   * DEEP and FIX: decodes every property of every record. A record can be sound in every way the other passes look at - its
-   * slot, its chunk chain, its edges - and still hold content that does not decode, which is what a record keeps when
-   * part of its chain was overwritten by another record's bytes (a chunk shared by two records, see
-   * {@code LocalBucket.check}). Such records are listed, never deleted: part of their content still reads, and nothing
-   * here can tell which part is wrong, so the answer is to restore them from their source.
+   * Decodes every property of every record, on every full-scope run. A record can be sound in every way the other
+   * passes look at - its slot, its chunk chain, its edges - and still hold content that does not decode, which is what a
+   * record keeps when part of its chain was overwritten by another record's bytes (a chunk shared by two records, see
+   * {@code LocalBucket.check}). Such records are counted as errors and listed, never deleted: part of their content
+   * still reads, and nothing here can tell which part is wrong, so the answer is to restore them from their source.
    */
   @SafeVarargs
   private void checkRecordContent(final List<DocumentType>... typeGroups) {
@@ -748,9 +747,13 @@ public class DatabaseChecker {
                   database.getSerializer().deserializePropertiesStrict(database, content, rid);
                 }
               } catch (final Exception e) {
-                if (CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("undecodableRecords"), maxWarnings, rid)
+                // A record an earlier pass already reported as corrupted is not reported again under a second name
+                if (!((Collection<RID>) result.get("corruptedRecords")).contains(rid)
+                    && CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("undecodableRecords"), maxWarnings, rid)
                     .isFirstSighting()) {
                   result.put("totalUndecodableRecords", (Long) result.get("totalUndecodableRecords") + 1);
+                  final Long errors = (Long) result.get("totalErrors");
+                  result.put("totalErrors", (errors != null ? errors : 0L) + 1);
                   addWarning("record " + rid + " cannot be decoded (" + e.getMessage() + "): restore it from its source");
                 }
               }

@@ -30,13 +30,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A record whose slot and chain are sound but whose CONTENT does not decode - what a record keeps after its tail
- * chunk was overwritten by another record's bytes - passes every structural check. CHECK DATABASE DEEP, and every FIX,
- * decodes every property of every record and lists the ones that fail, so they can be restored from their source. It
- * never deletes them: part of their content still reads, and nothing here can say which part is wrong.
+ * chunk was overwritten by another record's bytes - passes every structural check. CHECK DATABASE decodes every
+ * property of every record and reports the ones that fail as errors, so they can be restored from their source. It
+ * never deletes them, not even on FIX: part of their content still reads, and nothing here can say which part is wrong.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport {
+class CheckDatabaseUndecodableRecordTest extends BucketPageLayoutTestSupport {
   private static final String TYPE = "Doc";
 
   @Override
@@ -46,7 +46,7 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
   }
 
   @Test
-  void deepListsARecordWhoseContentDoesNotDecode() throws Exception {
+  void aRecordWhoseContentDoesNotDecodeIsReported() throws Exception {
     final RID[] rids = new RID[3];
     database.transaction(() -> {
       database.getSchema().createDocumentType(TYPE, 1);
@@ -73,23 +73,20 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
     }
     reopenDatabase();
 
-    final Result plain = checkDatabaseRow(false);
-    assertThat(numberProperty(plain, "totalErrors")).as("structurally the record is sound: " + plain.toJSON()).isZero();
-    assertThat(numberProperty(plain, "totalUndecodableRecords")).as("a plain check does not decode content").isZero();
-
-    final Result deep = row("check database deep");
-    assertThat(numberProperty(deep, "totalUndecodableRecords")).as(deep.toJSON().toString()).isEqualTo(1L);
-    assertThat(((Collection<?>) deep.getProperty("undecodableRecords")).stream().map(Object::toString).toList())
+    final Result check = checkDatabaseRow(false);
+    assertThat(numberProperty(check, "totalUndecodableRecords")).as(check.toJSON().toString()).isEqualTo(1L);
+    assertThat(numberProperty(check, "totalErrors")).as("undecodable content is an error: " + check.toJSON()).isEqualTo(1L);
+    assertThat(((Collection<?>) check.getProperty("undecodableRecords")).stream().map(Object::toString).toList())
         .containsExactly(rids[1].toString());
-    assertThat(warningsOf(deep).toString()).contains(rids[1].toString());
+    assertThat(warningsOf(check).toString()).contains(rids[1].toString());
 
-    final Result fix = row("check database fix");
-    assertThat(numberProperty(fix, "totalUndecodableRecords")).as("FIX decodes content too: " + fix.toJSON()).isEqualTo(1L);
+    final Result fix = checkDatabaseRow(true);
+    assertThat(numberProperty(fix, "totalUndecodableRecords")).as(fix.toJSON().toString()).isEqualTo(1L);
     assertThat(countRecords(TYPE)).as("undecodable records are reported, never deleted").isEqualTo(3L);
   }
 
   @Test
-  void deepFindsNothingOnHealthyRecordsOfEveryShape() {
+  void nothingIsReportedOnHealthyRecordsOfEveryShape() {
     database.transaction(() -> {
       final var vertexType = database.getSchema().createVertexType("V");
       vertexType.createProperty("embedding", com.arcadedb.schema.Type.ARRAY_OF_FLOATS).setExternal(true);
@@ -109,14 +106,9 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
       }
     });
 
-    final Result deep = row("check database deep");
-    assertThat(numberProperty(deep, "totalUndecodableRecords")).as(deep.toJSON().toString()).isZero();
-    assertThat(numberProperty(deep, "totalErrors")).as(deep.toJSON().toString()).isZero();
+    final Result check = checkDatabaseRow(false);
+    assertThat(numberProperty(check, "totalUndecodableRecords")).as(check.toJSON().toString()).isZero();
+    assertThat(numberProperty(check, "totalErrors")).as(check.toJSON().toString()).isZero();
   }
 
-  private Result row(final String sql) {
-    try (final var rs = database.command("sql", sql)) {
-      return rs.next();
-    }
-  }
 }
