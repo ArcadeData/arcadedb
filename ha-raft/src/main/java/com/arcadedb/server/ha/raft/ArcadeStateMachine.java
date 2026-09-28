@@ -2310,7 +2310,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
       // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
       // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
-      completeSnapshotInstall(snapshotIndex, notInstalled);
+      // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
+      // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
+      completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -6696,16 +6698,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * own applied position, which is what a leader-driven install does with a database it gave up on (issue #6760): the
    * node stays out of the ready set while it holds a copy it knows nothing about, and
    * {@link #retryUnfilledSnapshotGap()} re-drives a targeted resync of it.
+   * <p>
+   * A REGISTERED database the leader answers 404 for gets the same {@code LEADER_MISSING} verdict (issue #8588) - the
+   * one the auto-acquire reconcile of a leader-driven install already gives it - rather than failing the resync of
+   * every other database with it. Its copy is kept, still registered and served; any other failure of a registered
+   * database still fails the whole resync, which keeps the node-wide floor and re-arms it.
    */
   private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
     final String leaderHttpsAddr = source.httpsAddress();
     int resynced = 0;
+    // Copies the leader does not hold: neither installed nor quarantined, so they are in neither set below, and nothing
+    // replaced them either - so their bootstrap-divergence marks are theirs to keep (issues #8559, #8588).
+    final Set<String> leaderMissing = new HashSet<>();
     for (final String dbName : server.getDatabaseNames()) {
       // install() keeps the database open during the download and rolls back on failure, so a
       // watchdog-triggered resync never leaves it closed.
       if (server.existsDatabase(dbName)) {
-        installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+        try {
+          installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+        } catch (final LeaderDoesNotHoldDatabaseException e) {
+          // The same leader answers the same 404 on every retry, so failing the whole resync for it kept the node-wide
+          // floor for good (issue #8588). Reported as the auto-acquire reconcile reports it, the copy kept and served.
+          reportDatabaseTheLeaderDoesNotHold(dbName, false, e);
+          leaderMissing.add(dbName);
+          continue;
+        }
+        reconciler.clearLeaderMissing(dbName);
         // Per database, right after its own install, rather than once at the end: a later database failing must
         // not leave this one reported as still carrying the copy the bootstrap baseline rejected (issue #8367).
         settleBootstrapReplacement(dbName);
@@ -6714,9 +6733,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     final Set<String> notInstalled = new HashSet<>();
-    // Closed copies the leader does not hold: neither installed nor quarantined, so they are in neither set above, and
-    // nothing replaced them either - so their bootstrap-divergence marks are theirs to keep (issue #8559).
-    final Set<String> leaderMissing = new HashSet<>();
     for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
       try {
         installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
@@ -6726,7 +6742,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped - but marked
         // unverified, so nothing reopens it on this follower (issue #8589).
         try {
-          reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+          reportDatabaseTheLeaderDoesNotHold(dbName, true, e);
         } catch (final IOException markFailure) {
           // Without the mark the copy is reopenable and unverified: fall back to the quarantine, which fails closed.
           LogManager.instance().log(this, Level.SEVERE,
@@ -6758,7 +6774,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (notInstalled.isEmpty()) {
       clearDivergedState();
       // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
-      // had kept (issue #6124) - except a closed one the leader does not hold, whose copy nothing replaced.
+      // had kept (issue #6124) - except one the leader does not hold, whose copy nothing replaced.
       if (leaderMissing.isEmpty())
         clearAllBootstrapUnreconciled();
       else
@@ -6786,33 +6802,46 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
     // without it the very same gap is re-detected on the next restart and the node re-downloads
     // forever. Then wake the waiters this resync unblocked (issue #6111).
-    resolveStaleSnapshotFloorAfterResync(resynced, notInstalled);
+    // A copy the leader does not hold was not brought to the marker either: recording it there would launder it into
+    // "applied" as the leader's state (issue #8588), so it keeps the position it genuinely reached, like notInstalled.
+    final Set<String> notAtMarker;
+    if (leaderMissing.isEmpty())
+      notAtMarker = notInstalled;
+    else {
+      notAtMarker = new HashSet<>(notInstalled);
+      notAtMarker.addAll(leaderMissing);
+    }
+    resolveStaleSnapshotFloorAfterResync(resynced, notAtMarker);
   }
 
   /**
-   * The verdict of a resync on a database closed on this node that the leader answered 404 for (issue #8559): the
-   * cluster's leader does not hold it - closed there too, dropped by the cluster while this node was away, or never
-   * created - so there is no committed state to hold this copy to and no install that will ever succeed. It is
-   * reported {@link DatabaseReconciler.AcquireState#LEADER_MISSING}, as the auto-acquire reconcile reports it, and any
-   * quarantine on it is lifted: the node was serving every other database, and this copy is not being served at all.
+   * The verdict of a resync on a database the leader answered 404 for (issues #8559, #8588): the cluster's leader does
+   * not hold it - closed there too, dropped by the cluster while this node was away, or never created - so there is no
+   * committed state to hold this copy to and no install that will ever succeed. It is reported
+   * {@link DatabaseReconciler.AcquireState#LEADER_MISSING}, as the auto-acquire reconcile reports it, and any
+   * quarantine on it is lifted, as the leader-driven install lifts it for a database its reconcile reports so: a
+   * quarantine holds the WHOLE node out of the ready set and would wait for an install the same leader refuses on every
+   * retry. A registered copy stays registered and served, which is what the auto-acquire path does with it too.
    * <p>
-   * What keeps it that way is the durable {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE} mark written first (issue
-   * #8589): the leader may have closed a database the cluster still has, and this copy may be behind the committed log,
-   * so a follower must not reopen it for the next request that names it. The mark is per database, so it does not
-   * touch the node's readiness, and it goes with the install that replaces the copy or the drop that removes it.
+   * A copy closed on this node is marked first with the durable {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE}
+   * (issue #8589): the leader may have closed a database the cluster still has, and this copy may be behind the
+   * committed log, so a follower must not reopen it for the next request that names it. The mark is per database, so it
+   * does not touch the node's readiness, and it goes with the install that replaces the copy or the drop that removes
+   * it. A registered copy is never marked: it is being served, and nothing reopens it.
    *
-   * @throws IOException when the mark cannot be written: nothing else has been changed, and the caller keeps the copy
-   *                     quarantined rather than leave it reopenable
+   * @throws IOException when the mark of a closed copy cannot be written: nothing else has been changed, and the caller
+   *                     keeps the copy quarantined rather than leave it reopenable
    */
-  private void reportClosedDatabaseTheLeaderDoesNotHold(final String dbName, final LeaderDoesNotHoldDatabaseException e)
-      throws IOException {
-    SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
+  private void reportDatabaseTheLeaderDoesNotHold(final String dbName, final boolean closedLocally,
+      final LeaderDoesNotHoldDatabaseException e) throws IOException {
+    if (closedLocally)
+      SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
     LogManager.instance().log(this, Level.WARNING,
-        "Snapshot resync did not reinstall database '%s', which is closed on this node: the leader does not hold it "
-            + "(%s). Keeping this node's copy and not quarantining it, since no resync from this leader can replace "
-            + "it, but it is not reopened while this node is a follower: it may be behind the cluster. Open it on the "
-            + "leader if the cluster should still have it, or remove this node's copy (issues #8559, #8589)",
-        dbName, e.getMessage());
+        "Snapshot resync did not reinstall database '%s'%s: the leader does not hold it (%s). Keeping this node's copy "
+            + "and not quarantining it, since no resync from this leader can replace it%s. Open it on the leader if the "
+            + "cluster should still have it, or remove this node's copy (issues #8559, #8588, #8589)",
+        dbName, closedLocally ? ", which is closed on this node" : "", e.getMessage(),
+        closedLocally ? ", but it is not reopened while this node is a follower: it may be behind the cluster" : "");
     reconciler.markLeaderMissing(dbName);
     clearDivergedDatabase(dbName);
   }
@@ -6821,9 +6850,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Completes a successful full resync with respect to the stale-snapshot read floor (issue #6111):
    * persists the marker index as the applied position of every present database except {@code notInstalled} - the
    * resync brought the others to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect
-   * the same gap on the next restart - then clears the floor and wakes the waiters it was holding back. Each database
-   * in {@code notInstalled} is already quarantined with its own read floor (issue #8464), so the node-wide floor is
-   * no longer what protects it. No-op when no floor was outstanding.
+   * the same gap on the next restart - then clears the floor and wakes the waiters it was holding back. A database
+   * in {@code notInstalled} is either quarantined with its own read floor (issue #8464), so the node-wide floor is
+   * no longer what protects it, or one the leader does not hold (issue #8588), which no resync can bring to the
+   * marker. No-op when no floor was outstanding.
    * <p>
    * {@code resynced} is logged rather than gated on: zero is legitimate for a node with no databases
    * on disk (nothing can be stale). It is worth seeing in the log, because a
@@ -7003,7 +7033,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled) {
-    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true);
+    completeSnapshotInstall(snapshotIndex, notInstalled, Set.of());
+  }
+
+  /**
+   * Same, except that the databases in {@code notRefreshed} - kept by the install without being refreshed, the ones the
+   * leader does not hold (issue #8588) - keep their own applied position too. Unlike {@code notInstalled} they are not
+   * quarantined and get no read floor: the leader has no committed state for them to be behind.
+   */
+  void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled, final Set<String> notRefreshed) {
+    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true, notRefreshed);
   }
 
   /**
@@ -7012,6 +7051,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
       final boolean recordAppliedPositions) {
+    return settleDivergedStateAfterInstall(notInstalled, snapshotIndex, recordAppliedPositions, Set.of());
+  }
+
+  private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
+      final boolean recordAppliedPositions, final Set<String> notRefreshed) {
     final Map<String, Long> published = new LinkedHashMap<>();
     final boolean durable;
     // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
@@ -7025,7 +7069,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         globalAppliedIndex = snapshotIndex;
         if (server != null)
           for (final String dbName : server.getDatabaseNames())
-            if (!notInstalled.contains(dbName))
+            if (!notInstalled.contains(dbName) && !notRefreshed.contains(dbName))
               appliedIndexByDb.put(dbName, snapshotIndex);
       }
       for (final String dbName : notInstalled) {
@@ -7170,16 +7214,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
               try {
                 installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
               } catch (final LeaderDoesNotHoldDatabaseException e) {
-                // A quarantined copy closed on this node that the leader does not hold would otherwise be retried
-                // against the same 404 on every health tick, holding the node out of the ready set for good - which is
-                // also how a quarantine raised before issue #8559, and restored from disk, gets lifted. A REGISTERED
-                // one stays quarantined: this node serves it, and the quarantine is what keeps it from serving it.
-                if (server.existsDatabase(dbName))
-                  throw e;
+                // A quarantined copy the leader does not hold would otherwise be retried against the same 404 on every
+                // health tick, holding the node out of the ready set for good - which is also how a quarantine raised
+                // before this fix, and restored from disk, gets lifted. Closed (issue #8559) or registered (issue
+                // #8588) alike: the leader-driven auto-acquire install lifts the quarantine of a registered one too.
                 try {
-                  reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                  reportDatabaseTheLeaderDoesNotHold(dbName, !server.existsDatabase(dbName), e);
                 } catch (final IOException markFailure) {
-                  // The quarantine stays standing: without the mark it is what keeps the copy from being reopened.
+                  // The quarantine stays standing: without the mark it is what keeps the closed copy from being
+                  // reopened (issue #8589).
                   LogManager.instance().log(this, Level.SEVERE,
                       "Targeted snapshot resync could not mark database '%s' as an unverified closed copy: keeping it "
                           + "quarantined instead (issue #8589)", markFailure, dbName);

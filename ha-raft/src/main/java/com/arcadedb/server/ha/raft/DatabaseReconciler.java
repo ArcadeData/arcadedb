@@ -101,11 +101,18 @@ public class DatabaseReconciler {
    * The outcome of {@link #reconcileDatabasesFromLeader} (issue #8360).
    *
    * @param notInstalled            the databases this pass gave up on (issue #6760); see that method's javadoc
+   * @param leaderMissing           the local databases this pass reported {@link AcquireState#LEADER_MISSING}: kept,
+   *                                served and not quarantined, but not refreshed either, so the install must not
+   *                                record them as being at the snapshot index (issue #8588)
    * @param leaderSnapshotTermIndex the leader's own latest Raft snapshot {@link TermIndex}, fetched over the same
    *                                bootstrap-state RPC call used to reconcile the database list, or {@code null}
    *                                on any path that never reached the leader for it
    */
-  record ReconcileFromLeaderResult(Set<String> notInstalled, TermIndex leaderSnapshotTermIndex) {
+  record ReconcileFromLeaderResult(Set<String> notInstalled, Set<String> leaderMissing,
+                                   TermIndex leaderSnapshotTermIndex) {
+    ReconcileFromLeaderResult(final Set<String> notInstalled, final TermIndex leaderSnapshotTermIndex) {
+      this(notInstalled, Set.of(), leaderSnapshotTermIndex);
+    }
   }
 
   /**
@@ -270,9 +277,8 @@ public class DatabaseReconciler {
       // a wrong one is never revisited (issue #8374). Fetched first, so an unreachable leader fails the install before
       // any database is downloaded.
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      final Set<String> notInstalled = refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken,
-          installedBoundaryIndex);
-      return new ReconcileFromLeaderResult(notInstalled, leaderSnapshotTermIndex);
+      return refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex,
+          leaderSnapshotTermIndex);
     }
 
     // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
@@ -297,9 +303,8 @@ public class DatabaseReconciler {
       // The #4799 refusal first: on an empty follower it fails the install whatever the marker read would answer.
       failInstallWhenNoLocalDatabases();
       final TermIndex leaderSnapshotTermIndex = fetchLeaderSnapshotMarkerOrFail(leaderHttpAddr, leaderHttpsAddr, clusterToken);
-      final Set<String> notInstalled = refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken,
-          installedBoundaryIndex);
-      return new ReconcileFromLeaderResult(notInstalled, leaderSnapshotTermIndex);
+      return refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex,
+          leaderSnapshotTermIndex);
     }
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs = bootstrapState.databases();
 
@@ -359,7 +364,8 @@ public class DatabaseReconciler {
     if (verdict.retryWorthwhile())
       throw new IOException(String.format("Reconcile from leader had database failure(s); will retry (acquire=%s, refresh=%s)",
           outcome.acquireFailures(), outcome.refreshFailures()));
-    return new ReconcileFromLeaderResult(verdict.givenUp(), bootstrapState.snapshotTermIndex());
+    return new ReconcileFromLeaderResult(verdict.givenUp(), new HashSet<>(plan.leaderMissing()),
+        bootstrapState.snapshotTermIndex());
   }
 
   /**
@@ -549,18 +555,23 @@ public class DatabaseReconciler {
    * {@link GlobalConfiguration#HA_AUTO_ACQUIRE_DATABASES} is disabled or the leader's database list is
    * unavailable.
    * <p>
-   * A registered database whose install fails fails the whole install, so Ratis re-drives it. A database closed on this
-   * node (issue #8464) does NOT (issue #8558), as in the full resync ({@code ArcadeStateMachine.downloadAllDatabasesFrom}):
-   * the leader serves only the databases IT has open, so one closed on the leader too - an ordinary maintenance close,
-   * run on every node - answers 404 on every retry, and failing the install for it would leave the node re-notified
-   * forever with every other database behind with it. A 404 there is the leader not holding it (issue #8559): the copy
-   * is kept with the {@link AcquireState#LEADER_MISSING} verdict. Any other failure is reported back instead, and the
-   * caller quarantines it with its own read floor (issue #6760).
+   * A registered database whose install fails fails the whole install, so Ratis re-drives it - unless the leader
+   * answered 404 for it: the same leader answers the same on every retry, so it is kept, still registered and served,
+   * with the {@link AcquireState#LEADER_MISSING} verdict the auto-acquire path gives it (issue #8588). A database closed
+   * on this node (issue #8464) does NOT fail the install either (issue #8558), as in the full resync
+   * ({@code ArcadeStateMachine.downloadAllDatabasesFrom}): the leader serves only the databases IT has open, so one
+   * closed on the leader too - an ordinary maintenance close, run on every node - answers 404 on every retry, and
+   * failing the install for it would leave the node re-notified forever with every other database behind with it. A
+   * 404 there is the leader not holding it (issue #8559): the copy is kept with the {@link AcquireState#LEADER_MISSING}
+   * verdict and marked unverified (issue #8589). Any other failure is reported back instead, and the caller quarantines
+   * it with its own read floor (issue #6760).
    *
-   * @return the databases closed on this node that could not be installed; empty when every install succeeded
+   * @return the databases closed on this node that could not be installed, and the databases reported
+   * {@link AcquireState#LEADER_MISSING}: kept, not refreshed (issue #8588)
    */
-  private Set<String> refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
-      final String clusterToken, final long installedBoundaryIndex) throws IOException {
+  private ReconcileFromLeaderResult refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken, final long installedBoundaryIndex, final TermIndex leaderSnapshotTermIndex)
+      throws IOException {
     // Reserved internal databases (e.g. the Raft control directory '.raft') are skipped: the leader does not serve
     // them as snapshots, so an install attempt would only fail.
     final Set<String> registered = new LinkedHashSet<>();
@@ -568,8 +579,18 @@ public class DatabaseReconciler {
       // existsDatabase re-checks the live registry: a database dropped since the listing has no copy left to refresh
       if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX) && server.existsDatabase(dbName))
         registered.add(dbName);
-    for (final String dbName : registered)
-      refreshFromLeader(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
+    final Set<String> leaderMissing = new HashSet<>();
+    for (final String dbName : registered) {
+      try {
+        refreshFromLeader(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
+      } catch (final LeaderDoesNotHoldDatabaseException e) {
+        // A registered copy the leader does not hold is not a failed refresh: the same leader answers the same on every
+        // retry, so failing the install for it made Ratis re-trigger it for good. It is the auto-acquire path's verdict
+        // for the same input (issue #8588); the copy is kept and served.
+        markLeaderMissing(dbName);
+        leaderMissing.add(dbName);
+      }
+    }
 
     // Databases closed on this node are included (issue #8464): the next request reopens their directory, so they are
     // as present as the registered ones. Listed AFTER the registered ones are installed, so a database closed while
@@ -582,13 +603,13 @@ public class DatabaseReconciler {
         // A copy closed on this node that the leader does not hold (issue #8559) - closed there too, or dropped by the
         // cluster while this node was away - is not a failed refresh: the same leader answers the same on every retry.
         // It is the auto-acquire path's verdict for the same input. A database reopened here since the listing is
-        // served by this node again, so the leader not holding it still fails the install, as for a registered one.
-        if (server.existsDatabase(dbName))
-          throw e;
-        // Kept, and marked unverified so a follower does not reopen it (issue #8589). A mark that cannot be written
-        // fails the install: the copy would otherwise stay reopenable with nothing retrying it.
-        SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
+        // served by this node again, and is kept like a registered one (issue #8588).
+        // Otherwise it is kept, and marked unverified so a follower does not reopen it (issue #8589). A mark that
+        // cannot be written fails the install: the copy would otherwise stay reopenable with nothing retrying it.
+        if (!server.existsDatabase(dbName))
+          SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
         markLeaderMissing(dbName);
+        leaderMissing.add(dbName);
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Snapshot install could not refresh database '%s', which is closed on this node but still on disk and "
@@ -597,7 +618,7 @@ public class DatabaseReconciler {
         notInstalled.add(dbName);
       }
     }
-    return notInstalled;
+    return new ReconcileFromLeaderResult(notInstalled, leaderMissing, leaderSnapshotTermIndex);
   }
 
   private void refreshFromLeader(final String dbName, final String leaderHttpAddr, final String leaderHttpsAddr,
