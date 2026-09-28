@@ -45,3 +45,4 @@ public class FragmentDefinition extends Definition {
     return selectionSet;
   }
 }
+/* ParserGeneratorCC - OriginalChecksum=588294b34a10e410fa87ff81f52b5be4 (do not edit this line) */

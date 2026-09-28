@@ -65,6 +65,18 @@ public class GraphQLResultSet implements ResultSet {
   private final GraphQLFragments fragments;
 
   /**
+   * The projections built for a selection list, by identity, reused for every record that list is resolved against.
+   * Only a list whose projections cannot differ from one record to the next is cached: one that no fragment type
+   * condition was evaluated for, reached through a chain of lists that were all cached too. A list merged for one
+   * record only (see {@link #mapBySelections}) is never a key, so the cache is bounded by the size of the document, not
+   * by the number of records.
+   */
+  private final IdentityHashMap<List<Selection>, CachedProjections> projectionCache = new IdentityHashMap<>();
+
+  private record CachedProjections(ObjectTypeDefinition parentType, List<Projection> projections) {
+  }
+
+  /**
    * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
    * automatic expansion against a cyclic schema (e.g. {@code Book.authors -> Author.wrote -> Book}), which would
    * otherwise recurse until the stack overflows once directives are resolved against the right type. It is only
@@ -82,9 +94,10 @@ public class GraphQLResultSet implements ResultSet {
    *                    query return type: see issue #6833
    * @param type        the object type this field returns, when the schema declares one
    * @param set         the sub-selections written in the query document, if any
+   * @param cacheable   whether {@code set} is the same list for every record, so its projections can be cached
    */
   private record Projection(String name, String fieldName, AbstractField field, FieldDefinition schemaField,
-                            ObjectTypeDefinition type, List<Selection> set) {
+                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable) {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
@@ -113,7 +126,7 @@ public class GraphQLResultSet implements ResultSet {
   @Override
   public Result next() {
     return projections != null ?
-        mapBySelections(resultSet.next(), projections, returnType) :
+        mapBySelections(resultSet.next(), projections, returnType, true) :
         mapByReturnType(resultSet.next(), returnType);
   }
 
@@ -130,11 +143,11 @@ public class GraphQLResultSet implements ResultSet {
           continue;
 
         projections.add(
-            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null));
+            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false));
       }
       return mapProjections(current, projections);
     } finally {
-      expansionPath.remove(expansionPath.size() - 1);
+      expansionPath.removeLast();
     }
   }
 
@@ -143,12 +156,22 @@ public class GraphQLResultSet implements ResultSet {
    *                   top-level query return type, so a schema directive declared two levels deep is found (#6833)
    */
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections,
-      final ObjectTypeDefinition parentType) {
+      final ObjectTypeDefinition parentType, final boolean cacheable) {
+    if (cacheable) {
+      final CachedProjections cached = projectionCache.get(definedProjections);
+      if (cached != null && cached.parentType() == parentType)
+        return mapProjections(current, cached.projections());
+    }
+
     // A FRAGMENT SPREAD OR AN INLINE FRAGMENT HAS NO FIELD NAME OF ITS OWN: IT IS REPLACED BY THE FIELDS IT SELECTS, IF
     // ITS TYPE CONDITION APPLIES TO THIS RECORD. LEFT IN, IT DROPPED THOSE FIELDS AND TURNED INTO A NULL RESPONSE KEY
     // THAT NO SERIALIZER CAN RENDER. SEE ISSUE #7770
-    final List<Selection> selections = fragments.expand(definedProjections,
-        typeCondition -> typeConditionApplies(typeCondition, current, parentType));
+    final boolean[] typeConditionEvaluated = { false };
+    final List<Selection> selections = fragments.expand(definedProjections, typeCondition -> {
+      typeConditionEvaluated[0] = true;
+      return typeConditionApplies(typeCondition, current, parentType);
+    });
+    final boolean cache = cacheable && !typeConditionEvaluated[0];
 
     final List<Projection> projections = new ArrayList<>(selections.size());
     for (final Selection selection : selections) {
@@ -159,18 +182,18 @@ public class GraphQLResultSet implements ResultSet {
       final SelectionSet  set = selection.getSelectionSet();
       final String        responseKey = selection.getName();
 
-      final int existing = selections != definedProjections ? indexOf(projections, responseKey) : -1;
+      final int existing = indexOf(projections, responseKey);
       if (existing > -1) {
         // THE SAME RESPONSE KEY SELECTED TWICE, WHICH A FRAGMENT MAKES ORDINARY (`{ authors { a } ...F }` WITH
         // `F { authors { b } }`): THE SPECIFICATION MERGES THE SUB-SELECTIONS INTO ONE FIELD RATHER THAN LETTING THE
-        // LAST ONE WIN
+        // LAST ONE WIN. THE MERGED LIST CAN REPEAT A KEY IN TURN, WHICH THE NEXT LEVEL MERGES THE SAME WAY
         final Projection first = projections.get(existing);
         if (set != null && first.set() != null) {
           final List<Selection> merged = new ArrayList<>(first.set().size() + set.getSelections().size());
           merged.addAll(first.set());
           merged.addAll(set.getSelections());
           projections.set(existing, new Projection(first.name(), first.fieldName(), first.field(), first.schemaField(),
-              first.type(), merged));
+              first.type(), merged, cache));
         }
         continue;
       }
@@ -179,8 +202,12 @@ public class GraphQLResultSet implements ResultSet {
       final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
 
       projections.add(new Projection(responseKey, fieldName, field, schemaField, subType,
-          set != null ? set.getSelections() : null));
+          set != null ? set.getSelections() : null, cache));
     }
+
+    if (cache)
+      projectionCache.put(definedProjections, new CachedProjections(parentType, projections));
+
     return mapProjections(current, projections);
   }
 
@@ -333,43 +360,41 @@ public class GraphQLResultSet implements ResultSet {
       }
 
       final List<Selection> selectionSet = entry.set();
+      final boolean cacheable = entry.cacheable();
       final ObjectTypeDefinition projectionType = entry.type();
 
       if (selectionSet != null) {
-        if (projectionValue instanceof Map m) {
-          projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType);
-        } else if (projectionValue instanceof EmbeddedDocument emb) {
-          projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType);
-        } else if (projectionValue instanceof Result result) {
-          projectionValue = mapBySelections(result, selectionSet, projectionType);
-        } else if (projectionValue instanceof Iterable iterable) {
+        switch (projectionValue) {
+        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
+        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
+        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType, cacheable);
+        case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
             if (o instanceof Document document)
-              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType);
+              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
             else if (o instanceof Result result)
-              item = mapBySelections(result, selectionSet, projectionType);
+              item = mapBySelections(result, selectionSet, projectionType, cacheable);
             else
               continue;
 
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else {
+        }
+        case null, default -> {
           continue;
         }
-      } else if (projectionType != null) {
-        if (projectionValue instanceof Map m) {
-          projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
         }
+      } else if (projectionType != null) {
+        switch (projectionValue) {
+        case Map m -> projectionValue = mapByReturnType(new ResultInternal(m), projectionType);
         // MIRRORS THE Map/Result ARMS: THIS BRANCH IS THE ONE WHERE selectionSet IS NULL BY CONSTRUCTION, SO
         // DELEGATING TO mapBySelections() WITH IT WAS A GUARANTEED NPE. SEE ISSUE #6835
-        else if (projectionValue instanceof EmbeddedDocument emb) {
-          projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
-        } else if (projectionValue instanceof Result result) {
-          projectionValue = mapByReturnType(result, projectionType);
-        } else if (projectionValue instanceof Iterable iterable) {
+        case EmbeddedDocument emb -> projectionValue = mapByReturnType(new ResultInternal(emb), projectionType);
+        case Result result -> projectionValue = mapByReturnType(result, projectionType);
+        case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
@@ -383,8 +408,10 @@ public class GraphQLResultSet implements ResultSet {
             subResults.add(item);
           }
           projectionValue = subResults;
-        } else {
+        }
+        case null, default -> {
           continue;
+        }
         }
       }
 
