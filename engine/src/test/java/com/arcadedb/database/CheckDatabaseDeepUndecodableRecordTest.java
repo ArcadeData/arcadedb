@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A record whose slot and chain are sound but whose CONTENT does not decode - what a record keeps after its tail
- * chunk was overwritten by another record's bytes - passes every structural check. CHECK DATABASE DEEP decodes every
- * property of every record and lists the ones that fail, so they can be restored from their source. It never deletes
- * them: part of their content still reads, and nothing here can say which part is wrong.
+ * chunk was overwritten by another record's bytes - passes every structural check. CHECK DATABASE DEEP, and every FIX,
+ * decodes every property of every record and lists the ones that fail, so they can be restored from their source. It
+ * never deletes them: part of their content still reads, and nothing here can say which part is wrong.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -41,7 +41,7 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
 
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
-    // the record is left undecodable on purpose, and DEEP findings are not repaired
+    // the record is left undecodable on purpose, and undecodable records are never repaired
     return false;
   }
 
@@ -75,7 +75,7 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
 
     final Result plain = checkDatabaseRow(false);
     assertThat(numberProperty(plain, "totalErrors")).as("structurally the record is sound: " + plain.toJSON()).isZero();
-    assertThat(numberProperty(plain, "totalUndecodableRecords")).as("only DEEP decodes content").isZero();
+    assertThat(numberProperty(plain, "totalUndecodableRecords")).as("a plain check does not decode content").isZero();
 
     final Result deep = row("check database deep");
     assertThat(numberProperty(deep, "totalUndecodableRecords")).as(deep.toJSON().toString()).isEqualTo(1L);
@@ -83,8 +83,9 @@ class CheckDatabaseDeepUndecodableRecordTest extends BucketPageLayoutTestSupport
         .containsExactly(rids[1].toString());
     assertThat(warningsOf(deep).toString()).contains(rids[1].toString());
 
-    row("check database fix deep");
-    assertThat(countRecords(TYPE)).as("DEEP findings are reported, never deleted").isEqualTo(3L);
+    final Result fix = row("check database fix");
+    assertThat(numberProperty(fix, "totalUndecodableRecords")).as("FIX decodes content too: " + fix.toJSON()).isEqualTo(1L);
+    assertThat(countRecords(TYPE)).as("undecodable records are reported, never deleted").isEqualTo(3L);
   }
 
   @Test

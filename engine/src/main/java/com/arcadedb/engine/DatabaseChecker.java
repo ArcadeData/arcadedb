@@ -271,7 +271,7 @@ public class DatabaseChecker {
     result.put("totalDeletedConstraintViolatingRecords", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
-    // DEEP only: records whose storage is sound but whose content does not decode
+    // DEEP and FIX: records whose storage is sound but whose content does not decode
     result.put("undecodableRecords", new LinkedHashSet<RID>());
     result.put("totalUndecodableRecords", 0L);
     result.put("distinctMissingReferences", 0L);
@@ -390,7 +390,7 @@ public class DatabaseChecker {
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0)
-          + (deep ? 1 : 0); // record content decoding
+          + (deep || fix ? 1 : 0); // record content decoding
 
       checkEdges(edgeTypes);
 
@@ -418,8 +418,10 @@ public class DatabaseChecker {
 
       checkBuckets(result);
 
-      // AFTER the bucket pass: what it repaired or removed is decoded in the shape it left
-      if (deep)
+      // AFTER the bucket pass: what it repaired or removed is decoded in the shape it left. FIX runs it too: a repair
+      // that cannot say which records it could NOT make whole is not finished, and the cost is one read of every
+      // record's properties - small next to the graph pass every run already makes.
+      if (deep || fix)
         checkRecordContent(edgeTypes, vertexTypes, documentTypes);
 
       checkExternalProperties();
@@ -716,7 +718,7 @@ public class DatabaseChecker {
    * rebuild rescans the bucket, so the record left behind destroyed the very index the flag asked to repair.
    */
   /**
-   * DEEP: decodes every property of every record. A record can be sound in every way the other passes look at - its
+   * DEEP and FIX: decodes every property of every record. A record can be sound in every way the other passes look at - its
    * slot, its chunk chain, its edges - and still hold content that does not decode, which is what a record keeps when
    * part of its chain was overwritten by another record's bytes (a chunk shared by two records, see
    * {@code LocalBucket.check}). Such records are listed, never deleted: part of their content still reads, and nothing

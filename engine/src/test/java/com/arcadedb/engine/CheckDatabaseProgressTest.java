@@ -115,9 +115,10 @@ class CheckDatabaseProgressTest extends TestHelper {
             emissions.add(new Emission(stepName, stepIndex, totalSteps, done, total)))
         .check();
 
-    // FULL-SCOPE FIX ADDS THE ORPHAN-RECLAIM (#5375) AND "Rebuilding indexes" STEPS: 7 + 2.
-    assertThat(emissions.getFirst().totalSteps).isEqualTo(9);
+    // FULL-SCOPE FIX ADDS THE ORPHAN-RECLAIM (#5375), "Decoding record content" AND "Rebuilding indexes" STEPS: 7 + 3.
+    assertThat(emissions.getFirst().totalSteps).isEqualTo(10);
     assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Reclaiming orphaned edge segments"))).isTrue();
+    assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Decoding record content"))).isTrue();
     assertThat(emissions.stream().anyMatch(e -> e.stepName.startsWith("Rebuilding indexes"))).isTrue();
   }
 
