@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.parser.CaseExpression;
 import com.arcadedb.query.sql.parser.CheckDatabaseStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.CompactIndexStatement;
+import com.arcadedb.query.sql.parser.CompactTimeSeriesTypeStatement;
 import com.arcadedb.query.sql.parser.ConsoleStatement;
 import com.arcadedb.query.sql.parser.ContainsAllCondition;
 import com.arcadedb.query.sql.parser.ContainsAnyCondition;
@@ -6345,6 +6346,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.all = true;
     else
       stmt.name = (Identifier) visit(body.identifier());
+    return stmt;
+  }
+
+  /**
+   * Visit COMPACT TIMESERIES TYPE statement (issue #8574).
+   * Grammar: COMPACT TIMESERIES TYPE identifier
+   */
+  @Override
+  public CompactTimeSeriesTypeStatement visitCompactTimeSeriesTypeStmt(final SQLParser.CompactTimeSeriesTypeStmtContext ctx) {
+    final CompactTimeSeriesTypeStatement stmt = new CompactTimeSeriesTypeStatement();
+    stmt.name = (Identifier) visit(ctx.identifier());
     return stmt;
   }
 

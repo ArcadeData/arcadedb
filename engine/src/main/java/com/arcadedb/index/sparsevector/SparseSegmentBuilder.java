@@ -824,4 +824,72 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       return Integer.compare(bucketId1, bucketId2);
     return Long.compare(position1, position2);
   }
+
+  /**
+   * Bits of a packed RID key given to the position (issue #8553). A bucket position is
+   * {@code pageNumber * maxRecordsInPage + slot} with an {@code int} page number and at most 2048 records per page, so
+   * every position a bucket hands out is below {@code 2^42}.
+   */
+  public static final int  PACKED_POSITION_BITS = 42;
+  /** Largest position a packed key can hold. */
+  public static final long MAX_PACKED_POSITION  = (1L << PACKED_POSITION_BITS) - 1;
+  /**
+   * Largest bucket id OFFSET a packed key can hold: a key stores {@code bucketId - baseBucketId}, not the bucket id, so
+   * this bounds how many bucket ids one traversal may span, not how large a bucket id may be. An LSM_SPARSE_VECTOR
+   * index is per bucket, so a real traversal spans exactly one. 20 bits keep every valid key below 2^62, so
+   * {@link #UNPACKABLE} ({@link Long#MAX_VALUE}) stays strictly above all of them.
+   */
+  public static final int  MAX_PACKED_BUCKET_OFFSET = (1 << 20) - 1;
+  /** What {@link #packRid} answers for a RID it cannot order: above every valid key, never equal to one. */
+  public static final long UNPACKABLE               = Long.MAX_VALUE;
+
+  /**
+   * Folds a RID into one {@code long} whose natural order is exactly {@link #compareRid(int, long, int, long)}'s
+   * (issue #8553), relative to {@code baseBucketId}: the bucket offset in the high bits, the position in the low
+   * {@link #PACKED_POSITION_BITS}. The DAAT merge keeps its cursors ordered by this key, so each of the millions of
+   * heap comparisons a learned-sparse query runs is one {@code long} compare instead of an {@code int} compare, a
+   * branch and a {@code long} compare over two arrays.
+   * <p>
+   * The base is the smallest bucket id any cursor of the traversal starts on: cursors only move forward, so no key the
+   * traversal ever sees has a smaller one. A negative bucket id is the exhausted-cursor marker and maps to {@code -1},
+   * below every valid key, which is the order {@code compareRid} gives it too. A RID whose offset or position does not
+   * fit maps to {@link #UNPACKABLE}; nothing is ever refused, the traversal switches to comparing the RIDs themselves
+   * instead (see {@code BmwScorer}).
+   */
+  public static long packRid(final int bucketId, final long position, final int baseBucketId) {
+    if (bucketId < 0)
+      return -1L;
+    final long offset = (long) bucketId - baseBucketId;
+    if (offset < 0 || offset > MAX_PACKED_BUCKET_OFFSET || position < 0 || position > MAX_PACKED_POSITION)
+      return UNPACKABLE;
+    return (offset << PACKED_POSITION_BITS) | position;
+  }
+
+  /**
+   * The smallest packed key that is not before {@code (bucketId, position)}, for range bounds, which are not stored
+   * postings and may lie outside the packed range. Every packable posting ordered before the target maps below the
+   * answer and every one at or after it maps at or above it, so "at or past the end" means the same thing on keys as
+   * on RIDs. {@link #UNPACKABLE} means the target is past every packable key.
+   */
+  public static long packRidCeiling(final int bucketId, final long position, final int baseBucketId) {
+    final long offset = (long) bucketId - baseBucketId;
+    if (offset < 0)
+      return 0L;
+    if (offset > MAX_PACKED_BUCKET_OFFSET)
+      return UNPACKABLE;
+    if (position < 0)
+      return offset << PACKED_POSITION_BITS;
+    if (position > MAX_PACKED_POSITION)
+      // (offset + 1, 0); for the last offset that is 2^62, still above every valid key and below UNPACKABLE.
+      return (offset + 1) << PACKED_POSITION_BITS;
+    return (offset << PACKED_POSITION_BITS) | position;
+  }
+
+  public static int unpackBucketId(final long key, final int baseBucketId) {
+    return (int) ((key >>> PACKED_POSITION_BITS) + baseBucketId);
+  }
+
+  public static long unpackPosition(final long key) {
+    return key & MAX_PACKED_POSITION;
+  }
 }

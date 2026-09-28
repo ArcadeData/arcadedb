@@ -33,13 +33,21 @@ import java.util.logging.Level;
 public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   private final Vertex           vertex;
   private final Vertex.DIRECTION direction;
+  // See EdgeLinkedList.edgeIteratorKnowingEndpoints()
+  private final boolean          endpointsFromList;
 
   public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction,
       final EdgeSegment current,
       final String[] edgeTypes) {
+    this(database, vertex, direction, current, edgeTypes, false);
+  }
+
+  public EdgeIteratorFilter(final DatabaseInternal database, final Vertex vertex, final Vertex.DIRECTION direction,
+      final EdgeSegment current, final String[] edgeTypes, final boolean endpointsFromList) {
     super(database, current, edgeTypes);
     this.direction = direction;
     this.vertex = vertex;
+    this.endpointsFromList = endpointsFromList;
   }
 
   @Override
@@ -66,7 +74,14 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       }
 
       // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-      return next.asEdge(false);
+      final Edge edge = next.asEdge(false);
+      if (endpointsFromList && edge instanceof ImmutableEdge immutable) {
+        if (direction == Vertex.DIRECTION.OUT)
+          immutable.setEndpointsFromEdgeList(vertex.getIdentity(), nextVertex);
+        else
+          immutable.setEndpointsFromEdgeList(nextVertex, vertex.getIdentity());
+      }
+      return edge;
 
     } catch (final RecordNotFoundException e) {
       LogManager.instance()
