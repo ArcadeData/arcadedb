@@ -307,6 +307,9 @@ public final class SnapshotManager {
    * <li>{@code .snapshot-swap-state} - the durable phase of that install's file swap (#7769). It is cleared after
    * the marker, so one crash can leave it beside a serving database until the next install; its temporary
    * sibling is covered by the {@code .tmp} rule.</li>
+   * <li>{@code .ha-unverified-closed-copy} - the mark of a closed copy a resync could not verify (#8589). It lives only
+   * in a closed database's directory, which this endpoint does not checksum, and the leader deletes it when it
+   * reopens the copy; skipped anyway, so no node's own bookkeeping can ever read as a data difference.</li>
    * </ul>
    * The last four exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
    * combination for a divergence detector: the node being interrogated is the one carrying a key the leader cannot
@@ -332,6 +335,7 @@ public final class SnapshotManager {
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ".incoming")
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ArcadeStateMachine.SEALED_STAGING_SUFFIX)
         || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE)
+        || name.equals(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)
         || name.equals(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE)
         || PaginatedComponent.isTemporaryFileName(name);
   }
