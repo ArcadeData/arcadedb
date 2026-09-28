@@ -105,4 +105,10 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
   public String getSyntax() {
     return NAME + "(<value>, <window_size> | { window: <int> })";
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

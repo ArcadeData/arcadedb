@@ -47,6 +47,9 @@ public class RidSet implements Set<RID> {
 
   long size = 0;
 
+  // The words the bitmaps take, which grow to the highest position a bucket holds, not to the RIDs held (issue #8591)
+  private long allocatedWords = 0L;
+
   protected final int maxArraySize;
 
   /**
@@ -166,17 +169,26 @@ public class RidSet implements Set<RID> {
       System.arraycopy(oldContent, 0, content, 0, oldContent.length);
     }
 
-    if (content[bucket] == null)
+    if (content[bucket] == null) {
       content[bucket] = createClusterArray(block, wordInBlock);
+      allocatedWords += content[bucket][block].length;
+    }
 
-    if (content[bucket].length <= block)
+    if (content[bucket].length <= block) {
       content[bucket] = expandClusterBlocks(content[bucket], block, wordInBlock);
+      allocatedWords += content[bucket][block].length;
+    }
 
-    if (content[bucket][block] == null)
+    if (content[bucket][block] == null) {
       content[bucket][block] = expandClusterArray(new long[INITIAL_BLOCK_SIZE], wordInBlock);
+      allocatedWords += content[bucket][block].length;
+    }
 
-    if (content[bucket][block].length <= wordInBlock)
+    if (content[bucket][block].length <= wordInBlock) {
+      final int previousWords = content[bucket][block].length;
       content[bucket][block] = expandClusterArray(content[bucket][block], wordInBlock);
+      allocatedWords += content[bucket][block].length - previousWords;
+    }
 
     final long mask = 1L << bitInWord;
     final long original = content[bucket][block][wordInBlock];
@@ -301,5 +313,11 @@ public class RidSet implements Set<RID> {
   public void clear() {
     content = new long[8][][];
     size = 0;
+    allocatedWords = 0L;
+  }
+
+  /** The heap the bitmaps take: a bit per record position up to the highest one of each bucket, not per RID held. */
+  public long getAllocatedBytes() {
+    return allocatedWords * Long.BYTES;
   }
 }

@@ -19,7 +19,8 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -93,6 +94,7 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       private Map<Object, Object> rowsByKey;
       /** The build rows whose key cannot be hashed, ascending: every probe row is paired with them. */
       private IntList unhashableRows;
+      private OperationHeapLimit joinLimit;
       private boolean initialized = false;
       private boolean finished    = false;
 
@@ -144,8 +146,10 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           return;
         }
 
-        buildRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null,
-            HeapElementsLimit.of(context, "hash join"), compactAfterRows);
+        // The rows and the hash table over them are charged to one operation, released with the buffer
+        joinLimit = OperationHeapLimit.of(context, "hash join");
+        final OperationHeapLimit limit = joinLimit;
+        buildRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null, limit, compactAfterRows);
         rowsByKey = new HashMap<>();
         unhashableRows = new IntList();
 
@@ -161,11 +165,22 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
 
             final int index = buildRows.size();
             buildRows.add(row);
-            if (key == EquiJoinKey.UNHASHABLE)
+            if (key == EquiJoinKey.UNHASHABLE) {
               unhashableRows.add(index);
-            else
+              limit.charge(Integer.BYTES);
+            } else {
+              final int keys = rowsByKey.size();
               rowsByKey.merge(key, index, ValueHashJoin::appendRow);
+              if (rowsByKey.size() > keys)
+                // A new key: the table grew by an entry
+                limit.charge(HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES + HeapEstimator.estimate(key));
+              else
+                limit.charge(Integer.BYTES);
+            }
           }
+        } catch (final RuntimeException e) {
+          releaseBuffer();
+          throw e;
         } finally {
           buildResults.close();
         }
@@ -262,15 +277,27 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           probeResults.close();
           probeResults = null;
         }
+        // No probe row is left to pair: the hash table goes now, not when a close() the consumer may never call comes
+        releaseBuffer();
+      }
+
+      private void releaseBuffer() {
+        if (buildRows != null)
+          buildRows.clear();
+        rowsByKey = null;
+        unhashableRows = null;
+        // The candidates of the last key may be the array of the rows of a key: it goes with the table
+        candidates = null;
+        candidateCount = 0;
+        // The hash table goes with the rows
+        if (joinLimit != null)
+          joinLimit.release();
       }
 
       @Override
       public void close() {
         pending = null;
         finish();
-        if (buildRows != null)
-          buildRows.clear();
-        rowsByKey = null;
       }
     };
   }

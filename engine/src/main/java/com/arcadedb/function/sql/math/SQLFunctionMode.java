@@ -103,4 +103,9 @@ public class SQLFunctionMode extends SQLAggregatedFunction {
     return iMax;
   }
 
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

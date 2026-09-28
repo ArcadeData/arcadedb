@@ -133,6 +133,12 @@ public enum ErrorCategory {
    * HTTP handler already gives (503), instead of a gRPC {@code INTERNAL} a retry-driven client reads as a server
    * fault (issue #8166, review of PR #8197).
    * <p>
+   * {@link QueryHeapBudgetExceededException} rides with them for the same reason: the query was refused heap because
+   * the queries running at the same time hold the budget they all share, and fits it on its own, so the same request
+   * re-issued once they complete can succeed (issue #8591). Nor is it a {@link NeedRetryException}: a commit loop
+   * retrying on the spot would only meet the same full budget. It is decided before {@link #VALIDATION} and before
+   * the {@link CommandExecutionException} fall-through to {@link #SERVER}, which it extends.
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -141,7 +147,8 @@ public enum ErrorCategory {
    */
   public static ErrorCategory of(final Throwable error) {
     if (CauseChain.contains(error, NeedRetryException.class) //
-        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class))
+        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class) //
+        || CauseChain.contains(error, QueryHeapBudgetExceededException.class))
       return RETRY;
     if (CauseChain.contains(error, ArithmeticErrorException.class))
       return ARITHMETIC;

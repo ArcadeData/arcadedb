@@ -105,4 +105,10 @@ public class SQLFunctionTsPercentile extends SQLAggregatedFunction {
   public String getSyntax() {
     return NAME + "(<value>, <percentile>)";
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

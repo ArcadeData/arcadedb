@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
@@ -25,6 +26,7 @@ import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Created by luigidellaquila on 12/07/16.
@@ -38,10 +40,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
 
-  private final GroupBy groupBy;
-  private final long    timeoutMillis;
-  private final long    limit;
-  private final HeapElementsLimit groupsLimit;
+  private final GroupBy                   groupBy;
+  private final long                      timeoutMillis;
+  private final long                      limit;
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
+  private final OperationHeapLimit        groupsLimit;
+  // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
+  private final Queue<PartialAggregation> workerPartials = new ConcurrentLinkedQueue<>();
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
@@ -59,13 +64,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     this.limit = limit;
 
     // Memory optimization: Enforce memory limits for GROUP BY operations
-    this.groupsLimit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    this.groupsLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finalResults == null) {
-      executeAggregation(context, nRecords);
+      try {
+        executeAggregation(context, nRecords);
+      } catch (final RuntimeException e) {
+        releaseGroups();
+        throw e;
+      }
     }
 
     return new ResultSet() {
@@ -84,6 +94,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         final Result result = finalResults.get(nextItem);
         nextItem++;
         localNext++;
+        if (nextItem == finalResults.size())
+          // EVERY GROUP WAS SERVED: THEY ARE NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          releaseGroups();
         return result;
       }
     };
@@ -138,9 +151,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
         preAggr = newGroup(projection, next, context);
         aggregateResults.put(key, preAggr);
+        groupsLimit.chargeElement(key.values, groupOverheadBytes(projection));
       }
 
-      applyAggregates(projection, preAggr, next, context);
+      applyAggregates(projection, preAggr, next, context, groupsLimit);
 
       // NOTE: we must NOT clear the element reference of the input Result here (issue #4590).
       // Doing so is a destructive side effect on a row we do not own exclusively: when the same
@@ -172,6 +186,29 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     groupsLimit.check(groups + 1);
   }
 
+  /**
+   * What a group holds besides the values of its key, which are charged on their own: its key and its entry in the map
+   * of the groups, the row of its non-aggregate projections - most often the key values again - and one state per
+   * aggregate. What an aggregate that keeps every value gathers (list(), percentile()) is charged as it grows.
+   */
+  private static int groupOverheadBytes(final Projection projection) {
+    return HeapEstimator.HASH_ENTRY_BYTES + 24 + HeapEstimator.RESULT_BYTES
+        + 64 * projection.getItems().size();
+  }
+
+  private void releaseGroups() {
+    aggregateResults.clear();
+    if (finalResults != null)
+      finalResults = Collections.emptyList();
+    groupsLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseGroups();
+    super.close();
+  }
+
   /** A new group, holding the non-aggregate projections of the first row seen for it. */
   private static ResultInternal newGroup(final Projection projection, final Result next, final CommandContext context) {
     final ResultInternal group = new ResultInternal(context.getDatabase());
@@ -181,14 +218,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return group;
   }
 
+  /**
+   * Feeds a row to the aggregates of a group. An aggregate that keeps every value (list(), percentile()) charges them to
+   * {@code heapLimit}, the operation of the groups.
+   */
   private static void applyAggregates(final Projection projection, final ResultInternal group, final Result next,
-      final CommandContext context) {
+      final CommandContext context, final OperationHeapLimit heapLimit) {
     for (final ProjectionItem proj : projection.getItems()) {
       if (proj.isAggregate(context)) {
         final String alias = proj.getProjectionAlias().getStringValue();
         AggregationContext aggrCtx = (AggregationContext) group.getTemporaryProperty(alias);
         if (aggrCtx == null) {
-          aggrCtx = proj.getAggregationContext(context);
+          aggrCtx = HeapBufferingFunction.adopt(proj.getAggregationContext(context), heapLimit);
           group.setTemporaryProperty(alias, aggrCtx);
         }
         aggrCtx.apply(next, context);
@@ -226,9 +267,16 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       final boolean[] timedOutNotified = new boolean[1];
       // ONE PARTITION PER WORKER, SO THE MERGE CAN RUN IN PARALLEL TOO; WITHOUT A GROUP BY THERE IS ONE GROUP TO MERGE
       final int partitions = groupBy == null ? 1 : scan.getWorkerCount();
+      final int groupOverhead = groupOverheadBytes(projection);
       final List<PartialAggregation> partials = scan.aggregate(context,
-          workerContext -> new PartialAggregation(workerPreProjection == null ? null : workerPreProjection.copy(), projection.copy(),
-              groupBy == null ? null : groupBy.copy(), partitions),
+          workerContext -> {
+            final PartialAggregation partial = new PartialAggregation(
+                workerPreProjection == null ? null : workerPreProjection.copy(), projection.copy(),
+                groupBy == null ? null : groupBy.copy(), partitions, OperationHeapLimit.of(workerContext, "groups", "GROUP BY"),
+                groupOverhead);
+            workerPartials.add(partial);
+            return partial;
+          },
           PartialAggregation::accept,
           () -> {
             if (!timedOutNotified[0] && timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
@@ -268,6 +316,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
         groups.addAll(partition.values());
       checkGroupCount(groups.size() - 1);
+
+      // THE WORKERS CHARGED THEIR OWN GROUPS WHILE THEY SCANNED; THIS STEP HOLDS THE MERGED ONES FROM HERE ON, A KEY
+      // SEVERAL WORKERS MET BEING ONE GROUP NOW. EACH MERGED GROUP IS CHARGED FOR ITSELF: A PROPORTION OF THE WORKERS'
+      // CHARGES WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
+      for (final PartialAggregation partial : partials)
+        partial.releaseHeap();
+      for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
+        for (final GroupByKey key : partition.keySet())
+          groupsLimit.chargeElement(key.values, groupOverhead);
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
       final List<ResultInternal> result = new ArrayList<>(size);
@@ -276,6 +333,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       return result;
 
     } finally {
+      // A NO-OP ON SUCCESS; ON A FAILURE IT GIVES BACK WHAT THE WORKERS CHARGED, THE ONES STILL STOPPING INCLUDED
+      for (final PartialAggregation partial : workerPartials)
+        partial.releaseHeap();
+      workerPartials.clear();
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
     }
@@ -333,17 +394,29 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     private final Projection                          workerProjection;
     private final GroupBy                             workerGroupBy;
     private final HashMap<GroupByKey, PartialGroup>[] partitions;
+    private final OperationHeapLimit                  heapLimit;
+    private final int                                 groupOverhead;
     private       int                                 groupCount;
+    // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
+    private       boolean                             heapReleased;
 
     @SuppressWarnings("unchecked")
     PartialAggregation(final Projection preProjection, final Projection workerProjection, final GroupBy workerGroupBy,
-        final int partitionCount) {
+        final int partitionCount, final OperationHeapLimit heapLimit, final int groupOverhead) {
       this.preProjection = preProjection;
       this.workerProjection = workerProjection;
       this.workerGroupBy = workerGroupBy;
+      this.heapLimit = heapLimit;
+      this.groupOverhead = groupOverhead;
       this.partitions = new HashMap[partitionCount];
       for (int i = 0; i < partitionCount; i++)
         partitions[i] = new HashMap<>();
+    }
+
+    /** Gives back what this worker charged for its groups, and stops it charging more. */
+    synchronized void releaseHeap() {
+      heapReleased = true;
+      heapLimit.release();
     }
 
     // THE GROUP LIMIT IS CHECKED ON THIS WORKER'S GROUPS HERE AND ON THE MERGED ONES AT THE END: AN EXACT GLOBAL COUNT
@@ -359,8 +432,15 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         group = new PartialGroup(newGroup(workerProjection, next, context), position);
         groups.put(key, group);
         ++groupCount;
+        // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER: TAKEN PER NEW GROUP, NOT PER ROW
+        synchronized (this) {
+          if (!heapReleased)
+            heapLimit.chargeElement(key.values, groupOverhead);
+        }
       }
-      applyAggregates(workerProjection, group.row, next, context);
+      // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
+      // AND NONE KEEPS THE VALUES IT AGGREGATES, SO NOTHING OUTSIDE THE MONITOR ABOVE EVER CHARGES THIS WORKER'S OPERATION
+      applyAggregates(workerProjection, group.row, next, context, null);
     }
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
