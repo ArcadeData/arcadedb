@@ -189,7 +189,8 @@ public class GraphQLResultSet implements ResultSet {
         // LAST ONE WIN. THE MERGED LIST CAN REPEAT A KEY IN TURN, WHICH THE NEXT LEVEL MERGES THE SAME WAY
         //
         // TWO SELECTIONS UNDER ONE KEY THAT DO NOT RESOLVE TO THE SAME FIELD (`a: name` AND `a: id`) ARE A VALIDATION
-        // ERROR IN THE SPECIFICATION, WHICH THIS MODULE DOES NOT PERFORM: THE FIRST ONE WRITTEN IS KEPT
+        // ERROR IN THE SPECIFICATION, WHICH THIS MODULE DOES NOT PERFORM: THE FIRST ONE WRITTEN IS KEPT. SO IT IS WHEN ONLY
+        // ONE OF THE TWO HAS A SUB-SELECTION, THE SAME INVALID SHAPE
         final Projection first = projections.get(existing);
         if (set != null && first.set() != null) {
           final List<Selection> merged = new ArrayList<>(first.set().size() + set.getSelections().size());

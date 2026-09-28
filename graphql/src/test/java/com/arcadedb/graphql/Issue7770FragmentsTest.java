@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.function.Consumer;
@@ -297,6 +298,46 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void repeatedKeyWithoutFragmentsIsMergedToo() {
+    // NOT SPECIFIC TO FRAGMENTS: A KEY REPEATED IN A PLAIN DOCUMENT HAS ITS SUB-SELECTIONS MERGED THE SAME WAY, WHERE THE
+    // LAST ONE USED TO REPLACE THE FIRST
+    assertSingleBook("{ bookById(id: \"book-1\") { authors { firstName } authors { lastName } } }", record -> {
+      final List<Result> authors = record.getProperty("authors");
+      assertThat(authors).hasSize(1);
+      assertThat(authors.getFirst().<String>getProperty("firstName")).isEqualTo("Joanne");
+      assertThat(authors.getFirst().<String>getProperty("lastName")).isEqualTo("Rowling");
+    });
+  }
+
+  @Test
+  void nestedTypeConditionAndMergeAreResolvedForEveryRecord() {
+    // A TYPE-CONDITIONED FRAGMENT ONE LEVEL DOWN, COMBINED WITH A SUB-SELECTION MERGED THROUGH A FRAGMENT, OVER SEVERAL
+    // RECORDS: THE PROJECTION CACHE MUST NOT SERVE ONE RECORD'S EXPANSION TO ANOTHER
+    executeTest(database -> {
+      defineTypes(database);
+
+      try (final ResultSet resultSet = database.query("graphql", """
+          fragment F on Book { authors { lastName ... on Book { name } } }
+          { bookByName { id authors { ... on Author { firstName } } ...F } }""")) {
+        int count = 0;
+        while (resultSet.hasNext()) {
+          final Result record = resultSet.next();
+          assertSerializable(database, record);
+          final List<Result> authors = record.getProperty("authors");
+          assertThat(authors).hasSize(1);
+          final Result author = authors.getFirst();
+          assertThat(author.<String>getProperty("firstName")).isEqualTo("Joanne");
+          assertThat(author.<String>getProperty("lastName")).isEqualTo("Rowling");
+          assertThat(author.getPropertyNames()).doesNotContain("name");
+          count++;
+        }
+        assertThat(count).isEqualTo(2);
+      }
+      return null;
+    });
+  }
+
+  @Test
   void typeConditionOnAnUnmodeledInterfaceIsApplied() {
     // INTERFACES ARE NOT MODELED, SO MEMBERSHIP CANNOT BE CHECKED: THE FIELDS ARE RETURNED RATHER THAN SILENTLY DROPPED
     executeTest(database -> {
@@ -426,6 +467,7 @@ class Issue7770FragmentsTest extends AbstractGraphQLTest {
   }
 
   @Test
+  @Timeout(60) // A HANG DETECTOR, NOT A LATENCY BOUND: AN EXPONENTIAL EXPANSION WOULD NEVER FINISH
   void repeatedSpreadsOfTheSameFragmentDoNotMultiplyTheWork() {
     // EVERY LEVEL SPREADS THE NEXT ONE TWICE: EXPANDED TEXTUALLY THIS IS 2^20 SELECTIONS OF `id`
     final StringBuilder document = new StringBuilder();
