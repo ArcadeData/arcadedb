@@ -373,10 +373,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (overlay == null)
       return committed;
 
-    // The transaction's own rows, scored from what it has queued, merged into the committed ones by score. Both
-    // sides are exact top-k of their own population, so the merge of the two is the exact top-k of the union. The
-    // overlay holds the full-precision weights the transaction queued, so its scores are already the exact ones the
-    // rescoring gives the committed side.
+    // The transaction's own rows, scored from what it has queued, merged into the committed ones by score. Each side
+    // is the top-k of its own population, so the merge is the top-k of the union. The pending side is exact: the
+    // overlay holds the full-precision weights the transaction queued. The committed side is exact in its scores
+    // when rescoring is on, but it is the top-k of the k * oversample candidates the quantized pass picked, so its
+    // recall is bounded by rescoreOversample; with rescoring off it is exact only under the quantized scoring.
     return mergeByScore(committed, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
   }
 

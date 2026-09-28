@@ -396,3 +396,23 @@ test("the LSM_SPARSE_VECTOR branch carries rescoreOversample, 0 (off) included",
 
   assert.equal(command, "CREATE INDEX ON `Doc` (`dims`, `weights`) LSM_SPARSE_VECTOR METADATA " + '{"rescoreOversample":0}');
 });
+
+test("an out-of-range rescoreOversample never reaches the server", () => {
+  openDialog([
+    { name: "dims", type: "ARRAY_OF_INTEGERS" },
+    { name: "weights", type: "ARRAY_OF_FLOATS" }
+  ]);
+
+  const command = submitDialog({
+    "#inputCreateIdxAlgorithm": "LSM_SPARSE_VECTOR",
+    "#inputCreateIdxPropsSparseIdx": "dims",
+    "#inputCreateIdxPropsSparseWeights": "weights",
+    "#inputCreateIdxSparseDimensions": "",
+    "#inputCreateIdxSparseModifier": "",
+    "#inputCreateIdxSparseWeightQuantization": "",
+    "#inputCreateIdxSparseRescoreOversample": "101"
+  });
+
+  assert.equal(command, null, "no statement must be sent");
+  assert.match(notified, /[Rr]escore oversample/);
+});

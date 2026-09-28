@@ -1588,7 +1588,11 @@ function createIndex(typeName) {
       let rescoreRaw = $("#inputCreateIdxSparseRescoreOversample").val();
       if (rescoreRaw != null && rescoreRaw !== "") {
         let rescoreOversample = parseInt(rescoreRaw, 10);
-        if (!isNaN(rescoreOversample) && rescoreOversample >= 0) metadata.rescoreOversample = rescoreOversample;
+        if (isNaN(rescoreOversample) || rescoreOversample < 0 || rescoreOversample > 100) {
+          globalNotify("Error", "Rescore oversample must be between 0 and 100", "danger");
+          return;
+        }
+        metadata.rescoreOversample = rescoreOversample;
       }
     } else {
       let multiEl = document.getElementById("inputCreateIdxProps");
