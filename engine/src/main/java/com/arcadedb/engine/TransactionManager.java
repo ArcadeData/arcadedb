@@ -853,11 +853,13 @@ public class TransactionManager {
 
           // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // to keep in-memory metadata synchronized with replicated pages.
-          if (component instanceof TimeSeriesBucket timeSeriesBucket)
+          if (component instanceof TimeSeriesBucket timeSeriesBucket) {
             // A replay can rewrite a page at its SAME version (the torn-write repair above), so a tag summary cached
-            // for that version may describe bytes the page no longer holds (issue #8574).
-            timeSeriesBucket.invalidatePageTagSummary(modifiedPage.pageId.getPageNumber());
-          else if (component instanceof LSMVectorIndexMutable) {
+            // for that version may describe bytes the page no longer holds (issue #8574). A strictly newer version
+            // needs nothing: the summary is keyed on the version it was built from.
+            if (txPage.currentPageVersion == page.getVersion())
+              timeSeriesBucket.invalidatePageTagSummary(modifiedPage.pageId.getPageNumber());
+          } else if (component instanceof LSMVectorIndexMutable) {
             final LSMVectorIndexMutable vectorMutable =
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
