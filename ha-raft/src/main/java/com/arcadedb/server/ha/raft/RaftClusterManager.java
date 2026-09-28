@@ -487,12 +487,12 @@ class RaftClusterManager {
    * A failed call is settled, not sampled (issue #8487): the method waits, within {@code timeoutMs} (never less than
    * {@link #leaderConfirmGraceMs}), for a concrete leader and returns normally only when that leader is the target.
    *
-   * @throws NotTheLeaderRefusalException         when this node is not the leader, naming the leader (when known) so
-   *                                              the caller can retry against the right node
+   * @throws NotTheLeaderRefusalException          when this node is not the leader, naming the leader (when known) so
+   *                                               the caller can retry against the right node
    * @throws LeadershipTransferInProgressException when Ratis refused it because another transfer, to a different
-   *                                              peer, is already pending on this leader (issue #8557)
-   * @throws ConfigurationException               when leadership did not settle on the target, naming the leader it
-   *                                              settled on, or saying that none was elected in time
+   *                                               peer, is already pending on this leader (issue #8557)
+   * @throws ConfigurationException                when leadership did not settle on the target, naming the leader it
+   *                                               settled on, or saying that none was elected in time
    */
   void transferLeadership(final String targetPeerId, final long timeoutMs) {
     if (!raftHAServer.isLeader())
