@@ -462,7 +462,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * or targeted resync leaves the log complete). A leader cannot install from itself, and every client request on
    * that database is refused while its copy is being replaced (issue #8363), so the cluster rejects every write to it
    * with a healthy majority. {@link #handOffLeadershipWhileReplacingDatabase()} reads this set to hand leadership to
-   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition.
+   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition. {@link #startTransaction}
+   * reads it too, to refuse reserving page versions against a copy being replaced (issue #8022).
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
@@ -1158,6 +1159,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Refuse rather than append an entry no node will be able to read; not a fault of this leader.
       return context.build().setException(e);
     }
+
+    // Not validated against a copy this node is replacing (issue #8022): a node elected in the middle of an install
+    // (issue #8491) would otherwise reserve versions read from the pages it is about to discard, and the install then
+    // clears those reservations while their entries still wait behind the install lock. Refused like any other entry
+    // the leader cannot validate right now; the originator retries against the next leader.
+    final String databaseName = decoded.databaseName();
+    if (databaseName != null && databasesBeingReplaced.containsKey(databaseName))
+      return context.build().setException(new NeedRetryException(
+          "Database '" + databaseName + "' is being replaced with a copy from another node, so the leader cannot "
+              + "validate the transaction against it right now. Please retry"));
 
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
@@ -4488,6 +4499,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
         SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+        // The install replaced the database's files, so no reservation taken against the previous copy can still hold
+        // (issue #8022) - the rule applyInstallDatabaseEntry and applyDropDatabaseEntry already apply, here for every
+        // install path, the targeted resync of a quarantined database included. Success only and still under the lock:
+        // a failed install leaves the old copy, and the entries behind the reservations are still to be applied to it.
+        // Nothing in flight is dropped: reservations are taken only by a leader, a leader cannot install from itself,
+        // so this node stepped down (clearing its ledger) before the download could succeed, and a node elected
+        // mid-install takes no reservation on this database until the replacement ends (see startTransaction).
+        pageVersions.clear(dbName);
         // Recorded on success only, and still under the lock (issue #8577): a failed install leaves the old copy in
         // place, so the waiting entries must still be applied to it, not skipped. Recording here - before the
         // unlock below - is what makes the boundary visible to every entry that re-acquires this gate afterward,
