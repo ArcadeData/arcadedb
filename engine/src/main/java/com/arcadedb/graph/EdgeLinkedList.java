@@ -685,7 +685,7 @@ public class EdgeLinkedList {
       // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
       // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.
       final EdgeSegment prevBrowsed = loadChunkForWrite(prevBrowsedRID);
-      prevBrowsed.setPrevious(current.getPrevious());
+      prevBrowsed.setPrevious(previousOf(current));
       database.updateRecord(prevBrowsed);
       if (tx != null) {
         tx.poisonEdgeAppendPage(prevBrowsed.getIdentity());
