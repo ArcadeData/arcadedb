@@ -318,6 +318,11 @@ final class PostgresSessionSettings {
   /**
    * {@code SHOW ALL}: name and value of every parameter this server answers for - the ones it reports or answers from
    * its own state, and every one this connection or its startup packet set - in name order.
+   * <p>
+   * Deliberately NOT PostgreSQL's full list: PostgreSQL lists every GUC with its actual value, and this server has no
+   * actual value for most of them ({@code work_mem}, {@code shared_buffers}, ...), which nothing here implements. Listing
+   * them with an empty value would be the "unset or nonexistent?" ambiguity issue #8573 removed; {@link #show} still
+   * accepts every name PostgreSQL knows.
    */
   List<String[]> showAll() {
     final Set<String> names = new LinkedHashSet<>();
