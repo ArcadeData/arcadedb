@@ -49,6 +49,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.operators.RelationshipUniquenessFilter;
@@ -86,6 +87,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -1328,8 +1330,14 @@ public class CypherOptimizer {
     for (final WhereClause whereClause : logicalPlan.getWhereFilters()) {
       BooleanExpression filterExpression = whereClause.getConditionExpression();
 
-      if (anchorOperator instanceof NodeByLabelScan scan && anchorVariable != null)
-        filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan);
+      // An index seek takes them too (issue #8537): its own equality is still evaluated, but once per seeked vertex
+      // instead of once per row of the expansion above it
+      if (anchorVariable != null) {
+        if (anchorOperator instanceof NodeByLabelScan scan)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan::pushDownFilter);
+        else if (anchorOperator instanceof NodeIndexSeek seek)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
+      }
 
       if (filterExpression != null) {
         // Estimate cost and cardinality for this filter
@@ -1353,20 +1361,20 @@ public class CypherOptimizer {
   }
 
   /**
-   * Hands the anchor scan every top-level conjunct that reads the anchor variable and nothing else,
+   * Hands the anchor operator every top-level conjunct that reads the anchor variable and nothing else,
    * and returns what is left for the Filter above, or null when everything was pushed down.
    */
   private BooleanExpression pushAnchorOnlyConjuncts(final BooleanExpression expression,
-      final String anchorVariable, final LogicalPlan logicalPlan, final NodeByLabelScan scan) {
+      final String anchorVariable, final LogicalPlan logicalPlan, final Consumer<BooleanExpression> anchor) {
     if (expression == null)
       return null;
 
     if (expression instanceof BooleanWrapperExpression wrapper)
-      return pushAnchorOnlyConjuncts(wrapper.getBooleanExpression(), anchorVariable, logicalPlan, scan);
+      return pushAnchorOnlyConjuncts(wrapper.getBooleanExpression(), anchorVariable, logicalPlan, anchor);
 
     if (expression instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
-      final BooleanExpression left = pushAnchorOnlyConjuncts(logical.getLeft(), anchorVariable, logicalPlan, scan);
-      final BooleanExpression right = pushAnchorOnlyConjuncts(logical.getRight(), anchorVariable, logicalPlan, scan);
+      final BooleanExpression left = pushAnchorOnlyConjuncts(logical.getLeft(), anchorVariable, logicalPlan, anchor);
+      final BooleanExpression right = pushAnchorOnlyConjuncts(logical.getRight(), anchorVariable, logicalPlan, anchor);
       if (left == null)
         return right;
       if (right == null)
@@ -1377,7 +1385,7 @@ public class CypherOptimizer {
     if (!readsOnlyTheAnchor(expression, anchorVariable, logicalPlan))
       return expression;
 
-    scan.pushDownFilter(expression);
+    anchor.accept(expression);
     return null;
   }
 

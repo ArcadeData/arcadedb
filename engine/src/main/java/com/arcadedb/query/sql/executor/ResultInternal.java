@@ -84,6 +84,45 @@ public class ResultInternal implements Result {
     this.value = null;
   }
 
+  /**
+   * A new row carrying every binding of {@code source}, for an operator that extends a row with further bindings - a
+   * graph expansion does it once per row it produces (issue #8537).
+   * <p>
+   * The answer is the one the idiom it replaces gives - {@code getPropertyNames()} walked with {@code getProperty()} and
+   * {@code setProperty()} - and a plain row is copied off its map directly: the idiom built a fresh name set per row
+   * and then hashed every name twice more, which on a multi-hop MATCH is a set and three look-ups per binding per path.
+   * The values still go through {@link #setProperty(String, Object)} after the conversion {@link #getProperty(String)}
+   * applies, so no value lands in the copy in a form the old copy would not have produced. A subclass, or a row whose
+   * bindings live only in its element, takes the general route.
+   *
+   * @param extraBindings how many bindings the caller is about to add, to size the copy once
+   */
+  public static ResultInternal copyBindings(final Result source, final int extraBindings) {
+    if (source.getClass() == ResultInternal.class) {
+      final ResultInternal row = (ResultInternal) source;
+      final Map<String, Object> rowContent = row.content;
+      if (rowContent != null && !rowContent.isEmpty()) {
+        final int size = rowContent.size() + extraBindings;
+        final ResultInternal copy = new ResultInternal(new LinkedHashMap<>(size + (size >> 1) + 1));
+        final Set<String> removed = row.tombstones;
+        for (final Map.Entry<String, Object> entry : rowContent.entrySet()) {
+          Object value = entry.getValue();
+          if (removed != null && removed.contains(entry.getKey()))
+            value = null;
+          else if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+            value = identifiable.getIdentity();
+          copy.setProperty(entry.getKey(), value);
+        }
+        return copy;
+      }
+    }
+
+    final ResultInternal copy = new ResultInternal();
+    for (final String name : source.getPropertyNames())
+      copy.setProperty(name, source.getProperty(name));
+    return copy;
+  }
+
   public ResultInternal(final Map<String, Object> map) {
     this.content = map;
     this.database = null;

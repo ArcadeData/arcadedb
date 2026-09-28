@@ -18,11 +18,13 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -176,9 +178,14 @@ public class ExpandAll extends AbstractPhysicalOperator {
               continue; // Skip if source vertex is null (OPTIONAL MATCH)
             }
 
-            // Get edges from source vertex
+            // Get edges from source vertex. An edge no one reads - an anonymous relationship kept only for the
+            // uniqueness checks - is followed on the endpoints its edge-list entry holds, so no edge record is
+            // loaded (issue #8537); a relationship the query binds is read the ordinary way
             final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-            edgeIterator = sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
+            edgeIterator = edgeVariable == null && sourceVertex instanceof VertexInternal internal ?
+                ((DatabaseInternal) context.getDatabase()).getGraphEngine()
+                    .getEdgesKnowingEndpoints(internal, arcadeDirection, edgeTypes) :
+                sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
             currentInputUsedEdgeRids = collectUsedEdgeRids(currentInputResult);
             emittedSelfLoops = null;
           }
@@ -218,10 +225,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
               continue;
 
             // Copy input result and add edge and target vertex
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : currentInputResult.getPropertyNames()) {
-              result.setProperty(prop, currentInputResult.getProperty(prop));
-            }
+            final ResultInternal result = ResultInternal.copyBindings(currentInputResult, 2);
 
             if (edgeVariable != null) {
               result.setProperty(edgeVariable, edge);
@@ -256,9 +260,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
             if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
               continue;
 
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : currentInputResult.getPropertyNames())
-              result.setProperty(prop, currentInputResult.getProperty(prop));
+            final ResultInternal result = ResultInternal.copyBindings(currentInputResult, 2);
             if (targetVariable != null)
               result.setProperty(targetVariable, targetVertex);
 
@@ -361,20 +363,13 @@ public class ExpandAll extends AbstractPhysicalOperator {
    * Gets the target vertex from an edge based on direction.
    */
   private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex) {
-    final Vertex out = edge.getOutVertex();
-    final Vertex in = edge.getInVertex();
-
-    if (direction == Direction.OUT) {
-      return in;
-    } else if (direction == Direction.IN) {
-      return out;
-    } else {
-      // BOTH direction - return the vertex that's not the source
-      if (out.getIdentity().equals(sourceVertex.getIdentity())) {
-        return in;
-      } else {
-        return out;
-      }
-    }
+    // Only the far end is resolved: an edge from getEdgesKnowingEndpoints() answers both endpoints without its
+    // record, so neither this nor the RID comparison below loads it (issue #8537)
+    if (direction == Direction.OUT)
+      return edge.getInVertex();
+    else if (direction == Direction.IN)
+      return edge.getOutVertex();
+    // BOTH direction - return the vertex that's not the source
+    return edge.getOut().equals(sourceVertex.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
   }
 }

@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -33,12 +34,22 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
+  // The record handle the look-up in hasNext() produced, handed out by next() instead of looking it up a second time
+  private       Record           nextEdgeRecord;
   private       boolean          pending             = false;
+  // See EdgeLinkedList.edgeIteratorKnowingEndpoints()
+  private final boolean          endpointsFromList;
 
   public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
+    this(current, vertex, direction, false);
+  }
+
+  public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction,
+      final boolean endpointsFromList) {
     super(null, current);
     this.vertex = vertex;
     this.direction = direction;
+    this.endpointsFromList = endpointsFromList;
   }
 
   @Override
@@ -69,7 +80,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
         // ONLY SURFACES WHEN THE CONTENT IS ACTUALLY LOADED, e.g. UNDER REPEATABLE_READ ISOLATION.
         if (nextEdgeRID.getPosition() > -1) {
           try {
-            currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+            nextEdgeRecord = currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
           } catch (final RecordNotFoundException e) {
             // SKIP DANGLING EDGE
             nextEdgeRID = null;
@@ -110,8 +121,16 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
     ++browsed;
 
-    // ALREADY VALIDATED IN hasNext(); LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL.
-    return (Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+    // ALREADY VALIDATED IN hasNext(); LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL
+    final Edge edge = (Edge) nextEdgeRecord;
+    nextEdgeRecord = null;
+    if (endpointsFromList && edge instanceof ImmutableEdge immutable) {
+      if (direction == Vertex.DIRECTION.OUT)
+        immutable.setEndpointsFromEdgeList(vertex, nextVertexRID);
+      else
+        immutable.setEndpointsFromEdgeList(nextVertexRID, vertex);
+    }
+    return edge;
   }
 
   @Override
@@ -120,6 +139,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
     pending = false;
     nextEdgeRID = null;
     nextVertexRID = null;
+    nextEdgeRecord = null;
     lastElementPosition = currentPosition.get();
   }
 

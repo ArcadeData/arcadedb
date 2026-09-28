@@ -434,9 +434,7 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
       }
 
       private void addResult(final Vertex targetVertex, final GAVEdgeRef edgeRef) {
-        final ResultInternal result = new ResultInternal();
-        for (final String prop : currentInputResult.getPropertyNames())
-          result.setProperty(prop, currentInputResult.getProperty(prop));
+        final ResultInternal result = ResultInternal.copyBindings(currentInputResult, 2);
         if (targetVariable != null)
           result.setProperty(targetVariable, targetVertex);
         if (edgeRef != null)
