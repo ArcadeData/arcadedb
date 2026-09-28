@@ -274,6 +274,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           rightRows.clear();
         rowsByKey = null;
         unhashableRows = null;
+        // The candidates of the last key may be the array of the rows of a key: it goes with the table
+        candidates = null;
+        candidateCount = 0;
         // The hash table goes with the rows
         if (joinLimit != null)
           joinLimit.release();
