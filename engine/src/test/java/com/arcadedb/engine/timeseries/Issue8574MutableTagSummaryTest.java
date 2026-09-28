@@ -221,6 +221,39 @@ class Issue8574MutableTagSummaryTest extends TestHelper {
     assertThat(metrics.getMaterializedRows()).isLessThanOrEqualTo(shards);
   }
 
+  /**
+   * Batches smaller than the shard count must still rotate across every shard: advancing the routing counter by the
+   * shard count instead of by the runs handed out sent every two-row batch to the same two shards.
+   */
+  @Test
+  void smallBatchesRotateAcrossEveryShard() throws Exception {
+    final int shards = 4;
+    final TimeSeriesEngine engine = create(shards);
+    for (int b = 0; b < 8; b++)
+      engine.appendBatch(new long[] { BASE_TS + b * 2L, BASE_TS + b * 2L + 1 }, new Object[][] { { "h", "h" }, { 1.0, 2.0 } });
+
+    for (int s = 0; s < shards; s++)
+      assertThat(engine.getShard(s).getMutableBucket().getSampleCount()).as("shard %d", s).isEqualTo(4L);
+  }
+
+  /**
+   * A page rewritten by replay at its own version drops its cached summary, so the next scan rebuilds it.
+   */
+  @Test
+  void invalidatingASummaryKeepsTheAnswerExact() throws Exception {
+    final TimeSeriesEngine engine = create(1);
+    appendTimeMajor(engine, 0, 3_000);
+    final TimeSeriesBucket bucket = engine.getShard(0).getMutableBucket();
+    final List<Object[]> before = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "host_1"), 3, null);
+
+    for (int p = 0; p <= bucket.getDataPageCount() + 5; p++)
+      bucket.invalidatePageTagSummary(p);
+
+    assertThat(deep(engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, TagFilter.eq(0, "host_1"), 3, null)))
+        .isEqualTo(deep(before))
+        .isEqualTo(deep(expected(engine, "host_1", true, 3)));
+  }
+
   @Test
   void compactTimeSeriesTypeSealsTheTail() throws Exception {
     final TimeSeriesEngine engine = create(2);

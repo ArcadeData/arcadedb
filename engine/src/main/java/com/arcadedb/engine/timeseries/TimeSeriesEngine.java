@@ -248,7 +248,10 @@ public class TimeSeriesEngine implements AutoCloseable {
     // count a multiple of the shard count: reads for that series all landed on one shard, and a newest-first scan
     // of every other shard found no row of it to stop on. A contiguous run keeps the arrival order the caller
     // wrote, gives each shard a time slice of every series, and is what appendSamples already does per call.
-    final long base = appendCounter.getAndAdd(shardCount);
+    // The counter advances by the runs actually handed out, so batches smaller than the shard count still rotate
+    // across every shard instead of landing on the same few each time.
+    final int runs = Math.min(shardCount, n);
+    final long base = appendCounter.getAndAdd(runs);
 
     // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread (see
     // the threading note in the javadoc); routing them to shardExecutor would let each shard's own
@@ -259,7 +262,6 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     final List<CompletableFuture<Void>> futures = inThread ? null : new ArrayList<>(shardCount);
 
-    final int runs = Math.min(shardCount, n);
     for (int k = 0; k < runs; k++) {
       final int from = (int) ((long) n * k / runs);
       final int to = (int) ((long) n * (k + 1) / runs);
