@@ -29,6 +29,9 @@ import com.arcadedb.server.StaticBaseServerTest;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.storage.FileInfo;
+import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
+import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,8 +66,13 @@ import static org.mockito.Mockito.when;
  * The leader's 404 is now classified as the verdict it is - the cluster's leader does not hold that database, the
  * auto-acquire reconcile's {@code LEADER_MISSING} - on every path that installs a closed database: the full resync,
  * the targeted resync of a quarantine, and the legacy refresh of a Ratis-initiated install. The copy is kept and
- * reported; nothing is quarantined for it. Every other failure still quarantines, and a REGISTERED database the leader
- * does not hold still fails closed.
+ * reported; nothing is quarantined for it. Every other failure still quarantines.
+ * <p>
+ * Issue #8588 extends the same verdict to a REGISTERED database the leader does not hold - one the cluster dropped while
+ * this node was down, whose drop entry was compacted away before it caught up, which {@code loadDatabases} registers
+ * again at boot. It used to fail the whole full resync, the whole legacy install and every targeted resync of its
+ * quarantine, each retried against the same 404 for good, while the auto-acquire reconcile - the default path - reported
+ * the very same input {@code LEADER_MISSING} and completed. Every path now reports it the way the auto-acquire one does.
  * <p>
  * The fixture is the one {@link Issue8464ResyncCoversClosedDatabaseTest} uses: a real {@link ArcadeDBServer} (HA off),
  * a real {@link ArcadeStateMachine}, a mocked follower-side {@link RaftHAServer}, and a local HTTP server standing in
@@ -82,6 +90,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
   private static final int        LIVE_COUNT     = 12;
   private static final int        SNAPSHOT_COUNT = 27;
   private static final long       FLOOR          = 5L;
+  private static final long       MARKER         = 40L;
   private static final RaftPeerId LOCAL          = RaftPeerId.valueOf("local");
   private static final RaftPeerId LEADER         = RaftPeerId.valueOf("leader");
 
@@ -231,6 +240,62 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     assertThat(sm.isResyncInProgress()).isFalse();
   }
 
+  /**
+   * Issue #8588: a REGISTERED database the leader does not hold failed the WHOLE full resync - the node-wide floor
+   * stayed, the node stayed out of the ready set, and the health tick retried against the same 404 for good. It is now
+   * reported LEADER_MISSING and kept, as the auto-acquire reconcile reports it, and the resync completes.
+   */
+  @Test
+  void aFullResyncReportsARegisteredDatabaseTheLeaderDoesNotHoldAndCompletes() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB); // no context for DB_NAME: the leader answers 404 for it
+    sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
+    setStaleSnapshotAppliedFloor(FLOOR);
+    registerSnapshotMarker(MARKER);
+
+    sm.triggerSnapshotDownload();
+
+    assertThat(liveCount(OTHER_DB)).as("the other registered database was reinstalled").isEqualTo(SNAPSHOT_COUNT);
+    assertThat(sm.readPersistedAppliedIndex(OTHER_DB)).as("the reinstalled one is at the marker").isEqualTo(MARKER);
+    assertThat(sm.readPersistedAppliedIndex(DB_NAME)).as("the leader-missing one is not laundered into applied")
+        .isEqualTo(FLOOR);
+    assertThat(sm.getStaleSnapshotAppliedFloor()).as("the node-wide floor resolves").isEqualTo(-1L);
+    assertThat(sm.isResyncInProgress()).as("so the node is ready again").isFalse();
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).as("not quarantined").isFalse();
+    assertThat(leaderMissing(DB_NAME)).as("reported the way the auto-acquire reconcile reports it").isTrue();
+    assertThat(server.existsDatabase(DB_NAME)).as("still registered").isTrue();
+    assertThat(liveCount(DB_NAME)).as("the local copy is kept untouched").isEqualTo(LIVE_COUNT);
+  }
+
+  /** Nothing replaced the registered copy either, so its bootstrap-divergence mark is kept (issue #8588). */
+  @Test
+  void aFullResyncKeepsTheBootstrapMarkOfARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    sm.markBootstrapUnreconciled(DB_NAME);
+    sm.markBootstrapUnreconciled(OTHER_DB);
+    setStaleSnapshotAppliedFloor(FLOOR);
+
+    sm.triggerSnapshotDownload();
+
+    assertThat(sm.getBootstrapUnreconciledDatabases()).containsExactly(DB_NAME);
+  }
+
+  /** Any other failure of a registered database still fails the full resync closed, floor kept (issue #8588). */
+  @Test
+  void aFullResyncStillFailsForARegisteredDatabaseTheLeaderFailedToServe() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    leaderAnswers(DB_NAME, 503);
+    setStaleSnapshotAppliedFloor(FLOOR);
+
+    sm.triggerSnapshotDownload();
+
+    assertThat(sm.getStaleSnapshotAppliedFloor()).isEqualTo(FLOOR);
+    assertThat(sm.isResyncInProgress()).isTrue();
+    assertThat(leaderMissing(DB_NAME)).isFalse();
+  }
+
   // ------------------------------------------------------------------------------------------------------------
   // The targeted resync of a quarantine
   // ------------------------------------------------------------------------------------------------------------
@@ -256,9 +321,31 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     assertThat(liveCount(DB_NAME)).as("the local copy is kept").isEqualTo(LIVE_COUNT);
   }
 
-  /** A REGISTERED quarantined database is served by this node: the leader not holding it does not make it healthy. */
+  /**
+   * Issue #8588: a quarantined REGISTERED database the leader does not hold was retried against the same 404 on every
+   * health tick, holding the node out of the ready set for good. It is now lifted and reported LEADER_MISSING - what
+   * the leader-driven auto-acquire install already did with the same database - and the copy is kept and served.
+   */
   @Test
-  void theTargetedResyncKeepsTheQuarantineOfARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+  void theTargetedResyncLiftsTheQuarantineOfARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+    sm.markStateDiverged(DB_NAME);
+    assertThat(sm.isResyncInProgress()).as("the fixture starts quarantined").isTrue();
+
+    sm.retryUnfilledSnapshotGap();
+    sm.awaitLifecycleTasksForTesting(60_000);
+
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
+    assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).isEqualTo(-1L);
+    assertThat(sm.isResyncInProgress()).as("the node is ready again").isFalse();
+    assertThat(leaderMissing(DB_NAME)).isTrue();
+    assertThat(server.existsDatabase(DB_NAME)).as("still registered").isTrue();
+    assertThat(liveCount(DB_NAME)).as("the local copy is kept").isEqualTo(LIVE_COUNT);
+  }
+
+  /** Any other failure of a registered database's targeted resync still keeps its quarantine (issue #8588). */
+  @Test
+  void theTargetedResyncStillKeepsTheQuarantineOfARegisteredDatabaseTheLeaderFailedToServe() throws Exception {
+    leaderAnswers(DB_NAME, 503);
     sm.markStateDiverged(DB_NAME);
 
     sm.retryUnfilledSnapshotGap();
@@ -266,6 +353,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
 
     assertThat(sm.isDatabaseDiverged(DB_NAME)).isTrue();
     assertThat(sm.isResyncInProgress()).isTrue();
+    assertThat(leaderMissing(DB_NAME)).isFalse();
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -292,14 +380,83 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     assertThat(Files.isDirectory(root.resolve("databases").resolve(DB_NAME))).as("the local copy is kept").isTrue();
   }
 
-  /** A REGISTERED database the leader does not hold still fails the install: this node serves it. */
+  /**
+   * Issue #8588: a REGISTERED database the leader does not hold failed the legacy install, which Ratis then re-triggered
+   * for good. It is now reported LEADER_MISSING, as the auto-acquire reconcile reports it, and the install completes.
+   */
   @Test
-  void theLegacyRefreshStillFailsForARegisteredDatabaseTheLeaderDoesNotHold() {
+  void theLegacyRefreshReportsARegisteredDatabaseTheLeaderDoesNotHoldAndCompletes() throws Exception {
     server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    final DatabaseReconciler reconciler = legacyReconciler();
+
+    final DatabaseReconciler.ReconcileFromLeaderResult result =
+        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+
+    assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
+    assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
+    assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+    assertThat(result.notInstalled()).as("not quarantined by the install").isEmpty();
+    assertThat(result.leaderMissing()).as("but handed back as not refreshed").containsExactly(DB_NAME);
+    assertThat(server.existsDatabase(DB_NAME)).as("still registered").isTrue();
+    assertThat(liveCount(DB_NAME)).as("the local copy is kept").isEqualTo(LIVE_COUNT);
+  }
+
+  /**
+   * The auto-acquire reconcile hands its LEADER_MISSING databases back too (issue #8588), so the leader-driven install
+   * does not record a copy it never refreshed as being at the snapshot index.
+   */
+  @Test
+  void theAutoAcquireReconcileHandsBackARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    final DatabaseReconciler reconciler = new DatabaseReconciler() {
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) {
+        return new LeaderDatabaseQuery.BootstrapState(List.of(new LeaderDatabaseQuery.DatabaseInfo(OTHER_DB, 1L)),
+            TermIndex.valueOf(3L, MARKER));
+      }
+    };
+    reconciler.setServer(server);
+
+    final DatabaseReconciler.ReconcileFromLeaderResult result =
+        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+
+    assertThat(result.notInstalled()).isEmpty();
+    assertThat(result.leaderMissing()).containsExactly(DB_NAME);
+    assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+  }
+
+  /**
+   * The leader-driven install records the snapshot index for every database it refreshed, but a LEADER_MISSING one keeps
+   * its own position - and, unlike a database the install gave up on, is neither quarantined nor clamped (issue #8588).
+   */
+  @Test
+  void theInstallDoesNotRecordALeaderMissingDatabaseAtTheSnapshotIndex() {
+    createLocalDatabase(OTHER_DB);
+    sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
+    sm.markStateDiverged(DB_NAME);
+
+    sm.completeSnapshotInstall(MARKER, Set.of(), Set.of(DB_NAME));
+
+    assertThat(sm.readPersistedAppliedIndex(OTHER_DB)).isEqualTo(MARKER);
+    assertThat(sm.readPersistedAppliedIndex(DB_NAME)).as("not laundered into applied").isEqualTo(FLOOR);
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).as("not quarantined").isFalse();
+    assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("nor clamped").isEqualTo(-1L);
+  }
+
+  /** Any other failure of a registered database still fails the legacy install, so Ratis retries it (issue #8588). */
+  @Test
+  void theLegacyRefreshStillFailsForARegisteredDatabaseTheLeaderFailedToServe() {
+    server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    leaderAnswers(DB_NAME, 503);
     final DatabaseReconciler reconciler = legacyReconciler();
 
     assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L))
-        .isInstanceOf(LeaderDoesNotHoldDatabaseException.class);
+        .isInstanceOf(IOException.class)
+        .isNotInstanceOf(LeaderDoesNotHoldDatabaseException.class);
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -342,6 +499,12 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
   /** Reopens the database the way the next request would, and counts what it serves. */
   private long liveCount(final String name) {
     return server.getDatabase(name).countType("Node", true);
+  }
+
+  /** Publishes a latest snapshot at {@code index}, the marker a full resync records every reinstalled database at. */
+  private void registerSnapshotMarker(final long index) {
+    ((SimpleStateMachineStorage) sm.getStateMachineStorage()).updateLatestSnapshot(
+        new SingleFileSnapshotInfo(new FileInfo(root.resolve("snapshot-marker"), null), 3L, index));
   }
 
   private void setStaleSnapshotAppliedFloor(final long floor) throws Exception {
