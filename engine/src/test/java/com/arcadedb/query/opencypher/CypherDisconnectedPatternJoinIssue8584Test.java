@@ -220,6 +220,22 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
+  void aDoubleAtTwoToTheFiftyThirdStandsForSeveralLongs() {
+    // Item 9's y is the double 2^53, which the long 2^53 + 1 widens to: a seek of the single long 2^53 would miss it
+    database.transaction(() -> {
+      final VertexType big = database.getSchema().createVertexType("BigNum");
+      big.createProperty("n", Type.LONG);
+      big.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "n");
+      for (int i = 0; i < 200; i++)
+        database.newVertex("BigNum").set("id", i).set("n", (long) i).save();
+      database.newVertex("BigNum").set("id", 1000).set("n", 9007199254740993L).save();
+    });
+    final String query = "MATCH (i:Item), (b:BigNum) WHERE b.n = i.y RETURN i.id AS a, b.id AS b";
+    assertThat(plan(query)).contains("IndexNestedLoopJoin(b:BigNum)");
+    assertThat(assertSameAsFilteredProduct(query, "b.n = i.y")).contains("9/1000");
+  }
+
+  @Test
   void aKeyDeclaredOfAnotherKindIsNotSought() {
     // A LONG against a STRING index would read the whole label for every person: the planner knows it from the schema
     final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.zip RETURN p.id AS a, c.id AS b";
