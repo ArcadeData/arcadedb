@@ -415,8 +415,15 @@ public final class HealthMonitor {
    * Package-private for tests. Runs one check synchronously.
    */
   void tick() {
-    if (target.isShutdownRequested())
+    // Every early return below skips checkStaleFollower()/checkStuckFollower(), so each drops the observation streaks
+    // those checks own (issue #8389): a streak means "seen on every tick since it started", and a tick that did not look
+    // cannot extend it. Left standing, the confirmed stuck flag kept the cluster status reporting a critical incident
+    // whose promised self-heal those same returns made unreachable, and an old streak fired a reformat or a snapshot
+    // re-arm on the first tick back without the fresh second observation it exists to demand.
+    if (target.isShutdownRequested()) {
+      dropFollowerObservations();
       return;
+    }
     // Reconcile the inbound peer allowlist with current DNS every tick, regardless of Ratis lifecycle
     // state, so a returned peer's new pod IP is admitted proactively (issue #4696). The filter throttles
     // the actual re-resolution to its configured refresh interval.
@@ -439,6 +446,7 @@ public final class HealthMonitor {
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
+      dropFollowerObservations();
       return;
     }
     // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
@@ -451,6 +459,7 @@ public final class HealthMonitor {
     final String logFailure = target.getRaftLogFailure();
     if (logFailure != null) {
       handleFailedLogWriter(logFailure);
+      dropFollowerObservations();
       return;
     }
     noteLogWriterHealthy();
@@ -642,6 +651,18 @@ public final class HealthMonitor {
       logFailureClearSinceMs = -1;
       logFailureEscalated = false;
     }
+  }
+
+  /**
+   * Drops the stale-follower and stuck-divergence observation streaks, and with them the confirmed stuck flag, on a
+   * tick that returns before the follower checks run (issue #8389). Unlike {@link #resetStreaksAfterRestart()} it
+   * leaves the reformat budget alone: nothing was restarted or reformatted, so the divergence episode that budget
+   * belongs to is not over.
+   */
+  private void dropFollowerObservations() {
+    lagObservedSinceMs = -1;
+    stuckObservedSinceMs = -1;
+    stuckConfirmed = false;
   }
 
   /**
