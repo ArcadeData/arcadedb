@@ -152,6 +152,7 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
   private static final Pattern                                        TIME_ZONE_NAME     = Pattern.compile("(?i)^TIME\\s+ZONE$");
   private static final Pattern                                        SESSION_AUTHORIZATION_NAME = Pattern.compile("(?i)^SESSION\\s+AUTHORIZATION$");
+  private static final Pattern                                        TRANSACTION_ISOLATION_LEVEL_NAME = Pattern.compile("(?i)^TRANSACTION\\s+ISOLATION\\s+LEVEL$");
   /**
    * The {@code SET} forms PostgreSQL spells with keywords instead of a {@code =}/{@code TO} separator (issue #8392).
    * Group 1 is the optional scope modifier, group 2 the keyword, group 3 the rest. The negative lookahead keeps the
@@ -790,6 +791,9 @@ public class PostgresNetworkExecutor extends Thread {
           writeCommandComplete("COPY", rows);
         }
       } else {
+        if (portal.showName != null)
+          // SHOW answers the value as it stands at THIS Execute, as PostgreSQL does, not the one fixed at Parse
+          portal.cachedResultSet = showResultSet(portal.showName);
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           final ResultSet resultSet = runPortalQuery(portal);
@@ -1093,14 +1097,9 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (systemQuery != null)
         resultSet = new IteratorResultSet(
             createResultSet(systemQuery.columnName, systemQueryValue(systemQuery.function)).iterator());
-      else if ("SHOW TRANSACTION ISOLATION LEVEL".equals(upperCaseText)) {
-        final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
-        final String level = dbIsolationLevel.name().replace('_', ' ');
-        resultSet = new IteratorResultSet(createResultSet("LEVEL", level).iterator());
-      } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = parameterName(query.query.substring(5));
-        resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
-      } else if (isBeginStatement(upperCaseText)) {
+      else if (upperCaseText.startsWith("SHOW "))
+        resultSet = new IteratorResultSet(showResultSet(query.query.substring(5)).iterator());
+      else if (isBeginStatement(upperCaseText)) {
         applyTransactionControl(PostgresPortal.TransactionControl.BEGIN, null);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -3062,14 +3061,13 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
 
-      } else if ("SHOW TRANSACTION ISOLATION LEVEL".equals(upperCaseText)) {
-        final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
-        final String level = dbIsolationLevel.name().replace('_', ' ');
-        createResultSet(portal, "LEVEL", level);
-
       } else if (upperCaseText.startsWith("SHOW ")) {
-        final String varName = parameterName(portal.query.substring(5));
-        createResultSet(portal, varName, getShowConfigValue(varName));
+        // Answered here too, so Describe has the columns and an unknown name is refused at Parse; Execute reads the
+        // value again, since a BEGIN ISOLATION or a SET between Parse and Execute changes it
+        portal.showName = portal.query.substring(5);
+        portal.executed = true;
+        portal.cachedResultSet = showResultSet(portal.showName);
+        portal.columns = getColumns(portal.cachedResultSet);
 
       } else if (PostgresCopyStatement.isCopy(portal.query)) {
         // COPY ... TO STDOUT (issue #7188): the Arrow ADBC driver sends it through Parse/Bind/Describe/Execute
@@ -3476,6 +3474,9 @@ public class PostgresNetworkExecutor extends Thread {
     // SHOW/RESET SESSION AUTHORIZATION name session_authorization, as SET SESSION AUTHORIZATION does (issue #8392)
     if (SESSION_AUTHORIZATION_NAME.matcher(name).matches())
       return "session_authorization";
+    // SHOW/RESET TRANSACTION ISOLATION LEVEL, the SQL-standard spelling pgjdbc's getTransactionIsolation() sends
+    if (TRANSACTION_ISOLATION_LEVEL_NAME.matcher(name).matches())
+      return "transaction_isolation";
     return name.toLowerCase(Locale.ENGLISH);
   }
 
@@ -3487,8 +3488,31 @@ public class PostgresNetworkExecutor extends Thread {
     return tx != null && tx.isActive() ? tx.getIsolationLevel() : database.getTransactionIsolationLevel();
   }
 
-  private String getShowConfigValue(final String varName) {
-    return sessionSettings.show(varName);
+  /**
+   * The answer to {@code SHOW <rawName>}: one row whose one column is the parameter's PostgreSQL name, or for
+   * {@code SHOW ALL} one {@code name}/{@code setting}/{@code description} row per parameter, as PostgreSQL answers it.
+   * Every spelling of a parameter reaches the one value {@link PostgresSessionSettings#show} answers: {@code SHOW
+   * TRANSACTION ISOLATION LEVEL} used to be answered by a branch of its own that read the database default instead of
+   * the open transaction's level, under a column named {@code LEVEL} (issue #8569).
+   *
+   * @throws PostgresSessionSettings.SettingException {@code 42704} for a parameter PostgreSQL does not know (issue #8573)
+   */
+  private List<Result> showResultSet(final String rawName) {
+    final String name = parameterName(rawName);
+    if ("all".equals(name)) {
+      final List<String[]> all = sessionSettings.showAll();
+      final List<Result> rows = new ArrayList<>(all.size());
+      for (final String[] parameter : all) {
+        final Map<String, Object> row = new LinkedHashMap<>(4);
+        row.put("name", parameter[0]);
+        row.put("setting", parameter[1]);
+        row.put("description", "");
+        rows.add(new ResultInternal(row));
+      }
+      return rows;
+    }
+    final String value = sessionSettings.show(name);
+    return createResultSet(PostgresSessionSettings.canonicalName(name), value);
   }
 
   private void sendServerParameter(final String name, final String value) {

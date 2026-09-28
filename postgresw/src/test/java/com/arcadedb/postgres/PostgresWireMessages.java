@@ -209,6 +209,21 @@ final class PostgresWireMessages {
     throw new AssertionError("no DataRow among " + messageTypesOf(messages));
   }
 
+  /**
+   * The name of the first column the first RowDescription among {@code messages} describes.
+   */
+  static String firstColumnName(final List<WireMessage> messages) {
+    for (final WireMessage message : messages)
+      if (message.type() == 'T') {
+        final byte[] body = message.body();
+        int end = 2; // after the column count
+        while (body[end] != 0)
+          ++end;
+        return new String(body, 2, end - 2, StandardCharsets.UTF_8);
+      }
+    throw new AssertionError("no RowDescription among " + messageTypesOf(messages));
+  }
+
   private static void sendMessage(final DataOutputStream out, final char type, final ByteArrayOutputStream body) throws Exception {
     final byte[] bodyBytes = body.toByteArray();
     out.writeByte(type);
