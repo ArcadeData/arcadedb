@@ -158,6 +158,22 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     assertThat(liveCount(OTHER_DB)).as("every other database is served").isEqualTo(SNAPSHOT_COUNT);
   }
 
+  /**
+   * A replicated entry for a marked copy resolves its database through the same reopen point, and is refused there
+   * rather than applied onto a copy that may be behind: the refusal is what routes the entry to the per-database
+   * quarantine and targeted resync of {@code handleUnexpectedApplyError}.
+   */
+  @Test
+  void theApplyPathResolvesAMarkedCopyThroughTheSameRefusal() throws Exception {
+    closeLocally(DB_NAME);
+    setStaleSnapshotAppliedFloor(FLOOR);
+    sm.triggerSnapshotDownload();
+    assertThat(Files.exists(marker(DB_NAME))).isTrue();
+
+    assertThatThrownBy(() -> sm.databaseFor(DB_NAME)).isInstanceOf(DatabaseNotAvailableException.class);
+    assertThat(server.existsDatabase(DB_NAME)).isFalse();
+  }
+
   /** The targeted resync that lifts a quarantine on the same verdict marks the copy too. */
   @Test
   void theTargetedResyncMarksTheClosedCopyWhoseQuarantineItLifts() throws Exception {

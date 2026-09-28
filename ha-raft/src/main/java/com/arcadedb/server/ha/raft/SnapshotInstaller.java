@@ -893,6 +893,8 @@ public final class SnapshotInstaller {
     synchronized (server.getDatabasesLock()) {
       if (server.existsDatabase(databaseName) || !Files.isDirectory(dbDir))
         return false;
+      // The marker itself is deliberately not re-checked: a concurrent caller that wrote it first makes this a second,
+      // idempotent write of the same empty file, which is cheaper than another branch on a path this rare.
       writeMarkerDurable(marker);
       return true;
     }
