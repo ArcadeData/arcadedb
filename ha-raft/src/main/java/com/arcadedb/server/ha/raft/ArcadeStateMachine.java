@@ -6700,6 +6700,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     final Set<String> notInstalled = new HashSet<>();
+    // Closed copies the leader does not hold: neither installed nor quarantined, so they are in neither set above, and
+    // nothing replaced them either - so their bootstrap-divergence marks are theirs to keep (issue #8559).
+    final Set<String> leaderMissing = new HashSet<>();
     for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
       try {
         installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
@@ -6708,6 +6711,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // effect - would wait for an install that the same leader refuses on every retry. Reported the way the
         // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped.
         reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+        leaderMissing.add(dbName);
         continue;
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
@@ -6730,8 +6734,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (notInstalled.isEmpty()) {
       clearDivergedState();
       // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
-      // had kept (issue #6124).
-      clearAllBootstrapUnreconciled();
+      // had kept (issue #6124) - except a closed one the leader does not hold, whose copy nothing replaced.
+      if (leaderMissing.isEmpty())
+        clearAllBootstrapUnreconciled();
+      else
+        for (final String dbName : getBootstrapUnreconciledDatabases())
+          if (!leaderMissing.contains(dbName))
+            clearBootstrapUnreconciled(dbName);
     } else {
       // Every database but these carries the leader's copy now: clear the rest, and quarantine these with their own
       // honest floors in the same durable write (issues #6760, #8137).
@@ -6739,7 +6748,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final boolean durable = settleDivergedStateAfterInstall(notInstalled,
           snapshotInfo != null ? snapshotInfo.getIndex() : -1L, false);
       for (final String dbName : getBootstrapUnreconciledDatabases())
-        if (!notInstalled.contains(dbName))
+        if (!notInstalled.contains(dbName) && !leaderMissing.contains(dbName))
           clearBootstrapUnreconciled(dbName);
       // Fail closed. The node-wide floor below is the only other thing protecting these copies across a restart, and a
       // quarantine that lives in memory alone is gone after one: the directory would be reopened by the next request

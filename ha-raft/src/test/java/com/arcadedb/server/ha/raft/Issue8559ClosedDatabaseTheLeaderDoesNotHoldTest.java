@@ -43,6 +43,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -139,6 +140,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
   /** The leader's 404 is the only failure typed as "the leader does not hold it"; a 503 is an ordinary failure. */
   @Test
   void onlyALeader404IsTypedAsTheLeaderNotHoldingTheDatabase() throws Exception {
+    leaderAnswers(DB_NAME, 503, 404); // a failed attempt first: only the LAST attempt decides the type
     leaderAnswers(OTHER_DB, 503);
     final Path staging = Files.createDirectories(root.resolve("staging"));
 
@@ -175,6 +177,25 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     assertThat(leaderMissing(DB_NAME)).as("it is reported the way the auto-acquire reconcile reports it").isTrue();
     assertThat(sm.readPersistedAppliedIndex(DB_NAME)).as("and not laundered into applied").isEqualTo(FLOOR);
     assertThat(liveCount(DB_NAME)).as("the local copy is kept untouched").isEqualTo(LIVE_COUNT);
+  }
+
+  /**
+   * Nothing replaced the closed copy, so a bootstrap-divergence mark on it - the copy the cluster's first-formation
+   * baseline decided against - is kept, while the one on a database the resync did reinstall is cleared.
+   */
+  @Test
+  void aFullResyncKeepsTheBootstrapMarkOfAClosedDatabaseTheLeaderDoesNotHold() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    sm.markBootstrapUnreconciled(DB_NAME);
+    sm.markBootstrapUnreconciled(OTHER_DB);
+    closeLocally(DB_NAME);
+    setStaleSnapshotAppliedFloor(FLOOR);
+
+    sm.triggerSnapshotDownload();
+
+    assertThat(sm.getBootstrapUnreconciledDatabases()).containsExactly(DB_NAME);
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).isFalse();
   }
 
   /** Any other failure is still an install that did not happen, and still quarantines. */
@@ -329,9 +350,14 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     ((AtomicLong) f.get(sm)).set(floor);
   }
 
-  /** Makes the leader answer {@code status} with no body for {@code name}: a failure that is not a 404. */
-  private void leaderAnswers(final String name, final int status) {
+  /**
+   * Makes the leader answer {@code statuses} with no body for {@code name}, one per request in order, the last one
+   * repeated.
+   */
+  private void leaderAnswers(final String name, final int... statuses) {
+    final AtomicInteger attempt = new AtomicInteger();
     leader.createContext("/api/v1/ha/snapshot/" + name, exchange -> {
+      final int status = statuses[Math.min(attempt.getAndIncrement(), statuses.length - 1)];
       exchange.sendResponseHeaders(status, -1);
       exchange.close();
     });
