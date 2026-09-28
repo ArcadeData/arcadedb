@@ -32,6 +32,13 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Optimized to store only distinct field values instead of full Result objects to reduce memory footprint.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
+  // A DistinctKey, and the entry of the set that holds it
+  private static final int DISTINCT_KEY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 24;
+
+  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
+  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
+  private OperationHeapLimit limit;
+
   /**
    * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
    * This dramatically reduces memory usage compared to storing full Result objects.
@@ -69,16 +76,10 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  // A DistinctKey, and the entry of the set that holds it
-  private static final int DISTINCT_KEY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 24;
-
   final Set<DistinctKey> pastItems = new HashSet<>();
   final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
-  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
-  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
-  private OperationHeapLimit limit;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
