@@ -361,7 +361,8 @@ public final class TemporalUtil {
     else
       nanos += defaultNanos % 1_000;
     if (nanos >= 1_000_000_000L)
-      // Only reachable when a preserved coarser portion of defaultNanos is combined with a wide nanosecond field
+      // Only reachable when a portion preserved from defaultNanos is combined with a finer field whose own range is
+      // wider because the coarser one was not given, e.g. a preserved millisecond plus a bare microsecond: 999999
       throw new IllegalArgumentException("Invalid value for NanoOfSecond: " + nanos + " (valid values 0 - 999999999)");
     return (int) nanos;
   }
