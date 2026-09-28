@@ -224,7 +224,7 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
         if (use == KeyUse.SEEK) {
           try {
             // Cypher calls -0.0 and 0.0 equal, the index orders them apart: a zero is sought under both signs
-            final List<Object[]> signedKeys = withBothZeros(key);
+            final List<Object[]> signedKeys = withBothZeros(key, keyTypes);
             cursor = seek(signedKeys.removeLast());
             pendingKeys = signedKeys;
             return;
@@ -323,10 +323,13 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
    * since an index orders -0.0 before 0.0 while the Cypher {@code =} calls them equal. A zero against an integral
    * property is one key already, and is left alone.
    */
-  private static List<Object[]> withBothZeros(final Object[] key) {
+  private static List<Object[]> withBothZeros(final Object[] key, final Type[] keyTypes) {
     final List<Object[]> keys = new ArrayList<>(1);
     keys.add(key);
     for (int i = 0; i < key.length; i++) {
+      // An integral property holds one zero, which both signs convert to: seeking it twice would find its rows twice
+      if (keyTypes[i] != Type.FLOAT && keyTypes[i] != Type.DOUBLE)
+        continue;
       final Object value = key[i];
       final Object otherZero;
       if (value instanceof Double d && d == 0.0)
@@ -348,7 +351,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
   /**
    * A number against an integral property: the property only holds integers of its type's range, so a fraction or a
    * number out of the range equals none of them - and the index would refuse to narrow it. A double past 2^53 stands
-   * for several longs the Cypher equality, which compares a long and a double as doubles, calls equal to it.
+   * for several longs the Cypher equality, which compares a long and a double as doubles, calls equal to it - and so does
+   * 2^53 itself, which the long 2^53 + 1 rounds to.
    */
   private static KeyUse integralKeyUse(final Number number, final Type keyType) {
     final long value;
@@ -358,7 +362,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
       final double d = number instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
       if (Double.isNaN(d) || d != Math.rint(d))
         return KeyUse.NONE;
-      if (Math.abs(d) > MAX_EXACT_DOUBLE_INTEGER)
+      // 2^53 itself too: the long 2^53 + 1 widens to it
+      if (Math.abs(d) >= MAX_EXACT_DOUBLE_INTEGER)
         return KeyUse.SCAN;
       value = (long) d;
     } else
