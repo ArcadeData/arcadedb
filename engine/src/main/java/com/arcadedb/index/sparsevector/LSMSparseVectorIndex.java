@@ -809,7 +809,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   /**
    * {@code count} widened by the rescoring oversample. The widening is bounded by {@link #MAX_OVERFETCH_ROWS} like the
-   * ungrouped over-fetch, but the caller's own {@code count} never is: the cap limits what the oversample ADDS.
+   * ungrouped over-fetch, but the caller's own {@code count} never is: the cap limits what the oversample ADDS. So a
+   * {@code count} already past {@link #MAX_OVERFETCH_ROWS} gets no extra candidates: its results are still rescored
+   * exactly, but chosen from the quantized top {@code count} alone. Only an embedded caller can get there - the SQL
+   * function refuses a {@code k} that large.
    */
   private static int oversampled(final int count, final int oversample) {
     return oversample > 1 ? (int) Math.min((long) count * oversample, Math.max(count, MAX_OVERFETCH_ROWS)) : count;
