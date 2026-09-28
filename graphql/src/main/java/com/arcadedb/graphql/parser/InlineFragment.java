@@ -36,10 +36,6 @@ public class InlineFragment extends SimpleNode {
     return typeCondition != null ? typeCondition.getTypeName() : null;
   }
 
-  public Directives getDirectives() {
-    return directives;
-  }
-
   public SelectionSet getSelectionSet() {
     return selectionSet;
   }

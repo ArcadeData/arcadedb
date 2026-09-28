@@ -37,10 +37,6 @@ public class FragmentDefinition extends Definition {
     return type != null ? type.getTypeName() : null;
   }
 
-  public Directives getDirectives() {
-    return directives;
-  }
-
   public SelectionSet getSelectionSet() {
     return selectionSet;
   }
