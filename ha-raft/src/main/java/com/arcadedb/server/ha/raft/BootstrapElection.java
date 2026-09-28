@@ -303,16 +303,10 @@ class BootstrapElection {
     try {
       final boolean useSSL = server != null
           && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-      final RaftPeerId localId = haServer.getLocalPeerId();
-      final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
       final List<String> urls = new ArrayList<>();
-      for (final RaftPeer peer : haServer.getLivePeers()) {
-        if (peer.getId().equals(localId))
-          continue;
-        final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
+      for (final String url : peerProbeUrls(useSSL).values())
         if (url != null)
           urls.add(url);
-      }
       if (urls.isEmpty())
         return;
 
@@ -443,9 +437,7 @@ class BootstrapElection {
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
     final RaftPeerId localId = haServer.getLocalPeerId();
-    final Collection<RaftPeer> peers = haServer.getLivePeers();
     final Set<String> dbFilter = new HashSet<>(dbNames);
-    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
     final String announceBody = announcePassBody(passId, dbNames);
 
     // Self state computed locally to avoid a self-loop HTTP call.
@@ -460,16 +452,15 @@ class BootstrapElection {
     final boolean useSSL = server != null
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> peerAddresses = new LinkedHashMap<>();
-    for (final RaftPeer peer : peers) {
-      if (peer.getId().equals(localId))
-        continue;
-      final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
-      if (url == null) {
+    for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet()) {
+      if (entry.getValue() == null) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: peer %s has no known HTTP address; the election assumes it holds NO local data", peer.getId());
+            "Bootstrap: peer %s has no known HTTP address that identifies it and is not this node's own; the election "
+                + "assumes it holds NO local data. Declare each node's 'http' port explicitly in %s", entry.getKey(),
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
         continue;
       }
-      peerAddresses.put(peer.getId(), url);
+      peerAddresses.put(entry.getKey(), entry.getValue());
     }
 
     // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
@@ -615,6 +606,58 @@ class BootstrapElection {
   static boolean isRetryableProbeStatus(final int statusCode) {
     return statusCode == 401 || statusCode == 403 || statusCode == 408 || statusCode == 425
         || statusCode == 429 || statusCode >= 500;
+  }
+
+  /**
+   * The bootstrap-state URL of every live peer but this node, in peer order, for the two fan-outs of a pass: the
+   * state collection and the conclusion broadcast. A peer with no endpoint this node may dial maps to {@code null}
+   * rather than being left out, so the collection can name it in its warning and count it as holding no data.
+   * <p>
+   * Both halves are asked the two questions every other peer dial asks ({@link PeerDialAddress}): does the address
+   * identify this peer alone, and is it this node's own? An endpoint that fails either is withheld, because a probe
+   * sent to it is answered by the wrong node - most often by this one, with its own state - and the election would
+   * file that answer under the peer's id and pick a baseline from it without a line in the log.
+   * <ul>
+   * <li>The HTTPS half goes through {@link PeerDialAddress#encryptedEndpointOf}. The raw resolver derives a missing
+   * {@code https} port as the peer's Raft host plus <em>this</em> node's HTTPS port, so on a cluster whose nodes
+   * differ by port and declare only their {@code http} ports every peer collapsed onto this node's own listener, and
+   * {@link #chooseUrl} preferred that over the declared HTTP endpoint (issue #8033). Withheld, the probe falls back
+   * to the plain-HTTP half.</li>
+   * <li>The plain-HTTP half stays restricted to the {@code http} endpoint each peer DECLARED in
+   * {@link GlobalConfiguration#HA_SERVER_LIST}, as it always was, and is additionally withheld when that declared
+   * endpoint is shared with another peer or is this node's own spelled another way ({@code 127.0.0.1} against
+   * {@code localhost}).</li>
+   * </ul>
+   */
+  Map<RaftPeerId, String> peerProbeUrls(final boolean useSSL) {
+    final RaftPeerId localId = haServer.getLocalPeerId();
+    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
+    // Resolved once for the whole fan-out rather than once per peer.
+    final String localHttpAddress = haServer.getLocalHttpAddress();
+    final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
+    for (final RaftPeer peer : haServer.getLivePeers()) {
+      final RaftPeerId peerId = peer.getId();
+      if (peerId.equals(localId))
+        continue;
+      final String httpAddress = declaredHttpEndpointOf(peerId, httpAddresses.get(peerId), localHttpAddress);
+      final String httpsAddress = useSSL ? PeerDialAddress.encryptedEndpointOf(haServer, peerId) : null;
+      urls.put(peerId, chooseUrl(httpAddress, httpsAddress, useSSL));
+    }
+    return urls;
+  }
+
+  /**
+   * {@code declared} when it identifies {@code peerId} alone and is not this node's own endpoint, {@code null}
+   * otherwise. The same checks {@link PeerDialAddress#resolve} makes on its HTTP arm, restricted to the declared
+   * endpoint: the unambiguous accessor answers with the declared address whenever there is one, so any other answer
+   * means the declaration identifies nobody.
+   */
+  private String declaredHttpEndpointOf(final RaftPeerId peerId, final String declared, final String localHttpAddress) {
+    if (declared == null || !declared.equals(haServer.getUnambiguousPeerHttpAddress(peerId)))
+      return null;
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, declared))
+      return null;
+    return declared;
   }
 
   /**
