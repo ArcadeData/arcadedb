@@ -25,7 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -61,10 +61,6 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
-  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
-  // STEP: THE CLOSE() OF A QUERY REACHES THE STEPS
-  private OperationHeapLimit heapLimit;
-
   public CountChainedEdgesStep(final String boundVertexVariable,
       final Vertex.DIRECTION firstHopDirection,
       final String[] firstHopTypes,
@@ -99,8 +95,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
-    heapLimit = OperationHeapLimit.of(context, "GROUP BY");
-    final int groupOverhead = CountEdgesStep.groupOverheadBytes(aliasOutputNames.length + 1);
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -140,10 +135,12 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
 
-        final int groupsBefore = groups.size();
-        final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
-        if (groups.size() > groupsBefore)
-          heapLimit.add(groups.size(), keyValues, groupOverhead);
+        long[] accumulator = groups.get(groupKey);
+        if (accumulator == null) {
+          accumulator = new long[1];
+          groups.put(groupKey, accumulator);
+          limit.check(groups.size());
+        }
         accumulator[0] += totalCount;
       } finally {
         if (context.isProfiling())
@@ -191,13 +188,6 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     if (lenB > 0)
       System.arraycopy(b, 0, merged, lenA, lenB);
     return merged;
-  }
-
-  @Override
-  public void close() {
-    if (heapLimit != null)
-      heapLimit.release();
-    super.close();
   }
 
   @Override

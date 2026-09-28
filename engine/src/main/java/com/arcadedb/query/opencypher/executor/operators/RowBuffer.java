@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
@@ -87,8 +86,8 @@ public final class RowBuffer {
   // Compact form, column by column. A column's arrays are allocated the first time it holds that kind of value.
   private boolean  compact = false;
   /**
-   * The columns of the first row, in its order. The rows of one operator set their properties in one order, so the
-   * others match it; a row that does not is held as it came (see {@link #irregularRows}), which is only slower.
+   * The columns of the first row, in its order, which a compact row is rebuilt in. A row with other columns is held as
+   * it came (see {@link #irregularRows}), which is only slower.
    */
   private String[] columns;
   private int      capacity;
@@ -272,9 +271,8 @@ public final class RowBuffer {
   private boolean hasTheColumns(final Set<String> names) {
     if (names.size() != columns.length)
       return false;
-    final Iterator<String> iterator = names.iterator();
     for (final String column : columns)
-      if (!column.equals(iterator.next()))
+      if (!names.contains(column))
         return false;
     return true;
   }

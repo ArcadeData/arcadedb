@@ -256,6 +256,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
+  void aHashJoinHoldsTheSmallerSide() {
+    // Persons and cities are joined first, a handful of rows: the Items joined onto them are not the side to hold
+    final String query = "MATCH (p:Person), (c:City), (i:Item) WHERE c.id = p.cityId AND i.id = p.id RETURN p.id AS a, i.id AS b";
+    assertThat(plan(query)).contains("ValueHashJoin [on=p.id = i.id] [build=left]");
+    assertThat(assertSameAsFilteredProduct(query, "c.id = p.cityId", "i.id = p.id")).isNotEmpty();
+  }
+
+  @Test
   void relationshipComponentsAreJoinedAndKeepRelationshipUniqueness() {
     final String query = "MATCH (a:Person)-[r1:KNOWS]->(b:Person), (c:Person)-[r2:KNOWS]->(d:Person) WHERE b.id = c.id "
         + "RETURN a.id AS a, d.id AS b";

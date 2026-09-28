@@ -19,8 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapEstimator;
-import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -35,19 +34,21 @@ import java.util.function.BiPredicate;
 
 /**
  * Joins two independently matched parts of a pattern on the values of one or more {@code left = right} conjuncts of
- * the WHERE, instead of crossing them and filtering every pair (issue #8584): the right input is read once into a
- * hash table keyed by its side of the conjuncts, and each left row is paired only with the right rows of its key.
- * {@code MATCH (a:T), (b:T) WHERE a.x = b.y} costs |a| + |b| instead of |a| x |b|.
+ * the WHERE, instead of crossing them and filtering every pair (issue #8584): one input - the build side - is read
+ * once into a hash table keyed by its side of the conjuncts, and each row of the other - the probe side, streamed - is
+ * paired only with the build rows of its key. {@code MATCH (a:T), (b:T) WHERE a.x = b.y} costs |a| + |b| instead of
+ * |a| x |b|. The build side is the right input, or the left one when that is the smaller: the planner decides.
  * <p>
- * The rows come out as a {@link CartesianProduct} filtered on the conjuncts would produce them: for every left row, in
- * its order, the matching right rows in the order the right input produced them. The WHERE is still evaluated above
- * the join, so a pair the key lets through is decided by the comparison itself; the key only has to never lose a pair
- * the comparison accepts (see {@link EquiJoinKey}). A row whose key cannot be hashed is paired with every row of the
- * other side, as a product would.
+ * For every probe row, in its order, the matching build rows come in the order the build input produced them: built on
+ * the right, the rows come out as a {@link CartesianProduct} filtered on the conjuncts would produce them. A merged row
+ * always holds the left properties first. The WHERE is still evaluated above the join, so a pair the key lets through
+ * is decided by the comparison itself; the key only has to never lose a pair the comparison accepts (see
+ * {@link EquiJoinKey}). A row whose key cannot be hashed is paired with every row of the other side, as a product
+ * would.
  * <p>
- * The right rows are held in a {@link RowBuffer}: compact past a few thousand rows when the statement does not write
- * (issue #8583), and bounded by {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP}
- * (issue #8585). The right input is not read at all when the left one has no row.
+ * The build rows are held in a {@link RowBuffer}: compact past a few thousand rows when the statement cannot change a
+ * record (issue #8583), and bounded by {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP}
+ * (issue #8585). The build input is not read at all when the probe one has no row.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,20 +56,25 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
   private final PhysicalOperator            right;
   private final EquiJoinKey[]               keys;
   private final BiPredicate<Result, Result> pairFilter;
+  /** Whether the left input is the one read into the hash table, the right one streamed. */
+  private final boolean                     buildLeft;
   private       int                         compactAfterRows = 0;
 
   /**
-   * @param left       the input streamed and probed, one row at a time
-   * @param right      the input read into the hash table
+   * @param left       the left input
+   * @param right      the right input
    * @param keys       the conjuncts the two inputs are joined on
    * @param pairFilter when non-null, tested on every (left, right) pair of the same key before it is merged
+   * @param buildLeft  whether the left input is read into the hash table, rather than the right one
    */
   public ValueHashJoin(final PhysicalOperator left, final PhysicalOperator right, final EquiJoinKey[] keys,
-      final double estimatedCost, final long estimatedCardinality, final BiPredicate<Result, Result> pairFilter) {
+      final double estimatedCost, final long estimatedCardinality, final BiPredicate<Result, Result> pairFilter,
+      final boolean buildLeft) {
     super(left, estimatedCost, estimatedCardinality);
     this.right = right;
     this.keys = keys;
     this.pairFilter = pairFilter;
+    this.buildLeft = buildLeft;
   }
 
   /** See {@link CartesianProduct#setCompactAfterRows(int)}. */
@@ -81,18 +87,17 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {
-      private ResultSet leftResults;
-      private RowBuffer rightRows;
-      /** Key -> the right rows holding it: an Integer for one row, an {@link IntList} for more, ascending. */
+      private ResultSet probeResults;
+      private RowBuffer buildRows;
+      /** Key -> the build rows holding it: an Integer for one row, an {@link IntList} for more, ascending. */
       private Map<Object, Object> rowsByKey;
-      /** The right rows whose key cannot be hashed, ascending: every left row is paired with them. */
+      /** The build rows whose key cannot be hashed, ascending: every probe row is paired with them. */
       private IntList unhashableRows;
-      private OperationHeapLimit joinLimit;
       private boolean initialized = false;
       private boolean finished    = false;
 
-      private Result currentLeft;
-      // The right rows the current left row is paired with: either every row, or the ones listed in candidates
+      private Result currentProbe;
+      // The build rows the current probe row is paired with: either every row, or the ones listed in candidates
       private boolean allCandidates;
       private int[]   candidates;
       private final int[] oneCandidate = new int[1];
@@ -115,12 +120,14 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        final Result rightRow = pending;
+        final Result buildRow = pending;
         pending = null;
 
+        final Result leftRow = buildLeft ? buildRow : currentProbe;
+        final Result rightRow = buildLeft ? currentProbe : buildRow;
         final ResultInternal merged = new ResultInternal();
-        for (final String property : currentLeft.getPropertyNames())
-          merged.setProperty(property, currentLeft.getProperty(property));
+        for (final String property : leftRow.getPropertyNames())
+          merged.setProperty(property, leftRow.getProperty(property));
         for (final String property : rightRow.getPropertyNames())
           merged.setProperty(property, rightRow.getProperty(property));
         return merged;
@@ -128,80 +135,68 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
 
       private void initialize() {
         initialized = true;
-        leftResults = child.execute(context, nRecords);
-        // Nothing to pair: the right input is never read
-        if (!leftResults.hasNext()) {
+        probeResults = (buildLeft ? right : child).execute(context, nRecords);
+        // Nothing to pair: the build input is never read
+        if (!probeResults.hasNext()) {
           finish();
           return;
         }
 
-        // The rows and the hash table over them are charged to one operation, released with the buffer
-        joinLimit = OperationHeapLimit.of(context, "hash join");
-        final OperationHeapLimit limit = joinLimit;
-        rightRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null, limit, compactAfterRows);
+        buildRows = new RowBuffer(compactAfterRows > 0 ? context.getDatabase() : null,
+            HeapElementsLimit.of(context, "hash join"), compactAfterRows);
         rowsByKey = new HashMap<>();
         unhashableRows = new IntList();
 
-        final ResultSet rightResults = right.execute(context, nRecords);
+        final ResultSet buildResults = (buildLeft ? child : right).execute(context, nRecords);
         try {
-          while (rightResults.hasNext()) {
+          while (buildResults.hasNext()) {
             guard.check();
-            final Result row = rightResults.next();
-            final Object key = EquiJoinKey.canonicalKey(keys, false, row, context);
-            // A right row no key equals is never paired
+            final Result row = buildResults.next();
+            final Object key = EquiJoinKey.canonicalKey(keys, buildLeft, row, context);
+            // A build row no key equals is never paired
             if (key == EquiJoinKey.NO_MATCH)
               continue;
 
-            final int index = rightRows.size();
-            rightRows.add(row);
-            if (key == EquiJoinKey.UNHASHABLE) {
+            final int index = buildRows.size();
+            buildRows.add(row);
+            if (key == EquiJoinKey.UNHASHABLE)
               unhashableRows.add(index);
-              limit.charge(Integer.BYTES);
-            } else {
-              final int keys = rowsByKey.size();
+            else
               rowsByKey.merge(key, index, ValueHashJoin::appendRow);
-              if (rowsByKey.size() > keys)
-                // A new key: the table grew by an entry
-                limit.charge(HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES + HeapEstimator.estimate(key));
-              else
-                limit.charge(Integer.BYTES);
-            }
           }
-        } catch (final RuntimeException e) {
-          releaseBuffer();
-          throw e;
         } finally {
-          rightResults.close();
+          buildResults.close();
         }
 
-        if (rightRows.size() == 0)
+        if (buildRows.size() == 0)
           finish();
       }
 
-      // Walks forward to the next (left, right) pair of the same key the pair filter accepts
+      // Walks forward to the next (probe, build) pair of the same key the pair filter accepts
       private boolean advance() {
         while (!finished) {
-          if (currentLeft != null) {
+          if (currentProbe != null) {
             while (candidateIndex < candidateCount) {
               guard.check();
               final int index = allCandidates ? candidateIndex : candidates[candidateIndex];
               ++candidateIndex;
               // A compact buffer answers null for a row whose record was deleted since it was buffered
-              final Result rightRow = rightRows.get(index);
-              if (rightRow != null && (pairFilter == null || pairFilter.test(currentLeft, rightRow))) {
-                pending = rightRow;
+              final Result buildRow = buildRows.get(index);
+              if (buildRow != null && (pairFilter == null || (buildLeft ?
+                  pairFilter.test(buildRow, currentProbe) : pairFilter.test(currentProbe, buildRow)))) {
+                pending = buildRow;
                 return true;
               }
             }
           }
 
-          // Nothing left to pair with: every compact right row was found deleted since it was buffered
-          if (!leftResults.hasNext() || rightRows.liveSize() == 0) {
+          // Nothing left to pair with: every compact build row was found deleted since it was buffered
+          if (!probeResults.hasNext() || buildRows.liveSize() == 0) {
             finish();
             break;
           }
-          currentLeft = leftResults.next();
-          selectCandidates(EquiJoinKey.canonicalKey(keys, true, currentLeft, context));
+          currentProbe = probeResults.next();
+          selectCandidates(EquiJoinKey.canonicalKey(keys, !buildLeft, currentProbe, context));
         }
         return false;
       }
@@ -215,7 +210,7 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
         }
         if (key == EquiJoinKey.UNHASHABLE) {
           allCandidates = true;
-          candidateCount = rightRows.size();
+          candidateCount = buildRows.size();
           return;
         }
 
@@ -234,7 +229,7 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           return;
         }
 
-        // Merge the rows of the key with the unhashable ones, so the pairs keep the order of the right input
+        // Merge the rows of the key with the unhashable ones, so the pairs keep the order of the build input
         final int[] keyed;
         final int keyedCount;
         if (matching == null) {
@@ -260,34 +255,25 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
 
       private void finish() {
         finished = true;
-        currentLeft = null;
-        if (leftResults != null) {
-          leftResults.close();
-          leftResults = null;
+        currentProbe = null;
+        if (probeResults != null) {
+          probeResults.close();
+          probeResults = null;
         }
-        // No left row is left to pair: the hash table goes now, not when a close() the consumer may never call comes
-        releaseBuffer();
-      }
-
-      private void releaseBuffer() {
-        if (rightRows != null)
-          rightRows.clear();
-        rowsByKey = null;
-        unhashableRows = null;
-        // The hash table goes with the rows
-        if (joinLimit != null)
-          joinLimit.release();
       }
 
       @Override
       public void close() {
         pending = null;
         finish();
+        if (buildRows != null)
+          buildRows.clear();
+        rowsByKey = null;
       }
     };
   }
 
-  /** Adds a row to the ones of a key, keeping them in the order the right input produced them. */
+  /** Adds a row to the ones of a key, keeping them in the order the build input produced them. */
   private static Object appendRow(final Object existing, final Object added) {
     if (existing instanceof IntList list) {
       list.add((Integer) added);
@@ -315,6 +301,8 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
       sb.append(keys[i].getText());
     }
     sb.append("]");
+    if (buildLeft)
+      sb.append(" [build=left]");
     if (pairFilter != null)
       sb.append(" [RelationshipUniquenessFilter pushed into join]");
     if (compactAfterRows > 0)
@@ -328,7 +316,7 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
     return sb.toString();
   }
 
-  /** The input read into the hash table; the streamed one is {@link #getChild()}. */
+  /** The right input; the left one is {@link #getChild()}. */
   public PhysicalOperator getRight() {
     return right;
   }

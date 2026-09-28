@@ -32,13 +32,6 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Optimized to store only distinct field values instead of full Result objects to reduce memory footprint.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
-  // A DistinctKey, and the entry of the set that holds it
-  private static final int DISTINCT_KEY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 24;
-
-  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
-  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
-  private OperationHeapLimit limit;
-
   /**
    * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
    * This dramatically reduces memory usage compared to storing full Result objects.
@@ -80,10 +73,12 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
+  private final HeapElementsLimit heapLimit;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
     this.pastRids = new RidSet(context);
+    heapLimit = HeapElementsLimit.of(context, "DISTINCT");
   }
 
   @Override
@@ -133,8 +128,6 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         lastResult = getPrev().syncPull(context, nRecords);
       }
       if (lastResult == null || !lastResult.hasNext()) {
-        // EVERY INPUT ROW WAS SEEN: NO KEY IS NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
-        releaseBuffer();
         return;
       }
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -159,22 +152,12 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       return;
     }
     // Store only the property values, not the full Result object
-    final DistinctKey key = new DistinctKey(nextValue);
-    pastItems.add(key);
-    if (limit == null)
-      limit = OperationHeapLimit.of(context, "DISTINCT");
-    try {
-      limit.add(pastItems.size(), key.properties, DISTINCT_KEY_OVERHEAD_BYTES);
-    } catch (final RuntimeException e) {
-      releaseBuffer();
-      throw e;
+    pastItems.add(new DistinctKey(nextValue));
+    if (heapLimit.isExceededBy(pastItems.size())) {
+      final int held = pastItems.size();
+      this.pastItems.clear();
+      heapLimit.check(held);
     }
-  }
-
-  private void releaseBuffer() {
-    pastItems.clear();
-    if (limit != null)
-      limit.release();
   }
 
   private boolean alreadyVisited(final Result nextValue) {
@@ -210,7 +193,6 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    releaseBuffer();
     if (prev != null)
       prev.close();
   }
