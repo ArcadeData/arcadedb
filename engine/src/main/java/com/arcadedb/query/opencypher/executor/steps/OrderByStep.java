@@ -229,6 +229,10 @@ public class OrderByStep extends AbstractExecutionStep {
           }
         }
 
+        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
+        // what the heap holds now
+        heapLimit.rechargeAll(topK);
+
         // Extract results from heap and reverse to get correct sort order
         final List<Result> results = new ArrayList<>(topK.size());
         while (!topK.isEmpty()) {
