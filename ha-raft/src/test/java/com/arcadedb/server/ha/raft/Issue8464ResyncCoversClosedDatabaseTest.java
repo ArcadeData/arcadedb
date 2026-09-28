@@ -240,7 +240,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     };
     reconciler.setServer(server);
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null);
+    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
 
     assertThat(downloadsOf(DB_NAME)).isEqualTo(1);
     assertThat(liveCount(DB_NAME)).isEqualTo(SNAPSHOT_COUNT);
@@ -263,7 +263,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     };
     reconciler.setServer(server);
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null);
+    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
 
     assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
     assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);

@@ -488,6 +488,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   static final class InstallApplyGate extends ReentrantLock {
     private volatile long appliedUnderGate = -1L;
+    private volatile long installedIndex   = -1L;
 
     /** Called by the apply thread, holding this lock, for every entry it applied (or tried to) to the database. */
     void recordApplied(final long index) {
@@ -497,6 +498,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     long appliedUnderGate() {
       return appliedUnderGate;
+    }
+
+    /**
+     * Called by an install, still holding this lock, once the copy it just put in place is known to cover every
+     * entry up to {@code index} (issue #8577). Recorded BEFORE the lock is released, so an entry that was already
+     * waiting behind the gate - or arrives right after - sees it the moment it re-acquires the gate: nothing at or
+     * below it can slip through and be re-applied to a copy that already carries it.
+     */
+    void recordInstalled(final long index) {
+      if (index > installedIndex)
+        installedIndex = index;
+    }
+
+    /**
+     * The highest index the installed copy of this database is known to cover, or {@code -1} when no install has
+     * recorded one. An entry at or below it is a no-op (issue #8577): either this node's own pre-install local log
+     * being replayed after a restart, or a duplicate notification, and applying it would write data the installed
+     * copy already carries.
+     */
+    long installedIndex() {
+      return installedIndex;
     }
   }
 
@@ -1252,6 +1274,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       // Not applied to a copy an install is replacing (issue #7958): see installApplyGates.
       final InstallApplyGate installGate = enterInstallApplyGate(decoded.databaseName(), index);
+      if (installGate != null && index <= installGate.installedIndex()) {
+        // Covered by a snapshot an install already brought this database's copy to (issue #8577): this is either
+        // this node's own pre-install local log being replayed after a restart, or a duplicate notification.
+        // Applying it now would write data the installed copy already carries, and worse, would move
+        // lastAppliedIndex/the Ratis applied position backward relative to what the install just recorded,
+        // tripping Ratis's monotonic updateLastAppliedTermIndex check and halting the node. Skip as a no-op:
+        // nothing is applied, and lastAppliedIndex, the Ratis applied term/index and the persisted applied
+        // index are all left untouched, since the install already accounts for this index.
+        installGate.unlock();
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping entry %d for database '%s': already covered by the installed snapshot boundary %d (issue #8577)",
+            index, decoded.databaseName(), installGate.installedIndex());
+        return CompletableFuture.completedFuture(Message.valueOf("OK"));
+      }
       try {
         applyWithRetry(index, decoded.databaseName(), () -> {
           securitySuperseded[0] = false;
@@ -2192,12 +2228,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String leaderHttpsAddr = source.httpsAddress();
       final String clusterToken = raftHA != null ? raftHA.getClusterToken() : null;
 
+      // A safe LOWER BOUND on the boundary each reconciled database's copy is about to cover (issue #8577),
+      // known upfront and independent of the leader's snapshot marker: whatever resolveInstalledSnapshotBoundary
+      // below finally registers - firstTermIndexInLog-1 in the common case, or firstTermIndexInLog itself when the
+      // leader's marker is past its log start - is always >= this value, so recording it on every reconciled
+      // database's install lock cannot skip an entry the final boundary would not also cover. Computed before the
+      // reconcile so it is in place for every per-database install, not just the last one: entries this node is
+      // still replaying from its own local log below the leader's compacted log start are stale once any of those
+      // installs completes, whichever runs first.
+      final long installedBoundaryIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+
       // Databases the reconciler gave up on: it stopped failing the install for them, so they are NOT at the
       // snapshot index and must not be recorded as if they were (issue #6760). The reconciler also carries back
       // the leader's own latest Raft snapshot TermIndex (issue #8360), fetched over the very same bootstrap-state
       // RPC call, below.
       final DatabaseReconciler.ReconcileFromLeaderResult reconcileResult =
-          reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+          reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
       final Set<String> notInstalled = reconcileResult.notInstalled();
 
       // Compute the installed snapshot TermIndex: normally firstTermIndexInLog - 1, the end of what the snapshot covers,
@@ -4381,12 +4427,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * As {@link #installLeaderCopy(String, Supplier, Supplier, String)}, first running {@code underGate} (when not
    * {@code null}) with the install lock held and before anything is downloaded, fed the highest index applied to this
    * database under that lock. It may throw to abandon the install with the local copy untouched (issue #8490).
+   * <p>
+   * Not tied to a Raft install boundary (issue #8577): a targeted single-database resync is not the leader's
+   * compacted log catching this node up, so the entries waiting behind the gate are still assumed newer than what
+   * gets installed, exactly as {@link #installLeaderCopy} describes.
    */
   private void installLeaderCopy(final String dbName, final Supplier<String> leaderHttpAddr,
       final Supplier<String> leaderHttpsAddr, final String clusterToken, final LongConsumer underGate) throws IOException {
     // Read once: the field is volatile, and the path and the install must be about the same server.
     final ArcadeDBServer localServer = this.server;
-    runUnderInstallGate(dbName, underGate, () -> SnapshotInstaller.install(dbName,
+    runUnderInstallGate(dbName, underGate, -1L, () -> SnapshotInstaller.install(dbName,
         SnapshotInstaller.resolveDatabasePath(localServer, dbName), leaderHttpAddr, leaderHttpsAddr, clusterToken,
         localServer));
   }
@@ -4398,10 +4448,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * below the snapshot while the reconciler replaces the copy they target.
    */
   void runUnderInstallGate(final String dbName, final DatabaseReconciler.InstallAction install) throws IOException {
-    runUnderInstallGate(dbName, null, install);
+    runUnderInstallGate(dbName, null, -1L, install);
   }
 
-  private void runUnderInstallGate(final String dbName, final LongConsumer underGate,
+  /**
+   * As {@link #runUnderInstallGate(String, DatabaseReconciler.InstallAction)}, and - when {@code installedBoundaryIndex}
+   * is {@code >= 0} - records it on the database's install lock before releasing it (issue #8577): the boundary a
+   * leader-driven snapshot install just brought this database's copy to, safe to use even before the install's exact
+   * registered {@link TermIndex} is known, because it is always {@code <=} that final value (see
+   * {@link #resolveInstalledSnapshotBoundary}). {@link DatabaseReconciler.InstallGate}'s wiring for the
+   * Ratis-initiated install path.
+   */
+  void runUnderInstallGate(final String dbName, final long installedBoundaryIndex,
+      final DatabaseReconciler.InstallAction install) throws IOException {
+    runUnderInstallGate(dbName, null, installedBoundaryIndex, install);
+  }
+
+  private void runUnderInstallGate(final String dbName, final LongConsumer underGate, final long installedBoundaryIndex,
       final DatabaseReconciler.InstallAction install) throws IOException {
     // Registered for the whole install (issue #8491): from here until the finally below this node is replacing its copy
     // and cannot serve the database, so it must not stay leader - see databasesBeingReplaced.
@@ -4425,6 +4488,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
         SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+        // Recorded on success only, and still under the lock (issue #8577): a failed install leaves the old copy in
+        // place, so the waiting entries must still be applied to it, not skipped. Recording here - before the
+        // unlock below - is what makes the boundary visible to every entry that re-acquires this gate afterward,
+        // whether it was already blocked behind it or arrives later.
+        if (installedBoundaryIndex >= 0)
+          gate.recordInstalled(installedBoundaryIndex);
       } finally {
         gate.unlock();
       }
