@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Mutable TimeSeries bucket backed by paginated storage.
@@ -134,6 +135,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
   // Per data page, the distinct dictionary ids the page holds, indexed by page number (issue #8574).
   // Replaced wholesale on growth and on a layout change; a lost race only costs a rebuild.
   private volatile PageTagSummary[]     pageTagSummaries = new PageTagSummary[0];
+  // Bumped when a replay rewrites a page at the version it already had. A summary is trusted only under the
+  // generation a scan read before fetching any page, so one built from the pre-replay image is never reused after.
+  private final AtomicLong              summaryGeneration = new AtomicLong();
 
   /**
    * The distinct dictionary ids one data page holds for each dictionary-encoded TAG column, so a scan with a tag
@@ -147,12 +151,14 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private static final class PageTagSummary {
     private final long    version;
     private final int     sampleCount;
+    private final long    generation;
     // Indexed like dictColumns; each array sorted ascending, without duplicates.
     private final int[][] ids;
 
-    private PageTagSummary(final long version, final int sampleCount, final int[][] ids) {
+    private PageTagSummary(final long version, final int sampleCount, final long generation, final int[][] ids) {
       this.version = version;
       this.sampleCount = sampleCount;
+      this.generation = generation;
       this.ids = ids;
     }
   }
@@ -482,6 +488,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return results;
@@ -503,7 +511,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         continue;
       }
 
-      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers)) {
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -559,6 +567,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
@@ -601,7 +611,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
 
       // Skip pages that hold no row of the tag, without reading their rows (issue #8574)
-      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers)) {
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -672,6 +682,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int dataPageCount = getDataPageCount();
 
     final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    // Read before any page is fetched: see summaryGeneration
+    final long generation = summaryGeneration.get();
     if (tagFilter != null && matchers == null)
       // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
@@ -714,7 +726,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
 
       // Skip pages that hold no row of the tag, without reading their rows (issue #8574)
-      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers)) {
+      if (matchers != null && !pageMayHoldTags(page, pageNum, sampleCount, matchers, generation)) {
         if (metrics != null)
           metrics.addSkippedPage();
         continue;
@@ -901,7 +913,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * prunes on a cut-off, and a shard or a stretch of pages with no row of the tag never produces one, so every row
    * of it was read and tag-checked to find nothing.
    */
-  private boolean pageMayHoldTags(final BasePage page, final int pageNum, final int sampleCount, final TagMatcher[] matchers) {
+  private boolean pageMayHoldTags(final BasePage page, final int pageNum, final int sampleCount, final TagMatcher[] matchers,
+      final long generation) {
     boolean anyDict = false;
     for (final TagMatcher matcher : matchers)
       if (matcher.dictSlot >= 0) {
@@ -911,7 +924,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
     if (!anyDict)
       return true;
 
-    final PageTagSummary summary = pageTagSummary(page, pageNum, sampleCount);
+    final PageTagSummary summary = pageTagSummary(page, pageNum, sampleCount, generation);
     if (summary == null)
       return true;
 
@@ -942,12 +955,15 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * the version check in {@link #pageTagSummary} cannot see (issue #8574).
    */
   public void invalidatePageTagSummary(final int pageNum) {
+    // First the generation, so a summary a concurrent scan builds from the pre-replay image and publishes after the
+    // slot below is cleared carries a generation no later scan accepts.
+    summaryGeneration.incrementAndGet();
     final PageTagSummary[] cache = pageTagSummaries;
     if (pageNum >= 0 && pageNum < cache.length)
       cache[pageNum] = null;
   }
 
-  private PageTagSummary pageTagSummary(final BasePage page, final int pageNum, final int sampleCount) {
+  private PageTagSummary pageTagSummary(final BasePage page, final int pageNum, final int sampleCount, final long generation) {
     if (page instanceof MutablePage)
       return null;
 
@@ -955,11 +971,11 @@ public class TimeSeriesBucket extends PaginatedComponent {
     PageTagSummary[] cache = pageTagSummaries;
     if (pageNum < cache.length) {
       final PageTagSummary cached = cache[pageNum];
-      if (cached != null && cached.version == version && cached.sampleCount == sampleCount)
+      if (cached != null && cached.version == version && cached.sampleCount == sampleCount && cached.generation == generation)
         return cached;
     }
 
-    final PageTagSummary summary = new PageTagSummary(version, sampleCount, collectDictIds(page, sampleCount));
+    final PageTagSummary summary = new PageTagSummary(version, sampleCount, generation, collectDictIds(page, sampleCount));
 
     cache = pageTagSummaries;
     if (pageNum >= cache.length) {
