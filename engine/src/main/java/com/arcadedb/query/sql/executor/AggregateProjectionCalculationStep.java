@@ -43,6 +43,11 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
 
+  // #8591: THE GROUPS HELD, UNDER THE HEAP BUDGET OF ALL THE QUERIES; THE CAP ON THEIR NUMBER IS maxGroupsAllowed
+  private       OperationHeapLimit        heapLimit;
+  // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
+  private final Queue<PartialAggregation> workerPartials = new ConcurrentLinkedQueue<>();
+
   /**
    * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
    * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
@@ -80,13 +85,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final long    timeoutMillis;
   private final long    limit;
   private final long    maxGroupsAllowed;
-  // THE GROUPS HELD, UNDER THE HEAP BUDGET OF ALL THE QUERIES (ISSUE #8591); THE CAP ON THEIR NUMBER IS maxGroupsAllowed
-  private       OperationHeapLimit heapLimit;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
-  // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
-  private final Queue<PartialAggregation>       workerPartials   = new ConcurrentLinkedQueue<>();
   private       List<ResultInternal>            finalResults     = null;
 
   private int nextItem = 0;

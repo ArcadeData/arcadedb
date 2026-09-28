@@ -156,9 +156,10 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
               unhashableRows.add(index);
               limit.charge(Integer.BYTES);
             } else {
-              final Integer boxed = index;
-              // merge() hands back the very value it was given when the key is new: the table grew by an entry
-              if (rowsByKey.merge(key, boxed, ValueHashJoin::appendRow) == boxed)
+              final int keys = rowsByKey.size();
+              rowsByKey.merge(key, index, ValueHashJoin::appendRow);
+              if (rowsByKey.size() > keys)
+                // A new key: the table grew by an entry
                 limit.charge(HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES + HeapEstimator.estimate(key));
               else
                 limit.charge(Integer.BYTES);
