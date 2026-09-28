@@ -18,13 +18,17 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
@@ -46,11 +50,13 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -323,7 +329,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
     // come back - so fetching k of them and discarding some would under-fill. Fetching k + touched cannot.
     final Set<RID> pendingRIDs = overlay != null ? overlay.touchedRIDs() : null;
-    final long widened = (long) k + (overlay != null ? overlay.touchedCount() : 0);
+    // With exact rescoring on (issue #8576) the committed side keeps k * oversample candidates for it to choose from:
+    // their quantized scores decide only who is a candidate, never the final order.
+    final int oversample = rescoreOversample();
+    final int keep = oversampled(k, oversample);
+    final long widened = (long) keep + (overlay != null ? overlay.touchedCount() : 0);
     // The unfiltered branch stays UNCAPPED, as it was before the overflow guard went in (PR #8001 review). The
     // 100_000 ceiling belongs to the over-fetch: it bounds the multiplier applied to compensate for a selective
     // filter, not the caller's own k. Capping the unfiltered branch made this method quietly return at most
@@ -342,26 +352,139 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     }
 
     final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
-    if (!filtered && pendingRIDs == null)
-      return raw.size() <= k ? raw : raw.subList(0, k);
+    if (!filtered && pendingRIDs == null) {
+      final List<RidScore> head = raw.size() <= keep ? raw : raw.subList(0, keep);
+      if (oversample > 0)
+        return rescoreExactly(head, queryIndices, effectiveWeights, k);
+      return head.size() <= k ? head : head.subList(0, k);
+    }
 
-    final List<RidScore> out = new ArrayList<>(Math.min(k, raw.size()));
+    final List<RidScore> out = new ArrayList<>(Math.min(keep, raw.size()));
     for (final RidScore r : raw) {
       if (filtered && !allowedRIDs.contains(r.rid()))
         continue;
       if (pendingRIDs != null && pendingRIDs.contains(r.rid()))
         continue;
       out.add(r);
-      if (out.size() == k)
+      if (out.size() == keep)
         break;
     }
+    final List<RidScore> committed = oversample > 0 ? rescoreExactly(out, queryIndices, effectiveWeights, k) : out;
 
     if (overlay == null)
-      return out;
+      return committed;
 
-    // The transaction's own rows, scored from what it has queued, merged into the committed ones by score. Both
-    // sides are exact top-k of their own population, so the merge of the two is the exact top-k of the union.
-    return mergeByScore(out, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
+    // The transaction's own rows, scored from what it has queued, merged into the committed ones by score. Each side
+    // is the top-k of its own population, so the merge is the top-k of the union. The pending side is exact: the
+    // overlay holds the full-precision weights the transaction queued. The committed side is exact in its scores
+    // when rescoring is on, but it is the top-k of the k * oversample candidates the quantized pass picked, so its
+    // recall is bounded by rescoreOversample; with rescoring off it is exact only under the quantized scoring.
+    return mergeByScore(committed, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
+  }
+
+  /** The exact-rescoring oversampling this index applies; see {@link LSMSparseVectorIndexMetadata#rescoreOversample}. */
+  private int rescoreOversample() {
+    return sparseMetadata != null ?
+        sparseMetadata.effectiveRescoreOversample() :
+        LSMSparseVectorIndexMetadata.DEFAULT_RESCORE_OVERSAMPLE;
+  }
+
+  /**
+   * Replaces the index scores of {@code candidates} with exact ones, computed from each record's own full-precision
+   * weights, and keeps the best {@code k} (issue #8576).
+   * <p>
+   * The segments store quantized weights (INT8 by default), so the scores the engine ranks by carry a quantization
+   * error - and not a fixed one: every compaction merge re-quantizes the weights it carries onto the grid of a new
+   * block, so how far a stored weight has drifted depends on how the data was committed and merged. Ranking the
+   * final answer by the exact dot product makes it independent of all that: the quantized scores only pick the
+   * candidates, which is why the caller fetches more of them than it returns. The records are the source of truth
+   * for the weights and are loaded anyway to return the results, so no second copy of them is kept.
+   * <p>
+   * The score formula is the engine's, term for term: each query entry contributes on its own (a dimension asked
+   * twice counts twice), with the same effective - IDF-scaled when so configured - query weights.
+   */
+  private List<RidScore> rescoreExactly(final List<RidScore> candidates, final int[] queryIndices,
+      final float[] effectiveWeights, final int k) {
+    if (candidates.isEmpty())
+      return candidates;
+
+    // The query sorted by dimension with duplicate entries summed, for a binary search per record weight. The index
+    // rides in the low half so the sort needs no boxing.
+    final long[] packed = new long[queryIndices.length];
+    for (int i = 0; i < queryIndices.length; i++)
+      packed[i] = ((long) queryIndices[i] << 32) | i;
+    Arrays.sort(packed);
+    final int[] dims = new int[packed.length];
+    final double[] weights = new double[packed.length];
+    int m = 0;
+    for (final long p : packed) {
+      final float w = effectiveWeights[(int) p];
+      if (w == 0.0f)
+        continue;
+      final int dim = (int) (p >>> 32);
+      if (m > 0 && dims[m - 1] == dim)
+        weights[m - 1] += w;
+      else {
+        dims[m] = dim;
+        weights[m++] = w;
+      }
+    }
+
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final List<String> propertyNames = getPropertyNames();
+    final String tokensProperty = propertyNames.get(0);
+    final String weightsProperty = propertyNames.get(1);
+    final boolean[] matched = new boolean[m];
+    final List<RidScore> rescored = new ArrayList<>(candidates.size());
+    // This can run on a SparseVectorScoringPool worker (the per-bucket fan-out of vector.sparseNeighbors), which has
+    // no database context of its own. Established explicitly and torn down afterwards, create-only-if-absent, exactly
+    // as PaginatedSparseVectorEngine's partitioned scoring does it and for the same reasons: the task may also run
+    // inline on the caller's thread (caller-runs rejection), where an existing context must be neither re-initialised
+    // (that would roll the caller's transaction back) nor removed.
+    final boolean contextCreated = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath()) == null;
+    if (contextCreated)
+      DatabaseContext.INSTANCE.init(db);
+    try {
+      rescoreInto(candidates, rescored, db, tokensProperty, weightsProperty, dims, weights, m, matched);
+    } finally {
+      if (contextCreated)
+        DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
+    }
+    rescored.sort(BmwScorer.BY_SCORE_DESC);
+    return rescored.size() <= k ? rescored : new ArrayList<>(rescored.subList(0, k));
+  }
+
+  private static void rescoreInto(final List<RidScore> candidates, final List<RidScore> rescored, final DatabaseInternal db,
+      final String tokensProperty, final String weightsProperty, final int[] dims, final double[] weights, final int m,
+      final boolean[] matched) {
+    for (final RidScore candidate : candidates) {
+      final Document record;
+      try {
+        record = (Document) db.lookupByRID(candidate.rid(), true);
+      } catch (final RecordNotFoundException e) {
+        // Deleted after the index answered: there is nothing left to return for it.
+        continue;
+      }
+      final int[] tokens = toIntArray(record.get(tokensProperty));
+      final float[] values = toFloatArray(record.get(weightsProperty));
+      if (tokens == null || values == null || tokens.length != values.length) {
+        // Not a shape put() would have indexed: keep the score the index gave rather than invent one.
+        rescored.add(candidate);
+        continue;
+      }
+      Arrays.fill(matched, false);
+      double score = 0.0;
+      // Backwards, so a dimension the record lists twice counts once, at its last weight: put() applies the entries
+      // in order, and the later posting for the same (dimension, RID) is the one the index keeps.
+      for (int j = tokens.length - 1; j >= 0; j--) {
+        final int at = Arrays.binarySearch(dims, 0, m, tokens[j]);
+        if (at >= 0 && !matched[at]) {
+          matched[at] = true;
+          score += weights[at] * values[j];
+        }
+      }
+      rescored.add(new RidScore(candidate.rid(), (float) score));
+    }
   }
 
   /**
@@ -487,13 +610,21 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
     final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
 
+    // Exact rescoring (issue #8576) widens both caps: which groups win and which members fill them are decided on the
+    // exact scores, so the quantized pass only has to hand over enough of each.
+    final int oversample = rescoreOversample();
+    final int widening = groupedWidening((long) limit * groupSize, oversample);
     final List<RidScore> committed;
     try {
       // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
       // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
       // with candidates still available (issue #7966).
-      committed = engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs,
-          overlay != null ? overlay.touchedRIDs() : null);
+      final List<RidScore> candidates = engine.topKGrouped(queryIndices, effectiveWeights, oversampled(limit, widening),
+          oversampled(groupSize, widening), groupKeyResolver, allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
+      committed = oversample > 0 ?
+          admitGroups(rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE), limit, groupSize,
+              groupKeyResolver) :
+          candidates;
     } catch (final IOException e) {
       throw new IndexException("Sparse vector grouped top-K failed", e);
     }
@@ -524,13 +655,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     for (final GroupedTopUpPlanner.TopUp topUp : planner.plan()) {
       // The committed rows are the only capped source registered here; the pending ones hold every row there is.
       assert topUp.source() == 0 : "only the committed source can need a top-up, got source " + topUp.source();
-      final List<RidScore> topUpRows;
-      try {
-        topUpRows = engine.topKForGroups(queryIndices, effectiveWeights, topUp.groupKeys(), groupSize, topUp.floor(),
-            groupKeyResolver, allowedRIDs, overlay.touchedRIDs());
-      } catch (final IOException e) {
-        throw new IndexException("Sparse vector grouped top-K failed", e);
-      }
+      final List<RidScore> topUpRows = committedForGroups(queryIndices, effectiveWeights, topUp.groupKeys(), groupSize,
+          topUp.floor(), allowedRIDs, groupKeyResolver, overlay.touchedRIDs(), oversample);
       if (committedRows == committed)
         committedRows = new ArrayList<>(committed);
       committedRows.addAll(topUpRows);
@@ -590,13 +716,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
     final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
 
-    final List<RidScore> committed;
-    try {
-      committed = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor, groupKeyResolver,
-          allowedRIDs, overlay != null ? overlay.touchedRIDs() : null);
-    } catch (final IOException e) {
-      throw new IndexException("Sparse vector grouped top-K failed", e);
-    }
+    final List<RidScore> committed = committedForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor,
+        allowedRIDs, groupKeyResolver, overlay != null ? overlay.touchedRIDs() : null, rescoreOversample());
     if (overlay == null)
       return committed;
 
@@ -612,6 +733,97 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         out.add(candidate);
     }
     return out;
+  }
+
+  /**
+   * The committed best {@code groupSize} members of each of {@code groupKeys} scoring above {@code floor}, exactly
+   * rescored when the index rescores (issue #8576).
+   * <p>
+   * With rescoring the floor cannot be handed to the engine: it is an EXACT score (the caller took it from rescored
+   * rows), and a member whose quantized score sits at or below it may still score above it exactly. So the engine
+   * returns the best {@code groupSize * oversample} of each group unpruned, and the floor and the cap are applied to
+   * the exact scores here.
+   */
+  private List<RidScore> committedForGroups(final int[] queryIndices, final float[] effectiveWeights,
+      final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
+      final Function<RID, Object> groupKeyResolver, final Set<RID> excludedRIDs, final int oversample) {
+    final List<RidScore> candidates;
+    try {
+      candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys,
+          oversampled(groupSize, rowWidening((long) groupKeys.size() * groupSize, oversample)),
+          oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse vector grouped top-K failed", e);
+    }
+    if (oversample == 0)
+      return candidates;
+
+    final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
+    final HashMap<Object, Integer> perGroup = new HashMap<>();
+    final List<RidScore> out = new ArrayList<>((int) Math.min(rescored.size(), (long) groupKeys.size() * groupSize));
+    for (final RidScore candidate : rescored) {
+      if (candidate.score() <= floor)
+        break;
+      if (perGroup.merge(groupKeyResolver.apply(candidate.rid()), 1, Integer::sum) <= groupSize)
+        out.add(candidate);
+    }
+    return out;
+  }
+
+  /** The rows of {@code sorted} (best first) that fit {@code limit} groups of at most {@code groupSize} members. */
+  private static List<RidScore> admitGroups(final List<RidScore> sorted, final int limit, final int groupSize,
+      final Function<RID, Object> groupKeyResolver) {
+    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
+    final List<RidScore> out = new ArrayList<>(Math.min(sorted.size(), (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS)));
+    for (final RidScore candidate : sorted) {
+      if (groups.isFull())
+        break;
+      if (groups.admit(groupKeyResolver.apply(candidate.rid())))
+        out.add(candidate);
+    }
+    return out;
+  }
+
+  /**
+   * The factor a grouped search widens BOTH {@code limit} and {@code groupSize} by, so the rows it asks the engine for
+   * grow by its square: reduced until that product stays within {@link #MAX_OVERFETCH_ROWS} (or the caller's own
+   * {@code limit * groupSize}, when that is already larger). The SQL function sizes its memory guard on the caller's
+   * {@code k * groupSize}, before this widening, so the widening has to bound itself.
+   */
+  static int groupedWidening(final long rows, final int oversample) {
+    // Already at or past the budget: nothing to add. Returning here also keeps the product below from overflowing,
+    // since past this point rows < MAX_OVERFETCH_ROWS and oversample <= MAX_RESCORE_OVERSAMPLE.
+    if (rows >= MAX_OVERFETCH_ROWS)
+      return Math.min(oversample, 1);
+    int widening = oversample;
+    final long budget = MAX_OVERFETCH_ROWS;
+    while (widening > 1 && rows * widening * widening > budget)
+      widening--;
+    return widening;
+  }
+
+  /** As {@link #groupedWidening}, for a search that widens only the per-group cap, so the rows grow linearly. */
+  static int rowWidening(final long rows, final int oversample) {
+    // Already at or past the budget: nothing to add. Returning here also keeps the product below from overflowing,
+    // since past this point rows < MAX_OVERFETCH_ROWS and oversample <= MAX_RESCORE_OVERSAMPLE.
+    if (rows >= MAX_OVERFETCH_ROWS)
+      return Math.min(oversample, 1);
+    int widening = oversample;
+    final long budget = MAX_OVERFETCH_ROWS;
+    while (widening > 1 && rows * widening > budget)
+      widening--;
+    return widening;
+  }
+
+  /**
+   * {@code count} widened by the rescoring oversample. The widening is bounded by {@link #MAX_OVERFETCH_ROWS} like the
+   * ungrouped over-fetch, but the caller's own {@code count} never is: the cap limits what the oversample ADDS. So a
+   * {@code count} already past {@link #MAX_OVERFETCH_ROWS} gets no extra candidates: its results are still rescored
+   * exactly, but chosen from the quantized top {@code count} alone. Only an embedded caller can get there - the SQL
+   * function refuses a {@code k} that large.
+   */
+  private static int oversampled(final int count, final int oversample) {
+    return oversample > 1 ? (int) Math.min((long) count * oversample, Math.max(count, MAX_OVERFETCH_ROWS)) : count;
   }
 
   private static void addSource(final GroupedTopUpPlanner planner, final List<RidScore> rows,
@@ -900,9 +1112,19 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     }
   }
 
+  /**
+   * Settles the index into one sealed segment: seals the memtable first, then merges every segment (issue #8576).
+   * <p>
+   * The memtable is part of what a caller asking for a compaction means by "the index": leaving it out left up to a
+   * flush threshold's worth of postings unsealed - and unquantized, so scored at a different precision than the
+   * rest - until the next flush or close, which made the "settled" answers depend on where the last commits fell.
+   *
+   * @return true if a segment was sealed or merged
+   */
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    return engine.compactAll() != -1L;
+    final boolean flushed = engine.flush() != -1L;
+    return engine.compactAll() != -1L || flushed;
   }
 
   @Override
@@ -1139,10 +1361,57 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return typeIndex;
   }
 
+  /**
+   * Indexes every record already stored in the associated bucket (issue #8536).
+   * <p>
+   * Must NOT delegate to the shell's {@link LSMTreeIndex#build}: that scan hands each record to the indexer with the
+   * shell as the target, and the shell is a registration stub postings never enter, so it counted every record while
+   * leaving the engine the search reads empty. The records are handed to the indexer with THIS index as the target
+   * instead, so each one travels {@link #put} exactly as a live insert does - queued onto the build's transaction and
+   * replayed into the engine at each batch commit - which also keeps the postings in the WAL and on the replication
+   * stream rather than in a memtable a follower never sees.
+   */
   @Override
   public long build(final int buildIndexBatchSize, final boolean sharesCallerTransaction,
       final BuildIndexCallback callback) {
-    return underlyingIndex.build(buildIndexBatchSize, sharesCallerTransaction, callback);
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final List<String> propertyNames = getPropertyNames();
+    if (propertyNames == null || propertyNames.isEmpty())
+      throw new IndexException("Cannot build index '" + getName() + "' because metadata information are missing");
+
+    if (!setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE }, INDEX_STATUS.UNAVAILABLE))
+      throw new NeedRetryException("Error on building index '" + getName() + "' because not available");
+
+    final AtomicLong total = new AtomicLong();
+    try {
+      final String bucketName = db.getSchema().getBucketById(getAssociatedBucketId()).getName();
+      LogManager.instance().log(this, Level.INFO, "Building sparse vector index '%s' on %s...", getName(),
+          getTypeName() + propertyNames);
+      final long startTime = System.currentTimeMillis();
+
+      db.scanBucket(bucketName, record -> {
+        final Document source = IndexInternal.buildSourceRecord(db, record, sharesCallerTransaction);
+        db.getIndexer().addToIndex(LSMSparseVectorIndex.this, record.getIdentity(), source);
+        final long indexed = total.incrementAndGet();
+
+        IndexInternal.commitBuildBatch(db, indexed, buildIndexBatchSize, sharesCallerTransaction);
+
+        if (callback != null)
+          callback.onDocumentIndexed(source, indexed);
+        return true;
+      }, (rid, exception) -> {
+        if (exception instanceof RuntimeException re)
+          throw re;
+        throw new IndexException("Error on building index '" + getName() + "' at record " + rid, exception);
+      });
+
+      LogManager.instance().log(this, Level.INFO, "Completed building sparse vector index '%s': processed %d records in %dms",
+          getName(), total.get(), System.currentTimeMillis() - startTime);
+    } finally {
+      setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
+    }
+
+    return total.get();
   }
 
   @Override
@@ -1168,6 +1437,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       json.put("dimensions", sparseMetadata.dimensions);
       json.put("modifier", sparseMetadata.modifier);
       json.put("weightQuantization", sparseMetadata.weightQuantization.name());
+      // Written only when chosen: an index that never set it keeps following the per-quantization default.
+      if (sparseMetadata.rescoreOversample != LSMSparseVectorIndexMetadata.RESCORE_OVERSAMPLE_AUTO)
+        json.put("rescoreOversample", sparseMetadata.rescoreOversample);
     }
     return json;
   }

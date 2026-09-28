@@ -81,6 +81,16 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
     return withWeightQuantization(LSMSparseVectorIndexMetadata.parseWeightQuantization(weightQuantization));
   }
 
+  /**
+   * Sets how many candidates per requested result a search rescores exactly from the records' full-precision weights:
+   * {@code 0} disables it, {@link LSMSparseVectorIndexMetadata#RESCORE_OVERSAMPLE_AUTO} (the default) picks by
+   * weight quantization (issue #8576).
+   */
+  public TypeLSMSparseVectorIndexBuilder withRescoreOversample(final int rescoreOversample) {
+    sparseMetadata().setRescoreOversample(rescoreOversample);
+    return this;
+  }
+
   @Override
   public TypeLSMSparseVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     // Guarded rather than cast, for the same reason as sparseMetadata(): an actionable error beats a
