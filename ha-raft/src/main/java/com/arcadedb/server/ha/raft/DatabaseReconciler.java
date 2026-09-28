@@ -252,11 +252,11 @@ public class DatabaseReconciler {
    *         {@link TermIndex}, fetched over the same bootstrap-state RPC call (issue #8360), or {@code null} on
    *         every path that never reaches the leader (auto-acquire disabled, or the RPC failed).
    *
-   * @throws IOException if a database install fails while still inside its retry budget, or a registered one fails on
-   *                     the legacy refresh path (so the caller leaves the
-   *                     Ratis snapshot install incomplete and Ratis re-triggers it; installs are idempotent), or if the
-   *                     databases directory cannot be listed for the databases closed on this node (issue #8464): the
-   *                     install cannot then tell which local copies it would leave unrefreshed.
+   * @throws IOException if a database install fails while still inside its retry budget, or a registered database
+   *                     fails on the legacy refresh path - so the caller leaves the Ratis snapshot install incomplete
+   *                     and Ratis re-triggers it (installs are idempotent) - or if the databases directory cannot be
+   *                     listed for the databases closed on this node (issue #8464): the install cannot then tell which
+   *                     local copies it would leave unrefreshed.
    */
   ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken, final long installedBoundaryIndex) throws IOException {
