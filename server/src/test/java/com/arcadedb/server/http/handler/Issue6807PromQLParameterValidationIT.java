@@ -125,7 +125,7 @@ class Issue6807PromQLParameterValidationIT extends BaseGraphServerTest {
 
   private HttpURLConnection open(final int serverIndex, final String query) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1"
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1"
             + query).openConnection();
     connection.setRequestMethod("GET");
     connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()

@@ -51,7 +51,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // 1. LOGIN: Create a session first
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/login").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -69,7 +69,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 2. LIST SESSIONS: Root should be able to see active sessions
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/sessions").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/sessions").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -122,7 +122,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 3. CLEANUP: Logout
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/logout").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/logout").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -144,7 +144,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // 1. LOGIN: Get an authentication token using username/password
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/login").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -174,7 +174,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 2. USE TOKEN: Execute a query using only the token (no username/password)
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
 
       connection.setRequestMethod("GET");
       // Use Bearer token instead of Basic auth
@@ -196,7 +196,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 3. USE TOKEN WITH COMMAND: Execute a command using the token
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -217,7 +217,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 4. LOGOUT: Invalidate the token
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/logout").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/logout").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -234,7 +234,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 5. VERIFY TOKEN IS INVALID: Using the token after logout should fail
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -255,7 +255,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
   void loginWithInvalidCredentials() throws Exception {
     testEachServer(serverIndex -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/login").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -277,7 +277,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
   void queryWithInvalidToken() throws Exception {
     testEachServer(serverIndex -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer AU-invalid-token-12345");
@@ -329,7 +329,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // 1. LOGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/login").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -347,7 +347,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 2. BEGIN TRANSACTION using token
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/begin/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -366,7 +366,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 3. ROLLBACK using token
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/rollback/" + DATABASE_NAME).openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/rollback/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -382,7 +382,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 4. LOGOUT
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/logout").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/logout").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
@@ -411,7 +411,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // 1. LOGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/login").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -428,7 +428,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 2. SANITY CHECK: Token is valid right after login
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/databases").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
       connection.connect();
@@ -444,7 +444,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       // 4. CLIENT STILL USES THE OLD TOKEN -> server must return 401 with a parseable JSON body
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/databases").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
       connection.connect();
@@ -467,7 +467,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
       // 5. SAME TOKEN AGAINST OTHER ENDPOINTS: must consistently return 401 so the Studio's
       // global handler kicks in regardless of which call was the one to hit the dead session.
       connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + authToken);
       connection.connect();

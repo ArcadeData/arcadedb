@@ -55,7 +55,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       createApiToken(serverIndex, "Token2", "graph", 0, new JSONObject());
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.connect();
@@ -92,7 +92,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Use token to query
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection.connect();
@@ -114,7 +114,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       final String tokenValue = createApiToken(serverIndex, "Expired", "graph", pastTime, new JSONObject());
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection.connect();
@@ -139,7 +139,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Try to insert with read-only token
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/graph").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection.setDoOutput(true);
@@ -167,7 +167,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Delete using token hash (not plaintext)
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens?token=" +
               URLEncoder.encode(tokenHash, "UTF-8")).openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
@@ -181,7 +181,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Verify token no longer works
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201").openConnection();
       connection2.setRequestMethod("GET");
       connection2.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection2.connect();
@@ -201,7 +201,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Try to delete using plaintext token — should be rejected
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens?token=" +
               URLEncoder.encode(tokenValue, "UTF-8")).openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
@@ -222,7 +222,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       final String tokenHash = ApiTokenConfiguration.hashToken(tokenValue);
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens?token=" +
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens?token=" +
               URLEncoder.encode(tokenHash, "UTF-8")).openConnection();
       connection.setRequestMethod("DELETE");
       connection.setRequestProperty("Authorization", basicAuth());
@@ -236,7 +236,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Verify token no longer works
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201").openConnection();
       connection2.setRequestMethod("GET");
       connection2.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection2.connect();
@@ -278,7 +278,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
           .encodeToString("testuser:testpass".getBytes());
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", nonRootAuth);
       connection.connect();
@@ -306,7 +306,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Should be able to read
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201%20as%20value").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer " + tokenValue);
       connection.connect();
@@ -326,7 +326,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
 
       // Second token with the same name should return 409
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization", basicAuth());
       connection.setDoOutput(true);
@@ -353,7 +353,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
   void apiTokenInvalidReturns401() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%201").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Bearer at-invalid-nonexistent-token");
       connection.connect();
@@ -376,7 +376,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
         .forEach(t -> tokenConfig.deleteToken(t.getString("tokenHash")));
 
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server/api-tokens").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/api-tokens").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", basicAuth());
     connection.setDoOutput(true);

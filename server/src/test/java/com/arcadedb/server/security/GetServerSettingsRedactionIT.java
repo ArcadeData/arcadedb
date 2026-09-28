@@ -73,7 +73,7 @@ class GetServerSettingsRedactionIT extends BaseGraphServerTest {
 
   private String getServerInfo(final int serverIndex) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
     connection.setRequestMethod("GET");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
