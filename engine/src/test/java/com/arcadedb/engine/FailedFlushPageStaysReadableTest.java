@@ -41,6 +41,19 @@ class FailedFlushPageStaysReadableTest extends TestHelper {
 
   @Test
   void aCommittedPageWhoseFlushFailedIsNeverServedFromTheStaleFile() throws Exception {
+    assertFailedFlushStaysReadable(() -> new IOException("injected write failure"));
+  }
+
+  /**
+   * The same, when the write fails with an {@link Error}: an OutOfMemoryError can be raised at any allocation of a
+   * starved heap, the flush thread's included, and it used to escape every handler while the page was dropped anyway.
+   */
+  @Test
+  void aCommittedPageWhoseFlushHitAnErrorIsNeverServedFromTheStaleFile() throws Exception {
+    assertFailedFlushStaysReadable(() -> new OutOfMemoryError("injected out of memory"));
+  }
+
+  private void assertFailedFlushStaysReadable(final java.util.function.Supplier<Throwable> failure) throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final RID[] rids = new RID[2];
     db.transaction(() -> {
@@ -59,7 +72,10 @@ class FailedFlushPageStaysReadableTest extends TestHelper {
     PageManager.setPageWriteFaultInjector(id -> {
       if (id.getFileId() == pageId.getFileId()) {
         failedWrites.incrementAndGet();
-        throw new IOException("injected write failure");
+        final Throwable t = failure.get();
+        if (t instanceof IOException io)
+          throw io;
+        throw (Error) t;
       }
     });
     try {
