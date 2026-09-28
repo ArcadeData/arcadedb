@@ -390,9 +390,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // Store transaction ID in parent class session management
         setSessionId(transactionId);
       } catch (StatusRuntimeException | StatusException e) {
-        // #7780: the same guard as RemoteDatabase.begin(). A retryable status (UNAVAILABLE, or a NeedRetryException
-        // named in the trailers) must reach transaction()'s retry loop with its own type: no transaction exists yet,
-        // so retrying the begin is exactly what the server asked for.
+        // No transaction exists yet: a retryable status keeps its type for transaction()'s retry loop
         final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
         if (mapped instanceof NeedRetryException)
           throw mapped;
