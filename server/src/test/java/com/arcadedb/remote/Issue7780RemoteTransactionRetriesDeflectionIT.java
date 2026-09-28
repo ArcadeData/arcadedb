@@ -165,7 +165,7 @@ class Issue7780RemoteTransactionRetriesDeflectionIT extends BaseGraphServerTest 
   @Test
   void typedRetryableRefusalsAreRetriedOnBeginAndCommit() {
     final JSONObject notTheLeader = typedBody(ServerIsNotTheLeaderException.class.getName(), "not the leader")
-        .put("exceptionArgs", "127.0.0.1:2480");
+        .put("exceptionArgs", "127.0.0.1:" + getServerHttpPort());
     final JSONObject quorum = typedBody(QuorumNotReachedException.class.getName(), "quorum not reached");
 
     for (final String route : new String[] { "begin", "commit" })
@@ -264,7 +264,9 @@ class Issue7780RemoteTransactionRetriesDeflectionIT extends BaseGraphServerTest 
 
   /**
    * Answers the first request to one transaction route with a scripted error response instead of sending it, for the
-   * typed refusals a single node without HA cannot produce. The request never reaches the server.
+   * typed refusals a single node without HA cannot produce. The request never reaches the server, so a scripted
+   * {@code /commit} leaves the transaction its {@code /begin} opened on the server until the session times out (the
+   * gap tracked as #8618): its insert is never committed, and each iteration clears the type first regardless.
    */
   private static class ScriptedDatabase extends RemoteDatabase {
     final         AtomicInteger answered = new AtomicInteger();

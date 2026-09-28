@@ -414,15 +414,16 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
 
-        // #7780: no transaction exists yet and nothing ran, so a retryable refusal keeps its own type
-        throwIfRetryable(detail);
+        // No transaction exists yet and nothing ran: a retryable refusal keeps its type for transaction()'s retry loop
+        if (detail instanceof NeedRetryException retryable)
+          throw retryable;
 
         throw new TransactionException("Error on transaction begin", detail);
       }
 
       captureResponseHeaders(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
-    } catch (final NeedRetryException | DuplicatedKeyException e) {
+    } catch (final NeedRetryException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
@@ -430,16 +431,6 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (getSessionId() == null)
         setStickyTransactionServer(null);
     }
-  }
-
-  /**
-   * Rethrows, unchanged, the failures {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}
-   * retries: the whole {@link NeedRetryException} family and {@link DuplicatedKeyException}. Wrapping them in a
-   * {@link TransactionException} hid them from the retry loop, which matches on the thrown type (issue #7780).
-   */
-  private static void throwIfRetryable(final Exception detail) {
-    if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
-      throw (RuntimeException) detail;
   }
 
   // Prefer the leader (concrete pod) over currentServer (typically the LB hostname).
@@ -466,12 +457,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
-        // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry reached
-        // the replicated log, so a retry runs it for the first time. An outcome that may have landed is a
+        // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry
+        // reached the replicated log, so a retry runs it for the first time. An outcome that may have landed is a
         // TransactionException (ReplicationDispatchedTimeoutException) and one that did land is
-        // TransactionCommittedRemotelyException (409): neither is retried. Pinned server-side by
-        // Issue8481CommittedReplicationOutcomeIsNotRetriedTest, client-side by Issue7780RemoteTransactionRetriesDeflectionIT.
-        throwIfRetryable(detail);
+        // TransactionCommittedRemotelyException (409): neither is retried.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          throw (RuntimeException) detail;
 
         throw new TransactionException("Error on transaction commit", detail);
       }
