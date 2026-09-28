@@ -26,6 +26,8 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -121,6 +123,12 @@ class Issue7134StepDownRetryStopsOnRefusalTest {
 
     // isLeader() is true (the entry guard passes) but every transfer refuses, as it does once leadership moved.
     final RaftHAServer raft = new RaftHAServer(server, config) {
+      // Every configured peer answers (issue #8556): these tests are about the step-down loop, not reachability.
+      @Override
+      Set<String> handoffReachablePeers() {
+        return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+      }
+
       @Override
       public boolean isLeader() {
         return true;

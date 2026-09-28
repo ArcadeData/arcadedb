@@ -468,7 +468,7 @@ public final class HealthMonitor {
     // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). A hand-off
     // blocks this tick for up to one leadership transfer (ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_TIMEOUT_MS), so
     // the checks after it wait that long too - on a node that is the leader, where the follower checks are no-ops, and
-    // at most once per REPLACING_LEADER_HAND_OFF_INTERVAL_MS.
+    // at most once per ArcadeStateMachine.replacingLeaderHandOffIntervalMs after the previous attempt ended (#8556).
     target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
