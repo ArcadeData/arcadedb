@@ -860,7 +860,9 @@ public enum GlobalConfiguration {
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
-      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling.""",
+      with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling. A GROUP BY \
+      aggregated in the workers of a parallel scan checks the limit per worker while it scans and on the merged groups at the \
+      end, so its peak can reach the limit times the number of workers.""",
       Long.class, 500_000L, null, value -> {
         // Auto-scale the default with the JVM max heap: roughly one element every 2KB, never below the historical 500000 floor.
         final long maxHeap = Runtime.getRuntime().maxMemory();
@@ -913,8 +915,17 @@ public enum GlobalConfiguration {
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,
       """
       Minimum number of buckets required to trigger parallel scanning. \
-      If the type has fewer buckets than this threshold, sequential scanning is used""",
+      If the type has fewer buckets than this threshold, sequential scanning is used, unless one of its buckets \
+      is large enough to be split in page ranges (see arcadedb.queryParallelScanPagesPerUnit)""",
       Integer.class, 2),
+
+  QUERY_PARALLEL_SCAN_PAGES_PER_UNIT("arcadedb.queryParallelScanPagesPerUnit", SCOPE.DATABASE,
+      """
+      Minimum number of pages of the unit of work a parallel type scan cuts a bucket in: a bucket of at least twice \
+      as many pages is scanned by several workers, each on a range of its pages, so a type with a single bucket is \
+      scanned in parallel too. The rows are still returned in the order of a sequential scan. 0 disables the split: \
+      each bucket is then scanned by one worker""",
+      Integer.class, 32),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
       """
@@ -2126,8 +2137,12 @@ public enum GlobalConfiguration {
       installed all of the cluster's replicated security documents: server-users.jsonl, server-groups.json, \
       server-api-tokens.json (issues #7532, #7819). Until they land such a node enforces credentials from its own \
       config directory rather than the cluster's. A node that has been a member since the first configuration \
-      it observed - a statically configured cluster, restarted or not - is never held, even when its cluster has \
-      never replicated a security document. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
+      it observed - a statically configured cluster, restarted or not - is not held for that, even when its \
+      cluster has never replicated a security document; it is held only after it catches up by a snapshot \
+      install from the leader, which carries no security document, until the leader confirms its copies or \
+      seeds them (issue #8432), a hold that survives a restart until that confirmation arrives (issue #8465). \
+      A node that leads is never held, since nobody can confirm its copies while it leads: it is held again, \
+      with a fresh window, once it steps down - unless its window had already expired, which stays final. Requires arcadedb.server.readinessRequiresHA, and is bounded on \
       purpose: when the window expires the node reports READY and logs, once, at SEVERE, exactly which documents \
       never converged, so a scale-up or a rolling restart cannot stall behind a seed nobody is going to send. 0 \
       disables the wait entirely.""",
@@ -2155,7 +2170,7 @@ public enum GlobalConfiguration {
       Long.class, 90000L),
 
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
-      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
+      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Also the signal the leader-driven stalled-replica resync (HA_STALLED_REPLICA_RESYNC_DURATION_MS) uses to tell a follower that is down from one that is stuck: no resync is forced while a follower is unreachable, and its stall timer starts over when it reconnects (issue #8490). Setting it to 0 turns that protection off along with the narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
   HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
@@ -2394,8 +2409,12 @@ public enum GlobalConfiguration {
       command it has to forward to the leader. During cluster startup or a leader change there is a window \
       with no elected leader; without this wait a forwarded write fails immediately with "leader HTTP address \
       is not available" and the caller's transaction is lost (issue #4728 follow-up). The follower polls for \
-      the leader and forwards as soon as one appears. Set to 0 to restore the previous fail-fast behavior. \
-      Default 20000 comfortably covers a first-election window (which can exceed 10s on cluster startup).""",
+      the leader and forwards as soon as one appears. It also bounds how long a follower holds back a forwarded \
+      request's "not the leader" refusal that names no leader - the answer of a leader that just stepped down - \
+      until its own view stops naming that node, so the client's retry is not routed straight back to it (SQL \
+      writes, server commands and batch loads; issues #8480 and #8486). Set to 0 to restore the previous \
+      fail-fast behavior. Default 20000 comfortably covers a first-election window (which can exceed 10s on \
+      cluster startup).""",
       Long.class, 20000L),
 
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,

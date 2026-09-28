@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.SilenceBoundedInputStream;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -267,6 +269,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
     this.httpClient = LeaderDial.newConnectTimeoutBoundedClient(httpServer.getServer().getConfiguration());
+  }
+
+  /** Whether the one-shot "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
   }
 
   @Override
@@ -1018,11 +1025,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * read and disarmed as soon as it returns, and when it fires it closes the underlying stream, which is what
    * releases a reader parked on it (issue #7738).
    * <p>
-   * It exists for the follower's relay of a streamed batch answer. The JDK client's request timeout
-   * ({@code arcadedb.ha.proxyBatchReadTimeout}) expires, on JDK 21 to 25, only until the leader's response
-   * HEADERS arrive, and on the streaming encoding those arrive with the leader's first progress line. (JDK 26
-   * extended the request timeout to the whole body, which turns the same setting into a cap on a streamed load's
-   * total length there: issue #8325.)
+   * It exists for the follower's relay of a streamed batch answer. That forward carries no request timeout (issue
+   * #8325): the wait for the leader's response HEADERS, which on the streaming encoding arrive with its first progress
+   * line, is bounded by {@link LeaderDial#sendBounded}, and every later wait by this stream alone.
    * {@code BodyHandlers.ofInputStream} has no per-read timeout and the client sets no socket read timeout, so a
    * leader that answered its 200 and then stalled - deadlocked, in a long GC, blocked on a full volume - parked
    * the follower's worker thread in {@code readLine()} for as long as the leader kept the connection open.
@@ -1039,82 +1044,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * <p>
    * Package-private, and timer-injected, so the bound can be tested without a live leader.
    */
-  static final class ReadBoundedInputStream extends FilterInputStream {
+  static final class ReadBoundedInputStream extends SilenceBoundedInputStream {
     /** Schedules one task; the returned {@link Runnable} cancels it and must tolerate running after it fired. */
     @FunctionalInterface
-    interface Timer {
-      Runnable schedule(Runnable task, long delayMs);
+    interface Timer extends SilenceBoundedInputStream.Timer {
     }
 
-    private final long      timeoutMs;
-    private final Timer     timer;
-    private volatile boolean expired;
-
+    // The implementation moved to `network` as SilenceBoundedInputStream (issue #8473), so the Java remote client and
+    // the AI handlers bound their streamed reads the same way. This subclass keeps the relay's own name and its timer
+    // type, which runs the task on the exchange's XNIO thread.
     ReadBoundedInputStream(final InputStream in, final long timeoutMs, final Timer timer) {
-      super(in);
-      this.timeoutMs = timeoutMs;
-      this.timer = timer;
-    }
-
-    @Override
-    public int read() throws IOException {
-      final Runnable disarm = arm();
-      final int b;
-      try {
-        b = in.read();
-      } catch (final IOException e) {
-        throw expired ? timedOut(e) : e;
-      } finally {
-        disarm.run();
-      }
-      if (b < 0 && expired)
-        throw timedOut(null);
-      return b;
-    }
-
-    @Override
-    public int read(final byte[] b, final int off, final int len) throws IOException {
-      final Runnable disarm = arm();
-      final int n;
-      try {
-        n = in.read(b, off, len);
-      } catch (final IOException e) {
-        throw expired ? timedOut(e) : e;
-      } finally {
-        disarm.run();
-      }
-      if (n < 0 && expired)
-        throw timedOut(null);
-      return n;
-    }
-
-    /** Whether a read was released by the timer: the stream is closed from then on. */
-    boolean hasExpired() {
-      return expired;
-    }
-
-    private Runnable arm() {
-      final AtomicBoolean armed = new AtomicBoolean(true);
-      final Runnable cancel = timer.schedule(() -> {
-        if (!armed.compareAndSet(true, false))
-          // The read returned between this task being dequeued and this line: nothing to release.
-          return;
-        expired = true;
-        // safeClose swallows whatever close() throws, checked or not: this runs on the XNIO I/O thread, where an
-        // escaping exception would hit the thread rather than the relay. The write watchdog closes the same way.
-        IoUtils.safeClose(in);
-      }, timeoutMs);
-      return () -> {
-        if (armed.compareAndSet(true, false))
-          cancel.run();
-      };
-    }
-
-    private HttpTimeoutException timedOut(final IOException cause) {
-      final HttpTimeoutException e = new HttpTimeoutException("No data received for " + timeoutMs + "ms");
-      if (cause != null)
-        e.initCause(cause);
-      return e;
+      super(in, timeoutMs, timer);
     }
   }
 
@@ -1925,38 +1865,52 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // Two causes, two answers (issue #7603). The peer meant to reach THIS node: the address was right and
       // leadership moved while the load travelled, which the same request retried gets past - 503, and the warning
       // latch below is left for the misconfiguration it exists to report.
+      //
+      // A refusal nobody can classify - the peer named no leader, because leadership changed while it resolved the
+      // address or because it predates the header during a rolling upgrade - is answered the same way (issue #8393):
+      // it is an election far more often than a configuration fault, and only the refusal that proves the address
+      // named the wrong node keeps the 400 and the notice.
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = ha.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        final String error;
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          error = "A cluster peer forwarded this batch here as the leader, and leadership moved away from this node "
+              + "while the request was in flight" + nowLeads + ". Nothing was loaded: retry it";
+        else {
+          LogManager.instance().log(this, Level.FINE,
+              "A cluster peer forwarded a batch to this node as the leader without saying which node it meant to "
+                  + "reach, and this node is not the leader (db=%s): refused as retryable", databaseName);
+          error = "A cluster peer already forwarded this batch to the leader and it arrived on this node, which is not "
+              + "the leader" + nowLeads + ". Leadership most likely moved while the request was in flight: nothing was "
+              + "loaded, retry it. If this persists, the HTTP address that peer resolved for the leader may not "
+              + "identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents";
+        }
+        // Typed as the unnamed ServerIsNotTheLeaderException the server-command route and the SQL forward answer in
+        // the same situation, so the follower that relayed this batch recognizes the refusal and holds it until its
+        // own view stops naming this node, instead of routing the client's retry straight back here (issue #8486).
         return new ExecutionResponse(503, new JSONObject()
-            .put("error", "A cluster peer forwarded this batch here as the leader, and leadership moved away from this "
-                + "node while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader
-                + ")" : "") + ". Nothing was loaded: retry it")
+            .put("error", error)
+            .put("exception", ServerIsNotTheLeaderException.class.getName())
             .toString());
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Also said once in this node's log: the refusal is relayed back to the peer and from there to the
       // client, so otherwise the only node that can name the misconfiguration never mentions it.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a batch to this node as the leader, but this node is not the leader (db=%s). "
-                + (misidentified ? "That peer meant to reach another node, so " : "Unless leadership just moved, ")
-                + "the HTTP address that peer resolved for the leader does not identify "
-                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
-                + "load is refused rather than relayed on. This notice is logged only once.",
+                + "That peer meant to reach another node, so the HTTP address that peer resolved for the leader does "
+                + "not identify it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The load is refused rather than relayed on. This notice is logged only once.",
             databaseName, GlobalConfiguration.HA_SERVER_LIST.getKey());
       return new ExecutionResponse(400, new JSONObject()
-          .put("error", misidentified ?
-              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived on this "
-                  + "node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
-                  + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
-                  + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
-                  + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
-                  + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
-                  + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
-                  + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents")
+          .put("error", "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived on "
+              + "this node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
+              + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this")
           .toString());
     }
 
@@ -2010,11 +1964,15 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The response deadline (issues #7526/#7542): deliberately arcadedb.ha.proxyBatchReadTimeout rather than
     // arcadedb.ha.proxyReadTimeout, because a bulk load's legitimate duration is a function of the payload the
     // client is still streaming - the same reasoning relaxConnectionReadTimeout above applies to the INCOMING
-    // side of this same load. On the non-streaming path it bounds the wait for the leader's answer. On the
-    // streaming encoding the request timeout covers only the wait for the leader's first response line (send()
-    // below returns as soon as headers arrive), so relayNdJsonFromLeader applies the same budget to every later
-    // wait for the leader's data as well (issue #7738): a leader that stays silent that long is given up on,
-    // however far into the stream it stalls.
+    // side of this same load. On the non-streaming path it bounds the whole exchange, the leader's body included. On
+    // the streaming encoding it bounds the wait for the leader's first response line, and relayNdJsonFromLeader
+    // applies the same budget to every later wait for the leader's data (issue #7738): a leader that stays silent
+    // that long is given up on, however far into the stream it stalls - but one that keeps talking is never cut off.
+    //
+    // Enforced by LeaderDial.sendBounded rather than by the JDK request timeout (issue #8325), whose coverage depends
+    // on the JDK: on 21-25 it stops at the response headers, so a buffered answer whose body stalls half-way was
+    // read with no bound at all; on 26+ it covers the whole body, so on the streaming encoding it became a cap on the
+    // TOTAL length of a load that is working. The streaming request therefore carries no request timeout at all.
     final long configuredBatchTimeout = httpServer.getServer().getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT);
     if (configuredBatchTimeout < LeaderDial.MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
@@ -2029,17 +1987,23 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
         exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null,
-        Duration.ofMillis(deadlineMs), intendedLeaderId);
+        streaming ? null : Duration.ofMillis(deadlineMs), intendedLeaderId);
 
     try {
       if (streaming)
-        // send() returns as soon as the leader's response HEADERS arrive, which on the streaming encoding is at
-        // the leader's first progress line - while the JDK client's own executor thread is still publishing the
-        // relayed upload. That is what keeps the acknowledgements incremental across the hop.
-        return relayNdJsonFromLeader(exchange, databaseName, url,
-            dial.client().send(request, HttpResponse.BodyHandlers.ofInputStream()), deadlineMs);
+        // With ofInputStream the send completes as soon as the leader's response HEADERS arrive, which on the
+        // streaming encoding is at the leader's first progress line - while the JDK client's own executor thread is
+        // still publishing the relayed upload. That is what keeps the acknowledgements incremental across the hop,
+        // and why the deadline here bounds the headers only.
+        //
+        // A leader that refused instead of streaming is relayed as a buffered answer, and an unnamed "not the leader"
+        // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
+        return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
+                LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
+                deadlineMs), ha, intendedLeaderId, httpServer.getServer().getConfiguration());
 
-      final HttpResponse<String> response = dial.client().send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
+          HttpResponse.BodyHandlers.ofString(), deadlineMs);
 
       // The leader's X-ArcadeDB-Commit-Index bookmark (issue #5862) is not on the relayed-header allow-list of
       // LeaderCommandForwarder, so it is copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
@@ -2047,8 +2011,12 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       response.headers().firstValue("X-ArcadeDB-Commit-Index")
           .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
 
-      // Retry-After and the other allow-listed headers ride on the relayed answer itself (issue #8343).
-      return LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers());
+      // Retry-After and the other allow-listed headers ride on the relayed answer itself (issue #8343). An ex-leader's
+      // unnamed "not the leader" is held until this node stops naming it, so the client's retry is not routed straight
+      // back to it (issue #8486).
+      return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(
+          LeaderCommandForwarder.relayedResponse(response.statusCode(), response.body(), response.headers()), ha,
+          intendedLeaderId, httpServer.getServer().getConfiguration());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);
@@ -2136,8 +2104,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * As above, and additionally bounds the wait for the leader's response (issues #7526/#7542): without it a
    * leader that accepts the connection and never answers parks the Undertow worker thread serving
    * {@code POST /api/v1/batch} until the OS tears the socket down. The production forward
-   * ({@link #forwardBatchToLeader}) always supplies one; the shorter overloads above pass {@code null} for
-   * the tests that exercise the request shape without a deadline of their own.
+   * ({@link #forwardBatchToLeader}) supplies one on the buffered encoding only, and bounds the exchange itself through
+   * {@link LeaderDial#sendBounded} on both (issue #8325); the shorter overloads above pass {@code null} for the tests
+   * that exercise the request shape without a deadline of their own.
    *
    * @param timeout the response deadline, or {@code null} for none
    */
@@ -2202,9 +2171,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * before the load started, which is a normal status-carrying error response - is relayed as the buffered
    * answer it is, so the follower never invents a stream the leader did not send.
    * <p>
-   * Every wait for the leader's data is bounded by {@code readTimeoutMs} (issue #7738), the budget the request
-   * timeout already applied to the wait for its first line: a leader that stops sending mid-stream is given up
-   * on, the connection to it is closed, and the client's stream ends without a terminal line.
+   * Every wait for the leader's data is bounded by {@code readTimeoutMs} (issue #7738), the budget the forward
+   * already applied to the wait for its first line: a leader that stops sending mid-stream is given up on, the
+   * connection to it is closed, and the client's stream ends without a terminal line. It is the ONLY bound on the
+   * body, on every JDK (issue #8325): the request carries no timeout that could cap the stream's total length.
    *
    * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
    */

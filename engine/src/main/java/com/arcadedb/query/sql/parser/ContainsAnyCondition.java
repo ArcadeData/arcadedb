@@ -55,7 +55,10 @@ public class ContainsAnyCondition extends BooleanExpression {
         leftItems.add(leftIterator.next());
       return containsAny(leftItems, right);
     }
-    return false;
+
+    // A scalar left operand is the one-element collection it stands for, so 'u1' CONTAINSANY ['u1','u2'] answers like
+    // 'u1' IN ['u1','u2'] instead of being silently false for every record (issue #8436). A missing value stays false.
+    return left != null && containsAny(Collections.singletonList(left), right);
   }
 
   /**

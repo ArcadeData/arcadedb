@@ -48,7 +48,7 @@
             org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
             injects the jar into the plugin realm.
         -->
-        <native-maven-plugin.version>1.1.13</native-maven-plugin.version>
+        <native-maven-plugin.version>1.1.14</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--
@@ -331,6 +331,16 @@
                             build-time initialized, as it was in the last green build.
                         -->
                         <buildArg>--initialize-at-run-time=io.grpc.netty.shaded.io.netty.internal.tcnative,io.grpc.netty.shaded.io.netty.handler.ssl.ReferenceCountedOpenSslEngine</buildArg>
+                        <!--
+                            Netty 4.2 (shaded by grpc 1.84+) adds CleanerJava24Linker, which allocates direct
+                            memory through a java.lang.foreign downcall to malloc/free. The builder cannot
+                            parse that downcall (linkToNative) and aborts. Initialized at build time, its
+                            static initializer catches the failed handle creation and leaves INVOKE_MALLOC
+                            null, so isSupported() folds to false and the malloc path is never compiled;
+                            PlatformDependent then falls back to CleanerJava25/CleanerJava9 at run time.
+                            Netty's own native-image.properties does the same for CleanerJava25 only.
+                        -->
+                        <buildArg>--initialize-at-build-time=io.grpc.netty.shaded.io.netty.util.internal.CleanerJava24Linker</buildArg>
                         <!-- Embed all classpath resources (Studio assets, config templates, Lucene codecs). Tighten later. -->
                         <buildArg>-H:IncludeResources=.*</buildArg>
                         <!--

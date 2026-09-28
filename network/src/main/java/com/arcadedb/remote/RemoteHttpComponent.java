@@ -29,8 +29,10 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -40,9 +42,12 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -52,11 +57,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
+
+import javax.net.ssl.SSLSession;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase per thread.
@@ -171,23 +176,70 @@ public class RemoteHttpComponent extends RWLockContext {
   /**
    * Package-private overload that accepts an explicit watchdog budget, used by tests to exercise the
    * watchdog without waiting on the 30 second floor computed by {@link #computeWatchdogMs(int)}.
+   * <p>
+   * The budget covers the whole exchange, body included, on every JDK: the request's own timeout does not (issue
+   * #8473), since on JDK 21-25 it stops once the response headers arrive. On a timeout the exchange is cancelled
+   * rather than abandoned, so the connection and its buffers are released instead of draining unbounded in the
+   * background (see issue #5847), and the same happens when the waiting thread is interrupted.
    */
   HttpResponse<String> sendWithWatchdog(final HttpRequest request, final long watchdogMs) throws IOException, InterruptedException {
-    final CompletableFuture<HttpResponse<String>> future = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
-    try {
-      return future.get(watchdogMs, TimeUnit.MILLISECONDS);
-    } catch (final java.util.concurrent.TimeoutException e) {
-      // The exchange is not just abandoned: cancel it so the connection and its buffers are released
-      // instead of draining unbounded in the background (see issue #5847).
-      future.cancel(true);
-      throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
-    } catch (final ExecutionException e) {
-      final Throwable cause = e.getCause();
-      if (cause instanceof IOException ioe)
-        throw ioe;
-      if (cause instanceof InterruptedException ie)
-        throw ie;
-      throw new IOException("HTTP request failed: " + request.uri(), cause);
+    return BoundedHttpExchange.send(httpClient, request, HttpResponse.BodyHandlers.ofString(), watchdogMs,
+        "HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri());
+  }
+
+  /**
+   * Sends a request whose answer is STREAMED and returns once its headers have arrived, with its body bounded by
+   * silence rather than by length (issue #8473).
+   * <p>
+   * The wait for the headers is bounded by {@code timeoutMs}, and so is every later read of the body: a server that
+   * keeps sending keeps the stream alive however long the result is, and one that stops for longer than that fails
+   * the read with an {@link java.net.http.HttpTimeoutException}. The request must therefore carry no timeout of its
+   * own (see {@link #createRequestBuilder(String, String, boolean)}), which on JDK 26+ would cap the stream's total
+   * length.
+   */
+  HttpResponse<InputStream> sendStreamed(final HttpRequest request, final long timeoutMs)
+      throws IOException, InterruptedException {
+    final HttpResponse<InputStream> response = BoundedHttpExchange.send(httpClient, request,
+        HttpResponse.BodyHandlers.ofInputStream(), timeoutMs);
+    return new SilenceBoundedResponse(response, BoundedHttpExchange.silenceBounded(response.body(), timeoutMs));
+  }
+
+  /** A streamed answer whose body is the silence-bounded wrapper of the original one; everything else delegates. */
+  private record SilenceBoundedResponse(HttpResponse<InputStream> response, InputStream body)
+      implements HttpResponse<InputStream> {
+    @Override
+    public int statusCode() {
+      return response.statusCode();
+    }
+
+    @Override
+    public HttpRequest request() {
+      return response.request();
+    }
+
+    @Override
+    public Optional<HttpResponse<InputStream>> previousResponse() {
+      return response.previousResponse();
+    }
+
+    @Override
+    public HttpHeaders headers() {
+      return response.headers();
+    }
+
+    @Override
+    public Optional<SSLSession> sslSession() {
+      return response.sslSession();
+    }
+
+    @Override
+    public URI uri() {
+      return response.uri();
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return response.version();
     }
   }
 
@@ -410,6 +462,7 @@ public class RemoteHttpComponent extends RWLockContext {
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
+          refuseToReplayAPossiblyAppliedRequest(e, method, operation, connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
@@ -418,6 +471,9 @@ public class RemoteHttpComponent extends RWLockContext {
             remoteDb.setSessionId(null);
             throw new TransactionException("Server failover during active transaction", e);
           }
+
+          // Failing over hands the same write to the next server, which runs it again if the first one applied it.
+          refuseToReplayAPossiblyAppliedRequest(e, method, operation, connectToServer);
 
           if (!reloadClusterConfiguration())
             throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
@@ -474,6 +530,46 @@ public class RemoteHttpComponent extends RWLockContext {
 
     throw new RemoteException(
         "Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
+  }
+
+  /**
+   * Stops the retry loop of {@link #httpCommand} before it re-sends a request the server may already have applied
+   * (issue #8136). A {@link ServerIsNotTheLeaderException} is the server's own answer that it did not run the
+   * request, and a failure to connect proves the request never left this client: both are retried as before. Any
+   * other transport failure on a request that is not {@link #isReplayable replayable} propagates, because the
+   * statement may have run and only its response been lost - a replay would run it twice and report success.
+   */
+  private static void refuseToReplayAPossiblyAppliedRequest(final Exception e, final String method, final String operation,
+      final Pair<String, Integer> server) {
+    if (e instanceof IOException ioe && !isReplayable(method, operation) && !provablyNeverSent(ioe))
+      throw new RemoteException("Error on executing remote operation '" + operation + "' on server " + server.getFirst() + ":"
+          + server.getSecond() + ": the connection failed after the request was sent (" + e.getMessage()
+          + "), so the server may already have applied it. It is not sent again, because a replay could apply it twice",
+          e);
+  }
+
+  /**
+   * Whether a request may be sent again after a transport failure without first knowing what the server did with
+   * it (issue #8136). A {@code GET} changes nothing, and a {@code query} is executed through
+   * {@code Database.query()}, whose engines refuse a statement that is not idempotent. Everything else - a
+   * {@code command}, a server-level admin command - may write, so sending it twice may apply it twice.
+   */
+  static boolean isReplayable(final String method, final String operation) {
+    return "GET".equalsIgnoreCase(method) || "query".equals(operation);
+  }
+
+  /**
+   * Whether a transport failure proves the request never reached the server (issue #8136). Only a failure to
+   * establish the connection does: a refused connection ({@link ConnectException}) or a connect timeout
+   * ({@link HttpConnectTimeoutException}). Every other {@link IOException} - a reset, a read timeout, the watchdog
+   * of {@link #sendWithWatchdog} - can be raised after the server read the request and applied it, with only the
+   * response lost on the way back.
+   */
+  static boolean provablyNeverSent(final IOException e) {
+    for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
+      if (t instanceof ConnectException || t instanceof HttpConnectTimeoutException)
+        return true;
+    return false;
   }
 
   /**
@@ -552,13 +648,25 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
+    return createRequestBuilder(httpMethod, url, true);
+  }
+
+  /**
+   * @param withRequestTimeout whether the request carries the connection's timeout as its own. A request whose answer
+   *                           is read as a stream passes {@code false}: on JDK 26+ that timeout covers the whole body
+   *                           and would cap the stream's total length, so {@link #sendStreamed} bounds it instead
+   *                           (issue #8473)
+   */
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url, final boolean withRequestTimeout) {
     final String authHeader = getBasicAuthorizationHeader();
 
-    return HttpRequest.newBuilder()
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(url))
-        .timeout(Duration.ofMillis(timeout))
         .header("charset", "utf-8")
         .header("Authorization", authHeader);
+    if (withRequestTimeout)
+      builder.timeout(Duration.ofMillis(timeout));
+    return builder;
   }
 
   void requestClusterConfiguration() {
@@ -796,6 +904,13 @@ public class RemoteHttpComponent extends RWLockContext {
         return new ConcurrentModificationException(detail);
       } else if (exception.equals(TransactionException.class.getName())) {
         return new TransactionException(detail);
+      } else if (exception.equals(TransactionCommittedRemotelyException.class.getName())
+          || "com.arcadedb.server.ha.raft.MajorityCommittedAllFailedException".equals(exception)) {
+        // THE SERVER ANSWERS THESE 409: THE TRANSACTION IS COMMITTED CLUSTER-WIDE, SO IT MUST NOT BE RETRIED. REBUILT AS THE
+        // TYPED 'DO NOT RETRY' EXCEPTION INSTEAD OF AN UNTYPED RemoteException, SO A CALLER CAN TELL A WRITE THAT LANDED
+        // FROM ONE THAT FAILED. THE HA SUBCLASS (ALL QUORUM MISSED AFTER THE MAJORITY COMMITTED, ISSUE #8481) LIVES IN A
+        // SERVER MODULE THIS CLIENT DOES NOT DEPEND ON, SO ITS NAME IS MATCHED AS A STRING
+        return new TransactionCommittedRemotelyException(detail);
       } else if ("com.arcadedb.server.http.HttpSessionException".equals(exception)) {
         // SERVER-SIDE SUBCLASS OF TransactionException: THE WIRE CARRIES ONLY THE CLASS NAME, SO THE
         // SUBCLASS RELATIONSHIP MUST BE RESTORED EXPLICITLY HERE

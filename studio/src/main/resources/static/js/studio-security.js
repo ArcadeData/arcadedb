@@ -75,10 +75,10 @@ function refreshSecurityClusterReadiness(callback) {
 /**
  * The capability gap that blocks `capability`, or null when nothing does.
  *
- * Delegates the decision to studio-cluster.js so the Cluster page's banner and this gate cannot drift apart -
- * including the part that matters most, that only a LEADER can answer for its peers (see
- * clusterCapabilityReadiness). A follower, an unclustered server and a cluster that is fully upgraded all
- * produce the same answer here: nothing to report, nothing disabled.
+ * Delegates the decision to studio-cluster.js so the Cluster page's banner and this gate cannot drift apart. Every
+ * node probes its peers since issue #7549, so the answer is the same whether Studio is served by the leader or by a
+ * follower (issue #8055); an unclustered server and a cluster that is fully upgraded both produce nothing to
+ * report and nothing disabled.
  */
 function securityCapabilityGap(capability) {
   if (typeof clusterSecurityCapabilityGaps !== "function") return null;

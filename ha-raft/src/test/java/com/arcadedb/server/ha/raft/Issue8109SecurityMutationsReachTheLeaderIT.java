@@ -221,10 +221,12 @@ class Issue8109SecurityMutationsReachTheLeaderIT extends BaseRaftHATest {
     return null;
   }
 
+  // Sent with no intended leader id, as a peer on an older build does: nothing proves the address wrong, so the
+  // refusal is the retryable 503 rather than the configuration error's 400 (issue #8393).
   private void assertRefusedAsAlreadyForwarded(final HttpResponse<String> response, final String route) {
     assertThat(response.statusCode())
         .as("%s arriving already forwarded must be refused on this follower, body: %s", route, response.body())
-        .isEqualTo(400);
+        .isEqualTo(503);
     assertThat(response.body()).as("%s refusal must say why", route).contains("already forwarded");
   }
 

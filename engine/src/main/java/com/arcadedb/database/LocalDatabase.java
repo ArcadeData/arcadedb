@@ -102,6 +102,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
@@ -1108,6 +1109,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (idx == null)
         throw new IllegalArgumentException(
             "No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
+      if (!idx.getType().isExactKeyLookup())
+        // A FULL_TEXT (or vector, geospatial) index does not answer "value equals key": handing its answer back as one
+        // attached edges to every vertex sharing a token with the key, and to none when the key has no token (#8439)
+        throw new IllegalArgumentException(
+            "No key index has been created on type '" + type + "' properties " + Arrays.toString(keyNames) + ": index '"
+                + idx.getName() + "' is " + idx.getType() + " and cannot look up a record by exact key");
 
       return idx.get(keyValues);
     });
@@ -3437,16 +3444,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 
-    final long now = System.currentTimeMillis();
-
+    // #8523: THIS RUNS ON EVERY SCHEMA LOOKUP AND RECORD READ OF EVERY THREAD, SO IT READS THE COARSE CLOCK (A VOLATILE)
+    // RATHER THAN THE SYSTEM ONE, AND WRITES THE STAMPS ONLY WHEN THE TICK CHANGED. AN UNCONDITIONAL STORE MADE EACH CORE TAKE
+    // THE CACHE LINE (SHARED WITH open AND fenceReason, READ JUST ABOVE) AWAY FROM ALL THE OTHERS: A SCAN ON 12 THREADS
+    // RAN NO FASTER THAN ON ONE
+    final long now = CoarseClock.currentTimeMillis();
     if (updateIntent) {
       if (mode == ComponentFile.MODE.READ_ONLY)
         throw new DatabaseIsReadOnlyException(databaseReadOnlyErrorMessage);
 
-      lastUpdatedOn = now;
+      if (lastUpdatedOn != now)
+        lastUpdatedOn = now;
     }
 
-    lastUsedOn = now;
+    if (lastUsedOn != now)
+      lastUsedOn = now;
   }
 
   private void setDefaultValues(final Record record) {

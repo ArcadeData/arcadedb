@@ -163,9 +163,22 @@ public final class HealthMonitor {
     }
 
     /**
+     * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
+     * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
+     * write to it fails while it stays leader. No-op on a follower, when nothing is being replaced, and between
+     * throttled attempts. May block for the length of one leadership transfer.
+     * <p>
+     * Its own hook because nothing else sees the condition: the node's log is complete and it is not lagging, which
+     * is exactly why Raft elected it.
+     */
+    default void handOffLeadershipWhileReplacingDatabase() {
+    }
+
+    /**
      * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
-     * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
-     * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
+     * and recorded it next to that storage (issues #7736, #8380). Read when the monitor is built, and again after
+     * every escalation's write. Implementations that cannot tell must return {@code false}: the monitor then walks
+     * the escalation ladder from the top, as it did before.
      */
     default boolean hasPersistedCrashLoopEscalation() {
       return false;
@@ -339,8 +352,8 @@ public final class HealthMonitor {
                 + "to the Raft storage. The Raft-storage reformat will NOT run again on this storage and this node "
                 + "will not ask for another process restart: if the Raft layer does not stay up, operator "
                 + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
-                + "coordinated full-cluster Raft-storage reformat). Delete the '%s' file in the Raft storage "
-                + "directory to re-arm the automatic recovery (issues #5291, #7736)",
+                + "coordinated full-cluster Raft-storage reformat). Delete the '<raft-storage-dir>.%s' file next to "
+                + "the Raft storage directory to re-arm the automatic recovery (issues #5291, #7736, #8380)",
             RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
       }
     }
@@ -403,8 +416,15 @@ public final class HealthMonitor {
    * Package-private for tests. Runs one check synchronously.
    */
   void tick() {
-    if (target.isShutdownRequested())
+    // Every early return below skips checkStaleFollower()/checkStuckFollower(), so each drops the observation streaks
+    // those checks own (issue #8389): a streak means "seen on every tick since it started", and a tick that did not look
+    // cannot extend it. Left standing, the confirmed stuck flag kept the cluster status reporting a critical incident
+    // whose promised self-heal those same returns made unreachable, and an old streak fired a reformat or a snapshot
+    // re-arm on the first tick back without the fresh second observation it exists to demand.
+    if (target.isShutdownRequested()) {
+      dropFollowerObservations();
       return;
+    }
     // Reconcile the inbound peer allowlist with current DNS every tick, regardless of Ratis lifecycle
     // state, so a returned peer's new pod IP is admitted proactively (issue #4696). The filter throttles
     // the actual re-resolution to its configured refresh interval.
@@ -427,6 +447,7 @@ public final class HealthMonitor {
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
+      dropFollowerObservations();
       return;
     }
     // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
@@ -439,9 +460,16 @@ public final class HealthMonitor {
     final String logFailure = target.getRaftLogFailure();
     if (logFailure != null) {
       handleFailedLogWriter(logFailure);
+      dropFollowerObservations();
       return;
     }
     noteLogWriterHealthy();
+    // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
+    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). A hand-off
+    // blocks this tick for up to one leadership transfer (ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_TIMEOUT_MS), so
+    // the checks after it wait that long too - on a node that is the leader, where the follower checks are no-ops, and
+    // at most once per REPLACING_LEADER_HAND_OFF_INTERVAL_MS.
+    target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
@@ -508,8 +536,13 @@ public final class HealthMonitor {
           crashRestartStreak, crashLoopReformatTried ? " and a storage reformat" : "", state);
       // Recorded BEFORE the flag is raised, so a liveness read that sees the escalation also sees whether it was
       // recorded (issue #7736): the probe asks for a restart only for a recorded one.
-      if (!crashLoopEscalationPersisted)
-        crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason);
+      // Written on EVERY escalation and the flag re-derived from the disk, never trusted from memory (issue #8380):
+      // the flag is a cache of a file something else can delete - an operator, or a Raft-storage reformat on a
+      // layout that keeps the record inside the storage - and a stale-true flag skipped this write, so the node
+      // escalated with nothing on disk and its next process start walked the whole ladder again. The write is
+      // idempotent and costs one fsync on a path that is already failing. A failed rewrite of a record that is
+      // still there keeps the flag: the record the next start reads is intact.
+      crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason) || target.hasPersistedCrashLoopEscalation();
       crashLoopEscalated = true;
       LogManager.instance().log(this, Level.SEVERE, "%s. %s", reason, crashLoopEscalationPersisted ?
           "The escalation is recorded next to the Raft storage: the liveness probe now fails ONCE so the process is "
@@ -624,6 +657,18 @@ public final class HealthMonitor {
       logFailureClearSinceMs = -1;
       logFailureEscalated = false;
     }
+  }
+
+  /**
+   * Drops the stale-follower and stuck-divergence observation streaks, and with them the confirmed stuck flag, on a
+   * tick that returns before the follower checks run (issue #8389). Unlike {@link #resetStreaksAfterRestart()} it
+   * leaves the reformat budget alone: nothing was restarted or reformatted, so the divergence episode that budget
+   * belongs to is not over.
+   */
+  private void dropFollowerObservations() {
+    lagObservedSinceMs = -1;
+    stuckObservedSinceMs = -1;
+    stuckConfirmed = false;
   }
 
   /**

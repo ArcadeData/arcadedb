@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.function.BiFunction;
@@ -106,8 +107,9 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
   private final    AtomicLong                        totalPagesWrittenSize                 = new AtomicLong();
-  private final    AtomicLong                        cacheHits                             = new AtomicLong();
-  private final    AtomicLong                        cacheMiss                             = new AtomicLong();
+  // #8523: LongAdder, NOT AtomicLong: BUMPED ON EVERY PAGE ACCESS OF EVERY THREAD, READ ONLY BY THE STATISTICS
+  private final    LongAdder                         cacheHits                             = new LongAdder();
+  private final    LongAdder                         cacheMiss                             = new LongAdder();
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
@@ -1904,8 +1906,8 @@ public class PageManager extends LockContext {
     stats.pagesWrittenSize = totalPagesWrittenSize.get();
     stats.pageFlushQueueLength = flushThread != null ? flushThread.queue.size() : 0;
     stats.pageFlushQueueMaxPerDatabase = flushThread != null ? flushThread.maxSlotsUsedByAnyDatabase() : 0;
-    stats.cacheHits = cacheHits.get();
-    stats.cacheMiss = cacheMiss.get();
+    stats.cacheHits = cacheHits.sum();
+    stats.cacheMiss = cacheMiss.sum();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
@@ -2476,7 +2478,7 @@ public class PageManager extends LockContext {
       // #4958: count the miss BEFORE returning the freshly loaded page. The counter used to be bumped
       // only on the page-not-found fall-through below, so cacheMiss stayed at ~0 forever and the
       // hit/miss ratio in the stats was meaningless.
-      cacheMiss.incrementAndGet();
+      cacheMiss.increment();
 
       page = loadPage(pageId, pageSize, createIfNotExists, true);
       if (page == null) {
@@ -2486,7 +2488,7 @@ public class PageManager extends LockContext {
         return page;
 
     } else {
-      cacheHits.incrementAndGet();
+      cacheHits.increment();
       page.updateLastAccesses();
     }
 

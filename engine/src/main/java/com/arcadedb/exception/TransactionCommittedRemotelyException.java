@@ -21,7 +21,9 @@ package com.arcadedb.exception;
 /**
  * Thrown when a transaction IS durably committed cluster-wide (the replication quorum accepted it) but the
  * local apply failed afterwards (#5064). The data exists on the cluster and will be present locally after
- * reconciliation or restart.
+ * reconciliation or restart. Subtypes report other outcomes that are committed and must equally not be retried, such as
+ * the HA leader's "committed by the MAJORITY, not confirmed by every peer" under the ALL quorum (issue #8481), where the
+ * local commit did complete.
  * <p>
  * <b>Do NOT retry the transaction</b>: a retry would apply the changes a second time (for inserts, creating
  * duplicates). Treat this as a commit that succeeded remotely and continue; reloading held records is
