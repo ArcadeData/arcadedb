@@ -155,7 +155,9 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   @Test
   void aClosedDatabaseTheLeaderCannotServeIsQuarantinedWithoutFailingTheOthers() throws Exception {
     createLocalDatabase(OTHER_DB);
-    leaderServes(OTHER_DB); // no context for DB_NAME: the leader answers 404 for it
+    leaderServes(OTHER_DB);
+    // A failure other than 404: a 404 says the leader does not hold it, which is not quarantined (issue #8559)
+    leaderFails(DB_NAME);
     closeLocally(DB_NAME);
     sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
     setStaleSnapshotAppliedFloor(FLOOR);
@@ -180,6 +182,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   void aQuarantineThatCannotBePersistedKeepsTheNodeWideFloor() throws Exception {
     createLocalDatabase(OTHER_DB);
     leaderServes(OTHER_DB);
+    leaderFails(DB_NAME);
     closeLocally(DB_NAME);
     sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
     setStaleSnapshotAppliedFloor(FLOOR);
@@ -328,6 +331,14 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     final Field f = ArcadeStateMachine.class.getDeclaredField("staleSnapshotAppliedFloor");
     f.setAccessible(true);
     ((AtomicLong) f.get(sm)).set(floor);
+  }
+
+  /** Makes the leader fail to serve {@code name} with a 503, a failure that says nothing about whether it holds it. */
+  private void leaderFails(final String name) {
+    leader.createContext("/api/v1/ha/snapshot/" + name, exchange -> {
+      exchange.sendResponseHeaders(503, -1);
+      exchange.close();
+    });
   }
 
   /** Makes the leader serve a real database with a DIFFERENT record count under {@code name}. */

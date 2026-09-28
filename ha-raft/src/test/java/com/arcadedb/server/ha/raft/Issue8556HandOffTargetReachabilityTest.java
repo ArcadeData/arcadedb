@@ -340,6 +340,51 @@ class Issue8556HandOffTargetReachabilityTest {
     assertThat(attempts.get()).as("a new replacement waits the base interval, not the widened one").isEqualTo(4);
   }
 
+  /**
+   * The same reset through the path a health tick really takes: since #8557 the tick queues the hand-off from
+   * RaftHAServer.queueReplacingDatabaseHandOff, which returns before reaching the state machine when nothing is being
+   * replaced. That early return must still end the episode, or the next replacement waits out the widened interval.
+   */
+  @Test
+  void theHealthTickEndsTheBackOffWhenNothingIsBeingReplaced() throws Exception {
+    final AtomicLong clock = new AtomicLong(1_000_000L);
+    final AtomicInteger attempts = new AtomicInteger();
+    final RaftHAServer raft = mock(RaftHAServer.class);
+    when(raft.isLeader()).thenReturn(true);
+    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+      attempts.incrementAndGet();
+      return false;
+    });
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.setRaftHAServer(raft);
+    sm.replacingLeaderHandOffClock = clock::get;
+
+    sm.runUnderInstallGate("db", () -> {
+      sm.handOffLeadershipWhileReplacingDatabase();
+      clock.addAndGet(ArcadeStateMachine.replacingLeaderHandOffIntervalMs(1));
+      sm.handOffLeadershipWhileReplacingDatabase();
+      clock.addAndGet(ArcadeStateMachine.replacingLeaderHandOffIntervalMs(2));
+      sm.handOffLeadershipWhileReplacingDatabase();
+    });
+    assertThat(attempts.get()).isEqualTo(3);
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    when(server.getConfiguration()).thenReturn(config);
+    final RecordingStepDown tick = new RecordingStepDown(server, config);
+    try {
+      tick.queueReplacingDatabaseHandOff(sm); // a health tick with nothing being replaced
+    } finally {
+      tick.stop();
+    }
+
+    clock.addAndGet(ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
+    sm.runUnderInstallGate("db", () -> sm.handOffLeadershipWhileReplacingDatabase());
+    assertThat(attempts.get()).as("a new replacement waits the base interval, not the widened one").isEqualTo(4);
+  }
+
   @Test
   void theBackOffDoublesUpToItsCeiling() {
     assertThat(ArcadeStateMachine.replacingLeaderHandOffIntervalMs(0)).isEqualTo(10_000L);
