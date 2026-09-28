@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -162,8 +163,11 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            while (prevResults.hasNext())
+            final HeapElementsLimit limit = HeapElementsLimit.of(context, "DELETE of a disconnected pattern");
+            while (prevResults.hasNext()) {
               materializedInput.add(prevResults.next());
+              limit.check(materializedInput.size());
+            }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
           }

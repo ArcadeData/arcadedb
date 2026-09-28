@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -81,6 +82,7 @@ public class WithStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private final Set<List<Object>> seenResults = withClause.isDistinct() ? new HashSet<>() : null;
+      private final HeapElementsLimit distinctLimit = withClause.isDistinct() ? HeapElementsLimit.of(context, "WITH DISTINCT") : null;
       private int skipped = 0;
       private int returned = 0;
 
@@ -197,9 +199,9 @@ public class WithStep extends AbstractExecutionStep {
               final List<String> names = new TreeSet<>(projectedResult.getPropertyNames()).stream()
                   .filter(name -> !InternalVariables.isInternal(name)).toList();
               final List<Object> resultKey = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
-              if (seenResults.contains(resultKey))
+              if (!seenResults.add(resultKey))
                 continue;
-              seenResults.add(resultKey);
+              distinctLimit.check(seenResults.size());
             }
 
             // Apply SKIP (only when not deferred to downstream)

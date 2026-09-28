@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -165,8 +166,11 @@ public class ForeachStep extends AbstractExecutionStep {
             // eagerMaterialize field doc and DeleteStep's identical mechanism for issue #6491.
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            while (prevResults.hasNext())
+            final HeapElementsLimit limit = HeapElementsLimit.of(context, "FOREACH of a disconnected pattern");
+            while (prevResults.hasNext()) {
               materializedInput.add(prevResults.next());
+              limit.check(materializedInput.size());
+            }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
           }

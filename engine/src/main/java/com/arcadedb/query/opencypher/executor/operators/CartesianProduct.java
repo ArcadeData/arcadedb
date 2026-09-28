@@ -19,13 +19,12 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.function.BiPredicate;
@@ -43,12 +42,19 @@ import java.util.function.BiPredicate;
  * never pays for the rows it did not ask for. The buffer is what lets the second and later left rows
  * replay the right side without re-executing it. Both children are closed once - on exhaustion, or on
  * {@code close()}, whichever comes first (issue #7010).
+ * <p>
+ * The buffer is a {@link RowBuffer}: past a few thousand rows it holds the records of a read-only statement by RID
+ * instead of in full (issue #8583), and the rows it holds count against
+ * {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP}, past which the query fails
+ * instead of the server running out of memory (issue #8585).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CartesianProduct extends AbstractPhysicalOperator {
   private final PhysicalOperator right;
   private final BiPredicate<Result, Result> pairFilter;
+  /** Rows of the right side held in full before the buffer turns compact; 0 never compacts. */
+  private int compactAfterRows = 0;
 
   public CartesianProduct(final PhysicalOperator left, final PhysicalOperator right,
                           final double estimatedCost, final long estimatedCardinality) {
@@ -68,6 +74,14 @@ public class CartesianProduct extends AbstractPhysicalOperator {
     this.pairFilter = pairFilter;
   }
 
+  /**
+   * Lets the buffer of the right side turn compact past {@code compactAfterRows} rows (see {@link RowBuffer}). Only a
+   * statement that does not write may: the planner decides.
+   */
+  public void setCompactAfterRows(final int compactAfterRows) {
+    this.compactAfterRows = compactAfterRows;
+  }
+
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
     // A cartesian product emits |right| rows per left row without touching a source, so guarding the scans
@@ -77,7 +91,7 @@ public class CartesianProduct extends AbstractPhysicalOperator {
     return new ResultSet() {
       private ResultSet leftResults = null;
       private ResultSet rightResults = null;
-      private List<Result> rightBuffer = null;
+      private RowBuffer rightBuffer = null;
       private Result currentLeft = null;
       private int rightIndex = 0;
       private boolean rightExhausted = false;
@@ -126,7 +140,7 @@ public class CartesianProduct extends AbstractPhysicalOperator {
             }
           }
           // An empty right side crosses to nothing, so there is no point walking the remaining left rows.
-          if (rightExhausted && rightBuffer.isEmpty())
+          if (rightExhausted && rightBuffer.size() == 0)
             break;
           if (leftResults != null && leftResults.hasNext()) {
             currentLeft = leftResults.next();
@@ -151,8 +165,12 @@ public class CartesianProduct extends AbstractPhysicalOperator {
        * second and later left rows.
        */
       private Result nextRight() {
-        if (rightIndex < rightBuffer.size())
-          return rightBuffer.get(rightIndex++);
+        while (rightIndex < rightBuffer.size()) {
+          // A compact buffer answers null for a row whose record was deleted since it was buffered
+          final Result buffered = rightBuffer.get(rightIndex++);
+          if (buffered != null)
+            return buffered;
+        }
         if (rightExhausted)
           return null;
 
@@ -180,7 +198,8 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         // Execute left and right operators. The right side is NOT drained here (issue #7010).
         leftResults = child.execute(ctx, n);
         rightResults = right.execute(ctx, n);
-        rightBuffer = new ArrayList<>();
+        rightBuffer = new RowBuffer(compactAfterRows > 0 ? ctx.getDatabase() : null,
+            HeapElementsLimit.of(ctx, "Cartesian product"), compactAfterRows);
 
         // Get first left row
         if (leftResults.hasNext())
@@ -235,6 +254,8 @@ public class CartesianProduct extends AbstractPhysicalOperator {
     sb.append(indent).append("+ CartesianProduct");
     if (pairFilter != null)
       sb.append(" [RelationshipUniquenessFilter pushed into join]");
+    if (compactAfterRows > 0)
+      sb.append(" [compact buffer]");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

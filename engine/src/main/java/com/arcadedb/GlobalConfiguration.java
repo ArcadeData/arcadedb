@@ -856,7 +856,8 @@ public enum GlobalConfiguration {
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
-      and DISTINCT in heap). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      and DISTINCT in heap; in OpenCypher also the rows a Cartesian product or a hash join buffers, UNION, collect(), and the eager \
+      materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \

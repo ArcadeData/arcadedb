@@ -20,6 +20,7 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,9 +28,13 @@ import java.util.List;
 /**
  * collect() aggregation function - collects values into a list.
  * Example: MATCH (n:Person) RETURN collect(n.name)
+ * <p>
+ * The list is held in heap until the aggregation ends, so it counts against
+ * {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP} (issue #8585).
  */
 public class CollectFunction implements StatelessFunction {
-  private final List<Object> collectedValues = new ArrayList<>();
+  private final List<Object>      collectedValues = new ArrayList<>();
+  private       HeapElementsLimit limit;
 
   @Override
   public String getName() {
@@ -50,8 +55,12 @@ public class CollectFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
     // Collect the value (skip nulls per OpenCypher spec)
-    if (args[0] != null)
+    if (args[0] != null) {
       collectedValues.add(args[0]);
+      if (limit == null)
+        limit = HeapElementsLimit.of(context, "collect()");
+      limit.check(collectedValues.size());
+    }
     return null; // Intermediate result doesn't matter
   }
 

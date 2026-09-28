@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapElementsLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -105,6 +106,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key
       final Map<Object, Long> groups = new LinkedHashMap<>();
+      final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
 
       while (prevResult.hasNext()) {
         final Result inputRow = prevResult.next();
@@ -128,6 +130,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               : inputRow.getProperty(groupingAliases[0]);
 
           groups.merge(key, count, Long::sum);
+          limit.check(groups.size());
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -147,6 +150,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // Multi-key path
     final Map<GroupKey, Long> groups = new LinkedHashMap<>();
+    final HeapElementsLimit limit = HeapElementsLimit.of(context, "GROUP BY");
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -171,6 +175,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               : inputRow.getProperty(groupingAliases[i]);
 
         groups.merge(new GroupKey(keys), count, Long::sum);
+        limit.check(groups.size());
       } finally {
         if (context.isProfiling())
           cost += System.nanoTime() - begin;
