@@ -6675,10 +6675,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * A closed database that cannot be installed does NOT fail the resync of the others, unlike a registered one. The
    * leader answers only for the databases IT has open, so a database closed on the leader too - an ordinary
    * maintenance close, run on every node - would otherwise fail every full resync of this node for good, with every
-   * other database left behind with it. It is quarantined instead, with a read floor at its own applied position,
-   * which is what a leader-driven install does with a database it gave up on (issue #6760): the node stays out of the
-   * ready set while it holds a copy it knows nothing about, and {@link #retryUnfilledSnapshotGap()} re-drives a
-   * targeted resync of it.
+   * other database left behind with it. When the leader answers that it does not hold the database (a 404), the copy
+   * is reported {@link DatabaseReconciler.AcquireState#LEADER_MISSING} and kept, neither installed nor quarantined
+   * (issue #8559): no resync from that leader can ever replace it, so a quarantine - which holds the WHOLE node out of
+   * the ready set - would last until an operator intervened. Any other failure is quarantined, with a read floor at its
+   * own applied position, which is what a leader-driven install does with a database it gave up on (issue #6760): the
+   * node stays out of the ready set while it holds a copy it knows nothing about, and
+   * {@link #retryUnfilledSnapshotGap()} re-drives a targeted resync of it.
    */
   private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
@@ -6700,18 +6703,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
       try {
         installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      } catch (final LeaderDoesNotHoldDatabaseException e) {
+        // Not a failed install (issue #8559): the leader does not hold it, and a quarantine - node-wide in its readiness
+        // effect - would wait for an install that the same leader refuses on every retry. Reported the way the
+        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped.
+        reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+        continue;
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Snapshot resync could not reinstall database '%s', which is closed on this node but still on disk and "
                 + "would be reopened by the next request that names it: keeping it quarantined until a targeted "
-                + "resync succeeds. If the leader does not hold '%s' open, open it there or remove this node's copy "
-                + "(issue #8464)", e, dbName, dbName);
+                + "resync succeeds (issue #8464)", e, dbName);
         notInstalled.add(dbName);
         continue;
       }
       LogManager.instance().log(this, Level.INFO,
           "Snapshot resync reinstalled database '%s', which was closed on this node: it is open again (issue #8464)",
           dbName);
+      reconciler.clearLeaderMissing(dbName);
       settleBootstrapReplacement(dbName);
       resynced++;
     }
@@ -6745,6 +6754,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // without it the very same gap is re-detected on the next restart and the node re-downloads
     // forever. Then wake the waiters this resync unblocked (issue #6111).
     resolveStaleSnapshotFloorAfterResync(resynced, notInstalled);
+  }
+
+  /**
+   * The verdict of a resync on a database closed on this node that the leader answered 404 for (issue #8559): the
+   * cluster's leader does not hold it - closed there too, dropped by the cluster while this node was away, or never
+   * created - so there is no committed state to hold this copy to and no install that will ever succeed. It is
+   * reported {@link DatabaseReconciler.AcquireState#LEADER_MISSING}, as the auto-acquire reconcile reports it, and any
+   * quarantine on it is lifted: the node was serving every other database, and this copy is not being served at all.
+   */
+  private void reportClosedDatabaseTheLeaderDoesNotHold(final String dbName, final LeaderDoesNotHoldDatabaseException e) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Snapshot resync did not reinstall database '%s', which is closed on this node: the leader does not hold it "
+            + "(%s). Keeping this node's copy and not quarantining it, since no resync from this leader can replace "
+            + "it. Open it on the leader if the cluster should still have it, or remove this node's copy (issue #8559)",
+        dbName, e.getMessage());
+    reconciler.markLeaderMissing(dbName);
+    clearDivergedDatabase(dbName);
   }
 
   /**
@@ -7097,9 +7123,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // quarantine standing over a copy nothing would ever repair. A database with no copy at all is left
             // alone, as before - there is nothing on this node to serve stale.
             if (isDatabasePresentLocally(dbName)) {
-              installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+              try {
+                installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+              } catch (final LeaderDoesNotHoldDatabaseException e) {
+                // A quarantined copy closed on this node that the leader does not hold would otherwise be retried
+                // against the same 404 on every health tick, holding the node out of the ready set for good - which is
+                // also how a quarantine raised before issue #8559, and restored from disk, gets lifted. A REGISTERED
+                // one stays quarantined: this node serves it, and the quarantine is what keeps it from serving it.
+                if (server.existsDatabase(dbName))
+                  throw e;
+                reportClosedDatabaseTheLeaderDoesNotHold(dbName, e);
+                return;
+              }
               LogManager.instance().log(this, Level.INFO,
                   "Targeted snapshot resync of quarantined database '%s' completed", dbName);
+              reconciler.clearLeaderMissing(dbName);
               clearDivergedDatabase(dbName);
               clearBootstrapUnreconciled(dbName);
               settleBootstrapReplacement(dbName);
