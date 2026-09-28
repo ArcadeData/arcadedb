@@ -176,8 +176,9 @@ public final class HealthMonitor {
 
     /**
      * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
-     * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
-     * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
+     * and recorded it next to that storage (issues #7736, #8380). Read when the monitor is built, and again after
+     * every escalation's write. Implementations that cannot tell must return {@code false}: the monitor then walks
+     * the escalation ladder from the top, as it did before.
      */
     default boolean hasPersistedCrashLoopEscalation() {
       return false;
@@ -351,8 +352,8 @@ public final class HealthMonitor {
                 + "to the Raft storage. The Raft-storage reformat will NOT run again on this storage and this node "
                 + "will not ask for another process restart: if the Raft layer does not stay up, operator "
                 + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
-                + "coordinated full-cluster Raft-storage reformat). Delete the '%s' file in the Raft storage "
-                + "directory to re-arm the automatic recovery (issues #5291, #7736)",
+                + "coordinated full-cluster Raft-storage reformat). Delete the '<raft-storage-dir>.%s' file next to "
+                + "the Raft storage directory to re-arm the automatic recovery (issues #5291, #7736, #8380)",
             RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
       }
     }
@@ -535,8 +536,13 @@ public final class HealthMonitor {
           crashRestartStreak, crashLoopReformatTried ? " and a storage reformat" : "", state);
       // Recorded BEFORE the flag is raised, so a liveness read that sees the escalation also sees whether it was
       // recorded (issue #7736): the probe asks for a restart only for a recorded one.
-      if (!crashLoopEscalationPersisted)
-        crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason);
+      // Written on EVERY escalation and the flag re-derived from the disk, never trusted from memory (issue #8380):
+      // the flag is a cache of a file something else can delete - an operator, or a Raft-storage reformat on a
+      // layout that keeps the record inside the storage - and a stale-true flag skipped this write, so the node
+      // escalated with nothing on disk and its next process start walked the whole ladder again. The write is
+      // idempotent and costs one fsync on a path that is already failing. A failed rewrite of a record that is
+      // still there keeps the flag: the record the next start reads is intact.
+      crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason) || target.hasPersistedCrashLoopEscalation();
       crashLoopEscalated = true;
       LogManager.instance().log(this, Level.SEVERE, "%s. %s", reason, crashLoopEscalationPersisted ?
           "The escalation is recorded next to the Raft storage: the liveness probe now fails ONCE so the process is "

@@ -154,10 +154,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static final String FORWARDED_ROOT_USER = "root";
 
   /**
-   * Name of the file, directly under this peer's Raft storage directory, that records a crash-loop escalation
-   * across process restarts (issue #7736). Ratis ignores plain files there - it only scans sub-directories for
-   * Raft groups - and a Raft-storage reformat, by this node or by an operator, deletes it with the storage it
-   * describes. Deleting it by hand re-arms the automatic crash-loop recovery.
+   * Suffix of the file that records a crash-loop escalation across process restarts (issue #7736). It is a sibling
+   * of this peer's Raft storage directory, named after it ({@code <raft-storage-dir>.crash-loop-escalated}), never a
+   * file inside it: the divergence reformat of {@link #restartRatis(boolean)} deletes that directory wholesale, and
+   * reaches it automatically from the health monitor while an escalation record exists, so a record inside it was
+   * silently lost with the storage and the next process start walked the whole restart/reformat ladder again
+   * (issue #8380). The record describes this node's crash-loop history, not its log, so it has exactly three
+   * deleters: {@link #clearPersistedCrashLoopEscalation()}; {@link #discardNonPersistentRaftStorage(File)}, which
+   * wipes it together with a storage that is not kept across starts ({@code arcadedb.ha.raftPersistStorage=false});
+   * and an operator, by hand, to re-arm the automatic crash-loop recovery. See
+   * {@link #crashLoopEscalationMarkerFile(File)}.
    */
   static final String CRASH_LOOP_ESCALATION_MARKER = "crash-loop-escalated";
 
@@ -1352,8 +1358,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
     // within a single test run, so the Raft log survives across stop/start calls.
     final boolean persistStorage = resolvePersistStorage(configuration);
-    if (storageDir.exists() && !persistStorage)
-      deleteRecursive(storageDir);
+    if (!persistStorage)
+      discardNonPersistentRaftStorage(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
@@ -2032,6 +2038,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static File snapshotInstallHoldMarkerFile(final File raftStorageDir) {
     return new File(raftStorageDir.getAbsoluteFile().getParentFile(),
         raftStorageDir.getName() + ".snapshot-install-hold");
+  }
+
+  /**
+   * Where the crash-loop escalation record of the peer whose Raft storage is {@code raftStorageDir} lives (issues
+   * #7736, #8380): a sibling file of that directory, never inside it, for the same reason as
+   * {@link #runtimeJoinMarkerFile}: the divergence reformat of {@link #restartRatis(boolean)} deletes the directory,
+   * and the health monitor's in-memory view of the record ({@code crashLoopEscalationPersisted}) cannot see that.
+   */
+  static File crashLoopEscalationMarkerFile(final File raftStorageDir) {
+    return new File(raftStorageDir.getAbsoluteFile().getParentFile(),
+        raftStorageDir.getName() + "." + CRASH_LOOP_ESCALATION_MARKER);
+  }
+
+  /**
+   * Wipes the Raft storage of a node that does not persist it across starts ({@code arcadedb.ha.raftPersistStorage}
+   * false), together with the crash-loop escalation record kept beside it: that record describes a crash loop on the
+   * storage being discarded, and the fresh log this start formats has not crash-looped yet. Before issue #8380 the
+   * record lived inside the directory and went with it; moving it out must not make it outlive the storage here.
+   */
+  static void discardNonPersistentRaftStorage(final File raftStorageDir) {
+    if (raftStorageDir.exists())
+      deleteRecursive(raftStorageDir);
+    final File record = crashLoopEscalationMarkerFile(raftStorageDir);
+    if (record.exists() && !record.delete() && record.exists())
+      LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+          "Cannot delete the crash-loop escalation record '%s' of the discarded Raft storage: delete it by hand, or "
+              + "this server will not re-arm the automatic crash-loop recovery (issue #8380)", record.getAbsolutePath());
   }
 
   /**
@@ -3483,7 +3516,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private File crashLoopEscalationMarker() {
-    return new File(cachedRaftStorageDir(), CRASH_LOOP_ESCALATION_MARKER);
+    return crashLoopEscalationMarkerFile(cachedRaftStorageDir());
   }
 
   @Override

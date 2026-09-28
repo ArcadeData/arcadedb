@@ -422,8 +422,8 @@ public class ClusterAlerts {
         .put("recommendation", "Read this node's log from the first restart in the loop rather than the last - the "
             + "escalation reports the loop, not the fault that started it. A node still escalated after a restart "
             + "has a persistent cause: a term-inverted log or snapshot served by the leader needs a coordinated "
-            + "full-cluster Raft-storage reformat. Deleting the 'crash-loop-escalated' file in the Raft storage "
-            + "directory re-arms the automatic recovery for the next start.")
+            + "full-cluster Raft-storage reformat. Deleting the '<raft-storage-dir>.crash-loop-escalated' file next to "
+            + "the Raft storage directory re-arms the automatic recovery for the next start.")
         .put("details", new JSONObject().put("escalated", true)));
   }
 

@@ -245,15 +245,17 @@ class Issue7736CrashLoopEscalationSurvivesRestartTest {
   }
 
   @Test
-  void raftHAServerRecordsTheEscalationUnderItsRaftStorageDirectory(@TempDir final Path root) throws Exception {
+  void raftHAServerRecordsTheEscalationNextToItsRaftStorageDirectory(@TempDir final Path root) throws Exception {
     final RaftHAServer first = detachedServer(root.toFile());
     assertThat(first.hasPersistedCrashLoopEscalation()).isFalse();
 
     assertThat(first.persistCrashLoopEscalation("Ratis crash-loop persists after 11 restarts")).isTrue();
 
-    final File[] storageDirs = root.toFile().listFiles(File::isDirectory);
-    assertThat(storageDirs).as("the peer's own Raft storage directory").hasSize(1);
-    final File marker = new File(storageDirs[0], RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
+    // A sibling of the peer's Raft storage directory, never inside it (issue #8380).
+    final File[] records = root.toFile().listFiles(f -> f.isFile() && f.getName().endsWith(
+        "." + RaftHAServer.CRASH_LOOP_ESCALATION_MARKER));
+    assertThat(records).as("the record next to the peer's own Raft storage directory").hasSize(1);
+    final File marker = records[0];
     assertThat(marker).isFile();
     assertThat(Files.readString(marker.toPath())).contains("Ratis crash-loop persists after 11 restarts");
 
