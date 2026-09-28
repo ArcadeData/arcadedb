@@ -106,10 +106,11 @@ public class ResultInternal implements Result {
         final ResultInternal copy = new ResultInternal(new LinkedHashMap<>(size + (size >> 1) + 1));
         final Set<String> removed = row.tombstones;
         for (final Map.Entry<String, Object> entry : rowContent.entrySet()) {
-          Object value = entry.getValue();
           if (removed != null && removed.contains(entry.getKey()))
-            value = null;
-          else if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+            // A removed binding is not a property of the row: getPropertyNames() leaves it out, and so does the copy
+            continue;
+          Object value = entry.getValue();
+          if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
             value = identifiable.getIdentity();
           copy.setProperty(entry.getKey(), value);
         }
@@ -706,6 +707,9 @@ public class ResultInternal implements Result {
 
   public ResultInternal setPropertiesFromMap(final Map<String, Object> stats) {
     content.putAll(stats);
+    // Like setProperty(): re-setting a removed property lifts its tombstone
+    if (tombstones != null)
+      tombstones.removeAll(stats.keySet());
     return this;
   }
 }

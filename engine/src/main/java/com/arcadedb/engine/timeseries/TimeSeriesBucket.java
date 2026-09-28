@@ -967,6 +967,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
       cache[pageNum] = summary;
       pageTagSummaries = cache;
     } else
+      // A plain element store, not a volatile publication: another thread may not see it and rebuild the summary
+      // itself. That is the only cost - PageTagSummary is immutable (final fields) and checked against the page
+      // version before use, so no thread can read a half-built or stale one.
       cache[pageNum] = summary;
     return summary;
   }
