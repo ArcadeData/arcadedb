@@ -69,6 +69,7 @@ import io.undertow.util.StatusCodes;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -1454,6 +1455,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static boolean isEventStreamRequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst(Headers.ACCEPT);
     return accept != null && accept.contains(EVENT_STREAM_CONTENT_TYPE);
+  }
+
+  /**
+   * The write-side budget of every streamed response, in milliseconds: how long one blocking write may make no
+   * progress before the connection is closed (issues #7381 and #7806). Re-read on every call, so SET SERVER SETTING
+   * moves it without a restart.
+   */
+  protected int streamingWriteTimeout() {
+    return httpServer.getServer().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
+  }
+
+  /**
+   * The output stream a streamed response - NDJSON or Server-Sent Events - is written to, every write of which is
+   * bounded by {@link #streamingWriteTimeout()} (issue #7806). Switches the exchange to blocking mode if it is not
+   * already. A client that stops reading gets its connection closed instead of holding this worker thread for as
+   * long as it keeps the socket open.
+   *
+   * @param what names the response in the warning logged when the bound fires
+   */
+  protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final String what) {
+    if (!exchange.isBlocking())
+      exchange.startBlocking();
+    return WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(), what);
   }
 
   /** The response headers of a Server-Sent Events stream. */

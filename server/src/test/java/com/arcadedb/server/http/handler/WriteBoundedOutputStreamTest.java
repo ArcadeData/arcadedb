@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.server.http.handler.PostBatchHandler.WriteBoundedOutputStream;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;

@@ -346,11 +346,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
     exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
     exchange.setStatusCode(200);
-    if (!exchange.isBlocking())
-      exchange.startBlocking();
-
     int returned = 0;
-    try (final NdJsonResultStream stream = new NdJsonResultStream(exchange.getOutputStream())) {
+    // Every write bounded (issue #7806): the stream grows with the result set, so a client that stops reading it
+    // would otherwise hold this worker thread blocked in write() for as long as it keeps the connection open.
+    try (final NdJsonResultStream stream = new NdJsonResultStream(streamedResponseOutput(exchange,
+        "the streamed result of a query on database '" + (database != null ? database.getName() : null) + "'"))) {
       final boolean truncated;
       try {
         while (qResult != null && qResult.hasNext()) {

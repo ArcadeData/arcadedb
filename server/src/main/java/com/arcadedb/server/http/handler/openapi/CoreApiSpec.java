@@ -974,8 +974,10 @@ public class CoreApiSpec implements OpenApiContributor {
   private static Parameter ndJsonAcceptParam() {
     final Parameter accept = SpecBuilders.headerParam("Accept", """
         Send 'application/x-ndjson' to receive the result as a stream of newline-delimited JSON events, one row \
-        per line, flushed as the engine produces them instead of buffered in full server-side. Anything else - \
-        including an absent header - returns the buffered application/json body unchanged.""", false);
+        per line, flushed as the engine produces them instead of buffered in full server-side. Read the stream \
+        as it arrives: a response write that makes no progress for 'arcadedb.server.httpStreamingWriteTimeout' \
+        closes the connection, and the stream ends without its stats trailer. Anything else - including an \
+        absent header - returns the buffered application/json body unchanged.""", false);
     accept.getSchema().setEnum(List.of(SpecBuilders.JSON, NDJSON));
     return accept;
   }

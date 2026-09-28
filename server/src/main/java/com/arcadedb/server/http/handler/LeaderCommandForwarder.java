@@ -126,7 +126,7 @@ public final class LeaderCommandForwarder {
   private final Transport  transport;
 
   /** Builds the target a relayed progress stream is written to. Package-private and swappable for tests only. */
-  Function<HttpServerExchange, StreamTarget> streamTargetFactory = LeaderCommandForwarder::exchangeTarget;
+  Function<HttpServerExchange, StreamTarget> streamTargetFactory = this::exchangeTarget;
 
   /**
    * Emits the "a peer forwarded a request here and this node is not the leader either" notice only once
@@ -497,8 +497,12 @@ public final class LeaderCommandForwarder {
     OutputStream open(String contentType) throws IOException;
   }
 
-  /** The production {@link StreamTarget}: the client's own exchange, set up the way the leader set up its stream. */
-  static StreamTarget exchangeTarget(final HttpServerExchange exchange) {
+  /**
+   * The production {@link StreamTarget}: the client's own exchange, set up the way the leader set up its stream.
+   * Every write is bounded (issue #7806) exactly like the leader's own stream: a follower relaying to a client that
+   * stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
+   */
+  StreamTarget exchangeTarget(final HttpServerExchange exchange) {
     return contentType -> {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
@@ -506,7 +510,9 @@ public final class LeaderCommandForwarder {
       exchange.setStatusCode(200);
       if (!exchange.isBlocking())
         exchange.startBlocking();
-      return exchange.getOutputStream();
+      return WriteBoundedOutputStream.of(exchange, httpServer.getServer().getConfiguration()
+          .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT), "the relayed progress stream "
+          + "of a command forwarded to the leader");
     };
   }
 

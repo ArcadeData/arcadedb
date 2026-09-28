@@ -1695,13 +1695,15 @@ public enum GlobalConfiguration {
 
   SERVER_HTTP_STREAMING_WRITE_TIMEOUT("arcadedb.server.httpStreamingWriteTimeout", SCOPE.SERVER,
       """
-      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for \
-      (today only the newline-delimited answer of the bulk-load /api/v1/batch endpoint). That response is \
-      written while the request body is still being read, and its size grows with the size of the load, so a \
-      client that uploads everything before reading anything can fill the socket buffers between the two: the \
-      server then blocks inside a response write, and a server blocked there is not reading the upload either \
-      (issue #7381). This bounds that block instead of leaving it indefinite - the connection is closed, the \
-      load fails with a logged diagnosis and the worker thread is released. It is the write-side counterpart \
+      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for: \
+      the newline-delimited answer of the bulk-load /api/v1/batch endpoint, the newline-delimited query \
+      encoding of /query and /command (Accept: application/x-ndjson), the Server-Sent Events of the AI chat and \
+      of the long-running server commands, and a follower's relay of any of them. Their size grows with the \
+      size of a load, a result set or a conversation, so a client that stops reading fills the socket buffers \
+      and the server blocks inside a response write - on /batch, while not reading the upload either (issue \
+      #7381); everywhere else, holding a worker thread for as long as the client keeps the connection open \
+      (issue #7806). This bounds that block instead of leaving it indefinite - the connection is closed, the \
+      failure is logged with a diagnosis and the worker thread is released. It is the write-side counterpart \
       of 'arcadedb.server.httpStreamingReadTimeout' and is shorter than it on purpose: that budget covers a \
       pause nobody is at fault for (the server committing), while a write that has made no progress at all \
       for this long means the peer stopped consuming. The timer is armed around one write and disarmed as \
