@@ -276,7 +276,7 @@ public class CypherOptimizer {
     if (rootOperator == null) {
       for (final LogicalNode node : isolatedNodes)
         units.add(nodeUnit(node, logicalPlan));
-      final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
+      final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, logicalPlan, statisticsProvider,
           buffersMayReloadRecords());
       rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), relVarsPerClause);
       anchor = joinPlanner.getDriver().anchor;
@@ -477,7 +477,7 @@ public class CypherOptimizer {
     for (final LogicalNode node : logicalPlan.getPatternNodes().values())
       units.add(nodeUnit(node, logicalPlan));
 
-    final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
+    final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, logicalPlan, statisticsProvider,
         buffersMayReloadRecords());
     final PhysicalOperator rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), Collections.emptyMap());
 

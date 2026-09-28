@@ -71,6 +71,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       final VertexType person = database.getSchema().createVertexType("Person");
       person.createProperty("id", Type.INTEGER);
       person.createProperty("score", Type.FLOAT);
+      person.createProperty("zip", Type.LONG);
       database.getSchema().createEdgeType("KNOWS");
       database.getSchema().createEdgeType("IN_CITY");
 
@@ -92,7 +93,7 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
       final List<MutableVertex> persons = new ArrayList<>();
       for (int i = 0; i < PERSONS; i++) {
         final MutableVertex p = database.newVertex("Person").set("id", i).set("name", i % 5 == 0 ? "Ann" : "bob" + (i % 4))
-            .set("cityCode", "C" + (i % 4)).set("score", (float) (i / 20.0));
+            .set("cityCode", "C" + (i % 4)).set("score", (float) (i / 20.0)).set("zip", (long) i);
         // The cities past 399 do not exist, and persons 0 and 7 have none
         if (i % 7 != 0)
           p.set("cityId", (long) i * 70);
@@ -212,6 +213,14 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
     final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.cityId RETURN p.id AS a, c.id AS b";
     assertThat(plan(query)).contains("IndexNestedLoopJoin(c:City)");
     assertThat(assertSameAsFilteredProduct(query, "c.code = p.cityId")).containsExactly("1/1000");
+  }
+
+  @Test
+  void aKeyDeclaredOfAnotherKindIsNotSought() {
+    // A LONG against a STRING index would read the whole label for every person: the planner knows it from the schema
+    final String query = "MATCH (p:Person), (c:City) WHERE c.code = p.zip RETURN p.id AS a, c.id AS b";
+    assertThat(plan(query)).doesNotContain("IndexNestedLoopJoin").contains("ValueHashJoin");
+    assertThat(assertSameAsFilteredProduct(query, "c.code = p.zip")).isEmpty();
   }
 
   @Test
