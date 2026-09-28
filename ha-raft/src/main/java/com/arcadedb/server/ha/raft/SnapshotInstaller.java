@@ -492,17 +492,20 @@ public final class SnapshotInstaller {
     final boolean keepMarkerIfDownloadFails = Files.exists(pendingMarker) && !looksLikeADatabaseDirectory(dbPath);
 
     // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
-    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
+    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state. The pending marker
+    // is NOT part of it: over a torn directory it is the only thing keeping that directory unopenable, and deleting
+    // it here left a window - the staging directory creation and the marker rewrite below, both writes on what is
+    // often a full volume - in which a failure or a crash stripped it for good (issue #8381). It is rewritten in
+    // place instead, so a marker present on entry stays present at every instant.
     deleteDirectoryIfExists(snapshotNew);
     deleteDirectoryIfExists(snapshotBackup);
-    Files.deleteIfExists(pendingMarker);
     deleteSwapState(dbPath);
 
     Files.createDirectories(snapshotNew);
 
     // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
     // directory so a crash right after this point still leaves the marker on disk for startup
-    // recovery to find (issue #4830).
+    // recovery to find (issue #4830). Over an existing marker this truncates it in place.
     writeMarkerDurable(pendingMarker);
 
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
