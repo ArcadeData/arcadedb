@@ -382,7 +382,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // concurrent reader (refreshRaftClient() from a leader-change callback) never sees a half-built transport
   // configuration.
   private volatile Parameters                 raftParameters        = new Parameters();
-  private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
   // condition on its own, even without an intervening notifyApplied() call. notifyApplied() has a
@@ -4175,10 +4174,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       if (peer.getId().equals(peerId))
         return true;
     return false;
-  }
-
-  Object getLeaderChangeNotifier() {
-    return leaderChangeNotifier;
   }
 
   public void addPeer(final String peerId, final String address) {
