@@ -549,8 +549,7 @@ public class DatabaseReconciler {
       // existsDatabase re-checks the live registry: a database dropped since the listing has no copy left to refresh
       if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX) && server.existsDatabase(dbName))
         toRefresh.add(dbName);
-    final Set<String> closed = SnapshotInstaller.closedDatabaseNames(server);
-    toRefresh.addAll(closed);
+    toRefresh.addAll(SnapshotInstaller.closedDatabaseNames(server));
     for (final String dbName : toRefresh) {
       LogManager.instance().log(this, Level.INFO,
           "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
@@ -560,12 +559,10 @@ public class DatabaseReconciler {
                 leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
         clearLeaderMissing(dbName);
       } catch (final LeaderDoesNotHoldDatabaseException e) {
-        // A copy closed on this node that the leader does not hold (issue #8559) - closed there too, or dropped by the
-        // cluster while this node was away - is not a failed refresh: the same leader answers the same on every retry,
-        // so failing the install for it made Ratis re-trigger it for good. It is the auto-acquire path's verdict for
-        // the same input. A REGISTERED database the leader does not hold still fails the install: this node serves it.
-        if (!closed.contains(dbName) || server.existsDatabase(dbName))
-          throw e;
+        // A copy the leader does not hold - closed there too, or dropped by the cluster while this node was away - is
+        // not a failed refresh: the same leader answers the same on every retry, so failing the install for it made
+        // Ratis re-trigger it for good. It is the auto-acquire path's verdict for the same input, for a copy closed on
+        // this node (issue #8559) and a registered one (issue #8588) alike; the copy is kept.
         markLeaderMissing(dbName);
       }
     }
