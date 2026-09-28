@@ -170,15 +170,39 @@ class CypherCartesianProductIssue8583Test extends TestHelper {
   }
 
   @Test
-  void onlyAReadOnlyStatementCompactsItsBuffer() {
-    try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (a:Item), (b:Other) RETURN a, b")) {
-      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("CartesianProduct [compact buffer]");
-    }
+  void onlyAStatementThatCannotChangeARecordCompactsItsBuffer() {
+    assertThat(plan("MATCH (a:Item), (b:Other) RETURN a, b")).contains("CartesianProduct [compact buffer]");
+    // Adding entities changes no property of a buffered record
+    assertThat(plan("MATCH (a:Item), (b:Other) CREATE (a)-[:SEEN]->(b)")).contains("CartesianProduct [compact buffer]");
+    assertThat(plan("MATCH (a:Item), (b:Other) MERGE (a)-[:SEEN]->(b)")).contains("CartesianProduct [compact buffer]");
     // A write between the buffering and the replay could change what a reloaded record reads
-    try (final ResultSet rs = database.command("opencypher", "EXPLAIN MATCH (a:Item), (b:Other) SET b.seen = true")) {
-      final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
-      assertThat(plan).contains("CartesianProduct");
-      assertThat(plan).doesNotContain("compact buffer");
+    for (final String write : List.of("MATCH (a:Item), (b:Other) SET b.seen = true", "MATCH (a:Item), (b:Other) REMOVE b.id",
+        "MATCH (a:Item), (b:Other) MERGE (a)-[r:SEEN]->(b) ON MATCH SET b.seen = true"))
+      assertThat(plan(write)).as(write).contains("CartesianProduct").doesNotContain("compact buffer");
+  }
+
+  @Test
+  void aCreateOverACompactProductSeesEveryRecord() {
+    database.transaction(() -> {
+      final CartesianProduct product = new CartesianProduct(new NodeByLabelScan("a", "Other", 1, 3),
+          new NodeByLabelScan("b", "Item", 1, ITEMS), 1, 3L * ITEMS);
+      product.setCompactAfterRows(2);
+      try (final ResultSet rs = product.execute(context(), 100)) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          // Creating the edge rewrites the Item record the buffer reloads for the next Other
+          row.<Vertex>getProperty("a").modify().newEdge("LINK", row.<Vertex>getProperty("b")).save();
+        }
+      }
+    });
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:Other)-[:LINK]->(b:Item) RETURN count(*) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(3L * ITEMS);
+    }
+  }
+
+  private String plan(final String query) {
+    try (final ResultSet rs = database.command("opencypher", "EXPLAIN " + query)) {
+      return rs.getExecutionPlan().get().prettyPrint(0, 2);
     }
   }
 

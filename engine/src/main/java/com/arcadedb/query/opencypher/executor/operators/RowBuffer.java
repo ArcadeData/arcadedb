@@ -47,9 +47,9 @@ import java.util.Set;
  * read, loading its records again, so a big buffer trades a record load per replayed row for about 12 bytes per record
  * instead of a kilobyte.
  * <p>
- * Only a buffer whose statement does not write is made compact: a write could change what a record reads between the
- * time the row was buffered and the time it is replayed, and the result must not depend on how many rows the buffer
- * happened to hold. A record deleted by another transaction since it was buffered can no longer be loaded, and its
+ * Only a buffer whose statement cannot change a record is made compact - one that reads, or only adds entities: a SET
+ * or a DELETE could change what a record reads between the time the row was buffered and the time it is replayed, and
+ * the result must not depend on how many rows the buffer happened to hold. A record deleted by another transaction since it was buffered can no longer be loaded, and its
  * row is gone: {@link #get(int)} answers null for it, which is what a nested loop reading the input again would see.
  * <p>
  * Every row counts against {@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP} (issue
@@ -70,6 +70,10 @@ public final class RowBuffer {
 
   // Compact form, column by column. A column's arrays are allocated the first time it holds that kind of value.
   private boolean  compact = false;
+  /**
+   * The columns of the first row, in its order. The rows of one operator set their properties in one order, so the
+   * others match it; a row that does not is held as it came (see {@link #irregularRows}), which is only slower.
+   */
   private String[] columns;
   private int      capacity;
   /** Per column, the bucket of the record each row binds, or -1 when the row's value is in {@link #objects}. */

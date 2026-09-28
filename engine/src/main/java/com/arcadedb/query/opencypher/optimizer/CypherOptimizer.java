@@ -33,9 +33,11 @@ import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
+import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
@@ -273,7 +275,7 @@ public class CypherOptimizer {
       for (final LogicalNode node : isolatedNodes)
         units.add(nodeUnit(node, logicalPlan));
       final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
-          statement.isReadOnly());
+          buffersMayReloadRecords());
       rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), relVarsPerClause);
       anchor = joinPlanner.getDriver().anchor;
     }
@@ -474,11 +476,45 @@ public class CypherOptimizer {
       units.add(nodeUnit(node, logicalPlan));
 
     final DisconnectedPatternJoinPlanner joinPlanner = new DisconnectedPatternJoinPlanner(database, statisticsProvider,
-        statement.isReadOnly());
+        buffersMayReloadRecords());
     final PhysicalOperator rootOperator = joinPlanner.plan(units, whereConditions(logicalPlan), Collections.emptyMap());
 
     return new PhysicalPlan(logicalPlan, joinPlanner.getDriver().anchor, rootOperator,
         rootOperator.getEstimatedCost(), rootOperator.getEstimatedCardinality());
+  }
+
+  /**
+   * Whether the join buffers of this statement may hold their records by RID and load them again when they replay a
+   * row (issue #8583): only when nothing the statement does can change what a buffered record reads, or delete it,
+   * between the buffering and the replay, so the rows never depend on how many the buffer happened to hold. That is a
+   * statement that only reads, or whose writes only add entities: a CREATE, a MERGE without SET actions. A new
+   * relationship does rewrite its endpoints' records, but not a property of theirs, and the reload reads the current
+   * record.
+   */
+  private boolean buffersMayReloadRecords() {
+    if (statement.isReadOnly())
+      return true;
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    if (clauses == null)
+      return false;
+    for (final ClauseEntry entry : clauses)
+      switch (entry.getType()) {
+      case SET, REMOVE, DELETE, FOREACH, CALL, SUBQUERY:
+        return false;
+      case MERGE: {
+        final MergeClause merge = entry.getTypedClause();
+        if (hasActions(merge.getOnCreateSet()) || hasActions(merge.getOnMatchSet()))
+          return false;
+        break;
+      }
+      default:
+        break;
+      }
+    return true;
+  }
+
+  private static boolean hasActions(final SetClause setClause) {
+    return setClause != null && !setClause.isEmpty();
   }
 
   /** A node matched on its own, by the anchor operator its own predicates select. */

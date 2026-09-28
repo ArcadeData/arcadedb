@@ -232,7 +232,9 @@ public class ValueHashJoin extends AbstractPhysicalOperator {
           keyedCount = ((IntList) matching).size;
         }
         final int[] merged = new int[keyedCount + unhashableRows.size];
-        int k = 0, u = 0, m = 0;
+        int k = 0;
+        int u = 0;
+        int m = 0;
         while (k < keyedCount || u < unhashableRows.size)
           merged[m++] = u >= unhashableRows.size || (k < keyedCount && keyed[k] < unhashableRows.values[u]) ?
               keyed[k++] : unhashableRows.values[u++];
