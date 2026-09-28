@@ -235,6 +235,11 @@ public final class PhysicalOrderRidFetcher {
     return buffer.slices(sliceSize, consumer);
   }
 
+  /** Whether the current chunk holds entries that are not record addresses, which {@link #slices} leaves out. */
+  public boolean hasPassThrough() {
+    return passThrough != null && !passThrough.isEmpty();
+  }
+
   /**
    * Hands over the entries of the current chunk that are not record addresses, which {@link #slices} leaves out: an
    * embedded result, a record not stored yet. Once: a second call answers null.
