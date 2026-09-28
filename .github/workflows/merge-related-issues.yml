@@ -114,7 +114,7 @@ jobs:
           # whitelists every number against the very same candidate set, so the worst an
           # instruction injected into an issue body can achieve is a wrong grouping among
           # issues that were already eligible.
-          claude_args: '--model claude-sonnet-5 --allowed-tools "Read(related-candidates.json)"'
+          claude_args: '--model claude-sonnet-5-5 --allowed-tools "Read(related-candidates.json)"'
 
       - name: Apply the groupings
         if: steps.group.outputs.execution_file != ''
