@@ -112,6 +112,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -467,13 +468,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
-  // Wall-clock of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 = none yet.
-  // Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an election
-  // on every health tick.
-  private final AtomicLong lastReplacingLeaderHandOffMs = new AtomicLong();
+  // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
+  // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
+  // election on every health tick. Measured from the end, not the start (issue #8556): an attempt can outlast the
+  // interval, and stamping its start let the next one begin as soon as it returned.
+  private volatile long          lastReplacingLeaderHandOffEndMs;
+  // Hand-offs that failed in a row since the last one that moved leadership; widens the interval (issue #8556).
+  private volatile int           replacingLeaderHandOffFailures;
+  // Claimed by the caller running a hand-off, so a concurrent caller does not start a second one meanwhile.
+  private final    AtomicBoolean replacingLeaderHandOffRunning = new AtomicBoolean();
+  // Clock of the hand-off throttle. Package-private and mutable only so tests can drive the interval without sleeping.
+  LongSupplier replacingLeaderHandOffClock = System::currentTimeMillis;
 
   /** Minimum interval between two leadership hand-offs of a leader replacing a database (issue #8491). */
   static final long REPLACING_LEADER_HAND_OFF_INTERVAL_MS = 10_000L;
+
+  /** Longest interval the back-off of failed hand-offs of a leader replacing a database reaches (issue #8556). */
+  static final long REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS = 120_000L;
+
+  /**
+   * Where the count of failed hand-offs in a row stops growing (issue #8556). Any count past the one that reaches
+   * {@link #REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS} gives the same interval; the cap only keeps the counter bounded.
+   */
+  static final int REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED = 30;
 
   /** Budget of one leadership hand-off of a leader replacing a database (issue #8491). */
   static final long REPLACING_LEADER_HAND_OFF_TIMEOUT_MS = 10_000L;
@@ -4552,58 +4569,124 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Handing leadership to a peer fixes both at once: the peer holds the data and serves the writes, and the
    * install's next download attempt resolves that peer as its source and completes. It is the targeted transfer
-   * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging.
+   * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging and that answered
+   * this leader recently (issue #8556).
    * <p>
-   * No-op when nothing is being replaced (one map read), on a follower, and within
-   * {@link #REPLACING_LEADER_HAND_OFF_INTERVAL_MS} of the previous attempt, so a cluster where no peer can take over
-   * is not put through an election on every tick. Blocks the caller for up to
+   * No-op when nothing is being replaced (one map read), on a follower, and until
+   * {@link #replacingLeaderHandOffIntervalMs} has passed since the previous attempt ENDED - an interval that doubles
+   * with each failure in a row (issue #8556) - so a cluster where no peer can take over is not put through an election
+   * on every tick. Blocks the caller for up to
    * {@link #REPLACING_LEADER_HAND_OFF_TIMEOUT_MS} while a hand-off runs.
    *
    * @return whether leadership moved to another node
    */
   public boolean handOffLeadershipWhileReplacingDatabase() {
-    if (databasesBeingReplaced.isEmpty())
+    if (databasesBeingReplaced.isEmpty()) {
+      resetReplacingLeaderHandOffBackOff();
       return false;
+    }
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || !raftHA.isLeader())
+    if (raftHA == null || !raftHA.isLeader()) {
+      resetReplacingLeaderHandOffBackOff();
       return false;
+    }
 
     // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
     // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
     final List<String> replacing = getDatabasesBeingReplaced();
-    if (replacing.isEmpty())
-      return false;
-
-    final long now = System.currentTimeMillis();
-    final long previous = lastReplacingLeaderHandOffMs.get();
-    if (previous != 0 && now - previous < REPLACING_LEADER_HAND_OFF_INTERVAL_MS)
-      return false;
-    // Single attempt, no retry loop: a lost CAS means a concurrent caller (the health tick, or a direct call) has just
-    // claimed the slot and is running the hand-off itself.
-    if (!lastReplacingLeaderHandOffMs.compareAndSet(previous, now))
-      return false;
-
-    LogManager.instance().log(this, Level.WARNING,
-        "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
-            + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
-            + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
-    final boolean moved;
-    try {
-      moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
-    } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Leadership hand-off while replacing database(s) %s failed: %s. Retrying on a later health check", replacing,
-          e.getMessage());
+    if (replacing.isEmpty()) {
+      // The last replacement finished between the two reads: the episode is over, as on the empty fast path above.
+      resetReplacingLeaderHandOffBackOff();
       return false;
     }
-    if (moved)
-      LogManager.instance().log(this, Level.INFO,
-          "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
-    else
+
+    if (!replacingLeaderHandOffDue())
+      return false;
+    // Single attempt, no retry loop: a lost claim means a concurrent caller (the health tick, or a direct call) is
+    // running the hand-off itself.
+    if (!replacingLeaderHandOffRunning.compareAndSet(false, true))
+      return false;
+    boolean attempted = false;
+    boolean moved = false;
+    try {
+      // Re-checked under the claim: a caller that finished between the check above and the claim has just stamped it.
+      if (!replacingLeaderHandOffDue())
+        return false;
+
       LogManager.instance().log(this, Level.WARNING,
-          "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying on a later "
-              + "health check; to move it by hand, run POST /api/v1/cluster/leader", replacing);
-    return moved;
+          "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
+              + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
+              + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
+      attempted = true;
+      try {
+        moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Leadership hand-off while replacing database(s) %s failed: %s. Retrying in %d ms", replacing, e.getMessage(),
+            replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
+        return false;
+      }
+      if (moved)
+        LogManager.instance().log(this, Level.INFO,
+            "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying in %d ms; to move "
+                + "it by hand, run POST /api/v1/cluster/leader", replacing,
+            replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
+      return moved;
+    } finally {
+      // Stamped when the attempt ENDS (issue #8556), whatever it returned or threw, so the interval is a real pause
+      // between attempts rather than a period that a slow attempt can fill end to end.
+      if (attempted) {
+        lastReplacingLeaderHandOffEndMs = Math.max(1L, replacingLeaderHandOffClock.getAsLong());
+        replacingLeaderHandOffFailures = moved ? 0 : Math.min(replacingLeaderHandOffFailures + 1,
+            REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED);
+      }
+      replacingLeaderHandOffRunning.set(false);
+    }
+  }
+
+  /**
+   * Forgets the failures in a row once the condition they were counted for is over - nothing is being replaced, or this
+   * node is no longer the leader - so the next episode starts from the base interval (issue #8556). The pause after
+   * the last attempt still applies. One volatile read when there is nothing to reset.
+   * <p>
+   * Takes the same claim an attempt takes, so it can never zero the count under an attempt in flight, whose own
+   * failure would then restart the streak (code review on PR #8597). Losing the claim to an attempt skips the reset,
+   * which that attempt's outcome supersedes anyway.
+   * <p>
+   * Package-private: {@link RaftHAServer#queueReplacingDatabaseHandOff} calls it on the ticks that queue nothing.
+   */
+  void resetReplacingLeaderHandOffBackOff() {
+    if (replacingLeaderHandOffFailures == 0 || !replacingLeaderHandOffRunning.compareAndSet(false, true))
+      return;
+    try {
+      replacingLeaderHandOffFailures = 0;
+    } finally {
+      replacingLeaderHandOffRunning.set(false);
+    }
+  }
+
+  /** Whether the throttle of {@link #handOffLeadershipWhileReplacingDatabase()} admits an attempt now. */
+  private boolean replacingLeaderHandOffDue() {
+    final long lastEnd = lastReplacingLeaderHandOffEndMs;
+    return lastEnd == 0
+        || replacingLeaderHandOffClock.getAsLong() - lastEnd >= replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures);
+  }
+
+  /**
+   * The pause after a hand-off of a leader replacing a database before the next one (issue #8556):
+   * {@link #REPLACING_LEADER_HAND_OFF_INTERVAL_MS} after one that moved leadership or after the first failure, then
+   * doubling with each further failure in a row, up to {@link #REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS}. A hand-off
+   * that cannot succeed - no peer can take over - must not run at a steady duty cycle: every attempt that aims a
+   * targeted transfer at a peer that cannot win refuses every write on this leader while it is pending.
+   */
+  static long replacingLeaderHandOffIntervalMs(final int consecutiveFailures) {
+    if (consecutiveFailures <= 1)
+      return REPLACING_LEADER_HAND_OFF_INTERVAL_MS;
+    final int doublings = Math.min(consecutiveFailures - 1, 16);
+    return Math.min(REPLACING_LEADER_HAND_OFF_INTERVAL_MS << doublings, REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS);
   }
 
   /**

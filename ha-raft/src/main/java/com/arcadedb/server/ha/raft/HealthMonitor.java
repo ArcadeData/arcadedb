@@ -468,7 +468,8 @@ public final class HealthMonitor {
     // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
     // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). The hand-off
     // itself runs on the recovery executor the other automatic hand-offs share, so it cannot race them for the one
-    // transfer Ratis keeps pending, and this tick does not wait for it (issue #8557).
+    // transfer Ratis keeps pending, and this tick does not wait for it (issue #8557). Attempts are throttled to one per
+    // ArcadeStateMachine.replacingLeaderHandOffIntervalMs after the previous attempt ended (#8556).
     target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
