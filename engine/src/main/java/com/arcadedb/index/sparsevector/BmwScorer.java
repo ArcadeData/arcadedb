@@ -383,6 +383,8 @@ public final class BmwScorer {
     boolean heapDirty = true;
 
     while (true) {
+      // MUST stay the first statement of the loop: nothing may read the heap for candidate selection between the
+      // mirror sync that sets overflow and this check.
       if (mirror.overflow) {
         // A cursor reached a RID the packed order cannot hold. Every mirror was valid at the end of the
         // previous iteration, and this one completed on comparisons that stay exact against the
