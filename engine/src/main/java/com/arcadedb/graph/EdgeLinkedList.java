@@ -75,6 +75,24 @@ public class EdgeLinkedList {
   }
 
   /**
+   * {@link #edgeIterator}, with every edge it yields already knowing its two endpoints: the entry it is read from is
+   * the pair (edge RID, vertex at the other end) and this list belongs to the vertex at this end, so
+   * {@link Edge#getOut()}, {@link Edge#getIn()} and their vertex twins answer without loading the edge record (issue
+   * #8537). The record is read only when the edge's own content is.
+   * <p>
+   * FOR A CALLER THAT FOLLOWS EDGES WITHOUT READING THEM - an anonymous relationship of a traversal, kept only to tell
+   * one edge from another. The price is the one the neighbour walk ({@link #vertexIterator}) has always paid: a ghost,
+   * an entry whose edge record is gone, is not noticed by following it, because noticing it is exactly the record read
+   * this avoids. A caller that hands the edge to a user, or reads its properties, uses {@link #edgeIterator}, where
+   * following a ghost fails and the traversals skip it.
+   */
+  public Iterator<Edge> edgeIteratorKnowingEndpoints(final String... edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction, true);
+    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes, true);
+  }
+
+  /**
    * #5680: {@link #edgeIterator} for a caller that is about to REMOVE every edge it yields (today,
    * {@code GraphEngine.deleteVertex}), so a part of the list that cannot be read must surface rather than be
    * skipped - the caller deletes the vertex record on top of whatever this walk returned, and an entry silently

@@ -38,8 +38,11 @@ import java.util.Map;
  * @see MutableEdge
  */
 public class ImmutableEdge extends ImmutableDocument implements Edge {
-  private RID out;
-  private RID in;
+  private RID     out;
+  private RID     in;
+  // The endpoints were handed over by the edge list the edge was read from, not by whoever built the edge: the record
+  // still has content, and an edge that cannot read it must not pass for one that never had any (see modify())
+  private boolean endpointsFromEdgeList;
 
   public ImmutableEdge(final Database graph, final DocumentType type, final RID edgeRID, final RID out, final RID in) {
     super(graph, type, edgeRID, null);
@@ -64,6 +67,25 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     propertiesStartingPosition = content.position();
   }
 
+  /**
+   * Hands a not-yet-loaded edge the endpoints the edge list it was read from already holds (issue #8537).
+   * <p>
+   * An entry of a vertex's edge list is the pair (edge RID, vertex at the other end), and the list belongs to one
+   * endpoint in one direction, so an edge reached by walking it knows both of its endpoints without its record. With
+   * them set, {@link #getOut()}, {@link #getIn()} and their vertex twins answer without loading the record, which is
+   * what makes "follow the edge to its other end" cost what walking the adjacency costs: the record is read only
+   * when something asks for the edge's own content. The endpoints of an edge never change after it is created
+   * (moving a vertex rewrites both the edge record and the lists that point at it), so the pair is the same answer
+   * the record would give. A no-op on an edge that already has them.
+   */
+  synchronized void setEndpointsFromEdgeList(final RID out, final RID in) {
+    if (this.out == null && this.in == null) {
+      this.out = out;
+      this.in = in;
+      this.endpointsFromEdgeList = true;
+    }
+  }
+
   public synchronized MutableEdge modify() {
     if (prepareForModify("edge") instanceof MutableEdge fromCache)
       return fromCache;
@@ -77,7 +99,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     // AN EDGE BUILT OVER ITS TWO ENDPOINTS HAS NO RECORD CONTENT TO CARRY OVER, AND MODIFYING IT IS LEGITIMATE. BOTH
     // ENDPOINTS MISSING INSTEAD MEANS THE CONTENT SHOULD HAVE BEEN THERE AND IS NOT, AND THIS BRANCH WOULD HAND BACK A
     // MutableEdge WITH NO ENDPOINTS THAT SILENTLY DROPS THE EDGE'S PROPERTIES ON THE NEXT save()
-    if (out == null && in == null)
+    if (endpointsFromEdgeList || (out == null && in == null))
       requireBuffer("modify");
     return new MutableEdge(database, (EdgeType) type, rid, out, in);
   }
@@ -102,31 +124,36 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   @Override
   public synchronized RID getOut() {
-    checkForLazyLoading();
+    if (out == null)
+      checkForLazyLoading();
     return out;
   }
 
   @Override
   public synchronized Vertex getOutVertex() {
-    checkForLazyLoading();
+    if (out == null)
+      checkForLazyLoading();
     return (Vertex) database.lookupByRID(out, false);
   }
 
   @Override
   public synchronized RID getIn() {
-    checkForLazyLoading();
+    if (in == null)
+      checkForLazyLoading();
     return in;
   }
 
   @Override
   public synchronized Vertex getInVertex() {
-    checkForLazyLoading();
+    if (in == null)
+      checkForLazyLoading();
     return (Vertex) database.lookupByRID(in, false);
   }
 
   @Override
   public synchronized Vertex getVertex(final Vertex.DIRECTION iDirection) {
-    checkForLazyLoading();
+    if (out == null || in == null)
+      checkForLazyLoading();
     if (iDirection == Vertex.DIRECTION.OUT)
       return (Vertex) database.lookupByRID(out, false);
     else

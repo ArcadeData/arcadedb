@@ -84,7 +84,7 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true");
     try {
       assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
@@ -101,7 +101,7 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true");
 
     assertThat(resultSet.hasNext()).isTrue();
     resultSet.next();
@@ -122,7 +122,7 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true");
     try {
       assertThat(resultSet.hasNext()).isTrue();
       resultSet.next();
@@ -140,12 +140,41 @@ class FetchFromIndexedFunctionStepCloseTest extends TestHelper {
     }
   }
 
+  /**
+   * Issue #8594: a LIMIT that has delivered its last row releases the lazy chain at once, so a caller that reads the
+   * result set to its end and never closes it does not keep the retired index files of the chain alive.
+   */
+  @Test
+  void aSatisfiedLimitClosesTheIteratorWithoutClosingTheResultSet() {
+    createCities();
+
+    final ResultSet resultSet = database.query("sql",
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 2");
+    try {
+      assertThat(resultSet.hasNext()).isTrue();
+      resultSet.next();
+
+      final FetchFromIndexedFunctionStep step = indexedFunctionStep(resultSet);
+      final TrackingIterator tracker = new TrackingIterator(step.fullResult);
+      step.fullResult = tracker;
+
+      assertThat(resultSet.hasNext()).isTrue();
+      resultSet.next();
+
+      assertThat(tracker.closed).as("the last row of the LIMIT must release the lazy chain").isTrue();
+      assertThat(step.fullResult).isNull();
+      assertThat(resultSet.hasNext()).isFalse();
+    } finally {
+      resultSet.close();
+    }
+  }
+
   @Test
   void aFailureWhileClosingTheIteratorDoesNotEscape() {
     createCities();
 
     final ResultSet resultSet = database.query("sql",
-        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true LIMIT 1");
+        "SELECT name FROM City WHERE geo.within(coords, geo.geomFromText('" + SEARCH_BOX + "')) = true");
 
     assertThat(resultSet.hasNext()).isTrue();
     resultSet.next();

@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
@@ -852,7 +853,13 @@ public class TransactionManager {
 
           // For LSMVectorIndex, incrementally update VectorLocationIndex during replication
           // to keep in-memory metadata synchronized with replicated pages.
-          if (component instanceof LSMVectorIndexMutable) {
+          if (component instanceof TimeSeriesBucket timeSeriesBucket) {
+            // A replay can rewrite a page at its SAME version (the torn-write repair above), so a tag summary cached
+            // for that version may describe bytes the page no longer holds (issue #8574). A strictly newer version
+            // needs nothing: the summary is keyed on the version it was built from.
+            if (txPage.currentPageVersion == page.getVersion())
+              timeSeriesBucket.invalidatePageTagSummary(modifiedPage.pageId.getPageNumber());
+          } else if (component instanceof LSMVectorIndexMutable) {
             final LSMVectorIndexMutable vectorMutable =
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();

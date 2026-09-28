@@ -104,6 +104,39 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
     // index below to force segment-file creation; in production a workload that's permanently
     // below the threshold should call {@code Index.flush()} before relying on followers seeing
     // the data, which is the contract this test exercises.
+    insertDocuments(leaderDb);
+
+    flushAndAssertEveryServerAnswersLikeTheLeader(leaderDb, leaderIndex);
+  }
+
+  /**
+   * Issue #8536: an index created over rows already stored is populated by its BUILD, not by live puts - and the build
+   * used to index into the LSM-Tree shell and leave the engine empty. The build now travels the same transactional path
+   * a live insert does, so the postings must reach every follower and answer there exactly as on the leader.
+   */
+  @Test
+  void sparseVectorIndexBuiltOverExistingRowsReplicates() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      final DocumentType type = leaderDb.getSchema().createDocumentType(TYPE_NAME);
+      type.createProperty("tokens", Type.ARRAY_OF_INTEGERS);
+      type.createProperty("weights", Type.ARRAY_OF_FLOATS);
+    });
+    insertDocuments(leaderDb);
+
+    leaderDb.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "tokens", "weights" })
+        .withSparseVectorType()
+        .withDimensions(DIMENSIONS)
+        .create();
+
+    flushAndAssertEveryServerAnswersLikeTheLeader(leaderDb, leaderIndex);
+  }
+
+  private static void insertDocuments(final Database leaderDb) {
     leaderDb.transaction(() -> {
       final Random rnd = new Random(0xCAFEL);
       for (int i = 0; i < DOC_COUNT; i++) {
@@ -124,7 +157,9 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
         doc.save();
       }
     });
+  }
 
+  private void flushAndAssertEveryServerAnswersLikeTheLeader(final Database leaderDb, final int leaderIndex) throws Exception {
     // Force every per-bucket sparse-vector index to flush its memtable into a sealed segment.
     // Replication ships sealed component pages, so until a flush happens the leader's writes are
     // memtable-resident only and don't propagate to followers.
