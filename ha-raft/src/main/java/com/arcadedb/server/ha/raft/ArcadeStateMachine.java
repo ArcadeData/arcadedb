@@ -4591,8 +4591,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
     // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
     final List<String> replacing = getDatabasesBeingReplaced();
-    if (replacing.isEmpty())
+    if (replacing.isEmpty()) {
+      // The last replacement finished between the two reads: the episode is over, as on the empty fast path above.
+      resetReplacingLeaderHandOffBackOff();
       return false;
+    }
 
     if (!replacingLeaderHandOffDue())
       return false;
@@ -4644,10 +4647,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Forgets the failures in a row once the condition they were counted for is over - nothing is being replaced, or this
    * node is no longer the leader - so the next episode starts from the base interval (issue #8556). The pause after
    * the last attempt still applies. One volatile read when there is nothing to reset.
+   * <p>
+   * Takes the same claim an attempt takes, so it can never zero the count under an attempt in flight, whose own
+   * failure would then restart the streak (code review on PR #8597). Losing the claim to an attempt skips the reset,
+   * which that attempt's outcome supersedes anyway.
    */
   private void resetReplacingLeaderHandOffBackOff() {
-    if (replacingLeaderHandOffFailures != 0 && !replacingLeaderHandOffRunning.get())
+    if (replacingLeaderHandOffFailures == 0 || !replacingLeaderHandOffRunning.compareAndSet(false, true))
+      return;
+    try {
       replacingLeaderHandOffFailures = 0;
+    } finally {
+      replacingLeaderHandOffRunning.set(false);
+    }
   }
 
   /** Whether the throttle of {@link #handOffLeadershipWhileReplacingDatabase()} admits an attempt now. */
