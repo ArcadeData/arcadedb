@@ -85,7 +85,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong; import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -1459,8 +1460,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
   /**
    * The write-side budget of every streamed response, in milliseconds: how long one blocking write may make no
-   * progress before the connection is closed (issues #7381 and #7806). Re-read on every call, so SET SERVER SETTING
-   * moves it without a restart.
+   * progress before the connection is closed (issues #7381 and #7806). Re-read for every new stream, so SET SERVER
+   * SETTING applies to the next streamed response without a restart; a response already in flight keeps the budget
+   * it started with.
    */
   protected int streamingWriteTimeout() {
     return WriteBoundedOutputStream.budgetMs(httpServer);
@@ -1475,8 +1477,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * @param what names the response in the warning logged when the bound fires
    */
   protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final Supplier<String> what) {
-    if (!exchange.isBlocking())
-      exchange.startBlocking();
     return WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(), what);
   }
 

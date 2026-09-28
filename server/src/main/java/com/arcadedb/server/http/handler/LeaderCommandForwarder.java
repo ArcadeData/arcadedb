@@ -508,8 +508,6 @@ public final class LeaderCommandForwarder {
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
       exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
       exchange.setStatusCode(200);
-      if (!exchange.isBlocking())
-        exchange.startBlocking();
       return WriteBoundedOutputStream.of(exchange, WriteBoundedOutputStream.budgetMs(httpServer),
           () -> "the relayed progress stream of a command forwarded to the leader");
     };

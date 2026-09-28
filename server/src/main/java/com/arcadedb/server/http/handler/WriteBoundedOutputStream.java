@@ -92,16 +92,17 @@ public final class WriteBoundedOutputStream extends OutputStream {
   }
 
   /**
-   * The write-side budget of every streamed response as configured on {@code server}, in milliseconds, re-read on
-   * every call so SET SERVER SETTING moves it without a restart.
+   * The write-side budget of every streamed response as configured on {@code server}, in milliseconds. Read when a
+   * stream is created, so SET SERVER SETTING applies to the next streamed response without a restart; a response
+   * already in flight keeps the budget it started with.
    */
   public static int budgetMs(final HttpServer server) {
     return server.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
   }
 
   /**
-   * The output stream of {@code exchange}, every write of which is bounded by {@code timeoutMs} (issue #7806). The
-   * exchange must already be in blocking mode.
+   * The output stream of {@code exchange}, every write of which is bounded by {@code timeoutMs} (issue #7806).
+   * Switches the exchange to blocking mode if it is not already.
    *
    * @param timeoutMs the budget of {@link GlobalConfiguration#SERVER_HTTP_STREAMING_WRITE_TIMEOUT}; not positive
    *                  leaves the writes unbounded
@@ -109,6 +110,8 @@ public final class WriteBoundedOutputStream extends OutputStream {
    *                  query on database 'x'"; evaluated only then
    */
   public static OutputStream of(final HttpServerExchange exchange, final int timeoutMs, final Supplier<String> what) {
+    if (!exchange.isBlocking())
+      exchange.startBlocking();
     return new WriteBoundedOutputStream(exchange.getOutputStream(), connectionWatchdog(exchange, timeoutMs, what));
   }
 
