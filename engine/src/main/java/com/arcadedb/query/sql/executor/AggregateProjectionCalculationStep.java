@@ -41,39 +41,6 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
 
-  /**
-   * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
-   * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
-   */
-  private static class GroupByKey {
-    private final Object[] values;
-    private final int hashCode;
-
-    GroupByKey(final Object[] values) {
-      // Normalise numeric values to a canonical form so that numerically-equal keys represented with different
-      // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
-      // group instead of being split (issue #4516).
-      for (int i = 0; i < values.length; i++)
-        values[i] = Type.normalizeNumberForKey(values[i]);
-      this.values = values;
-      this.hashCode = Arrays.hashCode(values);
-    }
-
-    @Override
-    public boolean equals(final Object obj) {
-      if (this == obj)
-        return true;
-      if (!(obj instanceof GroupByKey))
-        return false;
-      return Arrays.equals(this.values, ((GroupByKey) obj).values);
-    }
-
-    @Override
-    public int hashCode() {
-      return hashCode;
-    }
-  }
-
   private final GroupBy groupBy;
   private final long    timeoutMillis;
   private final long    limit;
@@ -518,5 +485,38 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new AggregateProjectionCalculationStep(projection.copy(), groupBy == null ? null : groupBy.copy(), limit, context, timeoutMillis);
+  }
+
+  /**
+   * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
+   * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
+   */
+  private static class GroupByKey {
+    private final Object[] values;
+    private final int hashCode;
+
+    GroupByKey(final Object[] values) {
+      // Normalise numeric values to a canonical form so that numerically-equal keys represented with different
+      // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
+      // group instead of being split (issue #4516).
+      for (int i = 0; i < values.length; i++)
+        values[i] = Type.normalizeNumberForKey(values[i]);
+      this.values = values;
+      this.hashCode = Arrays.hashCode(values);
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      if (this == obj)
+        return true;
+      if (!(obj instanceof GroupByKey))
+        return false;
+      return Arrays.equals(this.values, ((GroupByKey) obj).values);
+    }
+
+    @Override
+    public int hashCode() {
+      return hashCode;
+    }
   }
 }
