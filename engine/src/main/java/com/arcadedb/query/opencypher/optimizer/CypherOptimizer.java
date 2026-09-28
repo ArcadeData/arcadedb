@@ -177,6 +177,11 @@ public class CypherOptimizer {
     if (!logicalPlan.hasRepresentableLabelSets())
       return null;
 
+    // 1b. A pattern that names no node at all - MATCH (:A), (:B), or (:A)-[:R]->(:B) - is left to the ordinary
+    // pipeline, as it always was: said here rather than left to the anchor selection refusing an empty plan
+    if (logicalPlan.getNodes().isEmpty())
+      return null;
+
     // 2. Collect runtime statistics
     final List<String> typeNames = extractTypeNames(logicalPlan);
     statisticsProvider.collectStatistics(typeNames);
@@ -184,8 +189,7 @@ public class CypherOptimizer {
     // Handle independent node-only patterns whether they are written as separate MATCH clauses or
     // comma-separated parts of one MATCH (e.g. MATCH (a:T), (b:T) CREATE ...). An anonymous node is one of the
     // parts too: MATCH (:T), (b:T) crosses every T with every T, and planning b alone answered |T| rows.
-    if (logicalPlan.getRelationships().isEmpty() && logicalPlan.getPatternNodes().size() > 1
-        && !logicalPlan.getNodes().isEmpty()) {
+    if (logicalPlan.getRelationships().isEmpty() && logicalPlan.getPatternNodes().size() > 1) {
       return optimizeMultiMatchIndependent(logicalPlan);
     }
 

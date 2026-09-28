@@ -268,6 +268,16 @@ class CypherDisconnectedPatternJoinIssue8584Test extends TestHelper {
   }
 
   @Test
+  void aPatternNamingNoNodeIsLeftToTheOrdinaryPipeline() {
+    for (final String query : List.of("MATCH (:City), (:Item) RETURN count(*) AS c", "MATCH (:City) MATCH (:Item) RETURN count(*) AS c")) {
+      try (final ResultSet rs = database.query("opencypher", "EXPLAIN " + query)) {
+        assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).as(query).doesNotContain("Using Cost-Based Query Optimizer");
+      }
+      assertThat(count(query)).as(query).isEqualTo((long) (CITIES + 1) * 14);
+    }
+  }
+
+  @Test
   void aWriteOverAJoinCreatesOneEdgePerMatch() {
     final long expected = pairs("MATCH (p:Person), (c:City) WHERE (c.id = p.cityId OR rand() < 0) RETURN p.id AS a, c.id AS b").size();
     database.transaction(() -> database.command("opencypher",
