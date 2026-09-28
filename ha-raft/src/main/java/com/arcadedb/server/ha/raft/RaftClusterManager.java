@@ -42,7 +42,7 @@ import java.util.logging.Level;
  * transferring leadership, and graceful cluster leave.
  * <p>
  * Delegates to {@link RaftHAServer} for shared state (live peers, leader status,
- * HTTP address map, leader-change notifier). All Raft configuration changes go
+ * HTTP address map). All Raft configuration changes go
  * through {@link #setConfigurationWithRetry} which retries bounded times to
  * survive the window where a newly elected leader has not yet committed from
  * its current term.
@@ -699,6 +699,8 @@ class RaftClusterManager {
       } catch (final Exception e) {
         HALog.log(this, HALog.BASIC, "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
       }
+      // transferLeadership() never lets an InterruptedException out: every wait it reaches catches it, restores the
+      // flag and returns. That is what makes the flag, and not a catch, the way to learn the leave was interrupted.
       if (Thread.currentThread().isInterrupted())
         throw new ConfigurationException("Interrupted while leaving cluster");
       if (!moved)
