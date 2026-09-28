@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.reflect.Field;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -70,6 +69,9 @@ class Issue7796RemoteServerAdminCommandsTest {
   private static final String UNTYPED_BAD_REQUEST = "HTTP/1.1 400 Bad Request\r\n" + json(new JSONObject()
       .put("error", "Cannot create user")
       .put("detail", "Cannot create user"));
+
+  /** Scripted "response" that reads the request and closes the connection without answering it. */
+  private static final String DROP = "DROP";
 
   /** One entry point per method the issue names, with the command it must send. */
   private static final List<Pair<String, Consumer<RemoteServer>>> ENTRY_POINTS = List.of(
@@ -161,6 +163,33 @@ class Issue7796RemoteServerAdminCommandsTest {
           assertThat(second.bodies()).as(entry.getFirst()).hasSize(1);
           assertThat(new JSONObject(second.bodies().getFirst()).getString("command")).as(entry.getFirst())
               .startsWith(entry.getFirst());
+        } finally {
+          client.close();
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------------------------
+  // The replay guard of #8136 applies: a write whose response was lost is not sent again
+  // ------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void everyAdminCommandIsNotResentWhenItsResponseWasLost() throws Exception {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.NETWORK_SAME_SERVER_ERROR_RETRIES, 3);
+
+    for (final Pair<String, Consumer<RemoteServer>> entry : ENTRY_POINTS) {
+      try (final ScriptedServer server = new ScriptedServer(DROP)) {
+        final RemoteServer client = client(server.port(), cfg);
+        client.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+        try {
+          assertThatThrownBy(() -> entry.getSecond().accept(client))
+              .as(entry.getFirst())
+              .isInstanceOf(RemoteException.class)
+              .hasMessageContaining("may already have applied it");
+
+          assertThat(server.bodies()).as(entry.getFirst()).hasSize(1);
         } finally {
           client.close();
         }
@@ -277,7 +306,6 @@ class Issue7796RemoteServerAdminCommandsTest {
   /**
    * A client whose cluster reload reveals {@code secondPort} as the next server, as an HA topology refresh would.
    */
-  @SuppressWarnings("unchecked")
   private static RemoteServer failoverClient(final int firstPort, final int secondPort, final ContextConfiguration cfg) {
     return new RemoteServer("127.0.0.1", firstPort, "root", "test", cfg) {
       @Override
@@ -287,15 +315,9 @@ class Issue7796RemoteServerAdminCommandsTest {
 
       @Override
       boolean reloadClusterConfiguration() {
-        try {
-          final Field f = RemoteHttpComponent.class.getDeclaredField("replicaServerList");
-          f.setAccessible(true);
-          final List<Pair<String, Integer>> replicas = (List<Pair<String, Integer>>) f.get(this);
-          if (replicas.isEmpty())
-            replicas.add(new Pair<>("127.0.0.1", secondPort));
-        } catch (final Exception e) {
-          throw new RuntimeException(e);
-        }
+        final List<Pair<String, Integer>> replicas = getReplicaServerList();
+        if (replicas.isEmpty())
+          replicas.add(new Pair<>("127.0.0.1", secondPort));
         return true;
       }
     };
@@ -303,7 +325,7 @@ class Issue7796RemoteServerAdminCommandsTest {
 
   /**
    * Loopback server that records the body of each request and answers it with the next scripted response,
-   * repeating the last one once the script runs out.
+   * repeating the last one once the script runs out. {@link #DROP} closes the connection without an answer.
    */
   private static final class ScriptedServer implements AutoCloseable {
     private final ServerSocket                  socket;
@@ -321,6 +343,8 @@ class Issue7796RemoteServerAdminCommandsTest {
             final String next = script.poll();
             if (next != null)
               last = next;
+            if (last == null || DROP.equals(last))
+              continue; // the request was read, and so applied; the response never makes it back
             final OutputStream out = client.getOutputStream();
             out.write(last.getBytes(StandardCharsets.UTF_8));
             out.flush();
