@@ -23,10 +23,15 @@ import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,6 +55,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the apply path with this malformed payload fails.
  */
 class Issue8577StaleEntryAfterInstallBoundaryTest {
+
+  @AfterEach
+  void clearSeam() {
+    ArcadeStateMachine.applyWaitsForInstallForTesting = null;
+  }
 
   @Test
   void anEntryAtOrBelowTheInstalledBoundaryIsSkippedAsANoOp() throws Exception {
@@ -85,6 +95,57 @@ class Issue8577StaleEntryAfterInstallBoundaryTest {
     final CompletableFuture<Message> aboveBoundary = sm.applyTransaction(txEntryForDatabase(sm, "chaos", 13L, 625717L));
     assertThat(aboveBoundary.isCompletedExceptionally())
         .as("an entry above the boundary must go through the normal apply path, not be skipped").isTrue();
+  }
+
+  @Test
+  @Timeout(60)
+  void anEntryAlreadyWaitingOnTheGateWhenTheInstallFinishesIsSkipped() throws Exception {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final long appliedBeforeReplay = sm.readAppliedIndexCounter();
+
+    final CountDownLatch installHoldsGate = new CountDownLatch(1);
+    final CountDownLatch releaseInstall = new CountDownLatch(1);
+    final CountDownLatch applyParked = new CountDownLatch(1);
+    ArcadeStateMachine.applyWaitsForInstallForTesting = name -> {
+      if ("chaos".equals(name))
+        applyParked.countDown();
+    };
+
+    final AtomicReference<Throwable> installFailure = new AtomicReference<>();
+    final Thread installer = new Thread(() -> {
+      try {
+        sm.runUnderInstallGate("chaos", 625716L, () -> {
+          installHoldsGate.countDown();
+          try {
+            releaseInstall.await();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        });
+      } catch (final Throwable t) {
+        installFailure.set(t);
+      }
+    }, "issue8577-install");
+    installer.start();
+    assertThat(installHoldsGate.await(30, TimeUnit.SECONDS)).isTrue();
+
+    // The #8577 interleaving: the apply thread reaches a stale replayed entry while the install holds the gate, and
+    // waits on it; the install then finishes and releases it.
+    final AtomicReference<CompletableFuture<Message>> result = new AtomicReference<>();
+    final Thread applier = new Thread(() -> result.set(sm.applyTransaction(txEntryForDatabase(sm, "chaos", 12L, 601958L))),
+        "issue8577-apply");
+    applier.start();
+    assertThat(applyParked.await(30, TimeUnit.SECONDS)).as("the stale entry must be parked on the install's gate").isTrue();
+
+    releaseInstall.countDown();
+    installer.join(30_000);
+    applier.join(30_000);
+
+    assertThat(installFailure.get()).isNull();
+    assertThat(result.get().isCompletedExceptionally())
+        .as("the parked stale entry must be skipped once the install releases the gate, not applied").isFalse();
+    assertThat(result.get().get().getContent().toStringUtf8()).isEqualTo("OK");
+    assertThat(sm.readAppliedIndexCounter()).isEqualTo(appliedBeforeReplay);
   }
 
   @Test
