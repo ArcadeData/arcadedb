@@ -132,6 +132,21 @@ class Issue8573Issue8569ShowParameterIT extends PostgresWireProtocolTestBase {
         assertThat(firstDataRowValue(readUntilReadyForQuery(in))).isEqualTo("repeatable read");
 
         assertThat(messageTypesOf(simple(out, in, "ROLLBACK"))).doesNotContain('E');
+
+        // A prepared SHOW reads the value at each Execute, not the one current when it was parsed
+        sendParse(out, "SHOWISO", "SHOW transaction_isolation");
+        sendSync(out);
+        readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(simple(out, in, "BEGIN ISOLATION REPEATABLE_READ"))).doesNotContain('E');
+        sendBind(out, "", "SHOWISO");
+        sendExecute(out, "");
+        sendSync(out);
+        assertThat(firstDataRowValue(readUntilReadyForQuery(in))).isEqualTo("repeatable read");
+        assertThat(messageTypesOf(simple(out, in, "ROLLBACK"))).doesNotContain('E');
+        sendBind(out, "", "SHOWISO");
+        sendExecute(out, "");
+        sendSync(out);
+        assertThat(firstDataRowValue(readUntilReadyForQuery(in))).isEqualTo("read committed");
         assertThat(firstDataRowValue(simple(out, in, "SHOW TRANSACTION ISOLATION LEVEL"))).isEqualTo("read committed");
       });
     }

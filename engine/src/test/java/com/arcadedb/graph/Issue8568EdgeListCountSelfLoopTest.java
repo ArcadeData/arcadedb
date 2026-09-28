@@ -128,6 +128,51 @@ class Issue8568EdgeListCountSelfLoopTest extends TestHelper {
     assertThat(contains).isFalse();
   }
 
+  /**
+   * A self-referencing chunk that is NOT the head and that a removal empties must not be deleted and relinked around:
+   * the chunk in front of it would be left pointing at the deleted record.
+   */
+  @Test
+  void emptiedSelfReferencingChunkIsNotDeletedAndRelinkedAround() throws Exception {
+    final RID[] hub = new RID[1];
+    final List<RID> spokes = new ArrayList<>();
+    database.transaction(() -> hub[0] = database.newVertex(VERTEX_TYPE).set("name", "hub").save().getIdentity());
+    database.transaction(() -> {
+      final MutableVertex target = hub[0].asVertex(true).modify();
+      for (int i = 0; i < DEGREE; i++) {
+        final MutableVertex spoke = database.newVertex(VERTEX_TYPE).set("i", i).save();
+        spoke.newEdge(EDGE_TYPE, target);
+        spokes.add(spoke.getIdentity());
+      }
+    });
+
+    // Point the chunk BEHIND the head at itself
+    final RID second = inTx(() -> {
+      final RID head = ((VertexInternal) hub[0].asVertex(true)).getInEdgesHeadChunk();
+      final RID behind = ((EdgeSegment) database.lookupByRID(head, true)).getPreviousRID();
+      final MutableEdgeSegment segment = (MutableEdgeSegment) database.lookupByRID(behind, true);
+      segment.setPrevious(segment);
+      ((DatabaseInternal) database).updateRecord(segment);
+      return behind;
+    });
+    assertThat(second).isNotNull();
+
+    runBounded(() -> {
+      database.transaction(() -> {
+        for (final RID spoke : spokes)
+          edgeLinkedListFor(hub[0]).removeVertex(spoke);
+      });
+      return null;
+    });
+
+    database.transaction(() -> {
+      final RID head = ((VertexInternal) hub[0].asVertex(true)).getInEdgesHeadChunk();
+      final RID behind = ((EdgeSegment) database.lookupByRID(head, true)).getPreviousRID();
+      assertThat(behind).isEqualTo(second);
+      assertThat(database.existsRecord(behind)).as("the head must not point at a deleted chunk").isTrue();
+    });
+  }
+
   private <T> T inTx(final Supplier<T> read) {
     final List<T> result = new ArrayList<>(1);
     database.transaction(() -> result.add(read.get()));

@@ -791,6 +791,9 @@ public class PostgresNetworkExecutor extends Thread {
           writeCommandComplete("COPY", rows);
         }
       } else {
+        if (portal.showName != null)
+          // SHOW answers the value as it stands at THIS Execute, as PostgreSQL does, not the one fixed at Parse
+          portal.cachedResultSet = showResultSet(portal.showName);
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           final ResultSet resultSet = runPortalQuery(portal);
@@ -1095,7 +1098,8 @@ public class PostgresNetworkExecutor extends Thread {
         resultSet = new IteratorResultSet(
             createResultSet(systemQuery.columnName, systemQueryValue(systemQuery.function)).iterator());
       else if (upperCaseText.startsWith("SHOW "))
-        resultSet = new IteratorResultSet(showResultSet(query.query.substring(5)).iterator()); else if (isBeginStatement(upperCaseText)) {
+        resultSet = new IteratorResultSet(showResultSet(query.query.substring(5)).iterator());
+      else if (isBeginStatement(upperCaseText)) {
         applyTransactionControl(PostgresPortal.TransactionControl.BEGIN, null);
         answersNoRows = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -3058,8 +3062,11 @@ public class PostgresNetworkExecutor extends Thread {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
 
       } else if (upperCaseText.startsWith("SHOW ")) {
+        // Answered here too, so Describe has the columns and an unknown name is refused at Parse; Execute reads the
+        // value again, since a BEGIN ISOLATION or a SET between Parse and Execute changes it
+        portal.showName = portal.query.substring(5);
         portal.executed = true;
-        portal.cachedResultSet = showResultSet(portal.query.substring(5));
+        portal.cachedResultSet = showResultSet(portal.showName);
         portal.columns = getColumns(portal.cachedResultSet);
 
       } else if (PostgresCopyStatement.isCopy(portal.query)) {

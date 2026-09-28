@@ -678,7 +678,9 @@ public class EdgeLinkedList {
     final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
     // Edge removal/relink does not commute with a concurrent append: exclude the touched pages from the merge.
     final TransactionContext tx = database.getTransactionIfExists();
-    if (prevBrowsedRID != null && current.isEmpty() && current.getPrevious() != null) {
+    // The guarded predecessor: a chunk whose previous pointer names itself ends the chain like a tail does, so it is
+    // never deleted and relinked around - that would point the chunk in front of it at the chunk just deleted (#8568)
+    if (prevBrowsedRID != null && current.isEmpty() && previousRIDOf(current) != null) {
       // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST.
       // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
       // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.

@@ -19,10 +19,15 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -82,6 +87,16 @@ class Issue8571TemporalSubSecondOverflowTest extends TestHelper {
     // truncate keeps the portion the adjustment map does not name
     assertThat(cypher("localtime.truncate('millisecond', localtime('12:00:00.123456789'), {nanosecond: 2})"))
         .isEqualTo("12:00:00.123000002");
+  }
+
+  @Test
+  void fractionalArbitraryPrecisionValueIsNotRoundedIntoAnInteger() {
+    // doubleValue() would round this to exactly 1.0 and accept it as the integer 1
+    assertThatThrownBy(() -> TemporalUtil.computeNanos(Map.of("millisecond", new BigDecimal("1.0000000000000001")), 0))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> TemporalUtil.toIntField("hour", new BigInteger("4294967308"))).isInstanceOf(IllegalArgumentException.class);
+    assertThat(TemporalUtil.computeNanos(Map.of("millisecond", new BigDecimal("5.000")), 0)).isEqualTo(5_000_000);
+    assertThat(TemporalUtil.toIntField("hour", new BigInteger("12"))).isEqualTo(12);
   }
 
   private String cypher(final String expression) {

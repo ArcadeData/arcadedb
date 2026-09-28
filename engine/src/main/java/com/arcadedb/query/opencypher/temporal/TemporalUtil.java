@@ -23,6 +23,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
@@ -386,6 +388,14 @@ public final class TemporalUtil {
   private static long toIntegralLong(final String name, final Object value) {
     if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte)
       return ((Number) value).longValue();
+    // Exact for the arbitrary-precision types: a double would round 1.0000000000000001 to an integral 1.0
+    if (value instanceof BigDecimal || value instanceof BigInteger) {
+      try {
+        return (value instanceof BigDecimal d ? d : new BigDecimal((BigInteger) value)).longValueExact();
+      } catch (final ArithmeticException e) {
+        throw new IllegalArgumentException("Invalid value for " + name + ": " + value);
+      }
+    }
     if (value instanceof Number n) {
       final double d = n.doubleValue();
       if (d != Math.rint(d) || d < Long.MIN_VALUE || d >= 0x1p63)
