@@ -139,6 +139,7 @@ statement
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
     | compactIndexStatement                          # compactIndexStmt
+    | COMPACT TIMESERIES TYPE identifier             # compactTimeSeriesTypeStmt
 
     // Type Re-serialisation (e.g. relocate property values after toggling EXTERNAL flag)
     | REBUILD TYPE rebuildTypeBody                   # rebuildTypeStmt
