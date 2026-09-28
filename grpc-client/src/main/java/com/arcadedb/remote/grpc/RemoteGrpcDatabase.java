@@ -43,6 +43,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
@@ -389,6 +390,12 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // Store transaction ID in parent class session management
         setSessionId(transactionId);
       } catch (StatusRuntimeException | StatusException e) {
+        // #7780: the same guard as RemoteDatabase.begin(). A retryable status (UNAVAILABLE, or a NeedRetryException
+        // named in the trailers) must reach transaction()'s retry loop with its own type: no transaction exists yet,
+        // so retrying the begin is exactly what the server asked for.
+        final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+        if (mapped instanceof NeedRetryException)
+          throw mapped;
         throw new TransactionException("Error on transaction begin", e);
       }
 

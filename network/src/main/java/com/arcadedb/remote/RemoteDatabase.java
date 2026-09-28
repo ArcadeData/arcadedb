@@ -29,7 +29,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -414,11 +413,21 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
+
+        // #7780: a retryable refusal (a 503 deflection such as a snapshot being installed, a leader election, a
+        // quorum the node cannot reach yet) must reach transaction()'s retry loop with its own type. Wrapped in a
+        // TransactionException it matched neither retry arm, so the configured retry budget was never spent although
+        // no transaction existed yet and nothing had been executed.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          throw (RuntimeException) detail;
+
         throw new TransactionException("Error on transaction begin", detail);
       }
 
       captureResponseHeaders(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
+    } catch (final NeedRetryException | DuplicatedKeyException e) {
+      throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     } finally {
@@ -451,15 +460,20 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
-        if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
-          // SUPPORT RETRY
-          throw detail;
+        // SUPPORT RETRY. #7780: the whole NeedRetryException family, not only its ConcurrentModificationException
+        // subtype - a 503 deflection, a QuorumNotReachedException, a leader change. Every one of them is a refusal
+        // the server answers BEFORE the transaction reaches the replicated log, so it was rolled back and a retry runs
+        // it for the first time: an outcome that is ambiguous about whether the write landed travels as a
+        // TransactionException instead (ReplicationDispatchedTimeoutException, issue #8481), and one where it DID land
+        // as TransactionCommittedRemotelyException (409), neither of which is retried.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          throw (RuntimeException) detail;
 
         throw new TransactionException("Error on transaction commit", detail);
       }
       captureResponseHeaders(response);
       committed = true;
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final NeedRetryException | DuplicatedKeyException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
