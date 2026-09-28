@@ -117,7 +117,7 @@ public class CartesianProduct extends AbstractPhysicalOperator {
         final Result rightResult = pendingRight;
         pendingRight = null;
 
-        // Merge left and right properties into one result
+        // Merge left and right properties into one result: the two sides bind disjoint variables, so none is overwritten
         final ResultInternal merged = new ResultInternal();
         for (final String prop : currentLeft.getPropertyNames())
           merged.setProperty(prop, currentLeft.getProperty(prop));
