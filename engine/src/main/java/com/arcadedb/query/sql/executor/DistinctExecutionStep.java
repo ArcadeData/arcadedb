@@ -40,7 +40,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   ResultSet lastResult = null;
   Result    nextValue;
   // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
-  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
+  // RIDS OF THE FAST PATH ARE NOT ELEMENTS UNDER THE CAP - A BITMAP TAKES A BIT PER RECORD POSITION - BUT THE BITMAP
+  // GROWS TO THE HIGHEST POSITION OF EACH BUCKET, SO WHAT IT TAKES IS CHARGED TO THE BUDGET
   private final OperationHeapLimit heapLimit;
 
   public DistinctExecutionStep(final CommandContext context) {
@@ -118,7 +119,17 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   private void markAsVisited(final Result nextValue) {
     if (canUseRidFastPath(nextValue)) {
+      final long bitmapBytes = pastRids.getAllocatedBytes();
       pastRids.add(nextValue.getElement().get().getIdentity());
+      final long grown = pastRids.getAllocatedBytes() - bitmapBytes;
+      if (grown > 0) {
+        try {
+          heapLimit.charge(grown);
+        } catch (final RuntimeException e) {
+          releaseBuffer();
+          throw e;
+        }
+      }
       return;
     }
     // Store only the property values, not the full Result object
@@ -134,6 +145,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   private void releaseBuffer() {
     pastItems.clear();
+    pastRids.clear();
     heapLimit.release();
   }
 

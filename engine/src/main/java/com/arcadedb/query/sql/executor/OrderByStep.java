@@ -175,12 +175,14 @@ public class OrderByStep extends AbstractExecutionStep {
     }
   }
 
-  /** Sorts the buffer and keeps its first {@code maxResults} rows, giving back the heap of the others. */
+  /**
+   * Sorts the buffer and keeps its first {@code maxResults} rows, giving back the heap of the others: the kept rows are
+   * estimated again, since the rows dropped are not of the size of the average one.
+   */
   private void keepTopResults(final CommandContext context) {
-    final int buffered = cachedResult.size();
     cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
     cachedResult = new ArrayList<>(cachedResult.subList(0, maxResults));
-    limit.release((long) ((double) limit.getChargedBytes() * (buffered - maxResults) / buffered));
+    limit.rechargeAll(cachedResult);
   }
 
   private void releaseBuffer() {

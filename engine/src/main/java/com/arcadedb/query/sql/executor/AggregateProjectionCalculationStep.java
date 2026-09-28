@@ -322,12 +322,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       checkGroupCount(groups.size() - 1);
 
       // THE WORKERS CHARGED THEIR OWN GROUPS WHILE THEY SCANNED; THIS STEP HOLDS THE MERGED ONES FROM HERE ON, A KEY
-      // SEVERAL WORKERS MET BEING ONE GROUP NOW
-      long partialBytes = 0L;
+      // SEVERAL WORKERS MET BEING ONE GROUP NOW. EACH MERGED GROUP IS CHARGED FOR ITSELF: A PROPORTION OF THE WORKERS'
+      // CHARGES WOULD MISS A LARGE KEY ONE WORKER HELD NEXT TO SMALL ONES THE OTHERS DID
       for (final PartialAggregation partial : partials)
-        partialBytes += partial.releaseHeap();
-      if (partialGroups > 0)
-        groupsLimit.charge((long) ((double) partialBytes * groups.size() / partialGroups));
+        partial.releaseHeap();
+      for (final HashMap<GroupByKey, PartialGroup> partition : merged.partitions)
+        for (final GroupByKey key : partition.keySet())
+          groupsLimit.chargeElement(key.values, groupOverhead);
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
       final List<ResultInternal> result = new ArrayList<>(size);
@@ -416,12 +417,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         partitions[i] = new HashMap<>();
     }
 
-    /** Gives back what this worker charged for its groups, and stops it charging more. Returns the bytes it held. */
-    synchronized long releaseHeap() {
+    /** Gives back what this worker charged for its groups, and stops it charging more. */
+    synchronized void releaseHeap() {
       heapReleased = true;
-      final long bytes = heapLimit.getChargedBytes();
       heapLimit.release();
-      return bytes;
     }
 
     // THE GROUP LIMIT IS CHECKED ON THIS WORKER'S GROUPS HERE AND ON THE MERGED ONES AT THE END: AN EXACT GLOBAL COUNT
@@ -443,7 +442,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
             heapLimit.chargeElement(key.values, groupOverhead);
         }
       }
-      applyAggregates(workerProjection, group.row, next, context, heapLimit);
+      // NO OPERATION FOR THE AGGREGATES: ONLY THE ONES THAT MERGE PARTIALS RUN IN THE WORKERS (count, sum, avg, min, max),
+      // AND NONE KEEPS THE VALUES IT AGGREGATES, SO NOTHING OUTSIDE THE MONITOR ABOVE EVER CHARGES THIS WORKER'S OPERATION
+      applyAggregates(workerProjection, group.row, next, context, null);
     }
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
