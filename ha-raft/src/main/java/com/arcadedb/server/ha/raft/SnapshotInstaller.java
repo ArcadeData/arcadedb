@@ -867,6 +867,46 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Marks the copy of {@code databaseName} closed on this node as one a resync could not verify - the leader did not
+   * hold it - so {@code ArcadeDBServer.getDatabase} refuses to reopen it while this node is a follower (issue #8589).
+   * Durable, so a restart does not reopen it either. A no-op for a REGISTERED database - this node serves it, and what
+   * keeps it from serving it stale is the caller's own verdict - and for a name with no directory left.
+   * <p>
+   * The check and the write hold the registry lock, so no reopen can slip between them: a reopen that ran before sees
+   * no marker and registers the copy (which the caller then finds registered), and one that runs after is refused.
+   *
+   * @return {@code true} when the marker is on disk, {@code false} when there was no closed copy to mark
+   * @throws IOException when the marker cannot be written durably: the caller must then treat the copy as the failed
+   *                     install it is, rather than leave it reopenable
+   */
+  static boolean markUnverifiedClosedCopy(final ArcadeDBServer server, final String databaseName) throws IOException {
+    // Lock-free early outs first, so a reconcile that reports the same databases LEADER_MISSING on every install does not
+    // queue on the registry lock for each of them: a registered database is not marked, and an existing mark stays -
+    // only an install or a drop removes it, and neither can run concurrently with the caller's install.
+    if (server.existsDatabase(databaseName))
+      return false;
+    final Path dbDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName);
+    final Path marker = dbDir.resolve(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
+    if (Files.exists(marker))
+      return true;
+    synchronized (server.getDatabasesLock()) {
+      if (server.existsDatabase(databaseName) || !Files.isDirectory(dbDir))
+        return false;
+      // The marker itself is deliberately not re-checked: a concurrent caller that wrote it first makes this a second,
+      // idempotent write of the same empty file, which is cheaper than another branch on a path this rare.
+      writeMarkerDurable(marker);
+      return true;
+    }
+  }
+
+  /** Whether {@code databaseName}'s directory carries the {@link ArcadeDBServer#UNVERIFIED_CLOSED_COPY_FILE} marker. */
+  static boolean isUnverifiedClosedCopy(final ArcadeDBServer server, final String databaseName) {
+    return Files.exists(Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE));
+  }
+
+  /**
    * Resolves the on-disk path of a database, so callers no longer need to keep it open just to read its
    * path before an install. Two cases:
    * <ul>
@@ -967,9 +1007,16 @@ public final class SnapshotInstaller {
       // the installer-only entry point rather than the one that refuses a marked directory (issue #7129).
       server.reopenDatabaseUnderSnapshotRecovery(databaseName);
     } catch (final Exception e) {
-      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-          "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
-          e, databaseName);
+      // The rollback restored a closed copy a resync could not verify, marker and all: it stays closed, as it was
+      // before the install, which is not a failure (issue #8589).
+      if (isUnverifiedClosedCopy(server, databaseName))
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Database '%s' stays closed after a snapshot-install rollback: its copy is still unverified (%s)", null,
+            databaseName, e.getMessage());
+      else
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
+            e, databaseName);
     }
   }
 
