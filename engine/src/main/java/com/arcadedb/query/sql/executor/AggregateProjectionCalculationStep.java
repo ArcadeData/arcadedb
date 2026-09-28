@@ -18,9 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
@@ -43,48 +40,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private int parallelWorkers = 0;
   private int parallelUnits   = 0;
 
-  // #8591: THE GROUPS HELD, UNDER THE HEAP BUDGET OF ALL THE QUERIES; THE CAP ON THEIR NUMBER IS maxGroupsAllowed
-  private       OperationHeapLimit        heapLimit;
+  private final GroupBy                   groupBy;
+  private final long                      timeoutMillis;
+  private final long                      limit;
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
+  private final OperationHeapLimit        groupsLimit;
   // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
   private final Queue<PartialAggregation> workerPartials = new ConcurrentLinkedQueue<>();
-
-  /**
-   * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
-   * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
-   */
-  private static class GroupByKey {
-    private final Object[] values;
-    private final int hashCode;
-
-    GroupByKey(final Object[] values) {
-      // Normalise numeric values to a canonical form so that numerically-equal keys represented with different
-      // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
-      // group instead of being split (issue #4516).
-      for (int i = 0; i < values.length; i++)
-        values[i] = Type.normalizeNumberForKey(values[i]);
-      this.values = values;
-      this.hashCode = Arrays.hashCode(values);
-    }
-
-    @Override
-    public boolean equals(final Object obj) {
-      if (this == obj)
-        return true;
-      if (!(obj instanceof GroupByKey))
-        return false;
-      return Arrays.equals(this.values, ((GroupByKey) obj).values);
-    }
-
-    @Override
-    public int hashCode() {
-      return hashCode;
-    }
-  }
-
-  private final GroupBy groupBy;
-  private final long    timeoutMillis;
-  private final long    limit;
-  private final long    maxGroupsAllowed;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
   private final Map<GroupByKey, ResultInternal> aggregateResults = new LinkedHashMap<>();
@@ -102,16 +64,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     this.limit = limit;
 
     // Memory optimization: Enforce memory limits for GROUP BY operations
-    final Database db = context == null ? null : context.getDatabase();
-    this.maxGroupsAllowed = db == null ?
-        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
-        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    this.groupsLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) {
     if (finalResults == null) {
-      heapLimit = OperationHeapLimit.of(context, "GROUP BY");
       try {
         executeAggregation(context, nRecords);
       } catch (final RuntimeException e) {
@@ -189,17 +147,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           return;
 
         // Memory safety: enforce memory limit for GROUP BY operations
-        if (maxGroupsAllowed > 0 && aggregateResults.size() >= maxGroupsAllowed) {
+        if (groupsLimit.isExceededBy(aggregateResults.size() + 1L)) {
+          final int held = aggregateResults.size();
           aggregateResults.clear();
-          checkGroupCount(maxGroupsAllowed);
+          checkGroupCount(held);
         }
 
         preAggr = newGroup(projection, next, context);
         aggregateResults.put(key, preAggr);
-        heapLimit.chargeElement(key.values, groupOverheadBytes(projection));
+        groupsLimit.chargeElement(key.values, groupOverheadBytes(projection));
       }
 
-      applyAggregates(projection, preAggr, next, context, heapLimit);
+      applyAggregates(projection, preAggr, next, context, groupsLimit);
 
       // NOTE: we must NOT clear the element reference of the input Result here (issue #4590).
       // Doing so is a destructive side effect on a row we do not own exclusively: when the same
@@ -228,17 +187,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   /** Refuses one group more when {@code groups} already reach the limit of groups one GROUP BY may hold in heap. */
   private void checkGroupCount(final long groups) {
-    if (maxGroupsAllowed > 0 && groups >= maxGroupsAllowed) {
-      throw new CommandExecutionException(
-          "Limit of allowed groups for in-heap GROUP BY in a single query exceeded (" + maxGroupsAllowed + "). You can set "
-              + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
-    }
+    groupsLimit.check(groups + 1);
   }
 
   /**
    * What a group holds besides the values of its key, which are charged on their own: its key and its entry in the map
    * of the groups, the row of its non-aggregate projections - most often the key values again - and one state per
-   * aggregate. The state of an aggregate that gathers values (list(), set(), percentile()) grows past that.
+   * aggregate. What an aggregate that keeps every value gathers (list(), percentile()) is charged as it grows.
    */
   private static int groupOverheadBytes(final Projection projection) {
     return HeapEstimator.HASH_ENTRY_BYTES + 24 + HeapEstimator.RESULT_BYTES
@@ -249,8 +204,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     aggregateResults.clear();
     if (finalResults != null)
       finalResults = Collections.emptyList();
-    if (heapLimit != null)
-      heapLimit.release();
+    groupsLimit.release();
   }
 
   @Override
@@ -322,7 +276,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
           workerContext -> {
             final PartialAggregation partial = new PartialAggregation(
                 workerPreProjection == null ? null : workerPreProjection.copy(), projection.copy(),
-                groupBy == null ? null : groupBy.copy(), partitions, OperationHeapLimit.of(workerContext, "GROUP BY"), groupOverhead);
+                groupBy == null ? null : groupBy.copy(), partitions, OperationHeapLimit.of(workerContext, "groups", "GROUP BY"),
+                groupOverhead);
             workerPartials.add(partial);
             return partial;
           },
@@ -372,7 +327,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       for (final PartialAggregation partial : partials)
         partialBytes += partial.releaseHeap();
       if (partialGroups > 0)
-        heapLimit.charge((long) ((double) partialBytes * groups.size() / partialGroups));
+        groupsLimit.charge((long) ((double) partialBytes * groups.size() / partialGroups));
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
       final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
       final List<ResultInternal> result = new ArrayList<>(size);
@@ -531,5 +486,38 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   @Override
   public ExecutionStep copy(final CommandContext context) {
     return new AggregateProjectionCalculationStep(projection.copy(), groupBy == null ? null : groupBy.copy(), limit, context, timeoutMillis);
+  }
+
+  /**
+   * Lightweight wrapper for GROUP BY keys using Object[] instead of ArrayList.
+   * This reduces memory overhead by eliminating ArrayList wrapper objects for each key.
+   */
+  private static class GroupByKey {
+    private final Object[] values;
+    private final int hashCode;
+
+    GroupByKey(final Object[] values) {
+      // Normalise numeric values to a canonical form so that numerically-equal keys represented with different
+      // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
+      // group instead of being split (issue #4516).
+      for (int i = 0; i < values.length; i++)
+        values[i] = Type.normalizeNumberForKey(values[i]);
+      this.values = values;
+      this.hashCode = Arrays.hashCode(values);
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      if (this == obj)
+        return true;
+      if (!(obj instanceof GroupByKey))
+        return false;
+      return Arrays.equals(this.values, ((GroupByKey) obj).values);
+    }
+
+    @Override
+    public int hashCode() {
+      return hashCode;
+    }
   }
 }

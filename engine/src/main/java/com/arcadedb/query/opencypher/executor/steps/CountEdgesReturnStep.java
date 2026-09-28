@@ -110,7 +110,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     if (groupingExpressions.length == 1) {
       // Single-key fast path: use raw Object as map key
       final Map<Object, Long> groups = new LinkedHashMap<>();
-      heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+      heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
 
       while (prevResult.hasNext()) {
         final Result inputRow = prevResult.next();
@@ -156,7 +156,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // Multi-key path
     final Map<GroupKey, Long> groups = new LinkedHashMap<>();
-    heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
       final long begin = context.isProfiling() ? System.nanoTime() : 0;

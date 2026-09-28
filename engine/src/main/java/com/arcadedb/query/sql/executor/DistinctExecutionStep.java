@@ -35,55 +35,18 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   // A DistinctKey, and the entry of the set that holds it
   private static final int DISTINCT_KEY_OVERHEAD_BYTES = HeapEstimator.HASH_ENTRY_BYTES + 24;
 
-  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
-  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
-  private OperationHeapLimit limit;
-
-  /**
-   * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
-   * This dramatically reduces memory usage compared to storing full Result objects.
-   */
-  private static class DistinctKey {
-    private final Map<String, Object> properties;
-    private final int hashCode;
-
-    DistinctKey(final Result result) {
-      // Extract only the properties (not the element reference, metadata, etc.), normalising numeric values to a
-      // canonical form so that the same logical number represented with different boxed numeric types (e.g.
-      // Integer(1) vs Long(1)) is deduplicated as one value instead of splitting into separate rows (issue #6676),
-      // matching the canonicalization SQL GROUP BY already applies (AggregateProjectionCalculationStep.GroupByKey).
-      final Set<String> propertyNames = result.getPropertyNames();
-      this.properties = new HashMap<>(propertyNames.size());
-      for (final String propName : propertyNames) {
-        this.properties.put(propName, Type.normalizeNumberForKey(result.getProperty(propName)));
-      }
-      // Pre-compute hashCode for performance
-      this.hashCode = properties.hashCode();
-    }
-
-    @Override
-    public boolean equals(final Object other) {
-      if (this == other)
-        return true;
-      if (!(other instanceof DistinctKey))
-        return false;
-      return this.properties.equals(((DistinctKey) other).properties);
-    }
-
-    @Override
-    public int hashCode() {
-      return hashCode;
-    }
-  }
-
   final Set<DistinctKey> pastItems = new HashSet<>();
   final RidSet           pastRids;
   ResultSet lastResult = null;
   Result    nextValue;
+  // THE KEYS REMEMBERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). THE
+  // RIDS OF THE FAST PATH ARE NOT COUNTED: A BITMAP TAKES A BIT PER RECORD POSITION
+  private final OperationHeapLimit heapLimit;
 
   public DistinctExecutionStep(final CommandContext context) {
     super(context);
     this.pastRids = new RidSet(context);
+    heapLimit = OperationHeapLimit.of(context, "DISTINCT");
   }
 
   @Override
@@ -161,10 +124,8 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     // Store only the property values, not the full Result object
     final DistinctKey key = new DistinctKey(nextValue);
     pastItems.add(key);
-    if (limit == null)
-      limit = OperationHeapLimit.of(context, "DISTINCT");
     try {
-      limit.add(pastItems.size(), key.properties, DISTINCT_KEY_OVERHEAD_BYTES);
+      heapLimit.add(pastItems.size(), key.properties, DISTINCT_KEY_OVERHEAD_BYTES);
     } catch (final RuntimeException e) {
       releaseBuffer();
       throw e;
@@ -173,8 +134,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   private void releaseBuffer() {
     pastItems.clear();
-    if (limit != null)
-      limit.release();
+    heapLimit.release();
   }
 
   private boolean alreadyVisited(final Result nextValue) {
@@ -223,4 +183,40 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
+  /**
+   * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
+   * This dramatically reduces memory usage compared to storing full Result objects.
+   */
+  private static class DistinctKey {
+    private final Map<String, Object> properties;
+    private final int hashCode;
+
+    DistinctKey(final Result result) {
+      // Extract only the properties (not the element reference, metadata, etc.), normalising numeric values to a
+      // canonical form so that the same logical number represented with different boxed numeric types (e.g.
+      // Integer(1) vs Long(1)) is deduplicated as one value instead of splitting into separate rows (issue #6676),
+      // matching the canonicalization SQL GROUP BY already applies (AggregateProjectionCalculationStep.GroupByKey).
+      final Set<String> propertyNames = result.getPropertyNames();
+      this.properties = new HashMap<>(propertyNames.size());
+      for (final String propName : propertyNames) {
+        this.properties.put(propName, Type.normalizeNumberForKey(result.getProperty(propName)));
+      }
+      // Pre-compute hashCode for performance
+      this.hashCode = properties.hashCode();
+    }
+
+    @Override
+    public boolean equals(final Object other) {
+      if (this == other)
+        return true;
+      if (!(other instanceof DistinctKey))
+        return false;
+      return this.properties.equals(((DistinctKey) other).properties);
+    }
+
+    @Override
+    public int hashCode() {
+      return hashCode;
+    }
+  }
 }

@@ -55,6 +55,7 @@ public final class OperationHeapLimit {
   static final int FORWARD_BYTES = 16 * 1024;
 
   private final long               maxElements;
+  private final String             elementsName;
   private final String             operation;
   private final QueryHeapTracker   tracker;
   private final OperationHeapLimit parent;
@@ -64,9 +65,10 @@ public final class OperationHeapLimit {
   private       long               estimatedBytes;
   private       int                sampleCountdown;
 
-  private OperationHeapLimit(final long maxElements, final String operation, final QueryHeapTracker tracker,
-      final OperationHeapLimit parent) {
+  private OperationHeapLimit(final long maxElements, final String elementsName, final String operation,
+      final QueryHeapTracker tracker, final OperationHeapLimit parent) {
     this.maxElements = maxElements;
+    this.elementsName = elementsName;
     this.operation = operation;
     this.tracker = tracker;
     this.parent = parent;
@@ -78,12 +80,19 @@ public final class OperationHeapLimit {
    * @param operation what holds the elements, as the error messages name it (e.g. "ORDER BY", "Cartesian product")
    */
   public static OperationHeapLimit of(final CommandContext context, final String operation) {
+    return of(context, "elements", operation);
+  }
+
+  /**
+   * @param elementsName what the operation holds, as the error message of the element cap names it (e.g. "groups")
+   */
+  public static OperationHeapLimit of(final CommandContext context, final String elementsName, final String operation) {
     final Database database = context == null ? null : context.getDatabase();
     final long maxElements = database == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
         database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
     final QueryHeapTracker tracker = context != null && QueryHeapBudget.isEnabled() ? context.getQueryHeapTracker() : null;
-    return new OperationHeapLimit(maxElements, operation, tracker, null);
+    return new OperationHeapLimit(maxElements, elementsName, operation, tracker, null);
   }
 
   /**
@@ -91,7 +100,7 @@ public final class OperationHeapLimit {
    * it: the list a collect() gathers for one group of a GROUP BY.
    */
   public OperationHeapLimit child(final String operation) {
-    return new OperationHeapLimit(maxElements, operation, tracker, this);
+    return new OperationHeapLimit(maxElements, "elements", operation, tracker, this);
   }
 
   /**
@@ -100,10 +109,18 @@ public final class OperationHeapLimit {
    * @param elements the number of elements the operation holds, the one being added included
    */
   public void check(final long elements) {
-    if (maxElements > 0 && elements > maxElements)
+    if (isExceededBy(elements))
       throw new CommandExecutionException(
-          "Limit of allowed elements for in-heap " + operation + " in a single query exceeded (" + maxElements + "). You can set "
-              + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+          "Limit of allowed " + elementsName + " for in-heap " + operation + " in a single query exceeded (" + maxElements
+              + "). You can set " + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
+  }
+
+  /**
+   * Whether holding {@code elements} is past the element cap, for an operation that releases what it holds before
+   * {@link #check(long) failing}.
+   */
+  public boolean isExceededBy(final long elements) {
+    return maxElements > 0 && elements > maxElements;
   }
 
   /**

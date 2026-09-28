@@ -99,7 +99,7 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
-    heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
     final int groupOverhead = CountEdgesStep.groupOverheadBytes(aliasOutputNames.length + 1);
 
     while (prevResult.hasNext()) {
@@ -140,10 +140,12 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
 
-        final int groupsBefore = groups.size();
-        final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
-        if (groups.size() > groupsBefore)
+        long[] accumulator = groups.get(groupKey);
+        if (accumulator == null) {
+          accumulator = new long[1];
+          groups.put(groupKey, accumulator);
           heapLimit.add(groups.size(), keyValues, groupOverhead);
+        }
         accumulator[0] += totalCount;
       } finally {
         if (context.isProfiling())

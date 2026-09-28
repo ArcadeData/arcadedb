@@ -117,7 +117,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
     final List<Result> results;
 
-    heapLimit = OperationHeapLimit.of(context, "GROUP BY");
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
     try {
       if (singleKeyPath) {
         results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context, nRecords);
