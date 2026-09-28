@@ -41,10 +41,13 @@ import com.arcadedb.query.opencypher.executor.operators.RowBuffer;
 import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
@@ -88,6 +91,7 @@ final class DisconnectedPatternJoinPlanner {
   static final double JOIN_BUFFER_COST_PER_ROW = 3.0;
 
   private final DatabaseInternal        database;
+  private final LogicalPlan             logicalPlan;
   private final StatisticsProvider      statisticsProvider;
   /** Rows a join buffer holds in full before it turns compact; 0 when a write could change a record (see RowBuffer). */
   private final int                     compactAfterRows;
@@ -125,9 +129,10 @@ final class DisconnectedPatternJoinPlanner {
 
   private enum Strategy {CARTESIAN_PRODUCT, HASH_JOIN, INDEX_NESTED_LOOP}
 
-  DisconnectedPatternJoinPlanner(final DatabaseInternal database, final StatisticsProvider statisticsProvider,
-      final boolean recordsReloadable) {
+  DisconnectedPatternJoinPlanner(final DatabaseInternal database, final LogicalPlan logicalPlan,
+      final StatisticsProvider statisticsProvider, final boolean recordsReloadable) {
     this.database = database;
+    this.logicalPlan = logicalPlan;
     this.statisticsProvider = statisticsProvider;
     this.compactAfterRows = recordsReloadable ? RowBuffer.DEFAULT_COMPACT_AFTER_ROWS : 0;
   }
@@ -293,6 +298,9 @@ final class DisconnectedPatternJoinPlanner {
       for (int i = 0; i < candidate.getPropertyNames().size() && i < keyTypes.length; i++) {
         final String property = candidate.getPropertyNames().get(i);
         EquiJoinKey key = fromLeft.get(property);
+        if (key != null && holdsOtherValuesThan(key.left(), keyTypes[i]))
+          // Every left row would read the label instead of seeking it: the hash join is the one to compare
+          key = null;
         if (key != null)
           readsLeft = true;
         else
@@ -369,6 +377,33 @@ final class DisconnectedPatternJoinPlanner {
         keys.add(EquiJoinKey.of(comparison.getRight(), comparison.getLeft()));
     }
     return keys.toArray(new EquiJoinKey[0]);
+  }
+
+  /**
+   * Whether an expression of the left row is known to hold values an index of the given key type cannot seek: a
+   * property the schema declares with a type of another kind - a number against a string index, whose equality with a
+   * string spelling a RID makes {@link IndexNestedLoopJoin} read the whole label for every row. An undeclared property
+   * or another expression is not known, and is sought.
+   */
+  private boolean holdsOtherValuesThan(final Expression expression, final Type indexKeyType) {
+    if (!(expression instanceof PropertyAccessExpression access))
+      return false;
+    final LogicalNode node = logicalPlan.getPatternNode(access.getVariableName());
+    if (node == null || node.getLabels().size() != 1 || node.isLabelDisjunction())
+      return false;
+    final DocumentType type = database.getSchema().getTypeOrNull(node.getFirstLabel());
+    final Property property = type == null ? null : type.getPolymorphicPropertyIfExists(access.getPropertyName());
+    return property != null && kindOf(property.getType()) != kindOf(indexKeyType);
+  }
+
+  /** The kind of value a type holds, as far as an index seek is concerned: text, number, boolean, or anything else. */
+  private static int kindOf(final Type type) {
+    return switch (type) {
+      case STRING -> 0;
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> 1;
+      case BOOLEAN -> 2;
+      default -> 3;
+    };
   }
 
   /** The {@code variable.property = constant} conjuncts, keyed by property: the constant side is the key. */
