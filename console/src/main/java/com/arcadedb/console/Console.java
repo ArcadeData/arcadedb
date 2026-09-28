@@ -92,9 +92,7 @@ public class Console {
   private              int                  verboseLevel             = 3;
   private              String               language                 = SQL_LANGUAGE;
   private              boolean              asyncMode                = false;
-  // THE DATABASE WHOSE ASYNC EXECUTOR CARRIES THE CONSOLE'S EXECUTOR-WIDE onError HANDLER. THE EXECUTOR IS PER DATABASE
-  // INSTANCE, SO THE HANDLER MUST FOLLOW databaseProxy ACROSS connect/create/close INSTEAD OF STAYING ON THE ONE THAT WAS
-  // CURRENT WHEN `set asyncMode = true` RAN (ISSUE #7865)
+  // THE DATABASE WHOSE (PER-INSTANCE) ASYNC EXECUTOR CARRIES THE CONSOLE'S EXECUTOR-WIDE onError HANDLER
   private              Database             asyncErrorHandlerDatabase;
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
@@ -440,7 +438,7 @@ public class Console {
                     GlobalConfiguration.ASYNC_WORKER_THREADS.reset();
                     // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
                     GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
-                    // WITH NO DATABASE OPEN YET THE REGISTRATION IS DEFERRED TO THE FIRST ASYNC STATEMENT (ISSUE #7865)
+                    // WITH NO DATABASE OPEN YET THE REGISTRATION IS DEFERRED TO THE FIRST ASYNC STATEMENT
                     registerAsyncErrorHandler();
                 }
                 outputLine(3, "Set asyncMode to %s", asyncMode);
@@ -788,21 +786,11 @@ public class Console {
     }
 
     /**
-     * Registers the executor-wide async error handler on the CURRENT database, once per database instance.
-     * <p>
-     * This is the error channel that is not the per-statement callback in {@link #executeSQL(String)}: `set asyncMode = true`
-     * forces {@code ASYNC_TX_BATCH_SIZE=1}, so the worker commits outside {@code DatabaseAsyncCommand.execute()} and a failure
-     * raised by that commit - a unique-index violation surfaced at commit, a full volume, a WAL write failure - arrives here
-     * instead. It must mark the run as errored for the same reason the callback does: otherwise main() exits 0 for a script
-     * whose writes never landed (issue #7300, follow-up to #7115).
-     * <p>
-     * The async executor belongs to one database instance, so registering once in `set asyncMode` was not enough: a later
-     * connect or create database replaced {@code databaseProxy} and left the new executor with no handler, and with no
-     * database open at all the registration dereferenced null (issue #7865). It is therefore called both when the setting
-     * is turned on and before every async statement; the identity check keeps the per-statement cost to one comparison.
-     * <p>
-     * The remote console needs no equivalent: executeSQL() takes the async path only when !isRemoteDatabase(), so a remote
-     * session in asyncMode runs every statement synchronously and its failures are already caught - and flagged - there.
+     * Registers the executor-wide async error handler on the CURRENT database, once per database instance. It is not the
+     * per-statement callback in {@link #executeSQL(String)}: with {@code ASYNC_TX_BATCH_SIZE=1} the worker commits outside
+     * {@code DatabaseAsyncCommand.execute()}, and a failure raised there must still mark the run as errored or main() exits 0
+     * for a script whose writes never landed. The executor belongs to one database instance, so this runs before every async
+     * statement, not only when the setting is turned on. Remote sessions never take the async path, so they need nothing.
      */
     private void registerAsyncErrorHandler() {
         if (!asyncMode || databaseProxy == null || isRemoteDatabase() || databaseProxy == asyncErrorHandlerDatabase)
@@ -1475,6 +1463,7 @@ public class Console {
         }
 
         databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", userName, password);
+        asyncErrorHandlerDatabase = null;
         this.remoteServer = new RemoteServer(remoteServer, remotePort, userName, password);
     }
 

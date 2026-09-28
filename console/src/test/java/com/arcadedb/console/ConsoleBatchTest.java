@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
@@ -340,7 +339,7 @@ class ConsoleBatchTest {
       db.async().waitCompletion();
       assertThat(Console.isErrored()).as("the script itself must succeed, or the check below proves nothing").isFalse();
 
-      ((DatabaseAsyncExecutorImpl) db.async()).onError(new IOException("simulated WAL write failure at commit"));
+      db.async().onError(new IOException("simulated WAL write failure at commit"));
       assertThat(Console.isErrored())
           .as("a failure on the current database's executor-wide async channel must decide the exit code")
           .isTrue();
