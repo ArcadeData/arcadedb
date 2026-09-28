@@ -388,13 +388,8 @@ public class DatabaseReconciler {
 
     // Additive-only guard: a database we hold that the leader does not must NOT be dropped here. Flag it so the
     // cluster status / Studio surfaces it; a genuine DROP still arrives via DROP_DATABASE_ENTRY replay.
-    for (final String dbName : plan.leaderMissing()) {
-      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
-      LogManager.instance().log(this, Level.WARNING,
-          "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
-              + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
-          dbName, dbName);
-    }
+    for (final String dbName : plan.leaderMissing())
+      markLeaderMissing(dbName);
 
     // A failure is "still worth retrying" only until it has failed ACQUIRE_GIVE_UP_AFTER times in a row. Past that
     // a persistently bad database stops forcing the retry, so it no longer makes Ratis re-trigger InstallSnapshot
@@ -408,6 +403,27 @@ public class DatabaseReconciler {
     for (final String dbName : outcome.refreshFailures().keySet())
       retryWorthwhile |= bumpFailureOrGiveUp(dbName, givenUp);
     return new ReconcileVerdict(retryWorthwhile, givenUp);
+  }
+
+  /**
+   * Records that the leader does not hold {@code dbName}, which this node has a copy of, and keeps that copy: the
+   * {@link AcquireState#LEADER_MISSING} verdict. Also the verdict of the snapshot resyncs when the leader answers 404
+   * for a database closed on this node (issue #8559), so the two paths report the same fact the same way.
+   */
+  void markLeaderMissing(final String dbName) {
+    acquireStatuses.put(dbName, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
+    LogManager.instance().log(this, Level.WARNING,
+        "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
+            + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
+        dbName, dbName);
+  }
+
+  /**
+   * Drops a {@link AcquireState#LEADER_MISSING} verdict on {@code dbName} once an install from the leader succeeded
+   * for it (issue #8559): the leader evidently holds it now. Any other state is left alone.
+   */
+  void clearLeaderMissing(final String dbName) {
+    acquireStatuses.computeIfPresent(dbName, (name, status) -> status.state() == AcquireState.LEADER_MISSING ? null : status);
   }
 
   /**
@@ -531,8 +547,9 @@ public class DatabaseReconciler {
    * node (issue #8464) does NOT (issue #8558), as in the full resync ({@code ArcadeStateMachine.downloadAllDatabasesFrom}):
    * the leader serves only the databases IT has open, so one closed on the leader too - an ordinary maintenance close,
    * run on every node - answers 404 on every retry, and failing the install for it would leave the node re-notified
-   * forever with every other database behind with it. Such a database is reported back instead, and the caller
-   * quarantines it with its own read floor (issue #6760).
+   * forever with every other database behind with it. A 404 there is the leader not holding it (issue #8559): the copy
+   * is kept with the {@link AcquireState#LEADER_MISSING} verdict. Any other failure is reported back instead, and the
+   * caller quarantines it with its own read floor (issue #6760).
    *
    * @return the databases closed on this node that could not be installed; empty when every install succeeded
    */
@@ -555,12 +572,19 @@ public class DatabaseReconciler {
     for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
       try {
         refreshFromLeader(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
+      } catch (final LeaderDoesNotHoldDatabaseException e) {
+        // A copy closed on this node that the leader does not hold (issue #8559) - closed there too, or dropped by the
+        // cluster while this node was away - is not a failed refresh: the same leader answers the same on every retry.
+        // It is the auto-acquire path's verdict for the same input. A database reopened here since the listing is
+        // served by this node again, so the leader not holding it still fails the install, as for a registered one.
+        if (server.existsDatabase(dbName))
+          throw e;
+        markLeaderMissing(dbName);
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Snapshot install could not refresh database '%s', which is closed on this node but still on disk and "
                 + "would be reopened by the next request that names it: finishing the install without it and keeping "
-                + "it quarantined until a resync succeeds. If the leader does not hold '%s' open, open it there or "
-                + "remove this node's copy (issue #8558)", e, dbName, dbName);
+                + "it quarantined until a resync succeeds (issue #8558)", e, dbName);
         notInstalled.add(dbName);
       }
     }
@@ -574,6 +598,7 @@ public class DatabaseReconciler {
     installGate.run(dbName, installedBoundaryIndex,
         () -> SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
             leaderHttpAddr, leaderHttpsAddr, clusterToken, server));
+    clearLeaderMissing(dbName);
   }
 
   /**
