@@ -341,6 +341,26 @@ public class RemoteHttpComponent extends RWLockContext {
       final boolean leaderIsPreferable,
       final boolean autoReconnect,
       final Callback callback) {
+    return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
+        callback, payloadCommand != null ? payloadCommand : operation);
+  }
+
+  /**
+   * As {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean, Callback)}, naming the
+   * failed request in an error message as {@code errorOperation} rather than by its command text. A command whose
+   * text carries a secret - {@code create user} carries the password (issue #7796) - must not have that text
+   * copied into an exception message, and from there into whatever logs it.
+   */
+  Object httpCommand(final String method,
+      final String extendedURL,
+      final String operation,
+      final String language,
+      final String payloadCommand,
+      final Map<String, Object> params,
+      final boolean leaderIsPreferable,
+      final boolean autoReconnect,
+      final Callback callback,
+      final String errorOperation) {
 
     Exception lastException = null;
 
@@ -440,7 +460,7 @@ public class RemoteHttpComponent extends RWLockContext {
           remoteDb.captureResponseHeaders(response);
 
         if (response.statusCode() != 200) {
-          lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
+          lastException = manageException(response, errorOperation);
           if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())) {
             LogManager.instance()
                 .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
