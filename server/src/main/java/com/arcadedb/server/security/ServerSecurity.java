@@ -575,7 +575,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       if (applied)
         return;
-      awaitSupersededChange(ha, "create user '" + name + "'", "user list", attempt);
+      awaitSupersededChange(ha, "create user '" + name + "'", "user list",
+          ReplicatedSecurityFingerprintRepository.USERS, attempt);
     }
   }
 
@@ -604,6 +605,58 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
         "Retrying to %s: the %s changed on another node between this node's read and the apply (attempt %d of %d)",
         what, document, attempt, SECURITY_CAS_MAX_ATTEMPTS);
     ha.awaitLocalApply();
+  }
+
+  /**
+   * {@link #awaitSupersededChange(HAServerPlugin, String, String, int)} for a document whose compare-and-set
+   * precondition is the document in force on this node: the user list and the API-token document (issue #8430).
+   * <p>
+   * Such a precondition is refused by every node for as long as this node's copy differs from the last one the
+   * cluster installed, because every node judges it against that installed fingerprint ({@link #isSuperseded}).
+   * A copy changed locally - a hand edit or a restored backup of the file, loaded at restart or by the reload of
+   * {@code server-users.jsonl}, and for tokens the legacy plaintext-to-hash migration such a file triggers - never
+   * converges by itself, so every attempt is refused. Publishing that copy instead, as the group document does
+   * since issue #8074, is deliberately NOT done for credentials: a node out of step with the cluster must not be
+   * able to push its own user list or token set over everyone else's (issue #6808).
+   * <p>
+   * What changes is only what the caller is told once the attempts are spent. The generic message says the
+   * document "keeps being changed concurrently on another node" and asks for a retry, which is false here and sends
+   * the operator to retry a request that cannot succeed from this node. When this node's copy differs from the
+   * installed one, the failure says so and names the ways out instead.
+   * <p>
+   * The comparison runs after one more {@link HAServerPlugin#awaitLocalApply()}, so an entry this node has not
+   * applied yet is not mistaken for a local change. A node that has never installed a replicated copy of the
+   * document has no cluster copy to differ from, and keeps the generic message.
+   */
+  private void awaitSupersededChange(final HAServerPlugin ha, final String what, final String document,
+      final String documentKey, final int attempt) {
+    if (attempt >= SECURITY_CAS_MAX_ATTEMPTS) {
+      ha.awaitLocalApply();
+      failIfChangedLocally(what, document, documentKey);
+    }
+    awaitSupersededChange(ha, what, document, attempt);
+  }
+
+  private void failIfChangedLocally(final String what, final String document, final String documentKey) {
+    final String installed = replicatedFingerprints.get(documentKey);
+    if (installed == null)
+      return;
+
+    final boolean users = ReplicatedSecurityFingerprintRepository.USERS.equals(documentKey);
+    final String live = users ? usersFingerprint() : apiTokensFingerprint();
+    if (installed.equals(live))
+      return;
+
+    final String fileName = users ? SecurityUserFileRepository.FILE_NAME : ApiTokenConfiguration.FILE_NAME;
+    throw new ServerSecurityException(String.format(
+        "Could not %s: this node's %s was changed locally and no longer matches the last one the cluster installed "
+            + "(installed fingerprint %s, in force here %s) - a hand edit or a restored backup of '%s' loaded at "
+            + "restart or by a reload%s. The cluster refuses a change built from a locally modified %s, so that "
+            + "one node cannot overwrite everyone else's copy, and retrying from this node fails the same way. "
+            + "Make the change through another node of the cluster, whose entry also replaces this node's local "
+            + "copy, or restore '%s' to the cluster's version. Nothing was changed",
+        what, document, installed, live, fileName, users ? "" : ", including the migration of legacy plaintext "
+            + "tokens it triggers", document, fileName));
   }
 
   /**
@@ -636,7 +689,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       if (applied)
         break;
-      awaitSupersededChange(ha, "update user '" + name + "'", "user list", attempt);
+      awaitSupersededChange(ha, "update user '" + name + "'", "user list",
+          ReplicatedSecurityFingerprintRepository.USERS, attempt);
     }
 
     // Applying the replicated list already dropped this principal's LOGIN sessions on every node, this one
@@ -671,7 +725,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       if (applied)
         break;
-      awaitSupersededChange(ha, "drop user '" + userName + "'", "user list", attempt);
+      awaitSupersededChange(ha, "drop user '" + userName + "'", "user list",
+          ReplicatedSecurityFingerprintRepository.USERS, attempt);
     }
 
     // Same rationale (and the same OUTSIDE-the-monitor placement) as dropUser(): a recreated same-name
@@ -1342,8 +1397,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * The cost of taking the recorded fingerprint as the baseline is that a node whose live document has drifted
    * cannot get a change of its own accepted: it submits the fingerprint of what it holds, every node compares that
    * with what the cluster installed, and the retry loop in {@code createUserClusterWide} and its siblings fails
-   * loudly after {@link #SECURITY_CAS_MAX_ATTEMPTS}. That is the right failure. A node out of step with the cluster
-   * must not be able to push its own copy over everyone else's, which is the whole of issue #6808.
+   * loudly after {@link #SECURITY_CAS_MAX_ATTEMPTS}, naming the local change (issue #8430). That is the right
+   * failure for the user list and the API-token document. A node out of step with the cluster must not be able to
+   * push its own copy over everyone else's, which is the whole of issue #6808. The group document takes the other
+   * side of that trade, because its local changes come from supported operations (issue #8074).
    *
    * @param current the document in force, used only to make the log line diagnosable - never to decide
    */
@@ -1955,7 +2012,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       if (applied)
         return response;
-      awaitSupersededChange(ha, "create API token '" + name + "'", "API-token document", attempt);
+      awaitSupersededChange(ha, "create API token '" + name + "'", "API-token document",
+          ReplicatedSecurityFingerprintRepository.API_TOKENS, attempt);
     }
   }
 
@@ -1982,7 +2040,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       }
       if (applied)
         return true;
-      awaitSupersededChange(ha, "delete the API token", "API-token document", attempt);
+      awaitSupersededChange(ha, "delete the API token", "API-token document",
+          ReplicatedSecurityFingerprintRepository.API_TOKENS, attempt);
     }
   }
 
