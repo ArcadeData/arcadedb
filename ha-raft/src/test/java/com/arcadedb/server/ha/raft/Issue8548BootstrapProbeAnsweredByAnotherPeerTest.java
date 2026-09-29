@@ -89,6 +89,17 @@ class Issue8548BootstrapProbeAnsweredByAnotherPeerTest {
   }
 
   @Test
+  void anAnswerFromTheAskedPeerWithoutADatabaseListIsRetriedAsMalformed() {
+    // The identity check passes; the missing list is then the same malformed answer it was before this change.
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200,
+        """
+            {"peerId":"localhost_31485"}""", Set.of("graph"));
+
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    assertThat(outcome.detail()).startsWith(BootstrapElection.MALFORMED_ANSWER);
+  }
+
+  @Test
   void aMalformedAnswerIsStillRetried() {
     final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200, "not json", Set.of("graph"));
     assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
