@@ -113,7 +113,7 @@ public class GraphQLSchema {
   }
 
   private ResultSet executeQuery(final OperationDefinition op, final Map<String, Object> parameters,
-      final GraphQLFragments fragments) {
+      final GraphQLFragments documentFragments) {
     String from = null;
 
     SelectionSet projection = null;
@@ -121,22 +121,29 @@ public class GraphQLSchema {
     FieldDefinition typeDefinition = null;
     final Set<String> typeArgumentNames = new HashSet<>();
 
-    // UNKNOWN AND CYCLIC FRAGMENTS ARE REJECTED HERE, BEFORE ANY RECORD IS READ: THE RESULT SET EXPANDS THE FRAGMENTS
-    // LAZILY, WHILE IT IS ITERATED, WHERE AN ERROR WOULD NO LONGER BE CLASSIFIED AS A PARSING ONE
+    final Map<String, Object> variables = resolveVariables(op, parameters);
+    // BOUND TO THE VARIABLES BEFORE ANYTHING IS EXPANDED: THE if ARGUMENT OF @skip AND @include CAN REFERENCE THEM
+    final GraphQLFragments fragments = documentFragments.withVariables(variables);
+
+    // UNKNOWN AND CYCLIC FRAGMENTS AND INVALID @skip/@include ARE REJECTED HERE, BEFORE ANY RECORD IS READ: THE RESULT SET
+    // EXPANDS THE SELECTIONS LAZILY, WHILE IT IS ITERATED, WHERE AN ERROR WOULD NO LONGER BE CLASSIFIED AS A PARSING ONE
     fragments.validate(op.getSelectionSet());
 
     // THE OPERATION'S OWN SELECTIONS ARE FIELDS OF THE Query TYPE, WHICH A TOP-LEVEL FRAGMENT CAN BE WRITTEN ON
     final List<Selection> operationSelections = fragments.expand(op.getSelectionSet().getSelections(), "Query"::equals);
     if (operationSelections.size() > 1)
       throw new CommandParsingException("Error on executing multiple queries");
-    if (operationSelections.isEmpty())
+    if (operationSelections.isEmpty()) {
+      // EXCLUDED BY @skip OR @include, THE ONLY FIELD IS WHAT A VALID DOCUMENT ASKED FOR: A RESPONSE WITH NO FIELD. WITHOUT
+      // THEM THERE IS STILL NO FIELD WHEN THE FRAGMENTS CANNOT APPLY TO Query, WHICH THE SPECIFICATION REJECTS
+      if (!fragments.expand(op.getSelectionSet().getSelections(), "Query"::equals, false).isEmpty())
+        return new InternalResultSet();
       throw new CommandParsingException("GraphQL query selects no field");
+    }
 
     String queryName = null;
 
     try {
-      final Map<String, Object> variables = resolveVariables(op, parameters);
-
       final Selection selection = operationSelections.getFirst();
       queryName = selection.getFieldName();
 
