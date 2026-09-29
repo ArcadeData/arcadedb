@@ -26,6 +26,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.schema.DocumentType;
@@ -50,6 +51,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 
 /**
  * The incoming side of the edge types declared unidirectional, for the query languages (issue #8625).
@@ -539,8 +541,13 @@ public final class IncomingEdgeLookup {
         addLightweightEdges(database, builders, lightweight.size());
 
       final List<Snapshot> result = new ArrayList<>(typeNames.size());
-      for (final String typeName : typeNames)
-        result.add(new Snapshot(typeName, builtBy, database, builders.get(typeName)));
+      for (final String typeName : typeNames) {
+        final Builder builder = builders.get(typeName);
+        // A query that pays for a scan says so: it is the cost a slow query over such a type is made of
+        LogManager.instance().log(IncomingEdgeLookup.class, Level.FINE,
+            "Scanned %d edges of the unidirectional edge type '%s' to answer its incoming side", builder.size, typeName);
+        result.add(new Snapshot(typeName, builtBy, database, builder));
+      }
       return result;
     }
 

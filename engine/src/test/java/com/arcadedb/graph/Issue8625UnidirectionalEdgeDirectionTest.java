@@ -73,6 +73,20 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
   }
 
   @Test
+  void graphBatchNamesAnUnknownEdgeType() {
+    createSchema(false);
+    final List<RID> tags = createTags();
+    try (final GraphBatch batch = database.batch().build()) {
+      assertThatThrownBy(() -> batch.newEdge(tags.get(0), "NoSuchEdge", tags.get(1)))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Edge type 'NoSuchEdge' not found");
+      assertThatThrownBy(() -> batch.newEdge(tags.get(0), "Tag", tags.get(1)))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Edge type 'Tag' not found");
+    }
+  }
+
+  @Test
   void graphBatchRefusesAUnidirectionalEdgeOnABidirectionalType() {
     createSchema(true);
     final List<RID> tags = createTags();
@@ -170,6 +184,10 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.inE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.both('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.bothE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
+    // An in() in a MATCH where: condition is an expression, not a hop: it answers as the function does anywhere else
+    assertThat(sum("sql",
+        "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3' AND in('TAGGED_WITH').size() > 0)} RETURN t)"))
+        .isZero();
     // SQL functions called on their own read what the vertex stores, as the vertex API does (embedded, remote, Gremlin)
     assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isZero();
     assertThat(sum("sql", "SELECT inE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isZero();

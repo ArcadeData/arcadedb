@@ -357,6 +357,8 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    // Also in reset(): a context is reused across transactions, and whichever of the two runs first must move it on;
+    // moving it twice only skips a transaction number, which nothing compares but for equality
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;

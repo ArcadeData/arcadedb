@@ -736,17 +736,17 @@ public class GraphBatch implements AutoCloseable {
 
     // Cached edge type bucket ID lookup
     final int typeBucketId = edgeTypeFirstBucketCache.computeIfAbsent(edgeTypeName,
-        name -> ((EdgeType) database.getSchema().getType(name)).getFirstBucketId());
+        name -> edgeType(name).getFirstBucketId());
 
     final boolean typeIsLightweight = lightweightTypeCache.computeIfAbsent(edgeTypeName,
-        name -> ((EdgeType) database.getSchema().getType(name)).isLightweight());
+        name -> edgeType(name).isLightweight());
 
     // The direction belongs to the schema, as the storage shape does (issue #8625). A unidirectional batch on a
     // bidirectional type would leave edges the type promises to reach from their target unreachable from it, and a
     // query walking the pattern from that end would silently answer nothing: refused, as Vertex.newEdge() refuses it.
     // A unidirectional type gets no incoming side whatever the batch was told.
     final boolean typeIsBidirectional = bidirectionalTypeCache.computeIfAbsent(edgeTypeName,
-        name -> ((EdgeType) database.getSchema().getType(name)).isBidirectional());
+        name -> edgeType(name).isBidirectional());
     if (typeIsBidirectional && !bidirectional)
       throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeTypeName)
           + ". Build the batch with withBidirectional(true), or declare the type UNIDIRECTIONAL");
@@ -775,6 +775,13 @@ public class GraphBatch implements AutoCloseable {
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
+  private EdgeType edgeType(final String name) {
+    if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType edgeType))
+      throw new IllegalArgumentException("Edge type '" + name + "' not found");
+    return edgeType;
   }
 
   /**
