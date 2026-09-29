@@ -90,8 +90,8 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
       assertThat(executions.get()).isEqualTo(2);
       assertThat(database.countType("Person", false)).isEqualTo(1);
       assertThat(activeSessions()).as("the session of the refused commit must have been released").isZero();
-      // THE SERVER'S Retry-After (#8617), READ FROM THE REAL ANSWER
-      assertThat(database.pauses).containsExactly(RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS * 1_000L);
+      // THE SERVER'S Retry-After (#8617), READ FROM THE REAL ANSWER, SPREAD BY UP TO A TENTH OF IT
+      assertRetryAfterPauses(database.pauses, 1);
     }
   }
 
@@ -103,15 +103,14 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
 
       assertThat(database.deflected.get()).isEqualTo(2);
       assertThat(executions.get()).isEqualTo(1);
-      final long retryAfterMs = RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS * 1_000L;
-      assertThat(database.pauses).containsExactly(retryAfterMs, retryAfterMs);
+      assertRetryAfterPauses(database.pauses, 2);
       assertThat(activeSessions()).isZero();
     }
   }
 
   /**
-   * The server-side half: a commit that fails inside the handler ends its session, with no help from the client. The
-   * client here never sends the rollback it would send on its way out.
+   * The server-side half: a commit that fails inside the handler ends its session, with no help from the client, and
+   * says so in the answer, so the client sends no rollback to release it. The client here would not send one anyway.
    */
   @Test
   void aCommitThatFailsInsideTheHandlerEndsItsSession() {
@@ -132,9 +131,16 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
       }
 
       assertThatThrownBy(database::commit).isInstanceOf(DuplicatedKeyException.class);
-      assertThat(database.rollbacksSkipped.get()).as("the client must not have released it").isEqualTo(1);
       assertThat(activeSessions()).as("a failed commit must end its session on the server").isZero();
+      assertThat(database.rollbacks.get()).as("the server said the session is closed: no rollback to send").isZero();
     }
+  }
+
+  private static void assertRetryAfterPauses(final List<Long> pauses, final int expected) {
+    final long retryAfterMs = RetryLaterException.SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS * 1_000L;
+    assertThat(pauses).hasSize(expected);
+    for (final long pause : pauses)
+      assertThat(pause).isBetween(retryAfterMs, retryAfterMs + retryAfterMs / 10);
   }
 
   private int activeSessions() {
@@ -151,7 +157,7 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
    */
   private static class DeflectingDatabase extends RemoteDatabase {
     final         AtomicInteger  deflected        = new AtomicInteger();
-    final         AtomicInteger  rollbacksSkipped = new AtomicInteger();
+    final         AtomicInteger  rollbacks        = new AtomicInteger();
     final         List<Long>     pauses           = new ArrayList<>();
     private final ArcadeDBServer server;
     private final String         route;
@@ -168,11 +174,11 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
 
     @Override
     public void rollback() {
+      rollbacks.incrementAndGet();
       if (releaseSessions) {
         super.rollback();
         return;
       }
-      rollbacksSkipped.incrementAndGet();
       setSessionId(null);
     }
 

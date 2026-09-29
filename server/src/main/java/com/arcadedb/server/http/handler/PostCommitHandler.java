@@ -59,8 +59,9 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
       // In a finally, because a commit that FAILS ends the transaction just the same: HttpSession.execute rolls it
       // back on the way out. The session used to stay registered with nothing left in it until the idle timeout,
       // one abandoned session per failed commit, and a client retrying the block left one behind per attempt
-      // (issue #8618).
-      removeSession(exchange, user);
+      // (issue #8618). The client is told, so it does not send a /rollback to release what is already gone.
+      if (removeSession(exchange, user))
+        exchange.getResponseHeaders().put(SESSION_CLOSED_HEADER, "true");
       exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
     }
     Metrics.counter("http.commit").increment();
