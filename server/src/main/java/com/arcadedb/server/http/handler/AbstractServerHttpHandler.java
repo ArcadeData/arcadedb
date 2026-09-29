@@ -69,6 +69,7 @@ import io.undertow.util.StatusCodes;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -85,6 +86,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -1468,6 +1470,28 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static boolean isEventStreamRequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst(Headers.ACCEPT);
     return accept != null && accept.contains(EVENT_STREAM_CONTENT_TYPE);
+  }
+
+  /**
+   * The write-side budget of every streamed response, in milliseconds: how long one blocking write may make no
+   * progress before the connection is closed (issues #7381 and #7806). Re-read for every new stream, so SET SERVER
+   * SETTING applies to the next streamed response without a restart; a response already in flight keeps the budget
+   * it started with.
+   */
+  protected int streamingWriteTimeout() {
+    return WriteBoundedOutputStream.budgetMs(httpServer);
+  }
+
+  /**
+   * The output stream a streamed response - NDJSON or Server-Sent Events - is written to, every write of which is
+   * bounded by {@link #streamingWriteTimeout()} (issue #7806). Switches the exchange to blocking mode if it is not
+   * already. A client that stops reading gets its connection closed instead of holding this worker thread for as
+   * long as it keeps the socket open.
+   *
+   * @param what names the response in the warning logged when the bound fires
+   */
+  protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final Supplier<String> what) {
+    return WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(), what);
   }
 
   /** The response headers of a Server-Sent Events stream. */

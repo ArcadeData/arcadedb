@@ -643,7 +643,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
    * Without the lock two events interleave into a single corrupt {@code data:} frame, which the
    * client cannot parse, rather than merely arriving in an unexpected order.
    */
-  private static final class SSEProgressSink implements ServerControlPlane.ProgressListener {
+  private final class SSEProgressSink implements ServerControlPlane.ProgressListener {
     private final HttpServerExchange exchange;
     private       OutputStream       out;
 
@@ -670,9 +670,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         if (out == null) {
           setEventStreamHeaders(exchange);
           exchange.setStatusCode(200);
-          if (!exchange.isBlocking())
-            exchange.startBlocking();
-          out = exchange.getOutputStream();
+          // Bounded (issue #7806): a client that stops reading the progress stream gets its connection closed
+          // rather than parking the thread that runs the command inside a write.
+          out = streamedResponseOutput(exchange, () -> "the progress stream of a server command");
         }
         out.write(sseFrame(data).getBytes(StandardCharsets.UTF_8));
         out.flush();
