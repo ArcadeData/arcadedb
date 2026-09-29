@@ -413,7 +413,8 @@ public class LocalSchema implements Schema {
   private volatile    Thread                                 recordingThread               = null;
   /**
    * Whether a save was left to the outermost {@link #recordFileChanges} frame by a nested frame or by a transaction
-   * that ended inside it (issue #8635). Read and written by the frame's thread under the database write lock only.
+   * that ended inside it (issue #8635). Read only when the frame FAILS: a successful one saves unconditionally. Read
+   * and written by the frame's thread under the database write lock only.
    */
   private             boolean                                recordingSavePending          = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();

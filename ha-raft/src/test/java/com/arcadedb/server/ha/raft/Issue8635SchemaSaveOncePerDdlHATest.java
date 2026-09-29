@@ -74,6 +74,18 @@ class Issue8635SchemaSaveOncePerDdlHATest extends BaseRaftHATest {
     assertThat(schema.getVersion() - before).as("one write at the commit").isEqualTo(1);
     assertThat(schema.isDirty()).isFalse();
 
+    // A NESTED TRANSACTION COMMITTED UNDER AN OPEN ONE THAT RAN DDL: THE RAFT COMMIT PATH ASKS FOR THE SAVE BEFORE THE
+    // NESTED CONTEXT LEFT THE STACK, WHERE isTransactionActive() ALREADY ANSWERS false. THE ENCLOSING END WRITES IT
+    leader.begin();
+    before = schema.getVersion();
+    leader.getSchema().createDocumentType("Issue8635Nested");
+    leader.begin();
+    leader.newDocument("Issue8635Doc").set("neverSeenBefore8635", 1L).set("anotherNewName8635", 2L).save();
+    leader.commit();
+    assertThat(schema.getVersion()).as("the nested commit leaves the write to the enclosing transaction").isEqualTo(before);
+    leader.commit();
+    assertThat(schema.getVersion() - before).as("one write at the enclosing commit").isEqualTo(1);
+
     assertClusterConsistency();
 
     for (int server = 0; server < getServerCount(); server++) {
@@ -81,6 +93,7 @@ class Issue8635SchemaSaveOncePerDdlHATest extends BaseRaftHATest {
       assertThat(serverSchema.getType("Issue8635Doc").getAllIndexes(false)).as("server %d", server).hasSize(1);
       for (int i = 0; i < 3; i++)
         assertThat(serverSchema.getType("Issue8635Tx" + i).getAllIndexes(false)).as("server %d", server).hasSize(1);
+      assertThat(serverSchema.existsType("Issue8635Nested")).as("server %d", server).isTrue();
     }
   }
 }
