@@ -3773,6 +3773,14 @@ public class LocalSchema implements Schema {
   }
 
   public synchronized void saveConfiguration() {
+    saveConfiguration(false);
+  }
+
+  /**
+   * @param ignoreOpenTransaction {@code true} for the one caller that saves on purpose while a transaction is open: the
+   *                              commit of the outermost transaction, right before its durable phase
+   */
+  private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
     rebuildBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
@@ -3780,7 +3788,7 @@ public class LocalSchema implements Schema {
     if (database.getEmbedded() instanceof LocalDatabase localDatabase)
       localDatabase.markModified();
 
-    if (readingFromFile || !loadInRamCompleted || multipleUpdate || database.isTransactionActive()) {
+    if (readingFromFile || !loadInRamCompleted || multipleUpdate || (!ignoreOpenTransaction && database.isTransactionActive())) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty
       dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
       return;
@@ -4297,6 +4305,30 @@ public class LocalSchema implements Schema {
           database.getName());
     }
     return isDirty();
+  }
+
+  /**
+   * Writes a pending schema change before the outermost transaction of this thread makes its records durable (issue
+   * #8635). A crash between the two would otherwise leave acknowledged records in bucket files that no schema entry
+   * names. The schema change stands whether the commit then succeeds or not, so writing it first loses nothing.
+   * <p>
+   * Nothing to do for a nested transaction (the outermost one writes), inside a frame of this thread (the frame writes),
+   * or under {@link #bulkChange}, which writes once at its own end.
+   */
+  public void saveConfigurationBeforeCommit() {
+    if (!isDirty() || recordingThread == Thread.currentThread())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.getTransactionDepth() > 1)
+      return;
+
+    try {
+      saveConfiguration(true);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema before a commit on database '%s'", e,
+          database.getName());
+    }
   }
 
   /**

@@ -55,7 +55,7 @@ public class CypherPlanCache {
    * How many times this cache has been invalidated. A counter rather than a timestamp (#8635): a plan built in the same
    * millisecond as the invalidation before it was refused by the millisecond-granular comparison this replaces.
    */
-  private long invalidationEpoch = 0;
+  private volatile long invalidationEpoch = 0;
 
   /**
    * Creates a new plan cache.
@@ -127,9 +127,7 @@ public class CypherPlanCache {
    * @return how many times this cache has been invalidated
    */
   public long getInvalidationEpoch() {
-    synchronized (this) {
-      return invalidationEpoch;
-    }
+    return invalidationEpoch;
   }
 
   /**

@@ -730,6 +730,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
+        schema.saveConfigurationBeforeCommit();
         final Binary result = current.getLastTransaction().commit();
         if (result != null) {
           stats.writeTx.incrementAndGet();

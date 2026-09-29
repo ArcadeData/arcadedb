@@ -303,6 +303,35 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
     assertThat(database.getSchema().existsType("Direct")).isTrue();
   }
 
+  /**
+   * begin(); CREATE TYPE; INSERT; commit(): the schema file names the type BEFORE the records are durable, so a crash
+   * between the commit and the schema write cannot leave acknowledged records in files no schema entry names.
+   */
+  @Test
+  void theSchemaNamesTheTypeBeforeTheRecordsInsertedIntoItAreDurable() throws Exception {
+    final Path schemaFile = ((LocalSchema) database.getSchema().getEmbedded()).getConfigurationFile().toPath();
+    final boolean[] namedWhenDurable = new boolean[1];
+    final boolean[] fired = new boolean[1];
+
+    database.begin();
+    database.getSchema().createDocumentType("Loaded");
+    database.newDocument("Loaded").set("x", 1).save();
+    ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
+      fired[0] = true;
+      try {
+        namedWhenDurable[0] = Files.readString(schemaFile).contains("\"Loaded\"");
+      } catch (final java.io.IOException e) {
+        throw new IllegalStateException(e);
+      }
+    });
+    database.commit();
+
+    assertThat(fired[0]).isTrue();
+    assertThat(namedWhenDurable[0]).as("schema.json named the type when the commit became durable").isTrue();
+    assertThat(((LocalSchema) database.getSchema().getEmbedded()).isDirty()).isFalse();
+    assertThat(database.countType("Loaded", false)).isEqualTo(1);
+  }
+
   /** The write count is the schema version; the file itself has to agree that the write happened. */
   @Test
   void theSchemaFileNamesTheTypeAsSoonAsTheDdlReturns() throws Exception {
