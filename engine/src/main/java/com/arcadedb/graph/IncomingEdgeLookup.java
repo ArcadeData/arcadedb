@@ -623,9 +623,15 @@ public final class IncomingEdgeLookup {
           ++to;
         return to - from;
       }
+      // COUNTED ON THE ARRAYS AND THE CHANGES ALONE: NO EDGE IS MATERIALIZED
       long count = 0;
-      for (final Iterator<Edge> it = edgesInto(target, changes); it.hasNext(); it.next())
-        ++count;
+      final boolean deletions = changes.hasDeletions();
+      for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
+        if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
+          ++count;
+      for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
+        if (isLive(created, changes))
+          ++count;
       return count;
     }
 
@@ -653,15 +659,28 @@ public final class IncomingEdgeLookup {
     /** The scanned edges into {@code target}, less the ones the transaction deleted since, plus the ones it created. */
     private Iterator<Edge> edgesInto(final RID target, final UnidirectionalEdgeChanges changes) {
       final List<Edge> result = new ArrayList<>();
-      for (final Iterator<Edge> it = storedEdgesInto(target); it.hasNext(); ) {
-        final Edge edge = it.next();
-        if (!changes.isDeletedAfter(edge.getIdentity(), builtAt))
-          result.add(edge);
-      }
+      // A DELETED EDGE IS TOLD BY ITS IDENTITY, WHICH THE ARRAYS HOLD: ONLY THE SURVIVING ONES ARE MATERIALIZED
+      final boolean deletions = changes.hasDeletions();
+      for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
+        if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
+          result.add(edgeAt(i));
       for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
-        if (created.sequence() > builtAt && !changes.isDeletedAfter(created.edge().getIdentity(), created.sequence()))
+        if (isLive(created, changes))
           result.add(created.edge());
       return result.iterator();
+    }
+
+    /** Whether an edge the transaction created is still there: created after the scan and not deleted since. */
+    private boolean isLive(final UnidirectionalEdgeChanges.Created created, final UnidirectionalEdgeChanges changes) {
+      return created.sequence() > builtAt && !changes.isDeletedAfter(created.edge().getIdentity(), created.sequence());
+    }
+
+    /** The identity of the edge at {@code i}, as the vertex API gives it, built from the arrays with no record load. */
+    private RID edgeIdentityAt(final int i) {
+      if (edgePositions[i] == LIGHTWEIGHT_POSITION)
+        return new LightEdgeRID(database, edgeBuckets[i], database.newRID(sourceBuckets[i], sourcePositions[i]),
+            database.newRID(targetBuckets[i], targetPositions[i]));
+      return database.newRID(edgeBuckets[i], edgePositions[i]);
     }
 
     private Iterator<Edge> storedEdgesInto(final RID target) {
