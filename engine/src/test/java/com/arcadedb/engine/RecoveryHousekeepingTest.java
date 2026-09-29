@@ -26,6 +26,8 @@ import com.arcadedb.log.Logger;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -35,7 +37,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Timer;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,9 +49,9 @@ import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.spy;
 
 /**
- * Recovery adopts WAL files into the pool also used by the timer. A reopened file has zero pending flush
- * acknowledgements even though none of its transactions has been replayed. Rotating that file mid-replay can
- * delete it and make the recovery loop read the next transaction from its empty replacement instead.
+ * Recovery used to adopt the WAL files under replay into the pool the housekeeping timer rotates. A reopened file has
+ * zero pending flush acknowledgements even though none of its transactions has been replayed, so rotating it
+ * mid-replay deleted it and made the recovery loop read the next transaction from its empty replacement instead.
  *
  * These are replay-order tests, not record-durability tests: valid synthetic WAL records and an observing
  * applyChanges override isolate the recovery loop from page-version mechanics. The real timer pass is driven
@@ -118,6 +124,66 @@ class RecoveryHousekeepingTest extends TestHelper {
     writeRecoveryInput();
     manager.afterFirstReplay = () -> { throw new WALVersionGapException("injected version gap"); };
     assertNoSuccessLog(manager::checkIntegrity);
+  }
+
+  @Test
+  void closeWaitsForAnInFlightHousekeepingPassAndNoPassRunsAfterIt() throws Exception {
+    assertStopWaitsForInFlightPass(manager -> manager.close(false, false));
+  }
+
+  @Test
+  void killWaitsForAnInFlightHousekeepingPassAndNoPassRunsAfterIt() throws Exception {
+    assertStopWaitsForInFlightPass(TransactionManager::kill);
+  }
+
+  /**
+   * close() and kill() used to wait for a running pass through a latch the pass raised itself, AFTER its "is the
+   * database open" check: a tick caught between the two ran concurrently with the pool retirement. The pass is parked
+   * here inside its size check, where a rotation is decided, and the stop must wait for it, then refuse later passes.
+   */
+  private void assertStopWaitsForInFlightPass(final Consumer<TransactionManager> stop) throws Exception {
+    final ObservingManager manager = installManager();
+    final ProbeWALFile parked = new ProbeWALFile(Path.of(database.getDatabasePath(), "txlog_parked_test.wal"), true);
+    manager.replaceActiveWALFileForTesting(0, parked).close();
+
+    final Thread pass = new Thread(manager::runWALHousekeeping, "recovery-housekeeping-pass-test");
+    pass.setDaemon(true);
+    pass.start();
+    assertThat(parked.entered.await(60, TimeUnit.SECONDS)).as("the pass must reach the size check").isTrue();
+
+    final AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+    final Thread stopper = new Thread(() -> {
+      try {
+        stop.accept(manager);
+      } catch (final Throwable error) {
+        stopFailure.set(error);
+      }
+    }, "recovery-housekeeping-stop-test");
+    stopper.setDaemon(true);
+    stopper.start();
+    // Either the stop parks behind the pass (correct) or it runs to completion under it (the defect): no timing guess.
+    for (int i = 0; i < 6_000 && stopper.getState() != Thread.State.WAITING && stopper.isAlive(); ++i)
+      Thread.sleep(10);
+    assertThat(stopper.getState()).as("the stop must wait for the pass that is deciding a rotation")
+        .isEqualTo(Thread.State.WAITING);
+
+    parked.release.countDown();
+    pass.join(60_000);
+    stopper.join(60_000);
+    assertThat(pass.isAlive()).isFalse();
+    assertThat(stopper.isAlive()).isFalse();
+    assertThat(stopFailure.get()).isNull();
+
+    // Even handed a live file, a pass after the stop must not look at the pool again.
+    final ProbeWALFile late = new ProbeWALFile(Path.of(database.getDatabasePath(), "txlog_late_test.wal"), false);
+    try {
+      manager.replaceActiveWALFileForTesting(0, late);
+      manager.runWALHousekeeping();
+      assertThat(late.sizeChecks).as("no housekeeping pass may run once the manager is stopped").hasValue(0);
+    } finally {
+      manager.replaceActiveWALFileForTesting(0, null);
+      late.close();
+    }
   }
 
   private static void assertNoSuccessLog(final Runnable action) {
@@ -204,6 +270,30 @@ class RecoveryHousekeepingTest extends TestHelper {
       if (tx.txId == FIRST_TX && afterFirstReplay != null)
         afterFirstReplay.run();
       return false;
+    }
+  }
+
+  /** Counts, and optionally parks, the size checks a housekeeping pass makes to decide a rotation. */
+  private static final class ProbeWALFile extends WALFile {
+    private final AtomicInteger  sizeChecks = new AtomicInteger();
+    private final CountDownLatch entered    = new CountDownLatch(1);
+    private final CountDownLatch release;
+
+    ProbeWALFile(final Path path, final boolean park) throws FileNotFoundException {
+      super(path.toString());
+      release = new CountDownLatch(park ? 1 : 0);
+    }
+
+    @Override
+    public long getSize() throws IOException {
+      sizeChecks.incrementAndGet();
+      entered.countDown();
+      try {
+        release.await(60, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return super.getSize();
     }
   }
 

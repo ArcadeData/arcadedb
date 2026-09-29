@@ -75,7 +75,7 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
   @Test
   void realGraphSurvivesHousekeepingBeforeFirstReadAndBetweenReplays() throws Exception {
     final Map<Path, String> input = prepareCrashedGraph();
-    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, false);
+    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, null);
 
     database = factory.open();
     verifyGraph();
@@ -98,7 +98,7 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
   @Test
   void repeatedFirstReadFailuresPreserveInputAndAllowARealRetry() throws Exception {
     final Map<Path, String> input = prepareCrashedGraph();
-    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(true, false);
+    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(true, null);
     for (int attempt = 0; attempt < 2; ++attempt) {
       assertThatThrownBy(() -> database = factory.open()).hasStackTraceContaining("injected first WAL read failure");
       assertThat(observed.get().firstReadChecks).isPositive();
@@ -115,7 +115,9 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
   @Test
   void failedReplayCleanupPreservesInputAndRetryIsIdempotent() throws Exception {
     final Map<Path, String> input = prepareCrashedGraph();
-    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, true);
+    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, () -> {
+      throw new IllegalStateException("injected failure after real WAL apply");
+    });
     assertThatThrownBy(() -> database = factory.open()).hasStackTraceContaining("injected failure after real WAL apply");
     assertThat(observed.get().appliedTransactions).isOne();
     assertInputPreserved(input);
@@ -128,13 +130,35 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     verifyGraph();
   }
 
-  private AtomicReference<BoundaryManager> installOnNextRecovery(final boolean failRead, final boolean failApply) {
+  /**
+   * An Error escaping the replay (the realistic one being an OutOfMemoryError on a large WAL) is not an Exception, and
+   * the failed-open cleanup used to catch only those: the instance stayed marked open with database.lck locked and its
+   * WAL timer running, so the path could not be opened again in this JVM.
+   */
+  @Test
+  void anErrorEscapingReplayReleasesTheFailedOpenAndPreservesInput() throws Exception {
+    final Map<Path, String> input = prepareCrashedGraph();
+    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, () -> {
+      throw new OutOfMemoryError("injected error after real WAL apply");
+    });
+    assertThatThrownBy(() -> database = factory.open()).isInstanceOf(OutOfMemoryError.class)
+        .hasMessage("injected error after real WAL apply");
+    assertThat(observed.get().appliedTransactions).isOne();
+    assertInputPreserved(input);
+
+    observed.get().owner.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, recoveryCallback);
+    database = factory.open();
+    verifyGraph();
+    assertTimerStopped(observed.get());
+  }
+
+  private AtomicReference<BoundaryManager> installOnNextRecovery(final boolean failRead, final Runnable applyFailure) {
     final AtomicReference<BoundaryManager> observed = new AtomicReference<>();
     recoveryCallback = () -> {
       final LocalDatabase opening = (LocalDatabase) DatabaseContext.INSTANCE.getActiveDatabase();
       // Retire the normal timer/owner before installing the instrumented one. Keep every pending WAL.
       opening.getTransactionManager().close(false, true);
-      final BoundaryManager manager = new BoundaryManager(opening, failRead, failApply);
+      final BoundaryManager manager = new BoundaryManager(opening, failRead, applyFailure);
       final Field field = LocalDatabase.class.getDeclaredField("transactionManager");
       field.setAccessible(true);
       field.set(opening, manager);
@@ -271,15 +295,15 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     private final DatabaseInternal owner;
     private final List<Thread> timerThreads;
     private final boolean failFirstRead;
-    private final boolean failApply;
+    private final Runnable applyFailure;
     private int firstReadChecks;
     private int appliedTransactions;
 
-    BoundaryManager(final DatabaseInternal db, final boolean failRead, final boolean failApply) {
+    BoundaryManager(final DatabaseInternal db, final boolean failRead, final Runnable applyFailure) {
       super(db);
       owner = db;
       failFirstRead = failRead;
-      this.failApply = failApply;
+      this.applyFailure = applyFailure;
       timerThreads = Thread.getAllStackTraces().keySet().stream()
           .filter(thread -> thread.getName().equals("ArcadeDB TransactionManager " + db.getName())).toList();
       assertThat(timerThreads).isNotEmpty();
@@ -304,8 +328,8 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
       final boolean changed = super.applyChanges(tx, delta, ignoreErrors);
       ++appliedTransactions;
       RecoveryHousekeepingTest.driveHousekeeping(this);
-      if (failApply)
-        throw new IllegalStateException("injected failure after real WAL apply");
+      if (applyFailure != null)
+        applyFailure.run();
       return changed;
     }
 
@@ -313,7 +337,7 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     public void checkIntegrity() {
       try {
         super.checkIntegrity();
-      } catch (final RuntimeException failure) {
+      } catch (final RuntimeException | Error failure) {
         // Run a tick in the gap between failed replay and LocalDatabase's real failed-open cleanup.
         RecoveryHousekeepingTest.driveHousekeeping(this);
         throw failure;
