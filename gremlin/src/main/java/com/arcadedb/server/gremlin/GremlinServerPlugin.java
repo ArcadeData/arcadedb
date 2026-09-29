@@ -58,6 +58,7 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
   private              ExecutorService      gremlinExecutorService;
+  private volatile     int                  boundPort;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -118,8 +119,8 @@ public class GremlinServerPlugin implements ServerPlugin {
 
         try {
           final Field field = settings.getClass().getField(gremlinConfigKey);
-          field.set(settings, value);
-        } catch (final NoSuchFieldException | IllegalAccessException e) {
+          field.set(settings, coerce(field.getType(), value));
+        } catch (final NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
           // IGNORE IT
         }
       }
@@ -147,6 +148,34 @@ public class GremlinServerPlugin implements ServerPlugin {
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
+    boundPort = settings.port;
+  }
+
+  /**
+   * The port the Gremlin Server listens on (issue #8578), so the remote {@code ArcadeGraph} reaches it wherever it was
+   * configured instead of assuming TinkerPop's default.
+   */
+  @Override
+  public Map<String, Integer> getAdvertisedPorts() {
+    final int port = boundPort;
+    return port > 0 ? Map.of("gremlin", port) : Map.of();
+  }
+
+  /**
+   * A {@code gremlin.*} server setting reaches this plugin as text when it comes from a system property or the
+   * command line, and {@link Field#set} refuses to store text into an {@code int} field: the setting was then dropped
+   * without a trace and the server started on the default. Numbers and booleans are converted to the field's type.
+   */
+  private static Object coerce(final Class<?> fieldType, final Object value) {
+    if (!(value instanceof String text))
+      return value;
+    if (fieldType == int.class || fieldType == Integer.class)
+      return Integer.valueOf(text.trim());
+    if (fieldType == long.class || fieldType == Long.class)
+      return Long.valueOf(text.trim());
+    if (fieldType == boolean.class || fieldType == Boolean.class)
+      return Boolean.valueOf(text.trim());
+    return value;
   }
 
   private static ThreadFactory newGremlinThreadFactory() {
@@ -262,6 +291,7 @@ public class GremlinServerPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
+    boundPort = 0;
     if (gremlinServer != null) {
       // Close all dynamically created ArcadeGraph instances
       final var graphManager = gremlinServer.getServerGremlinExecutor().getGraphManager();

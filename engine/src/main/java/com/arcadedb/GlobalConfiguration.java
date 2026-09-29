@@ -839,6 +839,14 @@ public enum GlobalConfiguration {
       'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).""",
       String.class, "java", Set.of("auto", "groovy", "java")),
 
+  GREMLIN_CLIENT_PORT("arcadedb.gremlin.client.port", SCOPE.DATABASE,
+      """
+      Port of the Gremlin Server the remote ArcadeGraph client connects to. 0 (default) uses the port the ArcadeDB server \
+      advertises for its Gremlin plugin, and falls back to 8182 (the TinkerPop default) when the server advertises none. \
+      Set it when the Gremlin port is reached through a mapping the server does not know about (container port publishing, \
+      a load balancer).""",
+      Integer.class, 0),
+
   /**
    * Not in use anymore after removing Gremlin Executor
    */

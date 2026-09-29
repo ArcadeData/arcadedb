@@ -74,6 +74,13 @@ class HardcodedTestServerPortsTest {
   private static final Pattern PORT_ASSIGNMENT = Pattern.compile(
       "(?:SERVER_HTTPS?_INCOMING_PORT(?:\\.getKey\\(\\))?\\s*,|Server\\.setPort\\(\\s*\\w+\\s*,)\\s*([^;]*?)\\)\\s*;");
 
+  /**
+   * A Gremlin driver {@code Cluster} pointed at TinkerPop's default port, {@code .port(8182)} (issue #8578): the Gremlin
+   * plugin binds the port the fixture drew, so a driver on 8182 reaches whichever other build owns it. The remote
+   * {@code ArcadeGraph} learns the port from the server; a test that builds its own driver reads it from the fixture.
+   */
+  private static final Pattern LITERAL_GREMLIN_PORT = Pattern.compile("\\.port\\(\\s*8182\\s*\\)");
+
   /** A class that starts an ArcadeDB server, directly or through one of the fixture bases. */
   private static final Pattern STARTS_SERVER = Pattern.compile(
       "\\bextends\\s+\\w*(?:ServerTest|RaftHA\\w*Test|MiniRaftTest|GremlinServerIT)\\b|new\\s+ArcadeDBServer\\(");
@@ -114,6 +121,8 @@ class HardcodedTestServerPortsTest {
         abstract class BasePlusIndex {
           private static final int    BASE_HTTP_PORT = 12480;
           void setUp() { new ArcadeDBServer(c); c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, BASE_HTTP_PORT + i); } }""");
+    sources.put("a/GremlinDriverPort.java", """
+        class GremlinDriverPort { @Test void t() { Cluster.build().addContactPoint("localhost").port(8182).create(); } }""");
     sources.put("a/RatisPort.java", """
         class RatisPort {
           private static final int BASE_PORT = 19860;
@@ -128,6 +137,7 @@ class HardcodedTestServerPortsTest {
             c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, "0");
             c.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, allocateFreePorts(1)[0]);
             GrpcConfigKeys.Server.setPort(properties, ports[i]);
+            Cluster.build().addContactPoint("localhost").port(gremlinPort).create();
           } }""");
     sources.put("b/Launcher.java", """
         class Launcher { public static void main(String[] a) { new ArcadeDBServer(c); System.out.println("http://localhost:2480"); } }""");
@@ -136,7 +146,7 @@ class HardcodedTestServerPortsTest {
 
     final List<String> offenders = offenders(sources);
     for (final String name : List.of("IndexUrl", "HttpsIndexUrl", "LiteralUrl", "LiteralSetting", "ConstantSetting", "BasePlusIndex",
-        "RatisPort"))
+        "GremlinDriverPort", "RatisPort"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }
@@ -178,6 +188,9 @@ class HardcodedTestServerPortsTest {
       // A literal URL is only a defect where a server is started: unit tests of the URL parsers use 2480 as data.
       if (STARTS_SERVER.matcher(source).find())
         report(offenders, name, source, LITERAL_PORT_URL.matcher(source), "addresses a hand-picked port instead of getServerHttpUrl(...)");
+
+      report(offenders, name, source, LITERAL_GREMLIN_PORT.matcher(source),
+          "points a Gremlin driver at the hand-picked port 8182 instead of the port the fixture drew");
 
       final Matcher assignment = PORT_ASSIGNMENT.matcher(source);
       while (assignment.find())

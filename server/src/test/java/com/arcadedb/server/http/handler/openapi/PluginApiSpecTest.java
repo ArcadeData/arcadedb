@@ -135,7 +135,8 @@ class PluginApiSpecTest {
         "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader",
         "peers", "databases", "databasePresence", "alerts", "localResync",
-        "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls");
+        "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
+        "bootstrapDeciding", "securityConvergence");
 
     // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
     // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it
@@ -148,6 +149,28 @@ class PluginApiSpecTest {
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
         "capabilitiesUnknownReason",
         "replicationRttP99Ms", "capabilities", "version");
+  }
+
+  /**
+   * Issues #8408 and #8555: the two readiness inputs that were the last ones missing from the status document. The
+   * members GetClusterHandler writes are pinned to the exact set, whole and required, so a member cannot reach the
+   * response and not the contract - the defect #7741 and #7872 both had.
+   */
+  @Test
+  void clusterStatusDeclaresTheLastTwoReadinessInputs() {
+    final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
+
+    final Schema<?> deciding = schema.getProperties().get("bootstrapDeciding");
+    assertThat(deciding.getProperties().keySet()).containsExactlyInAnyOrder("inProgress", "count", "databases");
+    assertThat(deciding.getRequired()).containsExactlyInAnyOrder("inProgress", "count", "databases");
+
+    final Schema<?> convergence = schema.getProperties().get("securityConvergence");
+    assertThat(convergence.getProperties().keySet()).containsExactlyInAnyOrder("held", "unconvergedDocuments", "armed",
+        "sinceIndex", "windowOpenedAt", "gaveUp", "skippedBecauseLeading");
+    assertThat(convergence.getRequired()).containsExactlyInAnyOrder("held", "unconvergedDocuments", "armed", "sinceIndex",
+        "windowOpenedAt", "gaveUp", "skippedBecauseLeading");
+
+    assertThat(schema.getRequired()).contains("bootstrapDeciding", "securityConvergence");
   }
 
   @Test
