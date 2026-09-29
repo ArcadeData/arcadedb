@@ -1793,7 +1793,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // issue #8491, is one kind), so nothing is queued. The episode is over, though, so its failures in a row are
     // forgotten here, where the state machine's own reset is never reached (issue #8556): one volatile read when there
     // is nothing to forget. Leadership is tested first: hasLeaderServiceGap() can stat a directory per marked
-    // database, which a follower's tick has no reason to pay for.
+    // database, which a follower's tick pays only while it has a moved hand-off to forget (see the reset).
     if (!isLeader() || !sm.hasLeaderServiceGap()) {
       sm.resetReplacingLeaderHandOffBackOff();
       return;

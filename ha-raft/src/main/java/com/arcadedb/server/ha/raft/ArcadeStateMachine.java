@@ -4661,8 +4661,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       (issue #7298): {@link #installFromLeaderForBootstrap} refuses on a leader. Not the other half of the
    *       unreconciled mark - a copy the #6124 guard KEPT is here and served;</li>
    *   <li>an unfilled stale-snapshot gap (issue #6111): entries this node's databases never received, which the resync
-   *       that fills it refuses to run on a leader. Node-global, like the floor itself. A peer that holds the entries
-   *       is exactly one that is not lagging, which is what the targeted transfer already requires of its target.</li>
+   *       that fills it refuses to run on a leader. Node-global, like the floor itself. The targeted transfer only
+   *       picks a peer that is not lagging, which rules out a peer behind on the log but NOT one that shares the same
+   *       gap: lag is judged from the log index, and a gap is invisible to it. A gap every node shares is bounded by
+   *       the back-off of hand-offs that moved leadership while the gap persisted, not avoided.</li>
    * </ul>
    * A quarantined database is not in the list: {@link RaftHAServer} hands that one off itself (issue #8483).
    * <p>
@@ -4684,8 +4686,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The conditions {@link #hasLeaderServiceGap()} tests, one line each for the log, in the order it tests them; empty
-   * when there are none.
+   * The conditions {@link #hasLeaderServiceGap()} tests, one line each for the log; empty when there are none.
+   * <p>
+   * MUST stay a strict mirror of that predicate: every condition it tests has a line here, and nothing else does. The
+   * hand-off reads this list after the predicate and treats an empty one as "the gap closed in between", so a condition
+   * the predicate reports and this list omits would make every hand-off a silent no-op.
+   * {@code Issue8529LeaderServiceGapHandOffTest} pins the two against each other for every condition.
    */
   List<String> describeLeaderServiceGaps() {
     final List<String> gaps = new ArrayList<>(4);
@@ -4773,7 +4779,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Leadership hand-off of a leader that cannot serve every database (%s) failed: %s. Retrying in %d ms", replacing, e.getMessage(),
+            "Leadership hand-off of a leader that cannot serve every database (%s) failed: %s. Retrying in %d ms",
+            replacing, e.getMessage(),
             replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
         return false;
       }
@@ -4816,9 +4823,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void resetReplacingLeaderHandOffBackOff() {
     // The moved hand-offs are forgotten only once the gap itself is gone (issue #8529), not merely because this node
     // stopped leading: that is what each of them achieved, and a gap no peer can close brings leadership back here.
-    // Evaluated only when there is something to forget, so a healthy node's tick stays one volatile read.
+    // Evaluated only when there is something to forget, so a healthy node's tick stays one volatile read; a node that
+    // handed off and still has its gap re-checks it on each tick until it closes, a stat per marked database at most.
     final boolean forgetMoved = leaderHandOffsMovedWhileGapPersisted > 0 && !hasLeaderServiceGap();
-    if ((replacingLeaderHandOffFailures == 0 && !forgetMoved) || !replacingLeaderHandOffRunning.compareAndSet(false, true))
+    if (replacingLeaderHandOffFailures == 0 && !forgetMoved)
+      return;
+    if (!replacingLeaderHandOffRunning.compareAndSet(false, true))
       return;
     try {
       replacingLeaderHandOffFailures = 0;
