@@ -198,13 +198,7 @@ test("a follower passes on the reason its own probe recorded", () => {
   assert.match(gaps[0].unverified[0].reason, /probe timed out/);
 });
 
-// Issue #8540: a capabilitiesUnknownReason on a FOLLOWER's row is what THIS node's probe could not obtain - a
-// partial partition or a firewall rule between two followers produces it while the leader, whose probe is the one
-// that decides the 409, reaches the same peer fine. Disabling Create there locked the operator out of a change
-// the leader would accept, with no override short of finding the leader's Studio. Such a peer is reported as
-// unverified - named, with the reason - and the gate stays open; the leader's own 409 remains the authority and is
-// rendered as an explanation by clusterCapabilityRefusal(). A peer that ANSWERED without the capability is still
-// a hard gap: the leader probes the same peer and gets the same build.
+// Issue #8540: a follower's failed probe is not the leader's verdict, and the leader is where the write is decided.
 
 test("on a follower, a peer only this node could not reach is unverified, not missing", () => {
   const data = followerView(readyCluster());
@@ -216,6 +210,19 @@ test("on a follower, a peer only this node could not reach is unverified, not mi
   assert.deepEqual(readiness.missing, []);
   assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb3"]);
   assert.match(readiness.unverified[0].reason, /Connection refused/);
+});
+
+test("on a follower that cannot probe the leader itself, the leader's row is unverified and Create stays open", () => {
+  const data = followerView(readyCluster());
+  data.peers[0] = { id: "arcadedb1", role: "LEADER", capabilitiesUnknownReason: "Connection refused" };
+
+  const gaps = clusterSecurityCapabilityGaps(data);
+  assert.equal(gaps.length, 2);
+  for (const gap of gaps) {
+    assert.equal(gap.ready, true, gap.capability + " is not known to be refused");
+    assert.deepEqual(gap.missing, []);
+    assert.deepEqual(gap.unverified.map((u) => u.id), ["arcadedb1"]);
+  }
 });
 
 test("on the leader, a probe failure is still missing, because the leader's own gate refuses on it", () => {

@@ -119,18 +119,12 @@ var CLUSTER_SECURITY_CAPABILITIES = [
  * any other node it is not evidence of anything: the peer is listed in `unjudged` and left out of `missing`, so a
  * follower that has just started does not put a red banner on a healthy cluster.
  *
- * A row that carries a `capabilitiesUnknownReason` but no `capabilities` is this node's probe failing to get an
- * answer. On the leader that is a refusal - the leader's gate decides on its own probe - so the row is missing. On
- * any other node it is this node's view only (issue #8540): a partial partition, or a firewall rule between two
- * followers, fails the follower's probe while the leader, whose probe is the one that decides the 409, reaches the
- * same peer fine. Such a row is listed in `unverified`, with the reason, and left out of `missing`, so the
- * Security page names it without taking the Create controls away from a change the leader may accept; the
- * leader's own 409 stays the authority and is rendered by clusterCapabilityRefusal(). A row whose peer ANSWERED
- * without the capability is missing on every node, because the leader probes the same peer and gets the same
- * build.
+ * A `capabilitiesUnknownReason` without `capabilities` is this node's probe getting no answer. On the leader it is
+ * missing, since the leader's gate decides on its own probe. Elsewhere it is `unverified` and gates nothing (issue
+ * #8540): security writes are forwarded to the leader, whose probe may reach a peer this node cannot.
  *
- * `determinable` says every peer could be judged; `ready` says no judged peer is missing the capability. A peer
- * this node did judge is reported even while another one is still unjudged or unverified.
+ * `ready` means no peer is known to lack the capability, and is what gates. `determinable` means every peer was
+ * judged; `ready && !determinable` is "nothing known to block, but not all verified from here".
  */
 function clusterCapabilityReadiness(data, capability) {
   var readiness = { capability: capability, determinable: false, ready: true, missing: [], unverified: [], unjudged: [] };
