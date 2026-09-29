@@ -450,6 +450,58 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
   }
 
   @Test
+  void anotherThreadWritingDuringAReadDoesNotMakeItScanAgain() throws Exception {
+    createSchema(false);
+    loadWithNewEdge();
+    final RID tag = database.query("sql", "SELECT FROM Tag WHERE name = 't3'").next().getIdentity().get();
+    final long scansBefore = IncomingEdgeLookup.getScansTaken();
+    long rows = 0;
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (t:Tag) MATCH (t)<-[:TAGGED_WITH]-(q) RETURN t.name AS tag, q.qid AS qid")) {
+      while (rs.hasNext()) {
+        rs.next();
+        if (++rows == 1) {
+          // A writer on another thread commits more edges of the type while the read is running
+          final Thread writer = new Thread(() -> database.transaction(() -> {
+            for (int i = 0; i < 10; i++)
+              database.newVertex("Question").set("qid", 10_000 + i).save().newEdge("TAGGED_WITH", tag);
+          }));
+          writer.start();
+          writer.join();
+        }
+      }
+    }
+    assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore).as("other threads' writes never invalidate the scan")
+        .isEqualTo(1);
+    assertThat(rows).isGreaterThanOrEqualTo(EXPECTED);
+  }
+
+  @Test
+  void aHeapCapHitOnTheSecondTypeOfAWalkFailsCleanly() {
+    createSchema(false);
+    database.getSchema().buildEdgeType().withName("FOLLOWS_ONE_WAY").withBidirectional(false).create();
+    loadWithNewEdge();
+    database.transaction(() -> {
+      final Vertex t3 = database.query("sql", "SELECT FROM Tag WHERE name = 't3'").next().getVertex().get();
+      for (int i = 0; i < 5; i++)
+        database.newVertex("Question").set("qid", -100 - i).save().newEdge("FOLLOWS_ONE_WAY", t3);
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100L);
+    try {
+      // FOLLOWS_ONE_WAY (5 edges) fits, TAGGED_WITH (800) does not: the whole walk fails, loudly
+      assertThatThrownBy(() -> sum("opencypher",
+          "MATCH (t:Tag) WHERE t.name = 't3' MATCH (t)<-[:FOLLOWS_ONE_WAY|TAGGED_WITH]-(q) RETURN count(q) AS n"))
+          .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
+    }
+    // And the next query, with no cap, answers both types
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag) WHERE t.name = 't3' MATCH (t)<-[:FOLLOWS_ONE_WAY|TAGGED_WITH]-(q) RETURN count(q) AS n"))
+        .isEqualTo(tagDegree("t3") + 5);
+  }
+
+  @Test
   void aScriptCommittingStatementByStatementReadsWhatItWrote() {
     createSchema(false);
     database.transaction(() -> {
