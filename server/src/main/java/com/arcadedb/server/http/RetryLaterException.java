@@ -46,17 +46,14 @@ public class RetryLaterException extends NeedRetryException {
   /** The back-off a node installing a snapshot tells every client to wait. */
   public static final long SNAPSHOT_INSTALL_RETRY_AFTER_SECONDS = 5L;
 
-  private final long retryAfterSeconds;
-
   public RetryLaterException(final String message, final long retryAfterSeconds) {
     super(message);
-    this.retryAfterSeconds = Math.max(1L, retryAfterSeconds);
-    // THE SAME BACK-OFF THROUGH THE ENGINE-LEVEL HINT, WHICH A RETRY LOOP THAT KNOWS NOTHING OF THIS CLASS READS (ISSUE #8617)
-    setRetryAfterMs(this.retryAfterSeconds * 1_000L);
+    // KEPT IN THE ENGINE-LEVEL HINT, WHICH A RETRY LOOP THAT KNOWS NOTHING OF THIS CLASS READS (ISSUE #8617)
+    setRetryAfterMs(Math.max(1L, retryAfterSeconds) * 1_000L);
   }
 
   /** How long the client is told to wait before retrying, at least one second. */
   public long getRetryAfterSeconds() {
-    return retryAfterSeconds;
+    return Math.max(1L, (getRetryAfterMs() + 999L) / 1_000L);
   }
 }

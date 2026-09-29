@@ -37,8 +37,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
-import java.util.function.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Predicate;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;

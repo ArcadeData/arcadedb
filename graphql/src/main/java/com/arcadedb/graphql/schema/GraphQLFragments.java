@@ -31,8 +31,14 @@ import com.arcadedb.graphql.parser.InlineFragment;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
 
-import java.util.*;
-import java.util.function.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * The fragment definitions of one GraphQL document, and the expansion of the fragment spreads ({@code ...F}) and inline
