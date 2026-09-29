@@ -35,6 +35,7 @@ import com.arcadedb.utility.MultiIterator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -54,29 +55,34 @@ import java.util.concurrent.ConcurrentHashMap;
  * when they cannot (the target is bound by an earlier clause, the hop is undirected, a pattern expression starts from
  * the target), and makes every IN walk over such a type complete instead of silently empty.
  * <p>
- * The answer comes from one scan of the edges of the unidirectional types involved, built the first time a query needs
- * it and shared by the whole query (its sub-queries and parallel workers included, through the root
- * {@link CommandContext}): the edge records of each type, plus the outgoing lists of the vertices for a type that is
- * stored lightweight. The scan is sorted by target into primitive arrays, so each later lookup is a binary search
- * rather than another scan, and the heap it takes is charged to the query's budget like any other in-heap buffer: a
- * type too large to index in heap fails the query loudly rather than filling the heap.
+ * The answer comes from one scan per unidirectional type, taken the first time a query needs that type and shared by
+ * the whole query (its sub-queries and parallel workers included, through the root {@link CommandContext}): the edge
+ * records of the type, plus the outgoing lists of the vertices for a type that is stored lightweight (one vertex walk
+ * serves every lightweight type a walk needs at once). A scan is sorted by target into primitive arrays, so each later
+ * lookup is a binary search rather than another scan, and the heap it takes is charged to the query's budget like any
+ * other in-heap buffer: a type too large to index in heap fails the query loudly rather than filling the heap.
  * <p>
  * Edges of a bidirectional type are read from the vertex as usual. An incoming pointer found on a vertex for a
  * unidirectional type - written by a bulk load that did not follow the type - is skipped, since the scan already
  * answers for that edge.
  * <p>
- * The scan is a snapshot of the edges visible when it is taken: an edge created later in the same query is not in it.
+ * A scan is a snapshot of the edges visible when it is taken. It is taken again when an edge of a unidirectional type
+ * was created or deleted since, in any transaction ({@link GraphEngine#getUnidirectionalEdgeChanges()}), so a script
+ * that writes such edges and then reads them, or a query that deletes some, sees what the vertex lists hold now.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class IncomingEdgeLookup {
   private static final long LIGHTWEIGHT_POSITION = -1L;
 
-  private final    Map<String, Snapshot> snapshots = new ConcurrentHashMap<>();
+  // CREATED ON FIRST USE: A QUERY OVER A SCHEMA WITHOUT UNIDIRECTIONAL TYPES NEVER NEEDS IT
+  private volatile Map<String, Snapshot> snapshots;
   private volatile Boolean               anyUnidirectionalType;
-  // THE STEPS ASK ONCE PER ROW, MOSTLY FOR THE SAME TYPES: THE LAST ANSWER AND THE UNTYPED ONE ARE KEPT
+  // THE STEPS ASK ONCE PER ROW, MOSTLY FOR THE SAME TYPES: THE LAST ANSWER AND THE UNTYPED ONE ARE KEPT, UNTIL THE
+  // DATABASE CHANGES (A SCRIPT MAY CREATE OR DROP AN EDGE TYPE BETWEEN TWO STATEMENTS THAT SHARE THIS LOOKUP)
   private volatile ClosureEntry          lastClosure;
   private volatile Closure               untypedClosure;
+  private volatile long                  memoizedAt = -1L;
 
   /**
    * The edges of {@code vertex} in {@code direction} over {@code edgeTypes} (all when empty), as
@@ -94,7 +100,8 @@ public final class IncomingEdgeLookup {
       result.addIterator(vertex.getEdges(Vertex.DIRECTION.OUT, edgeTypes).iterator());
     if (involved.closure.anyBidirectional)
       result.addIterator(new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(), involved.schema));
-    result.addIterator(involved.snapshot.edgesInto(vertex.getIdentity()));
+    for (final Snapshot snapshot : involved.snapshots)
+      result.addIterator(snapshot.edgesInto(vertex.getIdentity()));
     return result;
   }
 
@@ -115,7 +122,8 @@ public final class IncomingEdgeLookup {
     if (involved.closure.anyBidirectional)
       result.addIterator(new SourceVertices(
           new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(), involved.schema)));
-    result.addIterator(involved.snapshot.sourcesOf(vertex.getIdentity()));
+    for (final Snapshot snapshot : involved.snapshots)
+      result.addIterator(snapshot.sourcesOf(vertex.getIdentity()));
     return result;
   }
 
@@ -133,7 +141,9 @@ public final class IncomingEdgeLookup {
       for (final Iterator<Edge> it = new StoredIncomingEdges(vertex.getEdges(Vertex.DIRECTION.IN, edgeTypes).iterator(),
           involved.schema); it.hasNext(); it.next())
         ++count;
-    return count + involved.snapshot.count(vertex.getIdentity());
+    for (final Snapshot snapshot : involved.snapshots)
+      count += snapshot.count(vertex.getIdentity());
+    return count;
   }
 
   /**
@@ -146,7 +156,10 @@ public final class IncomingEdgeLookup {
     if (direction == Vertex.DIRECTION.OUT || context == null)
       return false;
     final IncomingEdgeLookup lookup = context.getIncomingEdgeLookup();
-    return lookup != null && lookup.hasAnyUnidirectionalType(database.getSchema())
+    if (lookup == null)
+      return false;
+    lookup.refreshMemos(database);
+    return lookup.hasAnyUnidirectionalType(database.getSchema())
         && lookup.closureOf(database.getSchema(), edgeTypes).unidirectional.length > 0;
   }
 
@@ -177,6 +190,7 @@ public final class IncomingEdgeLookup {
 
     final Database database = vertex.getDatabase();
     final Schema schema = database.getSchema();
+    lookup.refreshMemos(database);
     if (!lookup.hasAnyUnidirectionalType(schema))
       return null;
 
@@ -184,7 +198,19 @@ public final class IncomingEdgeLookup {
     if (closure.unidirectional.length == 0)
       return null;
 
-    return new Involved(schema, closure, lookup.snapshot((DatabaseInternal) database, closure.unidirectional, context));
+    return new Involved(schema, closure, lookup.snapshots((DatabaseInternal) database, closure.unidirectional, context));
+  }
+
+  private void refreshMemos(final Database database) {
+    if (!(database instanceof DatabaseInternal internal))
+      return;
+    final long modifications = internal.getModificationCount();
+    if (modifications != memoizedAt) {
+      anyUnidirectionalType = null;
+      untypedClosure = null;
+      lastClosure = null;
+      memoizedAt = modifications;
+    }
   }
 
   private boolean hasAnyUnidirectionalType(final Schema schema) {
@@ -218,14 +244,52 @@ public final class IncomingEdgeLookup {
     return closure;
   }
 
-  private Snapshot snapshot(final DatabaseInternal database, final String[] unidirectionalTypes,
+  /**
+   * The scans of {@code unidirectionalTypes}, taking the ones this query has not taken yet or whose edges changed since
+   * (see {@link GraphEngine#getUnidirectionalEdgeChanges()}). The common case - every scan present and current - reads
+   * a concurrent map and takes no lock; the missing ones are taken under the lock, so parallel workers wait for one scan
+   * rather than repeat it.
+   */
+  private Snapshot[] snapshots(final DatabaseInternal database, final String[] unidirectionalTypes,
       final CommandContext context) {
-    final String key = unidirectionalTypes.length == 1 ? unidirectionalTypes[0] : String.join(",", unidirectionalTypes);
-    final Snapshot existing = snapshots.get(key);
-    if (existing != null)
-      return existing;
-    // BUILT ONCE PER QUERY: PARALLEL WORKERS ASKING FOR THE SAME TYPES WAIT FOR THE FIRST BUILD RATHER THAN REPEAT IT
-    return snapshots.computeIfAbsent(key, k -> Snapshot.build(database, unidirectionalTypes, context));
+    final long version = database.getGraphEngine().getUnidirectionalEdgeChanges();
+    final Snapshot[] result = new Snapshot[unidirectionalTypes.length];
+    Map<String, Snapshot> map = snapshots;
+    if (map != null) {
+      boolean allCurrent = true;
+      for (int i = 0; i < unidirectionalTypes.length && allCurrent; i++) {
+        final Snapshot snapshot = map.get(unidirectionalTypes[i]);
+        if (snapshot == null || snapshot.version != version)
+          allCurrent = false;
+        else
+          result[i] = snapshot;
+      }
+      if (allCurrent)
+        return result;
+    }
+
+    synchronized (this) {
+      map = snapshots;
+      if (map == null) {
+        map = new ConcurrentHashMap<>();
+        snapshots = map;
+      }
+      final List<String> missing = new ArrayList<>(unidirectionalTypes.length);
+      for (final String typeName : unidirectionalTypes) {
+        final Snapshot snapshot = map.get(typeName);
+        if (snapshot == null || snapshot.version != version)
+          missing.add(typeName);
+      }
+      if (!missing.isEmpty())
+        for (final Snapshot snapshot : Snapshot.build(database, missing, version, context)) {
+          final Snapshot previous = map.put(snapshot.typeName, snapshot);
+          if (previous != null)
+            previous.limit.release();
+        }
+      for (int i = 0; i < unidirectionalTypes.length; i++)
+        result[i] = map.get(unidirectionalTypes[i]);
+    }
+    return result;
   }
 
   /**
@@ -283,56 +347,53 @@ public final class IncomingEdgeLookup {
   private record ClosureEntry(String[] edgeTypes, Closure closure) {
   }
 
-  private record Involved(Schema schema, Closure closure, Snapshot snapshot) {
+  private record Involved(Schema schema, Closure closure, Snapshot[] snapshots) {
   }
 
   /**
-   * The edges of a set of unidirectional types, sorted by target: six parallel primitive arrays, the endpoints and the
-   * edge as bucket/position pairs, so the lookup holds no object per edge. A lightweight edge has no record, and is
-   * kept as its type's bucket with {@link #LIGHTWEIGHT_POSITION}.
+   * The edges of one unidirectional type, sorted by target: six parallel primitive arrays, the endpoints and the edge
+   * as bucket/position pairs, so the scan holds no object per edge. A lightweight edge has no record, and is kept as its
+   * type's bucket with {@link #LIGHTWEIGHT_POSITION}. The arrays are the builder's own, sorted in place, so building
+   * one never holds a second copy.
    */
   private static final class Snapshot {
-    private final DatabaseInternal database;
-    private final int[]            targetBuckets;
-    private final long[]           targetPositions;
-    private final int[]            sourceBuckets;
-    private final long[]           sourcePositions;
-    private final int[]            edgeBuckets;
-    private final long[]           edgePositions;
+    private final String             typeName;
+    private final long               version;
+    private final OperationHeapLimit limit;
+    private final DatabaseInternal   database;
+    private final int                size;
+    private final int[]              targetBuckets;
+    private final long[]             targetPositions;
+    private final int[]              sourceBuckets;
+    private final long[]             sourcePositions;
+    private final int[]              edgeBuckets;
+    private final long[]             edgePositions;
 
-    private Snapshot(final DatabaseInternal database, final Builder builder) {
+    private Snapshot(final String typeName, final long version, final DatabaseInternal database, final Builder builder) {
+      builder.sortByTarget();
+      this.typeName = typeName;
+      this.version = version;
       this.database = database;
-      final int size = builder.size;
-      final int[] order = new int[size];
-      for (int i = 0; i < size; i++)
-        order[i] = i;
-      builder.sortByTarget(order);
-
-      targetBuckets = new int[size];
-      targetPositions = new long[size];
-      sourceBuckets = new int[size];
-      sourcePositions = new long[size];
-      edgeBuckets = new int[size];
-      edgePositions = new long[size];
-      for (int i = 0; i < size; i++) {
-        final int from = order[i];
-        targetBuckets[i] = builder.targetBuckets[from];
-        targetPositions[i] = builder.targetPositions[from];
-        sourceBuckets[i] = builder.sourceBuckets[from];
-        sourcePositions[i] = builder.sourcePositions[from];
-        edgeBuckets[i] = builder.edgeBuckets[from];
-        edgePositions[i] = builder.edgePositions[from];
-      }
+      this.limit = builder.limit;
+      this.size = builder.size;
+      this.targetBuckets = builder.targetBuckets;
+      this.targetPositions = builder.targetPositions;
+      this.sourceBuckets = builder.sourceBuckets;
+      this.sourcePositions = builder.sourcePositions;
+      this.edgeBuckets = builder.edgeBuckets;
+      this.edgePositions = builder.edgePositions;
     }
 
-    static Snapshot build(final DatabaseInternal database, final String[] unidirectionalTypes,
+    static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames, final long version,
         final CommandContext context) {
       final Schema schema = database.getSchema();
-      final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
-          "incoming-edge lookup over the unidirectional edge type(s) " + String.join(", ", unidirectionalTypes)));
+      final Map<String, Builder> builders = new HashMap<>();
+      final List<Builder> lightweight = new ArrayList<>();
+      for (final String typeName : typeNames) {
+        final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
+            "incoming-edge lookup over the unidirectional edge type " + typeName));
+        builders.put(typeName, builder);
 
-      final Set<String> lightweightTypes = new HashSet<>();
-      for (final String typeName : unidirectionalTypes) {
         // OWN BUCKETS ONLY: THE SUBTYPES ARE IN THE SET ON THEIR OWN
         final Iterator<Record> records = database.iterateType(typeName, false);
         while (records.hasNext()) {
@@ -340,24 +401,33 @@ public final class IncomingEdgeLookup {
           builder.add(edge.getIn(), edge.getOut(), edge.getIdentity().getBucketId(), edge.getIdentity().getPosition());
         }
         if (schema.getType(typeName) instanceof EdgeType edgeType && edgeType.isLightweight())
-          lightweightTypes.add(typeName);
+          lightweight.add(builder);
       }
 
-      if (!lightweightTypes.isEmpty())
-        addLightweightEdges(database, lightweightTypes, builder);
+      if (!lightweight.isEmpty())
+        addLightweightEdges(database, builders, lightweight.size());
 
-      return new Snapshot(database, builder);
+      final List<Snapshot> result = new ArrayList<>(typeNames.size());
+      for (final String typeName : typeNames)
+        result.add(new Snapshot(typeName, version, database, builders.get(typeName)));
+      return result;
     }
 
     /**
      * A lightweight edge lives only in the lists of its two vertices, and for a unidirectional type only in the
-     * outgoing one: the vertices are walked for it, as {@code SELECT FROM} does for such a type (issue #7477). A vertex
-     * bucket the caller cannot read is left out, like the edges it holds.
+     * outgoing one: the vertices are walked for it, as {@code SELECT FROM} does for such a type (issue #7477), once for
+     * all the lightweight types being scanned. A vertex bucket the caller cannot read is left out, like the edges it
+     * holds.
      */
-    private static void addLightweightEdges(final DatabaseInternal database, final Set<String> lightweightTypes,
-        final Builder builder) {
+    private static void addLightweightEdges(final DatabaseInternal database, final Map<String, Builder> builders,
+        final int lightweightTypes) {
       final Schema schema = database.getSchema();
-      final String[] names = lightweightTypes.toArray(new String[0]);
+      final String[] names = new String[lightweightTypes];
+      int n = 0;
+      for (final Map.Entry<String, Builder> entry : builders.entrySet())
+        if (schema.getType(entry.getKey()) instanceof EdgeType edgeType && edgeType.isLightweight())
+          names[n++] = entry.getKey();
+
       for (final DocumentType type : schema.getTypes()) {
         if (type.getType() != Vertex.RECORD_TYPE)
           continue;
@@ -368,10 +438,12 @@ public final class IncomingEdgeLookup {
             final Vertex vertex = it.next().asVertex();
             for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, names)) {
               final RID identity = edge.getIdentity();
-              // A RECORD-BACKED EDGE CAME FROM THE TYPE SCAN ALREADY; A SUBTYPE'S EDGE IS THE SUBTYPE'S TO ADD
-              if (identity.getPosition() >= 0 || !lightweightTypes.contains(edge.getTypeName()))
+              // A RECORD-BACKED EDGE CAME FROM THE TYPE SCAN ALREADY; A TYPE NOT BEING SCANNED IS NOT ADDED
+              if (identity.getPosition() >= 0)
                 continue;
-              builder.add(edge.getIn(), vertex.getIdentity(), identity.getBucketId(), LIGHTWEIGHT_POSITION);
+              final Builder builder = builders.get(edge.getTypeName());
+              if (builder != null)
+                builder.add(edge.getIn(), vertex.getIdentity(), identity.getBucketId(), LIGHTWEIGHT_POSITION);
             }
           }
         }
@@ -381,14 +453,14 @@ public final class IncomingEdgeLookup {
     long count(final RID target) {
       final int from = firstIndex(target);
       int to = from;
-      while (to < targetBuckets.length && isTarget(to, target))
+      while (to < size && isTarget(to, target))
         ++to;
       return to - from;
     }
 
     Iterator<Edge> edgesInto(final RID target) {
       final int from = firstIndex(target);
-      if (from >= targetBuckets.length || !isTarget(from, target))
+      if (from >= size || !isTarget(from, target))
         return Collections.emptyIterator();
       return new RangeIterator<>(from, target) {
         @Override
@@ -400,7 +472,7 @@ public final class IncomingEdgeLookup {
 
     Iterator<Vertex> sourcesOf(final RID target) {
       final int from = firstIndex(target);
-      if (from >= targetBuckets.length || !isTarget(from, target))
+      if (from >= size || !isTarget(from, target))
         return Collections.emptyIterator();
       return new RangeIterator<>(from, target) {
         @Override
@@ -432,7 +504,7 @@ public final class IncomingEdgeLookup {
       final int bucket = target.getBucketId();
       final long position = target.getPosition();
       int low = 0;
-      int high = targetBuckets.length;
+      int high = size;
       while (low < high) {
         final int mid = (low + high) >>> 1;
         final int cmp = targetBuckets[mid] != bucket ? Integer.compare(targetBuckets[mid], bucket) :
@@ -458,7 +530,7 @@ public final class IncomingEdgeLookup {
 
       @Override
       public boolean hasNext() {
-        return next < targetBuckets.length && isTarget(next, target);
+        return next < size && isTarget(next, target);
       }
 
       @Override
@@ -470,7 +542,10 @@ public final class IncomingEdgeLookup {
     }
   }
 
-  /** Grows the scan in parallel primitive arrays, charging the query's heap budget as it goes. */
+  /**
+   * Grows the scan in parallel primitive arrays. The query's heap budget is charged for the capacity the arrays take,
+   * slack included, as it grows, so a type too large to hold fails before it is held.
+   */
   private static final class Builder {
     private static final int BYTES_PER_EDGE = 3 * (Integer.BYTES + Long.BYTES);
 
@@ -485,13 +560,14 @@ public final class IncomingEdgeLookup {
 
     Builder(final OperationHeapLimit limit) {
       this.limit = limit;
+      limit.charge((long) targetBuckets.length * BYTES_PER_EDGE);
     }
 
     void add(final RID target, final RID source, final int edgeBucket, final long edgePosition) {
       limit.check(size + 1L);
-      limit.charge(BYTES_PER_EDGE);
       if (size == targetBuckets.length) {
         final int capacity = size + (size >> 1);
+        limit.charge((long) (capacity - size) * BYTES_PER_EDGE);
         targetBuckets = Arrays.copyOf(targetBuckets, capacity);
         targetPositions = Arrays.copyOf(targetPositions, capacity);
         sourceBuckets = Arrays.copyOf(sourceBuckets, capacity);
@@ -508,65 +584,79 @@ public final class IncomingEdgeLookup {
       ++size;
     }
 
-    /** Sorts {@code order} by target: a quicksort over the index array, recursing on the smaller side only. */
-    void sortByTarget(final int[] order) {
-      sort(order, 0, order.length - 1);
+    /** Sorts the six arrays by target, in place: a quicksort recursing on the smaller side only. */
+    void sortByTarget() {
+      sort(0, size - 1);
     }
 
-    private void sort(final int[] order, int low, int high) {
+    private void sort(int low, int high) {
       while (high - low > 16) {
-        final int pivot = order[medianOfThree(order, low, (low + high) >>> 1, high)];
+        final int mid = medianOfThree(low, (low + high) >>> 1, high);
+        final int pivotBucket = targetBuckets[mid];
+        final long pivotPosition = targetPositions[mid];
         int i = low;
         int j = high;
         while (i <= j) {
-          while (compare(order[i], pivot) < 0)
+          while (compareTo(i, pivotBucket, pivotPosition) < 0)
             ++i;
-          while (compare(order[j], pivot) > 0)
+          while (compareTo(j, pivotBucket, pivotPosition) > 0)
             --j;
-          if (i <= j) {
-            final int tmp = order[i];
-            order[i++] = order[j];
-            order[j--] = tmp;
-          }
+          if (i <= j)
+            swap(i++, j--);
         }
         if (j - low < high - i) {
-          sort(order, low, j);
+          sort(low, j);
           low = i;
         } else {
-          sort(order, i, high);
+          sort(i, high);
           high = j;
         }
       }
-      insertionSort(order, low, high);
+      for (int i = low + 1; i <= high; i++)
+        for (int j = i; j > low && compareTo(j - 1, targetBuckets[j], targetPositions[j]) > 0; j--)
+          swap(j - 1, j);
     }
 
-    private void insertionSort(final int[] order, final int low, final int high) {
-      for (int i = low + 1; i <= high; i++) {
-        final int value = order[i];
-        int j = i - 1;
-        while (j >= low && compare(order[j], value) > 0) {
-          order[j + 1] = order[j];
-          --j;
-        }
-        order[j + 1] = value;
-      }
-    }
-
-    private int medianOfThree(final int[] order, final int a, final int b, final int c) {
-      if (compare(order[a], order[b]) < 0) {
-        if (compare(order[b], order[c]) < 0)
+    private int medianOfThree(final int a, final int b, final int c) {
+      if (compare(a, b) < 0) {
+        if (compare(b, c) < 0)
           return b;
-        return compare(order[a], order[c]) < 0 ? c : a;
+        return compare(a, c) < 0 ? c : a;
       }
-      if (compare(order[a], order[c]) < 0)
+      if (compare(a, c) < 0)
         return a;
-      return compare(order[b], order[c]) < 0 ? c : b;
+      return compare(b, c) < 0 ? c : b;
     }
 
     private int compare(final int a, final int b) {
-      if (targetBuckets[a] != targetBuckets[b])
-        return Integer.compare(targetBuckets[a], targetBuckets[b]);
-      return Long.compare(targetPositions[a], targetPositions[b]);
+      return compareTo(a, targetBuckets[b], targetPositions[b]);
+    }
+
+    private int compareTo(final int i, final int bucket, final long position) {
+      if (targetBuckets[i] != bucket)
+        return Integer.compare(targetBuckets[i], bucket);
+      return Long.compare(targetPositions[i], position);
+    }
+
+    private void swap(final int a, final int b) {
+      final int tb = targetBuckets[a];
+      targetBuckets[a] = targetBuckets[b];
+      targetBuckets[b] = tb;
+      final long tp = targetPositions[a];
+      targetPositions[a] = targetPositions[b];
+      targetPositions[b] = tp;
+      final int sb = sourceBuckets[a];
+      sourceBuckets[a] = sourceBuckets[b];
+      sourceBuckets[b] = sb;
+      final long sp = sourcePositions[a];
+      sourcePositions[a] = sourcePositions[b];
+      sourcePositions[b] = sp;
+      final int eb = edgeBuckets[a];
+      edgeBuckets[a] = edgeBuckets[b];
+      edgeBuckets[b] = eb;
+      final long ep = edgePositions[a];
+      edgePositions[a] = edgePositions[b];
+      edgePositions[b] = ep;
     }
   }
 

@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.Result;
@@ -209,11 +210,152 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     try {
       assertThatThrownBy(() -> sum("opencypher",
           "MATCH (t:Tag) WHERE t.name = 't3' MATCH (t)<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
-          .hasMessageContaining("incoming-edge lookup over the unidirectional edge type(s) TAGGED_WITH")
+          .hasMessageContaining("incoming-edge lookup over the unidirectional edge type TAGGED_WITH")
           .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
     }
+  }
+
+  @Test
+  void groupedCountsAreRightForEveryTarget() {
+    createSchema(false);
+    loadWithNewEdge();
+    for (final String query : new String[] {
+        "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN t.name AS tag, count(q) AS n",
+        "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) RETURN t.name AS tag, count(q) AS n",
+        "MATCH (t:Tag)-[:TAGGED_WITH]-(q:Question) RETURN t.name AS tag, count(*) AS n" }) {
+      long rows = 0;
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          assertThat(((Number) r.getProperty("n")).longValue()).as(query + " for " + r.getProperty("tag"))
+              .isEqualTo(tagDegree(r.getProperty("tag")));
+          ++rows;
+        }
+      }
+      assertThat(rows).as(query).isEqualTo(TAGS);
+    }
+  }
+
+  @Test
+  void aWalkReachingUnidirectionalAndBidirectionalTypesAnswersBoth() {
+    createSchema(false);
+    database.getSchema().createEdgeType("FOLLOWS");
+    loadWithNewEdge();
+    final RID[] follower = new RID[1];
+    database.transaction(() -> {
+      final Vertex t3 = database.query("sql", "SELECT FROM Tag WHERE name = 't3'").next().getVertex().get();
+      final MutableVertex fan = database.newVertex("Question").set("qid", -1).save();
+      fan.newEdge("FOLLOWS", t3);
+      follower[0] = fan.getIdentity();
+    });
+    final long degree = tagDegree("t3") + 1;
+
+    assertThat(sum("sql", "SELECT in().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT inE().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<--(q) RETURN count(q) AS n")).isEqualTo(degree);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH|FOLLOWS]-(q) RETURN count(q) AS n"))
+        .isEqualTo(degree);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})--(q) RETURN count(q) AS n")).isEqualTo(degree);
+  }
+
+  @Test
+  void anIncomingPointerLeftOnAUnidirectionalTypeIsNotCountedTwice() {
+    createSchema(false);
+    loadWithNewEdge();
+    // What a bulk load that did not follow the type left behind: the incoming side of a unidirectional edge
+    database.transaction(() -> {
+      for (final var it = database.iterateType("Question", false); it.hasNext(); ) {
+        final Vertex q = it.next().asVertex();
+        for (final Edge e : q.getEdges(Vertex.DIRECTION.OUT, "TAGGED_WITH"))
+          ((DatabaseInternal) database).getGraphEngine().connectIncomingEdge(e.getInVertex(), q.getIdentity(), e.getIdentity());
+      }
+    });
+    assertEveryPatternFindsEveryEdge();
+  }
+
+  @Test
+  void aSelfLoopIsOneRelationship() {
+    createSchema(false);
+    database.transaction(() -> {
+      final MutableVertex tag = database.newVertex("Tag").set("name", "loop").save();
+      tag.newEdge("TAGGED_WITH", tag);
+    });
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 'loop'})-[r:TAGGED_WITH]-(x) RETURN count(r) AS n")).isEqualTo(1);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 'loop'})<-[r:TAGGED_WITH]-(x) RETURN count(r) AS n")).isEqualTo(1);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 'loop'})-[:TAGGED_WITH]-(x) RETURN count(x) AS n")).isEqualTo(1);
+  }
+
+  @Test
+  void anonymousNodesAndBoundTargetsAcrossClauses() {
+    createSchema(false);
+    loadWithNewEdge();
+    final long degree = tagDegree("t3");
+    assertThat(sum("opencypher", "MATCH (:Tag {name: 't3'})<-[:TAGGED_WITH]-(q:Question) RETURN count(q) AS n"))
+        .isEqualTo(degree);
+    assertThat(sum("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(:Question) RETURN count(t) AS n")).isEqualTo(EXPECTED);
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag {name: 't3'}) MATCH (q:Question) WHERE q.qid < 100 MATCH (t)<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
+        .isEqualTo(tagDegreeBelow("t3", 100));
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag {name: 't3'}) WITH t MATCH (t)<-[:TAGGED_WITH]-(q:Question)-[:TAGGED_WITH]->(other:Tag) "
+            + "RETURN count(other) AS n")).isEqualTo(degree); // relationship uniqueness: the other tag of each question
+  }
+
+  @Test
+  void shortestPathFunctionsWalkTheIncomingSide() {
+    createSchema(false);
+    loadWithNewEdge();
+    assertThat(rows("sql",
+        "SELECT shortestPath((SELECT FROM Tag WHERE name = 't3'), (SELECT FROM Question WHERE qid = 3), 'IN', 'TAGGED_WITH') AS p "
+            + "FROM Tag LIMIT 1")).isEqualTo(1);
+    assertThat(sum("sql",
+        "SELECT shortestPath((SELECT FROM Tag WHERE name = 't3'), (SELECT FROM Question WHERE qid = 3), 'IN', 'TAGGED_WITH').size() AS n "
+            + "FROM Tag LIMIT 1")).isEqualTo(2);
+    assertThat(rows("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MATCH p = allShortestPaths((t)<-[:TAGGED_WITH*]-(q)) RETURN p"))
+        .isEqualTo(1);
+    assertThat(rows("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) "
+            + "MATCH p = shortestPath((t)<-[r:TAGGED_WITH* WHERE r.missing IS NULL]-(q)) RETURN p")).isEqualTo(1);
+  }
+
+  @Test
+  void mergeFindsTheEdgeFromItsTarget() {
+    createSchema(false);
+    loadWithNewEdge();
+    database.transaction(() -> {
+      database.command("opencypher", "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MERGE (t)<-[:TAGGED_WITH]-(q)");
+      database.command("opencypher", "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MERGE (t)-[:TAGGED_WITH]-(q)");
+      database.command("opencypher", "MATCH (t:Tag {name: 't3'}) MERGE (t)<-[:TAGGED_WITH]-(q:Question {qid: 3})");
+    });
+    assertThat(groundTruth()).as("MERGE must match the existing edges, not create new ones").isEqualTo(EXPECTED);
+  }
+
+  @Test
+  void aScriptSeesTheEdgesItWritesBetweenReads() {
+    createSchema(false);
+    database.transaction(() -> {
+      database.newVertex("Tag").set("name", "s").save();
+      database.newVertex("Question").set("qid", 1).save();
+      database.newVertex("Question").set("qid", 2).save();
+    });
+    final List<Object> counts = new ArrayList<>();
+    database.transaction(() -> {
+      final ResultSet rs = database.command("sqlscript", """
+        CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 1) TO (SELECT FROM Tag WHERE name = 's');
+        LET a = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 2) TO (SELECT FROM Tag WHERE name = 's');
+        LET b = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        DELETE FROM TAGGED_WITH WHERE @out IN (SELECT FROM Question WHERE qid = 1);
+        LET c = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        RETURN [$a[0].n, $b[0].n, $c[0].n];
+        """);
+      while (rs.hasNext())
+        counts.add(rs.next().getProperty("value"));
+    });
+    assertThat(counts.toString()).isEqualTo("[1, 2, 1]");
   }
 
   private void assertEveryPatternFindsEveryEdge() {
@@ -299,6 +441,18 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
       for (final Vertex t : it.next().asVertex().getVertices(Vertex.DIRECTION.OUT, "TAGGED_WITH"))
         if (name.equals(t.getString("name")))
           n++;
+    return n;
+  }
+
+  private long tagDegreeBelow(final String name, final int maxQid) {
+    long n = 0;
+    for (final var it = database.iterateType("Question", false); it.hasNext(); ) {
+      final Vertex q = it.next().asVertex();
+      if (q.getInteger("qid") < maxQid)
+        for (final Vertex t : q.getVertices(Vertex.DIRECTION.OUT, "TAGGED_WITH"))
+          if (name.equals(t.getString("name")))
+            n++;
+    }
     return n;
   }
 

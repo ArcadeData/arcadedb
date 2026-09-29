@@ -30,6 +30,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -539,9 +540,24 @@ public class MergeStep extends AbstractExecutionStep {
     return null;
   }
 
+  /**
+   * The edges of {@code vertex} in {@code direction}, the incoming side of a unidirectional edge type included, which
+   * no vertex stores and the query's lookup answers (issue #8625): a MERGE that did not see it would create the edge
+   * again.
+   */
+  private Iterable<Edge> edgesOf(final Vertex vertex, final Vertex.DIRECTION direction, final String relType) {
+    return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, relType);
+  }
+
   private Edge findFirstEdgeTo(final Vertex from, final Vertex target,
       final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
       final String relType, final Map<String, Object> relProps) {
+    // An edge type declared unidirectional stores no incoming side: with both ends bound, the edge is looked for from
+    // the end that stores it, or MERGE would not find it and create a second one (issue #8625)
+    if (fromDir == Vertex.DIRECTION.IN
+        && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), fromDir, relType))
+      return findFirstEdgeTo(target, from, Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, relType, relProps);
+
     for (final Edge edge : from.getEdges(fromDir, relType)) {
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
@@ -673,7 +689,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
-    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex nextV = edge.getVertex(otherEnd);
@@ -738,7 +754,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<Result> results) {
-    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex prevV = edge.getVertex(otherEnd);
@@ -914,7 +930,7 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex.DIRECTION edgeDir = inbound ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
     final Vertex.DIRECTION otherEnd = inbound ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
 
-    for (final Edge edge : vertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(vertex, edgeDir, relType)) {
       try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
@@ -937,7 +953,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     // For undirected patterns also traverse the reverse direction
     if (relPattern.getDirection() == Direction.BOTH) {
-      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN, relType)) {
+      for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType)) {
         try {
           if (relProps != null && !matchesProperties(edge, relProps))
             continue;
