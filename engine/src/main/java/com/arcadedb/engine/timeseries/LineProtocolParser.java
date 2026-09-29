@@ -184,12 +184,14 @@ public class LineProtocolParser {
         pos++; // skip comma
         while (pos < len && line.charAt(pos) != ' ') {
           final ParsedString keyResult = readKey(line, pos);
+          // An empty tag key names no column, so skipping it would store the sample under a different series than
+          // the one the client sent, and answer it as written (issue #8563): reject the line, as the fields loop does
+          if (keyResult.value().isEmpty())
+            throw new IllegalArgumentException("Missing tag key at position " + pos);
           pos += keyResult.length() + 1; // +1 for '='
           final ParsedString valResult = readTagValueWithLength(line, pos);
           pos += valResult.length();
-          // InfluxDB spec mandates non-empty tag keys; skip silently to avoid polluting the schema
-          if (!keyResult.value().isEmpty())
-            tags.put(keyResult.value(), valResult.value());
+          tags.put(keyResult.value(), valResult.value());
           if (pos < len && line.charAt(pos) == ',')
             pos++; // skip comma separator
         }
