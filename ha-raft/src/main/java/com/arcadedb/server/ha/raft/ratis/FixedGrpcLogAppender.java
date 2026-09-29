@@ -51,9 +51,11 @@ import java.util.logging.Level;
  * <p>
  * It also overrides {@link #shouldInstallSnapshot(boolean)} so a follower that already installed a snapshot ending
  * right before the leader's log start receives entries instead of an endless stream of install-snapshot
- * notifications (issue #8459, see that method).
+ * notifications (issue #8459, see that method). Apache Ratis 3.3.1 ships an exemption of its own for the same state,
+ * but a looser one that leaves this class's fallback for a follower that no longer holds its snapshot unreachable, so
+ * the override still answers that question itself (issue #8548).
  * <p>
- * Once RATIS-2523 and the #8459 decision are both fixed in an Apache Ratis release, drop this class, drop
+ * Once RATIS-2523 is fixed and Apache Ratis offers the #8459 fallback, drop this class, drop
  * {@link FixedGrpcRpcType} / {@link FixedGrpcFactory}, and revert
  * {@code RaftPropertiesBuilder} to the stock {@code SupportedRpcType.GRPC}.
  *
@@ -139,22 +141,38 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
    * time, keeps the stock answer. Covers both {@code shouldInstallSnapshot()} and
    * {@code shouldNotifyToInstallSnapshot()}, which both delegate here.
    * <p>
-   * Verified against Apache Ratis 3.3.0: that delegation, and the three previous-entry carve-outs above, are what this
-   * override relies on, and nothing checks them at startup. Re-read them on a Ratis upgrade.
-   * {@code Issue8459InstallSnapshotNotifyLoopTest.leaderResumesAppendEntriesAfterInstallBoundaryOneBeforeItsLogStart}
-   * runs in notification mode, so it fails if {@code shouldNotifyToInstallSnapshot()} stops consulting this method.
-   * <p>
    * If the follower's own state no longer matches what it reported (for instance its storage was wiped since), its
    * {@code assertEntries} rejects the append. {@link #getNextIndexForError(long)} then withdraws the anchor, so the next
    * iteration notifies again and the follower either re-confirms its snapshot or installs a new one.
+   * <p>
+   * Apache Ratis 3.3.1 added an exemption of its own to the stock answer: no snapshot when
+   * {@code nextIndex == follower snapshotIndex + 1}, without the {@code matchIndex} and install-reply conditions of
+   * {@link #isAnchoredOnInstalledSnapshot}. Taken as is, it answered {@code false} before this method could record the
+   * anchor, so the fallback above never ran; and after a fallback it went on answering {@code false}, because a
+   * rewound {@code matchIndex} does not move {@code snapshotIndex}. A follower whose append was rejected was then sent
+   * the same append forever (issue #8548). The stock answer is therefore read without that exemption: a {@code false}
+   * from Ratis in exactly the state {@link #leaderLacksPreviousEntry} describes is treated as the {@code true} it was
+   * in Ratis 3.3.0, and {@link #isAnchoredOnInstalledSnapshot} alone decides whether to skip the snapshot.
+   * <p>
+   * Verified against Apache Ratis 3.3.1: that delegation, the three previous-entry carve-outs above and the stock
+   * exemption are what this override relies on, and nothing checks them at startup. Re-read them on a Ratis upgrade.
+   * {@code Issue8459InstallSnapshotNotifyLoopTest.rejectedAnchoredAppendFallsBackToANewNotification} runs in
+   * notification mode and fails if the stock answer again hides the anchor from this method; it is the test that
+   * caught the 3.3.1 change.
    */
   @Override
   public boolean shouldInstallSnapshot(final boolean hasSnapshot) {
-    if (!super.shouldInstallSnapshot(hasSnapshot))
-      return false;
-
     final FollowerInfo follower = getFollower();
     final long nextIndex = follower.getNextIndex();
+    if (!super.shouldInstallSnapshot(hasSnapshot)) {
+      // The appender asks on every iteration, so the log-start comparison comes first: getPrevious() is only looked
+      // up in the one position where the stock exemption can have hidden a missing previous entry.
+      final long leaderStartIndex = getRaftLog().getStartIndex();
+      if (nextIndex != leaderStartIndex
+          || !leaderLacksPreviousEntry(nextIndex, getRaftLog().getNextIndex(), leaderStartIndex, getPrevious(nextIndex) == null))
+        return false;
+    }
+
     final long snapshotIndex = follower.getSnapshotIndex();
     if (!isAnchoredOnInstalledSnapshot(nextIndex, getRaftLog().getStartIndex(), snapshotIndex, follower.getMatchIndex(),
         follower.hasAttemptedToInstallSnapshot()))
@@ -203,6 +221,24 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
       }
     }
     return super.getNextIndexForError(newNextIndex);
+  }
+
+  /**
+   * The last clause of Apache Ratis 3.3.0's {@code LogAppender.shouldInstallSnapshot}, which 3.3.1 narrowed with its
+   * follower-snapshot exemption (issue #8548): the follower still needs entries, its {@code nextIndex} is this
+   * leader's log start, and the entry before it is found neither in the log nor as this leader's snapshot marker
+   * ({@code previousMissing}, the caller's {@code getPrevious(nextIndex) == null}). Without a previous entry an
+   * append is only accepted by a follower that holds that entry as its snapshot, which is what
+   * {@link #isAnchoredOnInstalledSnapshot} checks.
+   * <p>
+   * Package-private for direct unit testing.
+   */
+  static boolean leaderLacksPreviousEntry(final long followerNextIndex, final long leaderNextIndex,
+      final long leaderStartIndex, final boolean previousMissing) {
+    return followerNextIndex < leaderNextIndex
+        && followerNextIndex == leaderStartIndex
+        && followerNextIndex > RaftLog.LEAST_VALID_LOG_INDEX
+        && previousMissing;
   }
 
   /**
