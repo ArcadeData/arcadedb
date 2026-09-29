@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
@@ -404,6 +405,18 @@ public class LocalSchema implements Schema {
   }
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
+  /**
+   * The thread running the outermost {@link #recordFileChanges} frame, {@code null} while none is open (issue #8635).
+   * Written under the database write lock; read by {@link #saveConfigurationAtTransactionEnd()} without it, hence
+   * volatile.
+   */
+  private volatile    Thread                                 recordingThread               = null;
+  /**
+   * Whether a save was left to the outermost {@link #recordFileChanges} frame by a nested frame or by a transaction
+   * that ended inside it (issue #8635). Read only when the frame FAILS: a successful one saves unconditionally. Read
+   * and written by the frame's thread under the database write lock only.
+   */
+  private             boolean                                recordingSavePending          = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
@@ -3760,6 +3773,14 @@ public class LocalSchema implements Schema {
   }
 
   public synchronized void saveConfiguration() {
+    saveConfiguration(false);
+  }
+
+  /**
+   * @param ignoreOpenTransaction {@code true} for the one caller that saves on purpose while a transaction is open: the
+   *                              commit of the outermost transaction, right before its durable phase
+   */
+  private synchronized void saveConfiguration(final boolean ignoreOpenTransaction) {
     rebuildBucketTypeMap();
 
     // A SCHEMA CHANGE MADE THROUGH THE JAVA API NEVER GOES THROUGH A COMMAND: MOVE THE MODIFICATION COUNTER HERE TOO, SO
@@ -3767,7 +3788,7 @@ public class LocalSchema implements Schema {
     if (database.getEmbedded() instanceof LocalDatabase localDatabase)
       localDatabase.markModified();
 
-    if (readingFromFile || !loadInRamCompleted || multipleUpdate || database.isTransactionActive()) {
+    if (readingFromFile || !loadInRamCompleted || multipleUpdate || (!ignoreOpenTransaction && database.isTransactionActive())) {
       // POSTPONE THE SAVING - ensure at least one generation is marked dirty
       dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
       return;
@@ -4083,8 +4104,14 @@ public class LocalSchema implements Schema {
       // is atomic on the target either way: schema.prev.json is what readConfiguration() falls back TO, so it can
       // never be half-written. It is also byte-identical by construction - literally the same bytes, so no charset
       // from setEncoding() is applied to it on the way out.
+      //
+      // #8635: WITHOUT ITS OWN DIRECTORY FSYNC. The write of schema.json below publishes into the same directory and
+      // fsyncs it, which makes this rename durable too, so a second fsync here was a full device flush bought for
+      // nothing on every schema change. In between, a power failure leaves schema.prev.json holding either the
+      // generation before this one or the one before that - complete either way - next to a schema.json that the
+      // atomic write guarantees is complete, so the fallback it exists for is never needed in that window.
       final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      FileUtils.atomicCopyFile(configurationFile, copy);
+      FileUtils.atomicCopyFile(configurationFile, copy, false);
     }
 
     // The primary is replaced by an atomic rename, so a reader sees either this generation or the previous one.
@@ -4171,14 +4198,35 @@ public class LocalSchema implements Schema {
       multipleUpdate = true;
 
     final boolean[] executed = new boolean[1];
+    final boolean[] keepDirty = new boolean[1];
     try {
       final RET result = database.getWrappedDatabaseInstance().recordFileChanges(() -> {
         // UNDER THE WRITE LOCK, SO THE DEPTH IS CONSISTENT: A NESTED FRAME (A TYPE CREATION AND THE BUCKET CREATIONS
         // INSIDE IT) SEES THE FRAME ENCLOSING IT
         final boolean outermost = recordingDepth++ == 0;
+        if (outermost) {
+          recordingThread = Thread.currentThread();
+          recordingSavePending = false;
+        }
         try {
           final Object callbackResult = callback.call();
           executed[0] = true;
+
+          if (suspendIntermediateSaves)
+            multipleUpdate = false;
+
+          // #8635: A NESTED FRAME DOES NOT SAVE, IT LEAVES THE SAVE TO THE OUTERMOST ONE. Every DDL nests frames - a
+          // type creation opens one per bucket it creates and one per bucket it attaches - and each used to rewrite
+          // schema.json on its way out, an fsync'd atomic publication every time: five writes for one CREATE TYPE.
+          // Nothing reads the file between the nested frame and the end of the enclosing one: the enclosing frame
+          // still holds the database write lock, which is what excludes the observers #7457 is about.
+          if (!outermost) {
+            recordingSavePending = true;
+            // THE MAP saveConfiguration() REBUILDS BEFORE IT POSTPONES: A BUCKET THIS FRAME CREATED OR ATTACHED MUST
+            // RESOLVE TO ITS TYPE FOR THE STEPS THAT FOLLOW IN THE ENCLOSING FRAME
+            rebuildBucketTypeMap();
+            return callbackResult;
+          }
 
           // #7457: SAVE schema.json BEFORE THE WRITE LOCK IS RELEASED, NOT AFTER. The callback registered or dropped
           // files in the FileManager, and until the schema file names exactly those files an observer that lists
@@ -4187,12 +4235,12 @@ public class LocalSchema implements Schema {
           // schema's monitor under the write lock is the order every DDL that saves from inside its own callback
           // (dropType, dropBucket, the materialized view ones) had already established; the reverse order - the
           // monitor held while waiting for the write lock - is the one no method may take, see dropMaterializedView.
-          if (suspendIntermediateSaves)
-            multipleUpdate = false;
+          //
           // UNCONDITIONAL, AS IT WAS OUTSIDE THE LOCK: NOT EVERY IN-MEMORY MUTATION MARKS A GENERATION DIRTY (A TYPE
           // INDEX REGISTERING ITS BUCKET SUB-INDEXES AFTER THEIR OWN SAVES DOES NOT), SO "NOTHING TO SAVE" CANNOT BE
-          // READ OFF isDirty() HERE. AND AT EVERY NESTING LEVEL, ALSO AS BEFORE: A NESTED FRAME SAVES UNLESS
-          // multipleUpdate POSTPONES IT (bulkChange, dropType), SO A DDL OVER N BUCKETS STILL WRITES THE FILE N TIMES
+          // READ OFF isDirty() HERE. STILL POSTPONED BY AN OPEN TRANSACTION OR BY multipleUpdate (bulkChange,
+          // dropType), WHICH SAVE ONCE AT THEIR OWN END
+          recordingThread = null;
           saveConfiguration();
 
           // THE LAST STEP UNDER THE WRITE LOCK OF THE OUTERMOST FRAME: THE CHANGE IS APPLIED, ITS FILES REGISTERED OR
@@ -4200,10 +4248,16 @@ public class LocalSchema implements Schema {
           // HERE THAT THE SCHEMA FILE AGREES WITH THE FILE SET PROVES THE SAVE RUNS UNDER THE LOCK (#7457) - MOVED
           // AFTER THE RELEASE, IT WOULD ALSO BE AFTER THIS HOOK. A NESTED FRAME HAD ITS SAVE POSTPONED TO THE FRAME
           // ENCLOSING IT, SO IT DOES NOT FIRE
-          if (outermost)
-            database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.SCHEMA_AFTER_FILE_CHANGES);
+          database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.SCHEMA_AFTER_FILE_CHANGES);
           return callbackResult;
         } finally {
+          if (outermost) {
+            recordingThread = null;
+            final boolean pending = recordingSavePending;
+            recordingSavePending = false;
+            if (!executed[0] && pending)
+              keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+          }
           --recordingDepth;
         }
       });
@@ -4221,10 +4275,119 @@ public class LocalSchema implements Schema {
     } finally {
       if (suspendIntermediateSaves)
         multipleUpdate = false;
-      if (!executed[0] && prevGeneration <= savedGeneration)
-        // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty
+      if (!executed[0] && !keepDirty[0] && prevGeneration <= savedGeneration)
+        // ROLLBACK THE DIRTY STATUS - restore only if we were the ones who made it dirty, and never over the work of
+        // a nested frame that is still waiting to be written (#8635)
         savedGeneration = dirtyGeneration.get();
     }
+  }
+
+  /**
+   * Writes what the nested frames of an outermost {@link #recordFileChanges} frame applied before its callback failed
+   * (issue #8635).
+   * <p>
+   * The nested frames left their saves to the outermost one, which never reaches its own save when the callback
+   * throws. Their work is in the in-memory schema regardless - there is no schema rollback - and their files are on
+   * disk, so it is written here, as each nested frame used to write it on its own before #8635. A failure of this
+   * save is logged and swallowed: the exception the caller has to see is the callback's, already propagating.
+   *
+   * @return {@code true} when the schema is still dirty afterwards (the save was postponed by an open transaction or
+   * by {@code multipleUpdate}), so the caller does not declare it clean
+   */
+  private boolean saveWhatAFailedFrameApplied(final boolean suspendIntermediateSaves) {
+    if (suspendIntermediateSaves)
+      multipleUpdate = false;
+    try {
+      saveConfiguration();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Error on saving the schema changes applied before a failed schema change on database '%s'", e,
+          database.getName());
+    }
+    return isDirty();
+  }
+
+  /**
+   * Two sessions committing right after one DDL both see the schema dirty before either has written it. The second
+   * finds it clean here, under the monitor, and does not repeat the fsync'd write (issue #8635).
+   */
+  private synchronized void saveIfStillDirty(final boolean ignoreOpenTransaction) {
+    if (isDirty())
+      saveConfiguration(ignoreOpenTransaction);
+  }
+
+  /**
+   * Writes a pending schema change before the outermost transaction of this thread makes its records durable (issue
+   * #8635). A crash between the two would otherwise leave acknowledged records in bucket files that no schema entry
+   * names. The schema change stands whether the commit then succeeds or not, so writing it first loses nothing.
+   * <p>
+   * Nothing to do for a nested transaction (the outermost one writes), inside a frame of this thread (the frame writes),
+   * or under {@link #bulkChange}, which writes once at its own end.
+   */
+  public void saveConfigurationBeforeCommit() {
+    if (!isDirty() || recordingThread == Thread.currentThread())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.getTransactionDepth() > 1)
+      return;
+
+    try {
+      saveIfStillDirty(true);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema before a commit on database '%s'", e,
+          database.getName());
+    }
+  }
+
+  /**
+   * Writes {@code schema.json} at the end of a transaction, if a schema change is pending (issue #8635).
+   * <p>
+   * Called on the way out of every commit and rollback, because a DDL run inside a transaction postpones its save to
+   * the end of it - a rollback included, since a schema change is not transactional and stands either way. Two
+   * transaction ends are not the place to write it, and both used to:
+   * <ul>
+   * <li>a NESTED transaction: the one enclosing it is still open, so its own end is where the save belongs. Told
+   * apart by the depth of this thread's transaction stack rather than by {@code isTransactionActive()}, so the answer
+   * does not depend on whether the caller asks before the ending transaction left the stack - as the Raft commit paths
+   * do - or after, as {@code LocalDatabase} does;</li>
+   * <li>a transaction committed INSIDE an outermost {@link #recordFileChanges} frame on this thread - the dictionary
+   * entry for a new type or property name, an index built bucket by bucket - where the frame writes the file on its
+   * way out anyway.</li>
+   * </ul>
+   */
+  public void saveConfigurationAtTransactionEnd() {
+    if (!isDirty())
+      return;
+
+    try {
+      saveAtTransactionEnd();
+    } catch (final RuntimeException e) {
+      // NEVER THROWN: AFTER A SUCCESSFUL COMMIT IT WOULD REPORT COMMITTED RECORDS AS FAILED AND INVITE A RETRY THAT
+      // APPLIES THEM TWICE, AND ON A ROLLBACK OR A FAILED COMMIT IT WOULD REPLACE THE EXCEPTION THE CALLER HAS TO SEE.
+      // THE SCHEMA STAYS DIRTY FOR THE NEXT SAVE OR THE CLOSE
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema at the end of a transaction on database '%s'", e,
+          database.getName());
+    }
+  }
+
+  private void saveAtTransactionEnd() {
+    // A FRAME OPEN ON ANOTHER THREAD NEEDS NO CHECK: IT HOLDS THE DATABASE WRITE LOCK, AND A COMMIT OR A ROLLBACK TAKES
+    // THE READ LOCK, SO NO TRANSACTION CAN END INSIDE SOMEBODY ELSE'S DDL AND WRITE ITS HALF-APPLIED SCHEMA
+    if (recordingThread == Thread.currentThread()) {
+      // THE FRAME IS OPEN ON THIS THREAD, UNDER THE WRITE LOCK: THE FLAG IS ITS OWN
+      recordingSavePending = true;
+      return;
+    }
+
+    // MORE THAN ONE TRANSACTION STACKED ON THIS THREAD: BEFORE THE POP, THE ENDING ONE IS NESTED; AFTER IT, THE ONE ON
+    // TOP IS. EITHER WAY AN ENCLOSING TRANSACTION IS STILL OPEN, AND ITS END WRITES THE FILE. WITH ONE LEFT,
+    // saveConfiguration() POSTPONES ON ITS OWN IF THAT ONE IS STILL ACTIVE
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.getTransactionDepth() > 1 && context.hasActiveTransaction())
+      return;
+
+    saveIfStillDirty(false);
   }
 
   protected Index createBucketIndex(final LocalDocumentType type,

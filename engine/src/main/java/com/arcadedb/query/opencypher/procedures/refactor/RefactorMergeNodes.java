@@ -238,6 +238,8 @@ public class RefactorMergeNodes implements CypherProcedure {
 
     for (final Edge edge : edgesToRewire) {
       final MutableEdge mutableEdge = edge.modify();
+      // The endpoint written is the survivor, not a value computed from the edge read: no stale-read refusal (#8610)
+      mutableEdge.clearBasedOnStaleRead();
       if (mutableEdge.getOut().equals(absorbed.getIdentity()))
         mutableEdge.set("@out", survivor.getIdentity());
       if (mutableEdge.getIn().equals(absorbed.getIdentity()))

@@ -601,8 +601,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               state.bufferedBytes += wal.length;
           } else
             tx.reset();
-          if (getSchema().getEmbedded().isDirty())
-            getSchema().getEmbedded().saveConfiguration();
+          // THIS ARM RUNS ONLY ON THE THREAD OF AN OPEN recordFileChanges FRAME, WHICH WRITES THE FILE ON ITS WAY OUT (#8635)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         } catch (final ArcadeDBException e) {
           // Issue #8149: the same answer as the ordinary arm below. Without it a refused DDL commit left its
           // transaction ACTIVE - the pop in the finally removes nothing from a single-level stack - with the read
@@ -645,8 +645,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         // Read-only transaction: nothing to replicate.
         tx.reset();
-        if (leader && getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+        if (leader)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         current.popIfNotLastTransaction();
         return null;
       } catch (final ArcadeDBException e) {
@@ -906,8 +908,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (outcome == LocalCommit.Outcome.PUBLISHED) {
           try {
             payload.tx().completeCommit();
-            if (getSchema().getEmbedded().isDirty())
-              getSchema().getEmbedded().saveConfiguration();
+            getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
             return null;
           } catch (final Exception e) {
             // The pages are published: only the bookkeeping after them failed (completeCommit fenced and reset the
@@ -1001,13 +1002,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         payload.tx().commit2ndPhase(payload.phase1());
 
-        if (getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
       } catch (final Exception e) {
-        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
-        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
-        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
-        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        // NOTE (#5075 review): this catch can fire after commit2ndPhase SUCCEEDED, when the failure came from the
+        // bookkeeping after it (the schema save itself never throws). Reconciling then replays the payload WAL
+        // against pages the commit already published - safe by the #4926 replay semantics: an equal-version entry
+        // re-applies the same absolute bytes (idempotent), a lower-version one is skipped.
         throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
         current.popIfNotLastTransaction();
