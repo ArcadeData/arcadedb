@@ -58,6 +58,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+// A hang detector, not a latency bound: an interleaving that deadlocks must fail the class, not stall the build
+@Timeout(value = 5, unit = TimeUnit.MINUTES)
 class Issue8538MergeOnMatchLostUpdateTest {
   private static final String MERGE_ONE  =
       "MERGE (c:C {id: $id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.n AS n";
@@ -510,7 +512,6 @@ class Issue8538MergeOnMatchLostUpdateTest {
    */
   @Test
   @Tag("slow") // contention-bound retries on one hot record: the deterministic interleavings above cover the regression
-  @Timeout(value = 5, unit = TimeUnit.MINUTES) // a hang detector for the retry loop, not a latency bound
   void concurrentMergeIncrementsAreNeverLost() throws Exception {
     final int writers = 8;
     final int batches = 50;
