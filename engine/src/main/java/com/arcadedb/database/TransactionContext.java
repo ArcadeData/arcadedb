@@ -387,7 +387,6 @@ public class TransactionContext implements Transaction {
     } else
       resetAndFireCallbacks();
 
-    // NO SCHEMA SAVE HERE: LocalDatabase.commit() DOES IT, ONCE THIS CONTEXT LEFT THE STACK (#8635)
     return phase1 != null ? phase1.result : null;
   }
 
