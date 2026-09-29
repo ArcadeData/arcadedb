@@ -475,6 +475,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private volatile long          lastReplacingLeaderHandOffEndMs;
   // Hand-offs that failed in a row since the last one that moved leadership; widens the interval (issue #8556).
   private volatile int           replacingLeaderHandOffFailures;
+  // Hand-offs that MOVED leadership while the condition behind them never cleared on this node (issue #8529); widens
+  // the interval like the failures above. A gap every node shares - a database missing on all of them, a stale-snapshot
+  // gap after a cluster-wide crash - has no peer that can close it: each hand-off succeeds, and the next leader hands
+  // off in turn. Without it leadership would rotate at the base interval for as long as the gap lasts. Forgotten only
+  // once this node no longer has the gap (resetReplacingLeaderHandOffBackOff), not when it stops being leader.
+  private volatile int           leaderHandOffsMovedWhileGapPersisted;
   // Claimed by the caller running a hand-off, so a concurrent caller does not start a second one meanwhile.
   private final    AtomicBoolean replacingLeaderHandOffRunning = new AtomicBoolean();
   // Clock of the hand-off throttle. Package-private and mutable only so tests can drive the interval without sleeping.
@@ -4645,7 +4651,62 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
+   * Whether this node, were it the leader, would hold a database it cannot serve and that a peer can (issue #8529) -
+   * the condition {@link #handOffLeadershipWhileReplacingDatabase()} moves leadership away from. Any of:
+   * <ul>
+   *   <li>a database being replaced with the leader's copy (issue #8491, {@link #databasesBeingReplaced});</li>
+   *   <li>a pending bootstrap replacement (issue #8367): the copy on disk is the one the committed baseline rejected,
+   *       and it stays out of service until it is replaced - which a leader cannot do from itself;</li>
+   *   <li>a database the committed bootstrap baseline says the cluster holds and that is not on this node at all
+   *       (issue #7298): {@link #installFromLeaderForBootstrap} refuses on a leader. Not the other half of the
+   *       unreconciled mark - a copy the #6124 guard KEPT is here and served;</li>
+   *   <li>an unfilled stale-snapshot gap (issue #6111): entries this node's databases never received, which the resync
+   *       that fills it refuses to run on a leader. Node-global, like the floor itself. A peer that holds the entries
+   *       is exactly one that is not lagging, which is what the targeted transfer already requires of its target.</li>
+   * </ul>
+   * A quarantined database is not in the list: {@link RaftHAServer} hands that one off itself (issue #8483).
+   * <p>
+   * Read on every health tick, so allocation-free and cheap when the answer is "no": three reads of an empty
+   * collection or an unset floor. Only a non-empty unreconciled set costs a directory check per marked database.
+   */
+  boolean hasLeaderServiceGap() {
+    if (!databasesBeingReplaced.isEmpty() || staleSnapshotAppliedFloor.get() >= 0)
+      return true;
+    ensureBootstrapBaselinesLoaded();
+    if (!bootstrapReplacementsPending.isEmpty())
+      return true;
+    if (bootstrapUnreconciledDatabases.isEmpty())
+      return false;
+    for (final String dbName : bootstrapUnreconciledDatabases)
+      if (!isDatabasePresentLocally(dbName))
+        return true;
+    return false;
+  }
+
+  /**
+   * The conditions {@link #hasLeaderServiceGap()} tests, one line each for the log, in the order it tests them; empty
+   * when there are none.
+   */
+  List<String> describeLeaderServiceGaps() {
+    final List<String> gaps = new ArrayList<>(4);
+    final List<String> replacing = getDatabasesBeingReplaced();
+    if (!replacing.isEmpty())
+      gaps.add("replacing " + replacing + " with the leader's copy (issue #8491)");
+    final long floor = staleSnapshotAppliedFloor.get();
+    if (floor >= 0)
+      gaps.add("unfilled stale-snapshot gap: its databases hold no entry past index " + floor + " (issue #6111)");
+    final List<String> pending = getPendingBootstrapReplacements();
+    if (!pending.isEmpty())
+      gaps.add("still holding the copy of " + pending + " the bootstrap baseline rejected (issue #8367)");
+    final BootstrapUnreconciled unreconciled = getBootstrapUnreconciled(null);
+    if (!unreconciled.missingLocally().isEmpty())
+      gaps.add("missing " + unreconciled.missingLocally() + ", which the bootstrap baseline committed (issue #7298)");
+    return gaps;
+  }
+
+  /**
+   * Hands leadership to a peer when this node is the leader and cannot serve a database a peer can (issue #8529, see
+   * {@link #hasLeaderServiceGap()}), the first of which was a leader replacing one of its databases with the leader's
    * copy (issue #8491). Driven by the {@link HealthMonitor} tick, through {@link RaftHAServer}, which runs it on the
    * executor the other automatic hand-offs share so that none of them races it (issue #8557).
    * <p>
@@ -4660,16 +4721,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging and that answered
    * this leader recently (issue #8556).
    * <p>
-   * No-op when nothing is being replaced (one map read), on a follower, and until
+   * No-op when {@link #hasLeaderServiceGap()} is false, on a follower, and until
    * {@link #replacingLeaderHandOffIntervalMs} has passed since the previous attempt ENDED - an interval that doubles
-   * with each failure in a row (issue #8556) - so a cluster where no peer can take over is not put through an election
-   * on every tick. Blocks the caller for up to
+   * with each failure in a row (issue #8556), and with each hand-off that moved leadership while the gap stayed open
+   * on this node (issue #8529) - so a cluster where no peer can take over, or where every peer shares the gap, is not
+   * put through an election on every tick. The name predates #8529 and is kept for the {@link HealthMonitor} hook.
+   * Blocks the caller for up to
    * {@link #REPLACING_LEADER_HAND_OFF_TIMEOUT_MS} while a hand-off runs.
    *
    * @return whether leadership moved to another node
    */
   public boolean handOffLeadershipWhileReplacingDatabase() {
-    if (databasesBeingReplaced.isEmpty()) {
+    if (!hasLeaderServiceGap()) {
       resetReplacingLeaderHandOffBackOff();
       return false;
     }
@@ -4681,9 +4744,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
     // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
-    final List<String> replacing = getDatabasesBeingReplaced();
+    final List<String> replacing = describeLeaderServiceGaps();
     if (replacing.isEmpty()) {
-      // The last replacement finished between the two reads: the episode is over, as on the empty fast path above.
+      // The last gap closed between the two reads: the episode is over, as on the fast path above.
       resetReplacingLeaderHandOffBackOff();
       return false;
     }
@@ -4702,24 +4765,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return false;
 
       LogManager.instance().log(this, Level.WARNING,
-          "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
-              + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
-              + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
+          "This node is the leader but cannot serve every database a peer can: %s. A leader cannot install the "
+              + "missing data from itself, so it stays that way for as long as it leads. Handing leadership to a peer "
+              + "that holds the data (issues #8491, #8529)", replacing);
       attempted = true;
       try {
         moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Leadership hand-off while replacing database(s) %s failed: %s. Retrying in %d ms", replacing, e.getMessage(),
+            "Leadership hand-off of a leader that cannot serve every database (%s) failed: %s. Retrying in %d ms", replacing, e.getMessage(),
             replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
         return false;
       }
       if (moved)
         LogManager.instance().log(this, Level.INFO,
-            "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
+            "Leadership handed off (%s); the missing data is installed from the new leader", replacing);
       else
         LogManager.instance().log(this, Level.WARNING,
-            "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying in %d ms; to move "
+            "Could not hand off leadership (%s): no peer took over. Retrying in %d ms; to move "
                 + "it by hand, run POST /api/v1/cluster/leader", replacing,
             replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
       return moved;
@@ -4730,15 +4793,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
         lastReplacingLeaderHandOffEndMs = Math.max(1L, replacingLeaderHandOffClock.getAsLong());
         replacingLeaderHandOffFailures = moved ? 0 : Math.min(replacingLeaderHandOffFailures + 1,
             REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED);
+        if (moved)
+          leaderHandOffsMovedWhileGapPersisted = Math.min(leaderHandOffsMovedWhileGapPersisted + 1,
+              REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED);
       }
       replacingLeaderHandOffRunning.set(false);
     }
   }
 
   /**
-   * Forgets the failures in a row once the condition they were counted for is over - nothing is being replaced, or this
-   * node is no longer the leader - so the next episode starts from the base interval (issue #8556). The pause after
-   * the last attempt still applies. One volatile read when there is nothing to reset.
+   * Forgets the failures in a row once the condition they were counted for is over - no leader service gap, or this
+   * node is no longer the leader - so the next episode starts from the base interval (issue #8556). The hand-offs
+   * that moved leadership are forgotten only once the gap itself is gone (issue #8529). The pause after the last
+   * attempt still applies. One or two volatile reads when there is nothing to reset.
    * <p>
    * Takes the same claim an attempt takes, so it can never zero the count under an attempt in flight, whose own
    * failure would then restart the streak (code review on PR #8597). Losing the claim to an attempt skips the reset,
@@ -4747,10 +4814,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Package-private: {@link RaftHAServer#queueReplacingDatabaseHandOff} calls it on the ticks that queue nothing.
    */
   void resetReplacingLeaderHandOffBackOff() {
-    if (replacingLeaderHandOffFailures == 0 || !replacingLeaderHandOffRunning.compareAndSet(false, true))
+    // The moved hand-offs are forgotten only once the gap itself is gone (issue #8529), not merely because this node
+    // stopped leading: that is what each of them achieved, and a gap no peer can close brings leadership back here.
+    // Evaluated only when there is something to forget, so a healthy node's tick stays one volatile read.
+    final boolean forgetMoved = leaderHandOffsMovedWhileGapPersisted > 0 && !hasLeaderServiceGap();
+    if ((replacingLeaderHandOffFailures == 0 && !forgetMoved) || !replacingLeaderHandOffRunning.compareAndSet(false, true))
       return;
     try {
       replacingLeaderHandOffFailures = 0;
+      if (forgetMoved)
+        leaderHandOffsMovedWhileGapPersisted = 0;
     } finally {
       replacingLeaderHandOffRunning.set(false);
     }
@@ -4759,8 +4832,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /** Whether the throttle of {@link #handOffLeadershipWhileReplacingDatabase()} admits an attempt now. */
   private boolean replacingLeaderHandOffDue() {
     final long lastEnd = lastReplacingLeaderHandOffEndMs;
-    return lastEnd == 0
-        || replacingLeaderHandOffClock.getAsLong() - lastEnd >= replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures);
+    return lastEnd == 0 || replacingLeaderHandOffClock.getAsLong() - lastEnd >= replacingLeaderHandOffIntervalMs(
+        Math.max(replacingLeaderHandOffFailures, leaderHandOffsMovedWhileGapPersisted));
   }
 
   /**
@@ -4974,7 +5047,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         LogManager.instance().log(this, Level.WARNING,
             "Database(s) %s still hold the copy the cluster's bootstrap baseline rejected, and this node is the leader, "
                 + "so there is nowhere to install the replacement from. They stay out of service on this node until "
-                + "leadership moves (POST /api/v1/cluster/leader) and the replacement is installed from the new leader",
+                + "leadership moves - the health check hands it to a peer that holds them (issue #8529), or run "
+                + "POST /api/v1/cluster/leader - and the replacement is installed from the new leader",
             getPendingBootstrapReplacements());
       return;
     }
