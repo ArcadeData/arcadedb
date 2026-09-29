@@ -246,8 +246,10 @@ public class RemoveStep extends AbstractExecutionStep {
     // count it when the property actually existed before the removal.
     final boolean propertyExisted = doc.has(property);
 
-    // Make document mutable
+    // Make document mutable. REMOVE writes no value computed from what the MATCH read, so a commit landing in between
+    // leaves nothing to lose: the stale-read refusal (#8610) does not apply
     final MutableDocument mutableDoc = doc.modify();
+    mutableDoc.clearBasedOnStaleRead();
 
     // Remove the property (setting to null removes it)
     mutableDoc.remove(property);
