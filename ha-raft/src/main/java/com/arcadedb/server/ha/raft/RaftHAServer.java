@@ -1608,10 +1608,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final RaftServer.Division division = raftServer.getDivision(raftGroup.getGroupId());
       final LifeCycle.State divisionState = division.getInfo().getLifeCycleState();
-      // CLOSING too (issue #8651): Ratis closes the division from the dying StateMachineUpdater thread, and that
-      // close can stay in CLOSING while the proxy reports RUNNING - a zombie that answered raftState=RUNNING.
-      if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION
-          || divisionState == LifeCycle.State.CLOSING)
+      if (isDivisionStateReported(divisionState))
         return divisionState;
     } catch (final Exception e) {
       // The division cannot be read - typically a transient window while the server is starting or an
@@ -1622,6 +1619,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft division state: %s", e.getMessage());
     }
     return proxyState;
+  }
+
+  /**
+   * Whether a division state overrides the RUNNING proxy state in {@link #getRaftLifeCycleState()}: the terminal ones,
+   * and CLOSING too (issue #8651) - Ratis closes the division from the dying StateMachineUpdater thread, and that close
+   * can stay in CLOSING while the proxy reports RUNNING, a zombie that answered raftState=RUNNING.
+   */
+  static boolean isDivisionStateReported(final LifeCycle.State divisionState) {
+    return divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION
+        || divisionState == LifeCycle.State.CLOSING;
   }
 
   /**

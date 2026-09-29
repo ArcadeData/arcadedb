@@ -211,7 +211,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
   // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
   // In memory only, and never seeded by reinitialize(): after a restart Ratis replays from the snapshot marker onward,
-  // and a marker reinitialize() distrusts (staleSnapshot) must not suppress the entries below it.
+  // and a marker reinitialize() distrusts (staleSnapshot) must not suppress the entries below it. An in-process
+  // restartRatis() builds a fresh state machine, so the boundary does not outlive it either.
   private final    AtomicLong                installedRaftBoundary  = new AtomicLong(-1);
   // The boundary the first refusal below it was reported for at WARNING, so each boundary logs once (issue #8651).
   // Guarded by appliedPositionLock.
@@ -1381,7 +1382,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // are refreshed by the leader catch-up that follows the install (issue #7833), and applying it now would write
       // an older document over that state and move lastAppliedIndex and the persisted applied index backward. No
       // notifyApplied() either: nothing advanced, and the install already notified for its seed.
-      if ((decoded.databaseName() == null || decoded.databaseName().isEmpty()) && isBelowInstalledRaftBoundary(index)) {
+      final boolean namesNoDatabase = decoded.databaseName() == null || decoded.databaseName().isEmpty();
+      if (namesNoDatabase && isBelowInstalledRaftBoundary(index)) {
         LogManager.instance().log(this, Level.FINE,
             "Skipping entry %d that names no database: already covered by the installed snapshot boundary %d "
                 + "(issue #8651)", index, installedRaftBoundary.get());
@@ -1412,25 +1414,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // this entry is the next one in order and leaving it unrecorded would stall every reader waiting on it.
       final boolean carriedByServedCopy = installGate != null && index <= installGate.servedCopyIndex()
           && isCarriedByInstalledCopy(decoded.type(), originatedLocally);
+      final Runnable dispatch = () -> {
+        securitySuperseded[0] = false;
+        switch (decoded.type()) {
+        case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
+        case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
+        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
+        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+        case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
+        case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
+        case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
+        case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
+        }
+      };
+      boolean staleNoDatabaseEntry = false;
       try {
         if (carriedByServedCopy)
           LogManager.instance().log(this, Level.FINE,
               "Not re-applying entry %d to database '%s': the copy installed from the leader, served at applied index %d, "
                   + "already carries it (issue #8579)", index, decoded.databaseName(), installGate.servedCopyIndex());
+        else if (namesNoDatabase)
+          // Re-checked, and the document written, under the lock the install records its boundary under (issue #8651):
+          // an install that lands between the check above and the write would otherwise let this stale document
+          // overwrite what the post-install security catch-up brings, which runs after the boundary is recorded.
+          synchronized (appliedPositionLock) {
+            if (isBelowInstalledRaftBoundary(index))
+              staleNoDatabaseEntry = true;
+            else
+              applyWithRetry(index, decoded.databaseName(), dispatch);
+          }
         else
-          applyWithRetry(index, decoded.databaseName(), () -> {
-            securitySuperseded[0] = false;
-            switch (decoded.type()) {
-            case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
-            case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
-            case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
-            case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-            case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
-            case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
-            case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
-            case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
-            }
-          });
+          applyWithRetry(index, decoded.databaseName(), dispatch);
       } finally {
         if (installGate != null) {
           // Recorded even when the apply failed: the floor an install derives from it can only be too high, which
@@ -1439,6 +1453,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
           installGate.unlock();
         }
       }
+      if (staleNoDatabaseEntry)
+        return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
       final long previousApplied;
       synchronized (appliedPositionLock) {
