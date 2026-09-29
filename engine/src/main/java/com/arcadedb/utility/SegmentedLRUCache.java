@@ -41,6 +41,7 @@ public class SegmentedLRUCache<K, V> {
 
   public SegmentedLRUCache(final int capacity) {
     this.capacity = Math.max(0, capacity);
+    // a single slot cannot be split into two segments: it stays a plain probation slot
     this.protectedCapacity = this.capacity < 2 ? 0 : Math.max(1, this.capacity * PROTECTED_PERCENT / 100);
     final int initial = Math.max(16, (int) (this.capacity / 0.75) + 1);
     this.probation = new LinkedHashMap<>(initial, 0.75f, true);

@@ -23,11 +23,10 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.utility.SegmentedLRUCache;
 
-
 /**
- * This class is a scan-resistant LRU cache (issue #8286: a burst of one-off statement texts, such as queries that embed their
- * values, must not evict the statements the application keeps re-running) for already parsed SQL statement executors. It stores itself in the storage as a resource. It also
- * acts an an entry point for the SQL parser.
+ * Scan-resistant LRU cache for already parsed SQL statement executors (issue #8286: a burst of one-off statement texts, such
+ * as queries that embed their values, must not evict the statements the application keeps re-running). It also acts as an
+ * entry point for the SQL parser.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
