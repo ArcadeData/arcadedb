@@ -28,11 +28,16 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
+import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.IntPredicate;
@@ -926,5 +931,43 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       // "%s" with the report as the argument, not the report as the format string: `what` is caller-supplied
       // and a stray % in it would turn the instrument into a formatting error instead of a report.
       LogManager.instance().log(requester, Level.WARNING, "%s", report);
+  }
+
+  /**
+   * The index of the last entry in {@code server}'s Raft log, committed or not, so an entry still in flight is not
+   * missed by a later {@link #securityEntriesInLogAfter(RaftHAServer, long)}.
+   */
+  protected static long lastRaftLogIndex(final RaftHAServer server) throws Exception {
+    return server.getRaftDivision().getRaftLog().getLastEntryTermIndex().getIndex();
+  }
+
+  /**
+   * The security entries (users, groups, API tokens) in {@code server}'s Raft log after {@code afterIndex}, up to its
+   * last entry, as {@code "index:TYPE"}.
+   * <p>
+   * The way to tell "the leader seeded the security documents" apart from "the leader wrote nothing" (issue #8455):
+   * the raw applied index cannot, because the cluster commits entries of its own in the same window, and an index
+   * that moved by one says nothing about which kind of entry moved it.
+   */
+  protected static List<String> securityEntriesInLogAfter(final RaftHAServer server, final long afterIndex)
+      throws Exception {
+    final RaftLog log = server.getRaftDivision().getRaftLog();
+    final long last = log.getLastEntryTermIndex().getIndex();
+    final List<String> found = new ArrayList<>();
+    for (long i = afterIndex + 1; i <= last; i++) {
+      final LogEntryProto entry = log.get(i);
+      if (entry == null)
+        throw new IllegalStateException("Raft log entry " + i + " is no longer readable (purged?)");
+      if (!entry.hasStateMachineLogEntry())
+        continue;
+      final ByteString data = entry.getStateMachineLogEntry().getLogData();
+      if (data.isEmpty())
+        continue;
+      final RaftLogEntryType type = RaftLogEntryType.fromId(data.byteAt(0));
+      if (type == RaftLogEntryType.SECURITY_USERS_ENTRY || type == RaftLogEntryType.SECURITY_GROUPS_ENTRY
+          || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY)
+        found.add(i + ":" + type);
+    }
+    return found;
   }
 }
