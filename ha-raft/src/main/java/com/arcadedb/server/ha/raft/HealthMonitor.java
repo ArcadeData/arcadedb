@@ -250,6 +250,9 @@ public final class HealthMonitor {
 
   private final    HealthTarget             target;
   private final    long                     intervalMs;
+  // Consecutive ticks the division was seen CLOSING (issue #8651). Health-monitor thread only.
+  private          int                      closingStreak;
+  private static final int                  CLOSING_TICKS_BEFORE_RECOVERY = 2;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
   private final    boolean                  divergedFollowerRecoveryEnabled;
@@ -446,6 +449,16 @@ public final class HealthMonitor {
     // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.
     target.trackFollowerStall();
     final LifeCycle.State state = target.getRaftLifeCycleState();
+    if (state == LifeCycle.State.CLOSING) {
+      // One tick in CLOSING is an ordinary close in progress; the same state on consecutive ticks is a division whose
+      // close never finished - the StateMachineUpdater died and closed it from its own thread (issue #8651).
+      closingStreak++;
+      dropFollowerObservations();
+      if (closingStreak >= CLOSING_TICKS_BEFORE_RECOVERY)
+        handleUnhealthyState(state);
+      return;
+    }
+    closingStreak = 0;
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
       dropFollowerObservations();
