@@ -4308,6 +4308,15 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Two sessions committing right after one DDL both see the schema dirty before either has written it. The second
+   * finds it clean here, under the monitor, and does not repeat the fsync'd write (issue #8635).
+   */
+  private synchronized void saveIfStillDirty(final boolean ignoreOpenTransaction) {
+    if (isDirty())
+      saveConfiguration(ignoreOpenTransaction);
+  }
+
+  /**
    * Writes a pending schema change before the outermost transaction of this thread makes its records durable (issue
    * #8635). A crash between the two would otherwise leave acknowledged records in bucket files that no schema entry
    * names. The schema change stands whether the commit then succeeds or not, so writing it first loses nothing.
@@ -4324,7 +4333,7 @@ public class LocalSchema implements Schema {
       return;
 
     try {
-      saveConfiguration(true);
+      saveIfStillDirty(true);
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema before a commit on database '%s'", e,
           database.getName());
@@ -4378,7 +4387,7 @@ public class LocalSchema implements Schema {
     if (context != null && context.getTransactionDepth() > 1 && context.hasActiveTransaction())
       return;
 
-    saveConfiguration();
+    saveIfStillDirty(false);
   }
 
   protected Index createBucketIndex(final LocalDocumentType type,

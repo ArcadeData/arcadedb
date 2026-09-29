@@ -1004,10 +1004,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
       } catch (final Exception e) {
-        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
-        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
-        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
-        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        // NOTE (#5075 review): this catch can fire after commit2ndPhase SUCCEEDED, when the failure came from the
+        // bookkeeping after it (the schema save itself never throws). Reconciling then replays the payload WAL
+        // against pages the commit already published - safe by the #4926 replay semantics: an equal-version entry
+        // re-applies the same absolute bytes (idempotent), a lower-version one is skipped.
         throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
         current.popIfNotLastTransaction();

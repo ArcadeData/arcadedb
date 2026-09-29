@@ -488,6 +488,8 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
     assertThat(database.query("sql", "select from Doc where k = 1").stream().count()).isEqualTo(1);
   }
 
+  // Pins the number of directory opens on purpose: it is the fsync reduction itself, so a change to how FileUtils opens
+  // the directory has to update this count deliberately.
   @Test
   void aSchemaWriteForcesTheDatabaseDirectoryOnce() {
     // schema.prev.json AND schema.json ARE PUBLISHED INTO THE SAME DIRECTORY, AND ONE FSYNC OF IT AFTER THE SECOND
