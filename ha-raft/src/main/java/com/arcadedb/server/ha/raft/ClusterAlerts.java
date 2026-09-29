@@ -279,8 +279,9 @@ public class ClusterAlerts {
             + "is a follower that finished a snapshot install but has not yet resumed appending the leader's "
             + "post-install entries.")
         .put("recommendation", "If arcadedb.ha.divergedFollowerRecovery is enabled (the default), this "
-            + "self-heals: once the condition has persisted for arcadedb.ha.staleFollowerRecoveryDurationMs "
-            + "(default 60s) the node reformats its local Raft storage and rejoins via a fresh snapshot install. "
+            + "self-heals: once the condition has persisted for arcadedb.ha.divergedFollowerRecoveryDurationMs "
+            + "(default 20s, with no applied-index progress) the node reformats its local Raft storage and rejoins "
+            + "via a fresh snapshot install. "
             + "It gives up after arcadedb.ha.divergedFollowerMaxReformats attempts (logged at SEVERE); if that "
             + "happened, if recovery is disabled, or if this recurs, restart this node by hand.")
         .put("details", new JSONObject().put("stuckAtStaleTerm", true)));

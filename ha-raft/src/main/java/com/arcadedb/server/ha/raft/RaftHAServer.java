@@ -1480,8 +1480,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // non-sticking restart streak here and escalates (reformat once, then give up loudly).
     final int crashLoopRestartThreshold = configuration.getValueAsInteger(
         GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
+    final long divergedFollowerRecoveryDurationMs = effectiveDivergedFollowerRecoveryDurationMs(
+        configuration.getValueAsLong(GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS),
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
-        divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
+        divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold, divergedFollowerRecoveryDurationMs);
     this.healthMonitor.start();
 
     // Peer capabilities are refreshed on EVERY node, not only the leader (issue #7549). #7219 introduced the
@@ -1848,7 +1851,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * AppendEntries (term conflict), so it has applied everything it could locally commit
    * ({@code commitIndex == appliedIndex}) yet its last-applied entry is from an older term
    * ({@code currentTerm > appliedTerm}). The {@link HealthMonitor} requires this to persist for
-   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
+   * {@code HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
    * around an election before the no-op commits. Returns false for the leader, when no leader is
    * known, while actively catching up (a catch-up that has applied everything it committed no longer counts, issue
    * #8341) or installing a snapshot, and whenever the state cannot be read.
@@ -1865,7 +1868,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     // The values below are read as separate Ratis getDivision(...) calls, so they can observe slightly
     // different moments during an election. We deliberately do not take an atomic snapshot: the
-    // HealthMonitor requires the stuck condition to persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS
+    // HealthMonitor requires the stuck condition to persist for HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS
     // before acting, which absorbs any one-tick inconsistency here.
     // The catch-up flag counts only while there is something left to apply (issue #8341): a stale flag with
     // commitIndex == appliedIndex hid exactly the signature below.
@@ -1881,7 +1884,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * momentarily {@code true} for any follower around a normal election - before it applies the new leader's
    * current-term no-op - so publishing it as-is would report a routine leader change as an incident on every
    * status poll. This is the same filter the health monitor already applies before it starts counting toward
-   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS}, at a fraction of that duration, so an operator sees the risk
+   * {@code HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS}, at a fraction of that duration, so an operator sees the risk
    * long before the automatic reformat (if enabled) fires - not only in the leader's replication log, which
    * before this was the only place the "advancing at 0 entries/tick" symptom showed up at all.
    * <p>
@@ -1924,6 +1927,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // We have applied everything we could locally commit, but at a stale term: we are rejecting the
     // leader's current-term entries and cannot move forward.
     return currentTerm > appliedTerm && commitIndex == appliedIndex;
+  }
+
+  /**
+   * Effective persistence window of the stuck-at-stale-term reformat (issue #8375): the configured
+   * {@code arcadedb.ha.divergedFollowerRecoveryDurationMs}, floored at twice {@code arcadedb.ha.electionTimeoutMax}.
+   * A follower that stops hearing its leader starts an election within one election timeout, which clears the
+   * leader-present half of the signature; a window at or below that could reformat a node that was only waiting for
+   * the election. The floor scales with a WAN-tuned cluster rather than being a fixed number.
+   */
+  static long effectiveDivergedFollowerRecoveryDurationMs(final long configuredMs, final long electionTimeoutMaxMs) {
+    final long floorMs = 2L * Math.max(0L, electionTimeoutMaxMs);
+    if (configuredMs >= floorMs)
+      return configuredMs;
+    LogManager.instance().log(RaftHAServer.class, Level.INFO,
+        "arcadedb.ha.divergedFollowerRecoveryDurationMs=%d is below 2x arcadedb.ha.electionTimeoutMax, using %dms",
+        configuredMs, floorMs);
+    return floorMs;
   }
 
   @Override
@@ -4912,6 +4932,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  @Override
   public long getLastAppliedIndex() {
     if (raftServer == null)
       return -1;
