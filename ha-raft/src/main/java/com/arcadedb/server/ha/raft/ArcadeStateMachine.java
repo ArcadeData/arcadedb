@@ -210,13 +210,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
   // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
+  // In memory only, and never seeded by reinitialize(): after a restart Ratis replays from the snapshot marker onward,
+  // and a marker reinitialize() distrusts (staleSnapshot) must not suppress the entries below it.
   private final    AtomicLong                installedRaftBoundary  = new AtomicLong(-1);
   // The boundary the first refusal below it was reported for at WARNING, so each boundary logs once (issue #8651).
-  private volatile long                      boundaryRefusalWarned  = -1L;
+  // Guarded by appliedPositionLock.
+  private          long                      boundaryRefusalWarned  = -1L;
   // Serialises "is this index below the boundary?" with the move of the applied position it guards (issue #8651):
   // the install records the boundary and seeds the applied position under it, and every applied-position update
   // checks and moves under it, so the apply thread can never read the boundary before the install and then move the
-  // position after it. Uncontended except during an install.
+  // position after it. Uncontended except during an install, when the apply thread waits out the install's durable
+  // write. LOCK ORDER: appliedPositionLock, then appliedIndexFileLock - never call updateLastAppliedTermIndex while
+  // holding appliedIndexFileLock.
   private final    Object                    appliedPositionLock    = new Object();
 
   // Persisted applied-index bookkeeping. One ArcadeStateMachine multiplexes every database onto a
@@ -1372,13 +1377,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final boolean[] securitySuperseded = new boolean[1];
 
       // An entry that names no database (the security entries decode to an empty name) has no real install gate to
-      // consult, so the global boundary is what marks it stale (issue #8651). Its effects (the security documents) are refreshed by the leader catch-up that follows the
-      // install (issue #7833), and applying it now would write an older document over that state and move
-      // lastAppliedIndex and the persisted applied index backward.
+      // consult, so the global boundary is what marks it stale (issue #8651). Its effects (the security documents)
+      // are refreshed by the leader catch-up that follows the install (issue #7833), and applying it now would write
+      // an older document over that state and move lastAppliedIndex and the persisted applied index backward. No
+      // notifyApplied() either: nothing advanced, and the install already notified for its seed.
       if ((decoded.databaseName() == null || decoded.databaseName().isEmpty()) && isBelowInstalledRaftBoundary(index)) {
         LogManager.instance().log(this, Level.FINE,
-            "Skipping entry %d that names no database: already covered by the installed snapshot boundary %d (issue #8651)",
-            index, installedRaftBoundary.get());
+            "Skipping entry %d that names no database: already covered by the installed snapshot boundary %d "
+                + "(issue #8651)", index, installedRaftBoundary.get());
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
 
