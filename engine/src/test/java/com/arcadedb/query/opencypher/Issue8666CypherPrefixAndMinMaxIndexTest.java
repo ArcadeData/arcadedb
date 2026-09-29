@@ -56,10 +56,11 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
           database.newVertex("D").set("x", 100 + (i * 7) % 1000).set("s", String.format("%04x", i)).set("u", "v" + i).save();
       }
       database.newVertex("D").set("s", "ab\\c%").set("x", -5).save();
-      database.newVertex("D").set("s", "ab퟿").save();
-      database.newVertex("D").set("s", "ab퟿z").save();
-      database.newVertex("D").set("s", "￿").save();
-      database.newVertex("D").set("s", "￿q").save();
+      database.newVertex("D").set("s", "ab\uD7FF").save();
+      database.newVertex("D").set("s", "ab\uD7FFz").save();
+      database.newVertex("D").set("s", "\uFFFF").save();
+      database.newVertex("D").set("s", "\uFFFFq").save();
+      database.newVertex("D").set("s", "\uD83D\uDE00").save();
     });
   }
 
@@ -68,7 +69,7 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
     for (int i = 0; i < VERTICES; i++)
       if (i % 50 != 0 && String.format("%04x", i).startsWith(prefix))
         count++;
-    for (final String extra : new String[] { "ab\\c%", "ab퟿", "ab퟿z", "￿", "￿q" })
+    for (final String extra : new String[] { "ab\\c%", "ab\uD7FF", "ab\uD7FFz", "\uFFFF", "\uFFFFq", "\uD83D\uDE00" })
       if (extra.startsWith(prefix))
         count++;
     return count;
@@ -84,7 +85,7 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
   @Test
   void startsWithAParameterUsesTheIndexRange() {
     final String query = "MATCH (d:D) WHERE d.s STARTS WITH $p RETURN count(*) AS n";
-    for (final String prefix : new String[] { "0", "0a", "0a1", "ff", "zzz", "ab\\", "ab\\c%", "ab", "ab퟿", "￿", "￿q" }) {
+    for (final String prefix : new String[] { "0", "0a", "0a1", "ff", "zzz", "ab\\", "ab\\c%", "ab", "ab\uD7FF", "\uFFFF", "\uFFFFq" }) {
       assertThat(scalar(query, Map.of("p", prefix), "n")).as("prefix '%s'", prefix).isEqualTo(expectedPrefixCount(prefix));
     }
     assertThat(profile(query, Map.of("p", "0a"))).contains("NodeIndexRangeScan");
@@ -94,9 +95,9 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
   void startsWithOnTheEndOfTheKeySpace() {
     // No key sorts after a run of U+FFFF: the range has no upper end
     final String query = "MATCH (d:D) WHERE d.s STARTS WITH $p RETURN count(*) AS n";
-    assertThat(scalar(query, Map.of("p", "￿"), "n")).isEqualTo(2L);
-    assertThat(scalar(query, Map.of("p", "￿q"), "n")).isEqualTo(1L);
-    assertThat(scalar(query, Map.of("p", "ab퟿"), "n")).isEqualTo(2L);
+    assertThat(scalar(query, Map.of("p", "\uFFFF"), "n")).isEqualTo(2L);
+    assertThat(scalar(query, Map.of("p", "\uFFFFq"), "n")).isEqualTo(1L);
+    assertThat(scalar(query, Map.of("p", "ab\uD7FF"), "n")).isEqualTo(2L);
   }
 
   @Test
@@ -148,7 +149,8 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
   @Test
   void minAndMaxOfAStringKey() {
     assertThat(scalar("MATCH (d:D) RETURN min(d.s) AS v", Map.of(), "v")).isEqualTo("0001");
-    assertThat(scalar("MATCH (d:D) RETURN max(d.s) AS v", Map.of(), "v")).isEqualTo("￿q");
+    // U+FFFF is above every BMP character in UTF-16 and the 4-byte emoji above it in UTF-8, where the index orders the keys
+    assertThat(scalar("MATCH (d:D) RETURN max(d.s) AS v", Map.of(), "v")).isEqualTo("\uD83D\uDE00");
   }
 
   @Test
