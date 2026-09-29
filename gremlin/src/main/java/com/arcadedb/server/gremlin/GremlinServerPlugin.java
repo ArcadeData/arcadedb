@@ -181,8 +181,13 @@ public class GremlinServerPlugin implements ServerPlugin {
       return Integer.valueOf(text.trim());
     if (fieldType == long.class || fieldType == Long.class)
       return Long.valueOf(text.trim());
-    if (fieldType == boolean.class || fieldType == Boolean.class)
-      return Boolean.valueOf(text.trim());
+    if (fieldType == boolean.class || fieldType == Boolean.class) {
+      // Boolean.valueOf() turns "yes" or "1" into false without a word: only the two spellings are a boolean
+      final String trimmed = text.trim();
+      if (!"true".equalsIgnoreCase(trimmed) && !"false".equalsIgnoreCase(trimmed))
+        throw new IllegalArgumentException("'" + text + "' is neither true nor false");
+      return Boolean.valueOf(trimmed);
+    }
     return value;
   }
 

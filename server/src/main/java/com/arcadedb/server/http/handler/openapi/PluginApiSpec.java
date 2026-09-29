@@ -705,7 +705,9 @@ public class PluginApiSpec implements OpenApiContributor {
         admission seed, so a member that is caught up can still hold none of the cluster's copies. While 'held', \
         '/api/v1/ready' answers 503 until the leader confirms them. The wait is bounded by \
         arcadedb.ha.securityConvergenceReadinessTimeout: past it the node reports READY while enforcing its own copies \
-        ('gaveUp'). Not a resync, so 'localResync' does not reflect it; the 'security-documents-unconverged' alert does.""");
+        ('gaveUp'). Not a resync, so 'localResync' does not reflect it; the 'security-documents-unconverged' alert does. \
+        Reading this document counts as observing the node: it evaluates the same shared window as the readiness probe, \
+        so the first read that finds the node otherwise ready opens the window, exactly as a probe would.""");
     schema.addProperty("held", SpecBuilders.bool("True while '/api/v1/ready' is answering 503 because of this gate"));
     schema.addProperty("unconvergedDocuments", SpecBuilders.arrayOf(SpecBuilders.string("Security document"),
         "The documents the cluster has not confirmed on this node, in the order users, groups, API tokens. Empty when "

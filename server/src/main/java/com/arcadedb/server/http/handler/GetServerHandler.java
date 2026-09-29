@@ -95,18 +95,35 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * when no plugin listens, so a client can tell "none" from "this build does not report it".
    */
   private void exportAdvertisedPorts(final JSONObject response) {
+    response.put("ports", buildAdvertisedPorts(httpServer.getServer().getPlugins()));
+  }
+
+  /**
+   * The {@code ports} member: package-private so the filtering can be tested with stub plugins. A port that is null or
+   * not positive is dropped, a plugin that throws is skipped, and a service name a previous plugin already took keeps
+   * its first owner.
+   */
+  static JSONObject buildAdvertisedPorts(final Collection<ServerPlugin> plugins) {
     final JSONObject ports = new JSONObject();
-    for (final ServerPlugin plugin : httpServer.getServer().getPlugins()) {
+    for (final ServerPlugin plugin : plugins) {
       try {
-        for (final Map.Entry<String, Integer> port : plugin.getAdvertisedPorts().entrySet())
-          if (port.getValue() != null && port.getValue() > 0)
+        for (final Map.Entry<String, Integer> port : plugin.getAdvertisedPorts().entrySet()) {
+          if (port.getValue() == null || port.getValue() <= 0)
+            continue;
+          if (ports.has(port.getKey()))
+            LogManager.instance().log(GetServerHandler.class, Level.WARNING,
+                "Plugin '%s' advertises the service '%s', which another plugin already advertises: ignored", null,
+                plugin.getName(), port.getKey());
+          else
             ports.put(port.getKey(), port.getValue().intValue());
+        }
       } catch (final RuntimeException e) {
         // A PLUGIN THAT CANNOT ANSWER MUST NOT FAIL THE TOPOLOGY THE CLIENT IS ASKING FOR
-        LogManager.instance().log(this, Level.WARNING, "Cannot read the advertised ports of plugin '%s'", e, plugin.getName());
+        LogManager.instance().log(GetServerHandler.class, Level.WARNING, "Cannot read the advertised ports of plugin '%s'", e,
+            plugin.getName());
       }
     }
-    response.put("ports", ports);
+    return ports;
   }
 
   /**
