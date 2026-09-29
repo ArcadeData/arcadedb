@@ -262,7 +262,9 @@ public class ArcadeGraph implements Graph, Closeable {
   /**
    * The port of the Gremlin Server the remote driver connects to (issue #8578): the client setting
    * {@link GlobalConfiguration#GREMLIN_CLIENT_PORT} when it is set, because only the client knows a port mapping the
-   * server cannot see; else the port the server advertises for its Gremlin plugin; else TinkerPop's default.
+   * server cannot see; else the port the server advertises for its Gremlin plugin; else TinkerPop's default. One port
+   * for every contact point: the advertised value is the one of the node that answered, so Gremlin is assumed to listen
+   * on the same port on every node of a cluster (set the client setting when it does not).
    */
   private static int resolveRemoteGremlinPort(final RemoteDatabase remoteDatabase) {
     final int configured = remoteDatabase.getClientConfiguration().getValueAsInteger(GlobalConfiguration.GREMLIN_CLIENT_PORT);

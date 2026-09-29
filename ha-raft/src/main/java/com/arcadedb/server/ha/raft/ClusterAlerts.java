@@ -182,17 +182,11 @@ public class ClusterAlerts {
         securityConvergence = SecurityConvergenceStatus.NOT_CONVERGING;
     }
 
-    /** The shape before issues #8408 and #8555, for callers that sample neither the passes deciding nor the gate. */
-    public NodeStatus(final ArcadeStateMachine.CriticalHalt halt, final ArcadeStateMachine.RaftLogFailure logFailure,
-        final boolean crashLoopEscalated, final boolean detailedDiagnostics, final List<String> bootstrapInstalls) {
-      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, bootstrapInstalls, Collections.emptyList(),
-          SecurityConvergenceStatus.NOT_CONVERGING);
-    }
-
-    /** The shape before issue #8044, for callers that have no state machine to sample installs from. */
+    /** For callers that have no state machine to sample installs, passes deciding or the gate from. */
     public NodeStatus(final ArcadeStateMachine.CriticalHalt halt, final ArcadeStateMachine.RaftLogFailure logFailure,
         final boolean crashLoopEscalated, final boolean detailedDiagnostics) {
-      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, Collections.emptyList());
+      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, Collections.emptyList(), Collections.emptyList(),
+          SecurityConvergenceStatus.NOT_CONVERGING);
     }
 
     /**

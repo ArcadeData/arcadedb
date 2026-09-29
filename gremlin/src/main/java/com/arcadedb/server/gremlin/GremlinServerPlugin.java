@@ -112,19 +112,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     settings.authorization.config = new HashMap<>(1);
     settings.authorization.config.put("server", server);
 
-    for (final String key : configuration.getContextKeys()) {
-      if (key.startsWith("gremlin.")) {
-        final Object value = configuration.getValue(key, null);
-        final String gremlinConfigKey = key.substring("gremlin.".length());
-
-        try {
-          final Field field = settings.getClass().getField(gremlinConfigKey);
-          field.set(settings, coerce(field.getType(), value));
-        } catch (final NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-          // IGNORE IT
-        }
-      }
-    }
+    for (final String key : configuration.getContextKeys())
+      if (key.startsWith("gremlin."))
+        applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
 
     // Ensure databases referenced in the graphs section of gremlin-server.yaml are created/opened.
     // This restores the pre-2026.2.1 behaviour where a static `graphs:` entry in gremlin-server.yaml
@@ -159,6 +149,24 @@ public class GremlinServerPlugin implements ServerPlugin {
   public Map<String, Integer> getAdvertisedPorts() {
     final int port = boundPort;
     return port > 0 ? Map.of("gremlin", port) : Map.of();
+  }
+
+  /**
+   * Copies one {@code gremlin.*} server-configuration key onto the Gremlin Server settings. A name that is not a setting
+   * is ignored, as the same keys are shared with other configuration; a value that cannot be converted to the setting's
+   * type is ignored too, but with a WARNING, because the server then starts on the default and, since issue #8578,
+   * advertises it.
+   */
+  static void applyServerSetting(final Settings settings, final String name, final Object value) {
+    try {
+      final Field field = settings.getClass().getField(name);
+      field.set(settings, coerce(field.getType(), value));
+    } catch (final NoSuchFieldException e) {
+      // NOT A GREMLIN SERVER SETTING
+    } catch (final IllegalAccessException | IllegalArgumentException e) {
+      LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
+          "Ignoring the Gremlin Server setting 'gremlin.%s' with value '%s': %s", null, name, value, e.getMessage());
+    }
   }
 
   /**

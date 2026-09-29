@@ -377,6 +377,33 @@ public class ServerControlPlane {
    * and the gRPC status description identical.
    */
   public String notReadyReason() {
+    final String hold = notReadyReasonBeforeSecurityGate();
+    if (hold != null)
+      return hold;
+
+    if (isHAReadinessRequired()) {
+      // Consensus readiness says nothing about the three security documents, which do not travel in the Raft
+      // snapshot and reach a new peer only through the admission seed (issue #7532).
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null)
+        return securityConvergenceStatus(ha).reason();
+    }
+
+    return null;
+  }
+
+  private boolean isHAReadinessRequired() {
+    return server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
+        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+  }
+
+  /**
+   * Every readiness check that comes before the security-convergence gate, in the order they are answered. Split out so
+   * the status document evaluates the gate only where the probe would reach it (issue #8555): the gate is not a pure
+   * read, it opens its window on first sight, and a status poll during catch-up must not start the clock of a node that
+   * {@code /api/v1/ready} still holds for another reason.
+   */
+  private String notReadyReasonBeforeSecurityGate() {
     if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
       return "Server not started yet";
 
@@ -422,12 +449,6 @@ public class ServerControlPlane {
       final long maxLag = Math.max(0L, server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG));
       if (ha.getReadinessSignal(maxLag) == HAServerPlugin.READINESS_SIGNAL.NOT_READY)
         return "Node is not yet in the Raft configuration or has not caught up";
-
-      // Consensus readiness says nothing about the three security documents, which do not travel in the Raft
-      // snapshot and reach a new peer only through the admission seed (issue #7532).
-      final String unconverged = securityConvergenceStatus(ha).reason();
-      if (unconverged != null)
-        return unconverged;
     }
 
     return null;
@@ -631,11 +652,11 @@ public class ServerControlPlane {
    * What the security-convergence gate sees on this node right now, for {@code GET /api/v1/cluster} (issue #8555). It
    * evaluates the same window the readiness probe does and on the same shared state, so the status document and
    * {@code /api/v1/ready} cannot disagree, and it is {@link SecurityConvergenceStatus#NOT_CONVERGING} where the gate
-   * does not apply: no HA layer, or readiness that does not depend on it.
+   * does not apply: no HA layer, readiness that does not depend on it, or a node the probe still holds for an earlier
+   * reason - the gate is only evaluated where the probe would reach it, because evaluating it opens its window.
    */
   public SecurityConvergenceStatus getSecurityConvergenceStatus() {
-    if (!server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
-        || !server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+    if (!isHAReadinessRequired() || notReadyReasonBeforeSecurityGate() != null)
       return SecurityConvergenceStatus.NOT_CONVERGING;
     final HAServerPlugin ha = server.getHA();
     return ha == null ? SecurityConvergenceStatus.NOT_CONVERGING : securityConvergenceStatus(ha);
