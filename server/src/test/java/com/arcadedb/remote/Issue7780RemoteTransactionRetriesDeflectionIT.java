@@ -246,12 +246,6 @@ class Issue7780RemoteTransactionRetriesDeflectionIT extends BaseGraphServerTest 
     }
 
     @Override
-    protected void sleepBeforeRetry(final long delayMs) {
-      // THE PACING OF THE RETRIES IS PINNED BY Issue8618RemoteCommitSessionReleaseIT: WAITING OUT THE SERVER'S REAL 5 SECOND
-      // Retry-After HERE WOULD ONLY SLOW THE SUITE DOWN (ISSUE #8617)
-    }
-
-    @Override
     HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
       if (!request.uri().getPath().contains(route) || remaining.getAndDecrement() <= 0)
         return super.sendWithWatchdog(request);
@@ -286,12 +280,6 @@ class Issue7780RemoteTransactionRetriesDeflectionIT extends BaseGraphServerTest 
       this.route = "/api/v1/" + route + "/";
       this.status = status;
       this.body = body;
-    }
-
-    @Override
-    protected void sleepBeforeRetry(final long delayMs) {
-      // THE PACING OF THE RETRIES IS PINNED BY Issue8618RemoteCommitSessionReleaseIT: WAITING OUT THE SERVER'S REAL 5 SECOND
-      // Retry-After HERE WOULD ONLY SLOW THE SUITE DOWN (ISSUE #8617)
     }
 
     @Override
