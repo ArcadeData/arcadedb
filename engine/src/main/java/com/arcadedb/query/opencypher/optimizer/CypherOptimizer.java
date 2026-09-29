@@ -123,8 +123,8 @@ public class CypherOptimizer {
   private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
   private static final double DEFAULT_FILTER_SELECTIVITY      = 0.5;
   /** The key types whose index order is the order Cypher sorts their values in. */
-  public static final Set<Type> INDEX_ORDERED_KEY_TYPES = Collections.unmodifiableSet(EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
-      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
+  public static final Set<Type> INDEX_ORDERED_KEY_TYPES = Collections.unmodifiableSet(
+      EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
       Type.DATETIME_MICROS, Type.DATETIME_NANOS));
 
   private final DatabaseInternal    database;

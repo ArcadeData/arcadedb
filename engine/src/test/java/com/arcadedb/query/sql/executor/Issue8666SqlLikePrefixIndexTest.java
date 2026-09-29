@@ -35,8 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8666SqlLikePrefixIndexTest extends TestHelper {
   private static final int      VERTICES = 3_000;
-  private static final String[] EXTRAS   = { "ab\\c%", "ab\\cd", "ab퟿", "ab퟿z", "￿", "￿q", "😀", "😀a",
-      "😁", "abXd", "ab?d", "Abc" };
+  private static final String[] EXTRAS   = { "ab\\c%", "ab\\cd", "ab\uD7FF", "ab\uD7FFz", "\uFFFF", "\uFFFFq", "\u1F600", "\u1F600a",
+      "\u1F601", "abXd", "ab?d", "Abc" };
 
   @Override
   protected void beginTest() {
@@ -90,8 +90,8 @@ class Issue8666SqlLikePrefixIndexTest extends TestHelper {
   @Test
   void aParameterPrefixIsServedByTheIndexAndTheStatementIsReplanned() {
     final String where = "s LIKE :p";
-    for (final String prefix : new String[] { "0a", "0a1", "ff", "zzz", "ab\\", "ab", "ab퟿", "￿", "￿q", "😀",
-        "😁", "Abc", "0", "1", "0a1f" })
+    for (final String prefix : new String[] { "0a", "0a1", "ff", "zzz", "ab\\", "ab", "ab\uD7FF", "\uFFFF", "\uFFFFq", "\u1F600",
+        "\u1F601", "Abc", "0", "1", "0a1f" })
       assertThat(count(where, Map.of("p", prefix + "%"))).as("prefix '%s'", prefix).isEqualTo(expectedLike(prefix + "%"));
     assertThat(plan(where, Map.of("p", "0a%"))).contains("FETCH FROM INDEX D[s]");
 

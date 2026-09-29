@@ -38,7 +38,7 @@ import com.arcadedb.schema.DocumentType;
  * The planner only builds it where the index holds exactly the values the aggregate looks at: an ordered index on that
  * property alone, defined on the label itself, which skips the vertices with no value (what {@code min} and {@code max}
  * ignore anyway), and orders its keys the way Cypher orders the values. The answer is read from the vertex the first
- * entry points to, so it is the value the scan would have returned, not the index's own copy of the key.
+ * entry points to, so it is the value the scan would have returned, not the index's own copy of the key. {@code DISTINCT} is irrelevant to a minimum or a maximum, so it does not stop the shortcut.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
