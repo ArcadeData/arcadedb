@@ -48,7 +48,7 @@ public class ExecutionPlanCache {
    * millisecond as the invalidation before it - routine right after a schema change - was refused by the
    * millisecond-granular comparison this replaces, although it was planned against the new schema.
    */
-  private       long                               invalidationEpoch = 0;
+  private volatile long                               invalidationEpoch = 0;
 
   /**
    * @param size the size of the cache
@@ -66,7 +66,7 @@ public class ExecutionPlanCache {
   /**
    * The invalidation epoch a planner reads BEFORE it starts planning, and hands back to {@link #put}.
    */
-  public synchronized long getInvalidationEpoch() {
+  public long getInvalidationEpoch() {
     return invalidationEpoch;
   }
 
