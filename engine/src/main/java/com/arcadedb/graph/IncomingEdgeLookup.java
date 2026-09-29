@@ -147,6 +147,32 @@ public final class IncomingEdgeLookup {
   }
 
   /**
+   * The edges joining {@code vertex} to {@code target} in {@code direction} over {@code edgeTypes}, found from the end
+   * that stores each of them: an incoming edge of {@code vertex} is an outgoing one of {@code target}, and the outgoing
+   * side is written for every edge type. Complete for unidirectional types without the scan, and filtered on the
+   * neighbour pointer the edge lists hold, so no edge that does not reach the other end is loaded. A self-loop is
+   * answered once.
+   */
+  public static Iterator<Edge> getEdgesConnectedTo(final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final RID target, final String... edgeTypes) {
+    final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
+    final GraphEngine graphEngine = database.getGraphEngine();
+    if (direction == Vertex.DIRECTION.OUT)
+      return graphEngine.getEdgesConnectedTo(vertex, Vertex.DIRECTION.OUT, target, edgeTypes);
+
+    final VertexInternal targetVertex = (VertexInternal) database.lookupByRID(target, false);
+    final Iterator<Edge> incoming = graphEngine.getEdgesConnectedTo(targetVertex, Vertex.DIRECTION.OUT,
+        vertex.getIdentity(), edgeTypes);
+    if (direction == Vertex.DIRECTION.IN || vertex.getIdentity().equals(target))
+      return incoming;
+
+    final MultiIterator<Edge> both = new MultiIterator<>();
+    both.addIterator(graphEngine.getEdgesConnectedTo(vertex, Vertex.DIRECTION.OUT, target, edgeTypes));
+    both.addIterator(incoming);
+    return both;
+  }
+
+  /**
    * Whether {@link #getEdges}, {@link #getVertices} and {@link #countEdges} answer differently from the vertex API for
    * this walk, i.e. whether it reaches the incoming side of a unidirectional edge type within a query. Cheap: the scan
    * is not built by asking.

@@ -247,6 +247,7 @@ public abstract class GraphTraverser {
    */
   public GraphTraverser withContext(final CommandContext context) {
     this.context = context;
+    this.incomingLookup = null;
     return this;
   }
 
