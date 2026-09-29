@@ -203,9 +203,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static final   boolean                   CHECK_FREE_SPACE_CLAIMS          = LocalBucket.class.desiredAssertionStatus();
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
+  /** Test-only seam run by a {@link #count()} recompute after it read its stamp, before its scan (#8640). */
+  static volatile        Runnable                  recountScanHookForTesting;
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
+  // #8640: bumped under this bucket's monitor by every replicated apply that writes its pages WITHOUT the file lock
+  // while the counter is unknown; a count() recompute publishes only if it did not move since its scan started
+  private                long                      unlockedApplyStamp;
+  // #8640: set when a replicated apply timed out on this bucket's lock, so the following ones do not wait again for the
+  // same long recompute; cleared by the first apply that gets the lock
+  private volatile       boolean                   applyLockContended;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1201,6 +1209,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recomputed > -1)
         return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
 
+      // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
+      final long stampAtScanStart = getUnlockedApplyStamp();
+
+      final Runnable scanHook = recountScanHookForTesting;
+      if (scanHook != null)
+        scanHook.run();
+
       long total = 0;
       int undecodableSlots = 0;
 
@@ -1249,13 +1264,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // Publish the recomputed value only when this scan ran under the lock (acquired now, or already held by
       // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
       // so leave the counter at -1 and return a best-effort value: a later call recomputes cleanly.
-      if (lockStatus != LockManager.LOCK_STATUS.NO)
+      if (lockStatus != LockManager.LOCK_STATUS.NO) {
         // The scan reads the transaction's view (getPage returns its uncommitted pages first), so `total`
         // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
         // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
         // transaction-visible `total` below.
-        cachedRecordCount.set(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total);
-      else
+        if (!publishRecomputedCount(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart))
+          LogManager.instance().log(this, Level.FINE,
+              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not cached",
+              componentName);
+      } else
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
                 lockTimeout);
@@ -2381,6 +2399,42 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
+  }
+
+  /**
+   * Called before and after a replicated apply writes this bucket's pages without holding its file lock (issue #8640):
+   * a {@link #count()} recompute that started before either call does not publish its scan, and one that already
+   * published is thrown away by the call after, because its scan may hold part of the apply and the apply's delta fold
+   * cannot tell which part. The counter is left unknown and the next {@code count()} recomputes it.
+   */
+  synchronized void invalidateCachedRecordCountForUnlockedApply() {
+    ++unlockedApplyStamp;
+    cachedRecordCount.set(-1);
+  }
+
+  synchronized long getUnlockedApplyStamp() {
+    return unlockedApplyStamp;
+  }
+
+  boolean isApplyLockContended() {
+    return applyLockContended;
+  }
+
+  void setApplyLockContended(final boolean contended) {
+    applyLockContended = contended;
+  }
+
+  /**
+   * Publishes a recomputed counter unless an unlocked apply ran since {@code stampAtScanStart} was read (issue #8640).
+   * Synchronized with {@link #invalidateCachedRecordCountForUnlockedApply()} so the check and the publish are one step.
+   */
+  synchronized boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+    if (unlockedApplyStamp != stampAtScanStart)
+      return false;
+    cachedRecordCount.set(count);
+    // A known counter makes the applies skip the lock, so nothing else would clear the mark before the next -1
+    applyLockContended = false;
+    return true;
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
