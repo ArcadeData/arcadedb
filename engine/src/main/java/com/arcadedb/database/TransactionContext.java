@@ -393,9 +393,8 @@ public class TransactionContext implements Transaction {
     } else
       resetAndFireCallbacks();
 
-    if (database.getSchema().getEmbedded().isDirty())
-      database.getSchema().getEmbedded().saveConfiguration();
-
+    // NO SCHEMA SAVE HERE (#8635): LocalDatabase.commit() DOES IT ONCE THIS CONTEXT HAS LEFT THE STACK, WHERE A NESTED
+    // TRANSACTION CAN TELL THAT THE ONE ENCLOSING IT IS STILL OPEN AND LEAVE THE SAVE TO ITS COMMIT
     return phase1 != null ? phase1.result : null;
   }
 

@@ -740,6 +740,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         current.popIfNotLastTransaction();
       }
 
+      // AFTER THE POP (#8635): A NESTED TRANSACTION HAS LEFT THE STACK, SO THE SAVE SEES THE ONE ENCLOSING IT STILL
+      // OPEN AND POSTPONES TO ITS COMMIT INSTEAD OF WRITING schema.json UNDER ITS FEET
+      schema.saveConfigurationAtTransactionEnd();
+
       return null;
     });
   }
@@ -759,6 +763,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final TransactionException e) {
         // ALREADY ROLLED BACK
       }
+
+      // A SCHEMA CHANGE IS NOT TRANSACTIONAL: A DDL RUN INSIDE THIS TRANSACTION STANDS, AND ITS FILES EXIST, WHATEVER
+      // HAPPENED TO THE RECORDS. IT POSTPONED ITS SAVE TO THE END OF THE TRANSACTION, WHICH IS NOW (#8635)
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -788,6 +796,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // ALREADY ROLLED BACK
         }
       }
+
+      // SEE rollback(): A DDL RUN INSIDE THE ROLLED BACK TRANSACTIONS STANDS, AND WAS WAITING FOR THEIR END (#8635)
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }

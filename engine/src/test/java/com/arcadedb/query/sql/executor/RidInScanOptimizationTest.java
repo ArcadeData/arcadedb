@@ -62,17 +62,6 @@ class RidInScanOptimizationTest extends TestHelper {
 
       otherTypeRid = database.newDocument("Other").set("name", "other0").save().getIdentity();
     });
-
-    // The type creations above invalidate the execution plan cache, stamping
-    // ExecutionPlanCache.lastInvalidation with System.currentTimeMillis(). SelectExecutionPlanner's
-    // cache-put guard (createExecutionPlan) rejects a plan whose own planningStart timestamp isn't
-    // strictly greater than that invalidation stamp. On a fast/warmed-up JVM the setup above and a
-    // test's first query can land in the same millisecond tick, so a plan that is legitimately built
-    // after the invalidation gets skipped anyway - this only matters here because #5855 is what makes
-    // these @rid plans cacheable in the first place. Not a bug in the fix; just avoid racing the clock.
-    final long setupMillis = System.currentTimeMillis();
-    while (System.currentTimeMillis() == setupMillis)
-      Thread.onSpinWait();
   }
 
   @Test
