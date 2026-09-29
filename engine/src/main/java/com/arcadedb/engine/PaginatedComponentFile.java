@@ -189,7 +189,8 @@ public class PaginatedComponentFile extends ComponentFile {
 
   /**
    * Forces the file to disk unconditionally, with its metadata when {@code metaData} is true or when the file still
-   * owes a metadata sync (see {@link #syncState}).
+   * owes a metadata sync (see {@link #syncState}). The parent directory is NOT forced: a created or renamed file's
+   * directory entry is made durable by {@link FileManager#syncFiles()}, which forces the directories as well.
    */
   public void force(final boolean metaData) throws IOException {
     force(SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN), metaData);

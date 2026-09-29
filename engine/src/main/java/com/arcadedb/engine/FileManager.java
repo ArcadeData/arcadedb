@@ -47,6 +47,9 @@ public class FileManager {
   private final        AtomicLong                                maxFilesOpened    = new AtomicLong();
   // Data files forced by syncFiles() (issue #8626): what a clean close or a WAL rotation actually paid in fsyncs.
   private final        AtomicLong                                syncedFiles       = new AtomicLong();
+  // Serializes syncFiles() (issue #8626). Deliberately NOT this object's monitor: dropFile() holds that one across I/O,
+  // and a WAL rotation fsyncing hundreds of files must not stall file creation and drops behind it.
+  private final        Object                                    syncLock          = new Object();
   // Bumps on every file registration / drop. Lets callers (e.g. PaginatedSparseVectorEngine's
   // refreshSegmentsFromFileManager) skip the O(total files) walk on the hot query path when the
   // FileManager is unchanged since their last observation - they cache the value here, compare on
@@ -271,6 +274,17 @@ public class FileManager {
    * Forces to disk every data file written, created or renamed since its last successful fsync (issue #8626), and the
    * directory of every created or renamed one. A file that nothing touched since then is skipped: it has nothing left
    * to persist, and the WAL about to be deleted protects nothing in it.
+   * <p>
+   * The calls are SERIALIZED. A sync claims a file's pending state before it forces it, so a second caller running at
+   * the same time would find the file clean and return {@code true} while the first one's fsync is still in flight -
+   * and may still fail. The WAL rotation timer and a clean close do run at the same time (the close stops the timer
+   * only after its own sync), so without the lock the close could delete the WAL on the strength of an fsync that then
+   * failed on the timer thread. Serialized, a caller that finds a file clean knows a completed sync forced it, and a
+   * failed one has already given the pending state back, so the next caller forces the file itself.
+   * <p>
+   * The directory fsync is best effort, as everywhere else in the engine ({@link FileUtils#forceDirectory}): a file
+   * store that refuses it (and Windows, where no such call exists) leaves the directory entry of a new file durable
+   * against a process crash only. It does not fail the sync, because the file content is already on disk.
    *
    * @return {@code true} when every file that needed it was fsynced; {@code false} when any fsync failed (#4934). After a
    *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
@@ -279,6 +293,12 @@ public class FileManager {
    *     drop and retries on the next pass.
    */
   public boolean syncFiles() {
+    synchronized (syncLock) {
+      return syncFilesSerialized();
+    }
+  }
+
+  private boolean syncFilesSerialized() {
     boolean allSynced = true;
     Set<Path> directoriesToSync = null;
     for (final ComponentFile f : fileNameMap.values()) {
