@@ -99,8 +99,11 @@ class GrpcTimeSeriesSupportTest {
 
     assertThatThrownBy(() -> GrpcTimeSeriesSupport.toSamples(List.of(emptyKey), "weather",
         TimeSeriesPrecision.TS_PRECISION_MILLISECONDS))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("tag key");
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> {
+          assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(((StatusRuntimeException) e).getStatus().getDescription()).contains("tag key");
+        });
   }
 
   @Test
@@ -111,8 +114,11 @@ class GrpcTimeSeriesSupportTest {
 
     assertThatThrownBy(() -> GrpcTimeSeriesSupport.toSamples(List.of(emptyKey), "weather",
         TimeSeriesPrecision.TS_PRECISION_MILLISECONDS))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("field key");
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> {
+          assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(((StatusRuntimeException) e).getStatus().getDescription()).contains("field key");
+        });
   }
 
   @Test
