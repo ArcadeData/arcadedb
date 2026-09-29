@@ -25,13 +25,16 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.utility.LockManager;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -245,6 +248,49 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     // With nothing overlapping, the next recompute caches.
     assertThat(bucket.count()).isEqualTo(10);
     assertThat(bucket.getCachedRecordCount()).isEqualTo(10);
+  }
+
+  @Test
+  void aFailingLockPhaseReleasesTheApplyLock() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final int fileId = bucket.getFileId();
+    bucket.setCachedRecordCount(-1);
+
+    // A delta map that throws while the lock phase reads it.
+    final Map<Integer, Integer> failing = new HashMap<>(Map.of(fileId, 1)) {
+      @Override
+      public Set<Integer> keySet() {
+        throw new IllegalStateException("lock phase failure");
+      }
+    };
+
+    final ExecutorService applier = Executors.newSingleThreadExecutor();
+    try {
+      final Future<Boolean> apply = applier.submit(
+          () -> db.getTransactionManager().applyChanges(buildWalTransaction(db, fileId, 1, 8646), failing, false));
+      assertThatThrownBy(() -> apply.get(30, TimeUnit.SECONDS)).hasRootCauseInstanceOf(IllegalStateException.class);
+    } finally {
+      applier.shutdownNow();
+    }
+
+    // The snapshot t0 barrier (write side) can still be taken, and no file lock was left behind.
+    final ReentrantReadWriteLock applyLock = db.getTransactionManager().getApplyLock();
+    assertThat(applyLock.writeLock().tryLock(10, TimeUnit.SECONDS)).isTrue();
+    applyLock.writeLock().unlock();
+    final Object other = new Object();
+    assertThat(db.getTransactionManager().tryLockFile(fileId, 1000, other)).isEqualTo(LockManager.LOCK_STATUS.YES);
+    db.getTransactionManager().unlockFile(fileId, other);
+  }
+
+  @Test
+  void aSuccessfulRecomputeClearsTheContendedMark() {
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Counted").getBuckets(false).getFirst();
+    bucket.setCachedRecordCount(-1);
+    bucket.setApplyLockContended(true);
+
+    assertThat(bucket.publishRecomputedCount(0, bucket.getUnlockedApplyStamp())).isTrue();
+    assertThat(bucket.isApplyLockContended()).isFalse();
   }
 
   private static void applyInBackground(final DatabaseInternal db, final int fileId, final int delta, final long txId)

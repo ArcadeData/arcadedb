@@ -682,9 +682,11 @@ public class TransactionManager {
       final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
-    // Null on the steady-state path (every counter known), which then allocates nothing
-    final BucketLocks bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
+    BucketLocks bucketLocks = null;
     try {
+      // Null on the steady-state path (every counter known), which then allocates nothing. Inside the try: a throw
+      // from the lock phase must still release the shared apply lock, or the snapshot t0 barrier waits forever
+      bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
       return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
     } finally {
       if (bucketLocks != null) {
@@ -732,9 +734,10 @@ public class TransactionManager {
    * entries that follow only TRY its lock instead of each waiting the full timeout behind the same long scan: the
    * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark.
    * <p>
-   * The unknown-counter check and the lock are not atomic, and need not be: a counter only goes from known to unknown
-   * through this method's own timeout path on this same apply thread (or a recovery, which runs before any apply), so
-   * the race costs at most one lock that turns out unneeded.
+   * The unknown-counter check and the lock are not atomic. Known to unknown between the two (a {@code CHECK DATABASE
+   * FIX} or a corrupted-slot repair invalidating the counter while this entry is being applied) leaves this one entry
+   * applied without the lock and its fold skipped, the pre-#8640 behaviour, for that single overlap; the next entry
+   * sees the -1 and locks. Unknown to known costs at most one lock that turns out unneeded.
    *
    * @return the buckets locked or timed out, or null when no bucket in the entry has an unknown counter
    */
@@ -758,6 +761,19 @@ public class TransactionManager {
     Arrays.sort(fileIds, 0, count);
     final BucketLocks result = new BucketLocks(count);
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    try {
+      lockBuckets(fileIds, count, timeout, requester, result);
+    } catch (final RuntimeException | Error e) {
+      // The caller never receives the partially filled result, so the locks taken so far are released here
+      for (int i = 0; i < result.lockedCount; i++)
+        unlockFile(result.locked[i], requester);
+      throw e;
+    }
+    return result;
+  }
+
+  private void lockBuckets(final int[] fileIds, final int count, final long timeout, final Object requester,
+      final BucketLocks result) {
     for (int i = 0; i < count; i++) {
       final int fileId = fileIds[i];
       if (!(database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket))
@@ -784,7 +800,6 @@ public class TransactionManager {
               "Bucket '%s' is still locked by a record count recompute: applying without the lock", null, bucket.getName());
       }
     }
-    return result;
   }
 
   /**

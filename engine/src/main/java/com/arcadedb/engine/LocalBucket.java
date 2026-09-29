@@ -203,10 +203,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   private static final   boolean                   CHECK_FREE_SPACE_CLAIMS          = LocalBucket.class.desiredAssertionStatus();
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
-  protected final        int                       contentHeaderSize;
-  private final          int                       maxRecordsInPage;
   /** Test-only seam run by a {@link #count()} recompute after it read its stamp, before its scan (#8640). */
   static volatile        Runnable                  recountScanHookForTesting;
+  protected final        int                       contentHeaderSize;
+  private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
   // #8640: bumped under this bucket's monitor by every replicated apply that writes its pages WITHOUT the file lock
   // while the counter is unknown; a count() recompute publishes only if it did not move since its scan started
@@ -2432,6 +2432,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     if (unlockedApplyStamp != stampAtScanStart)
       return false;
     cachedRecordCount.set(count);
+    // A known counter makes the applies skip the lock, so nothing else would clear the mark before the next -1
+    applyLockContended = false;
     return true;
   }
 
