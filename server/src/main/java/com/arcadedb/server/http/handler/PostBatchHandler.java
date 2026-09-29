@@ -1332,6 +1332,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
 
     /**
+     * The refusal this body ended with when it was cut off at {@code arcadedb.server.httpBodyContentMaxSize}, or
+     * {@code null} when it was not. Read by the leader-forwarding relay (issue #8161), where the refusal is raised on
+     * the JDK client's publishing thread and reaches the caller of {@code HttpClient.send} only as the cause of a
+     * plain {@link IOException} that says nothing about which side failed; the stream itself is the one witness that
+     * cannot be mistaken about it.
+     */
+    RequestTooBigException refusedOverCap() {
+      return bodyFailure instanceof RequestTooBigException tooBig ? tooBig : null;
+    }
+
+    /**
      * Refuses a read of a body that has already failed, with the failure itself rather than a wrapper: it is the
      * reason this read cannot happen, its stack trace points at where the body really ended, and the load is
      * answered with exactly the message it would have carried had the failure surfaced on this read in the first
@@ -1900,6 +1911,25 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
           .toString());
     } catch (final Exception e) {
+      // This node's own body cap, not the leader (issue #8161). The capped stream is the forwarded request's body
+      // publisher, so a chunked upload that crosses arcadedb.server.httpBodyContentMaxSize fails HERE, on the JDK
+      // client's thread, and surfaces as a plain IOException from send() - indistinguishable, by type, from a
+      // leader that went away. Answering it below would hand the client a retryable 503 that blames the leader for
+      // a request that can only ever be refused again, where the leader answers the same request with the
+      // documented 413. The stream, not the exception, says which it was: rethrown so sendMappedErrorResponse
+      // builds that 413 exactly as it does on the leader and on every other route.
+      final RequestTooBigException tooBig = body.refusedOverCap();
+      if (tooBig != null) {
+        // The leader was handed a body that ended early and treats it as a truncated upload: GraphBatch commits
+        // incrementally, so what it loaded before the cut stays loaded and its own log carries the counts.
+        LogManager.instance().log(this, Level.WARNING,
+            "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
+                + "exceeded '%s' (currently %,d bytes) on this node. Raise that setting or split the payload; the "
+                + "leader's log reports what it loaded before the relay was cut", null, databaseName,
+            body.getBytesRead(), GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
+            httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
+        throw tooBig;
+      }
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503,
           "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
