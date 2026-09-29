@@ -36,6 +36,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.MultiIterator;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -79,6 +80,10 @@ import java.util.function.Supplier;
  * commits statement by statement), because the changes it missed are no longer kept. Other transactions' changes are not
  * seen, as a query does not see them in the records it already read either.
  * <p>
+ * An edge or a source vertex another transaction deletes after the scan is still in it: the step that reads it meets
+ * the missing record as it meets a ghost edge-list entry, and skips it through {@link GhostEdgeReporter}. With an overlay
+ * (the query's own writes since the scan), the edges of the target are materialized rather than streamed.
+ * <p>
  * A scan reads the edge records of the type, which are the edges the source vertices list: an edge record that no
  * vertex lists (the leftover of a failed write, which {@code CHECK DATABASE} reports) would be answered here and not by
  * a walk from its source.
@@ -93,6 +98,8 @@ public final class IncomingEdgeLookup {
   private static final long       LIGHTWEIGHT_POSITION = -1L;
   // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
   private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
+  // THE LAST CLOSURE THE STATIC CHECKS COMPUTED ON THIS THREAD: STEPS ASK PER ROW FOR THE SAME TYPES
+  private static final ThreadLocal<CachedClosure> LAST_STATIC_CLOSURE = new ThreadLocal<>();
   // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
   private static final ThreadLocal<int[]> PATTERN_WALKS = ThreadLocal.withInitial(() -> new int[1]);
 
@@ -224,14 +231,14 @@ public final class IncomingEdgeLookup {
   public static boolean isIncomingSideMissing(final Schema schema, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
     return direction != Vertex.DIRECTION.OUT && schema.hasUnidirectionalEdgeTypes()
-        && closure(schema, edgeTypes).unidirectional.length > 0;
+        && cachedClosure(schema, edgeTypes).unidirectional.length > 0;
   }
 
   /**
    * Whether any of {@code edgeTypes} (all when empty), or one of their subtypes, is declared unidirectional.
    */
   public static boolean isAnyUnidirectional(final Schema schema, final String... edgeTypes) {
-    return schema.hasUnidirectionalEdgeTypes() && closure(schema, edgeTypes).unidirectional.length > 0;
+    return schema.hasUnidirectionalEdgeTypes() && cachedClosure(schema, edgeTypes).unidirectional.length > 0;
   }
 
   /**
@@ -325,7 +332,7 @@ public final class IncomingEdgeLookup {
       boolean allCurrent = true;
       for (int i = 0; i < unidirectionalTypes.length && allCurrent; i++) {
         final Snapshot snapshot = map.get(unidirectionalTypes[i]);
-        if (snapshot == null || snapshot.isStale(changes))
+        if (snapshot == null || snapshot.isStale(changes, database))
           allCurrent = false;
         else
           result[i] = snapshot;
@@ -343,7 +350,7 @@ public final class IncomingEdgeLookup {
       final List<String> missing = new ArrayList<>(unidirectionalTypes.length);
       for (final String typeName : unidirectionalTypes) {
         final Snapshot snapshot = map.get(typeName);
-        if (snapshot == null || snapshot.isStale(changes))
+        if (snapshot == null || snapshot.isStale(changes, database))
           missing.add(typeName);
       }
       if (!missing.isEmpty()) {
@@ -417,6 +424,28 @@ public final class IncomingEdgeLookup {
   private record ClosureEntry(String[] edgeTypes, Closure closure) {
   }
 
+  // THE SCHEMA IS HELD WEAKLY: A POOLED THREAD MUST NOT KEEP A CLOSED DATABASE REACHABLE
+  private record CachedClosure(WeakReference<LocalSchema> schema, long serial, String[] edgeTypes, Closure closure) {
+  }
+
+  /**
+   * {@link #closure} memoized per thread for the static checks, which steps call per row: kept while the schema, its
+   * types and the requested types stay the same, so a row costs a comparison rather than a walk of the types.
+   */
+  private static Closure cachedClosure(final Schema schema, final String[] edgeTypes) {
+    final LocalSchema embedded = schema.getEmbedded();
+    if (embedded == null)
+      return closure(schema, edgeTypes);
+    final long serial = embedded.getTypesChangeSerial();
+    final CachedClosure last = LAST_STATIC_CLOSURE.get();
+    if (last != null && last.schema.get() == embedded && last.serial == serial && Arrays.equals(last.edgeTypes, edgeTypes))
+      return last.closure;
+    final Closure closure = closure(schema, edgeTypes);
+    LAST_STATIC_CLOSURE.set(
+        new CachedClosure(new WeakReference<>(embedded), serial, edgeTypes == null ? null : edgeTypes.clone(), closure));
+    return closure;
+  }
+
   private record Involved(Schema schema, Closure closure, Snapshot[] snapshots) {
   }
 
@@ -432,6 +461,8 @@ public final class IncomingEdgeLookup {
     private final UnidirectionalEdgeChanges builtBy;
     private final long                      builtAt;
     private final long                      builtIn;
+    // TAKEN OUTSIDE A TRANSACTION: NOTHING TO OVERLAY, SO ANY WRITE TO THE DATABASE SINCE MAKES IT STALE
+    private final long                      builtAtModification;
     private final OperationHeapLimit limit;
     private final DatabaseInternal   database;
     private final int                size;
@@ -449,6 +480,7 @@ public final class IncomingEdgeLookup {
       this.builtBy = builtBy;
       this.builtAt = builtBy != null ? builtBy.getSequence() : 0L;
       this.builtIn = builtBy != null ? builtBy.getTransaction() : 0L;
+      this.builtAtModification = database.getModificationCount();
       this.database = database;
       this.limit = builder.limit;
       this.size = builder.size;
@@ -534,10 +566,13 @@ public final class IncomingEdgeLookup {
 
     /**
      * Whether the transaction the scan was taken in ended since, so the changes it made after the scan are no longer
-     * kept for the overlay. A scan read from another transaction's thread (a parallel worker) is read as taken.
+     * kept for the overlay. A scan read from another transaction's thread (a parallel worker) is read as taken. A scan
+     * taken outside any transaction has no changes to overlay, and is stale once the database was written at all.
      */
-    boolean isStale(final UnidirectionalEdgeChanges current) {
-      return builtBy != null && current == builtBy && builtIn != builtBy.getTransaction();
+    boolean isStale(final UnidirectionalEdgeChanges current, final DatabaseInternal database) {
+      if (builtBy == null)
+        return database.getModificationCount() != builtAtModification;
+      return current == builtBy && builtIn != builtBy.getTransaction();
     }
 
     /** The changes to overlay: the current transaction's, when it is the one the scan was taken in and changed since. */

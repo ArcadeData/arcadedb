@@ -457,28 +457,41 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
       database.newVertex("Question").set("qid", 1).save();
       database.newVertex("Question").set("qid", 2).save();
     });
-    final ResultSet rs = database.command("sqlscript", """
+    assertThat(runScriptReadingBeforeAndAfterACommit()).isEqualTo(2);
+  }
+
+  @Test
+  void aScriptWhoseFirstStatementReadsOnAFreshThreadStillSeesItsLaterWrites() throws Exception {
+    createSchema(false);
+    database.transaction(() -> {
+      database.newVertex("Tag").set("name", "s").save();
+      database.newVertex("Question").set("qid", 1).save();
+      database.newVertex("Question").set("qid", 2).save();
+    });
+    final long[] result = new long[1];
+    final Thread thread = new Thread(() -> result[0] = runScriptReadingBeforeAndAfterACommit());
+    thread.start();
+    thread.join();
+    assertThat(result[0]).isEqualTo(2);
+  }
+
+  /**
+   * A read that takes the scan, one committed write, and a second read on the same script context: the second read
+   * must see the written edge. Plain statements rather than LET, which makes the script run a CREATE EDGE twice (#8633).
+   */
+  private long runScriptReadingBeforeAndAfterACommit() {
+    try (final ResultSet rs = database.command("sqlscript", """
+        SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
         BEGIN;
         CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 1) TO (SELECT FROM Tag WHERE name = 's');
-        COMMIT;
-        LET a = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
-        BEGIN;
         CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 2) TO (SELECT FROM Tag WHERE name = 's');
         COMMIT;
-        LET b = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
-        LET c = SELECT count(*) AS n FROM TAGGED_WITH;
-        RETURN [$a[0].n, $b[0].n, $c[0].n];
-        """);
-    final List<Object> counts = new ArrayList<>();
-    while (rs.hasNext())
-      counts.add(rs.next().getProperty("value"));
-    // The scan the first read took was taken in a transaction that committed since: the second read takes it again
-    // and answers every edge there is. Compared with the edge count rather than a constant, because the script engine
-    // runs the first CREATE EDGE twice here (#8633), which is not what this pins
-    final List<?> values = counts;
-    assertThat(((Number) values.get(0)).longValue()).isGreaterThanOrEqualTo(1L);
-    assertThat(((Number) values.get(1)).longValue()).isEqualTo(((Number) values.get(2)).longValue());
-    assertThat(((Number) values.get(1)).longValue()).isGreaterThan(((Number) values.get(0)).longValue());
+        SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
+        """)) {
+      final long n = ((Number) rs.next().getProperty("n")).longValue();
+      assertThat(sum("sql", "SELECT count(*) AS n FROM TAGGED_WITH")).as("the script wrote two edges").isEqualTo(2);
+      return n;
+    }
   }
 
   @Test
