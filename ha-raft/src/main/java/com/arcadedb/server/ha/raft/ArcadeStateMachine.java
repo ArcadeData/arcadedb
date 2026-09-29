@@ -207,6 +207,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
+  // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
+  // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
+  // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
+  // In memory only, and never seeded by reinitialize(): after a restart Ratis replays from the snapshot marker onward,
+  // and a marker reinitialize() distrusts (staleSnapshot) must not suppress the entries below it. An in-process
+  // restartRatis() builds a fresh state machine, so the boundary does not outlive it either.
+  private final    AtomicLong                installedRaftBoundary  = new AtomicLong(-1);
+  // The boundary the first refusal below it was reported for at WARNING, so each boundary logs once (issue #8651).
+  // Guarded by appliedPositionLock.
+  private          long                      boundaryRefusalWarned  = -1L;
+  // Serialises "is this index below the boundary?" with the move of the applied position it guards (issue #8651):
+  // the install records the boundary and seeds the applied position under it, and every applied-position update
+  // checks and moves under it, so the apply thread can never read the boundary before the install and then move the
+  // position after it. Uncontended except during an install, when the apply thread waits out the install's durable
+  // write. LOCK ORDER: appliedPositionLock, then appliedIndexFileLock - never call updateLastAppliedTermIndex while
+  // holding appliedIndexFileLock.
+  private final    Object                    appliedPositionLock    = new Object();
 
   // Persisted applied-index bookkeeping. One ArcadeStateMachine multiplexes every database onto a
   // single Raft group, so a single global scalar cannot answer a per-database question: a co-located
@@ -1116,6 +1133,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   protected boolean updateLastAppliedTermIndex(final TermIndex newTI) {
+    synchronized (appliedPositionLock) {
+      return updateLastAppliedTermIndexLocked(newTI);
+    }
+  }
+
+  private boolean updateLastAppliedTermIndexLocked(final TermIndex newTI) {
+    // A stale replayed entry that Ratis applies through notifyTermIndexUpdated (its own metadata and configuration
+    // entries) never reaches applyTransaction's install skip. Left to super it trips the monotonic check on the
+    // StateMachineUpdater thread, which dies and closes the division (issue #8651). STRICTLY below: the install's own
+    // seed is AT the boundary, and an entry at it is an equal-position no-op that super handles.
+    final long boundary = installedRaftBoundary.get();
+    if (newTI != null && newTI.getIndex() < boundary) {
+      // The first refusal per boundary at WARNING: the rest of a stale replay would flood the log, but a boundary that
+      // is ever wrong must not be invisible, since its only other symptom is an applied index that stops advancing.
+      final boolean first = boundaryRefusalWarned != boundary;
+      boundaryRefusalWarned = boundary;
+      LogManager.instance().log(this, first ? Level.WARNING : Level.FINE,
+          "Ignoring applied-position update %s: below the installed snapshot boundary %d, a stale entry from this "
+              + "node's pre-install log (issue #8651)", newTI, boundary);
+      return false;
+    }
     final TermIndex oldTI = getLastAppliedTermIndex();
     if (isBenignSnapshotTermRegression(oldTI, newTI)) {
       LogManager.instance().log(this, Level.WARNING,
@@ -1147,6 +1185,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return true;
     }
     return super.updateLastAppliedTermIndex(newTI);
+  }
+
+  /** Records the index a leader-driven install covers; never lowers it (issue #8651). */
+  // @VisibleForTesting
+  void recordInstalledRaftBoundary(final long index) {
+    installedRaftBoundary.accumulateAndGet(index, Math::max);
+  }
+
+  /** Whether {@code index} is at or below what a leader-driven install already covers (issue #8651). */
+  // @VisibleForTesting
+  boolean isBelowInstalledRaftBoundary(final long index) {
+    return index <= installedRaftBoundary.get();
   }
 
   /**
@@ -1336,6 +1386,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // than a field: applyWithRetry can re-run the lambda, and a field would outlive this entry.
       final boolean[] securitySuperseded = new boolean[1];
 
+      // An entry that names no database (the security entries decode to an empty name) has no real install gate to
+      // consult, so the global boundary is what marks it stale (issue #8651). Its effects (the security documents)
+      // are refreshed by the leader catch-up that follows the install (issue #7833), and applying it now would write
+      // an older document over that state and move lastAppliedIndex and the persisted applied index backward. No
+      // notifyApplied() either: nothing advanced, and the install already notified for its seed.
+      final boolean namesNoDatabase = decoded.databaseName() == null || decoded.databaseName().isEmpty();
+      if (namesNoDatabase && isBelowInstalledRaftBoundary(index)) {
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping entry %d that names no database: already covered by the installed snapshot boundary %d "
+                + "(issue #8651)", index, installedRaftBoundary.get());
+        return CompletableFuture.completedFuture(Message.valueOf("OK"));
+      }
+
       // Not applied to a copy an install is replacing (issue #7958): see installApplyGates.
       final InstallApplyGate installGate = enterInstallApplyGate(decoded.databaseName(), index);
       if (installGate != null && index <= installGate.installedIndex()) {
@@ -1360,25 +1423,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // this entry is the next one in order and leaving it unrecorded would stall every reader waiting on it.
       final boolean carriedByServedCopy = installGate != null && index <= installGate.servedCopyIndex()
           && isCarriedByInstalledCopy(decoded.type(), originatedLocally);
+      final Runnable dispatch = () -> {
+        securitySuperseded[0] = false;
+        switch (decoded.type()) {
+        case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
+        case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
+        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
+        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+        case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
+        case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
+        case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
+        case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
+        }
+      };
+      boolean staleNoDatabaseEntry = false;
       try {
         if (carriedByServedCopy)
           LogManager.instance().log(this, Level.FINE,
               "Not re-applying entry %d to database '%s': the copy installed from the leader, served at applied index %d, "
                   + "already carries it (issue #8579)", index, decoded.databaseName(), installGate.servedCopyIndex());
+        else if (namesNoDatabase)
+          // Re-checked, and the document written, under the lock the install records its boundary under (issue #8651):
+          // an install that lands between the check above and the write would otherwise let this stale document
+          // overwrite what the post-install security catch-up brings, which runs after the boundary is recorded.
+          synchronized (appliedPositionLock) {
+            if (isBelowInstalledRaftBoundary(index))
+              staleNoDatabaseEntry = true;
+            else
+              applyWithRetry(index, decoded.databaseName(), dispatch);
+          }
         else
-          applyWithRetry(index, decoded.databaseName(), () -> {
-            securitySuperseded[0] = false;
-            switch (decoded.type()) {
-            case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
-            case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
-            case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
-            case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-            case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
-            case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
-            case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
-            case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
-            }
-          });
+          applyWithRetry(index, decoded.databaseName(), dispatch);
       } finally {
         if (installGate != null) {
           // Recorded even when the apply failed: the floor an install derives from it can only be too high, which
@@ -1387,19 +1462,32 @@ public class ArcadeStateMachine extends BaseStateMachine {
           installGate.unlock();
         }
       }
+      if (staleNoDatabaseEntry)
+        return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
-      final long previousApplied = lastAppliedIndex.getAndSet(index);
-      updateLastAppliedTermIndex(termIndex.getTerm(), index);
-      // Record the index globally AND against the database this entry targeted, so the per-database
-      // bootstrap replay-skip can trust a value that is not mixed across databases (issue #4824).
-      // decoded.databaseName() is null only for database-agnostic entries (e.g. SECURITY_USERS_ENTRY),
-      // which advance the global position only. A DROP entry removes the database, so the global
-      // position advances and its per-database entry is evicted in a single atomic write (avoids
-      // growing the map for the node lifetime with names of dropped databases).
-      if (decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY)
-        writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
-      else
-        writePersistedAppliedIndex(index, decoded.databaseName());
+      final long previousApplied;
+      synchronized (appliedPositionLock) {
+        // Below a Raft install's boundary only for a database that install did not cover (not installed, missing on
+        // the leader, or created since): its gate recorded no boundary, so the entry was applied to it, which is
+        // right, since nothing replaced its copy. The global positions are the install's, though, and must not move
+        // backward (issue #8651): only the database's own applied position is recorded.
+        final boolean belowInstall = isBelowInstalledRaftBoundary(index);
+        previousApplied = belowInstall ? lastAppliedIndex.get() : lastAppliedIndex.getAndSet(index);
+        updateLastAppliedTermIndex(termIndex.getTerm(), index);
+        // Record the index globally AND against the database this entry targeted, so the per-database
+        // bootstrap replay-skip can trust a value that is not mixed across databases (issue #4824).
+        // decoded.databaseName() is null only for database-agnostic entries (e.g. SECURITY_USERS_ENTRY),
+        // which advance the global position only. A DROP entry removes the database, so the global
+        // position advances and its per-database entry is evicted in a single atomic write (avoids
+        // growing the map for the node lifetime with names of dropped databases).
+        final boolean drop = decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY;
+        if (belowInstall)
+          writePersistedDatabaseAppliedIndex(index, decoded.databaseName(), drop);
+        else if (drop)
+          writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
+        else
+          writePersistedAppliedIndex(index, decoded.databaseName());
+      }
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -2371,14 +2459,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // brings EVERY present database to the snapshot point, so record the snapshot index for each
       // of them too (not just the global position) - this keeps the per-database bootstrap
       // replay-skip honest after a full resync (issue #4824).
-      lastAppliedIndex.set(snapshotIndex);
-      updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
-      // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
-      // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
-      // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
-      // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
-      // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
-      completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
+      // The boundary, the seed and the durable write under one lock (issue #8651): the apply thread may still be
+      // replaying this node's pre-install log, and it checks the boundary and moves the applied positions under the
+      // same lock, so a stale entry either lands entirely before the seed (which then moves the positions forward) or
+      // sees the boundary and leaves them alone - never checks before and writes after.
+      synchronized (appliedPositionLock) {
+        recordInstalledRaftBoundary(snapshotIndex);
+        lastAppliedIndex.set(snapshotIndex);
+        updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
+        // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
+        // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
+        // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
+        // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
+        // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
+        completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
+      }
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -6361,6 +6456,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
       ensureAppliedIndexLoaded();
       globalAppliedIndex = index;
       if (dbName != null)
+        appliedIndexByDb.put(dbName, index);
+      persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Records {@code index} against {@code dbName} only (or evicts it, for a drop), leaving the global applied position
+   * where it is (issue #8651): for an entry below a Raft install's boundary, whose global position is the install's.
+   */
+  void writePersistedDatabaseAppliedIndex(final long index, final String dbName, final boolean drop) {
+    if (dbName == null || dbName.isEmpty())
+      return;
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (drop)
+        appliedIndexByDb.remove(dbName);
+      else
         appliedIndexByDb.put(dbName, index);
       persistAppliedIndexFile();
     }
