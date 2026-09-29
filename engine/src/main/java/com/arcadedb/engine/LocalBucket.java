@@ -6483,9 +6483,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // SINGLE INCREMENT, WHICH UNDERCOUNTED THE PENDING CHANGES) SO THE FAILED SCAN IS RETRIED AT THE
         // NEXT CYCLE; max(consumed, 1) COVERS THE firstRun CASE WHERE THE CONSUMED COUNT MAY BE ZERO
         changesFromLastStats.addAndGet(Math.max(consumedChanges, 1L));
-        // #8660: A FAILED SCAN MUST NOT LOSE THE RESUME STATE, OR THE NEXT GATHER IS THROTTLED AGAIN
-        if (resuming)
-          gatherTruncated = true;
+        // #8660: BACK OFF LIKE ANY OTHER GATHER, SO A PERSISTENT ERROR IS NOT RETRIED (AND LOGGED) ON EVERY ALLOCATION
+        gatherTruncated = false;
+        timeOfLastStats = System.currentTimeMillis();
         LogManager.instance().log(this, Level.WARNING, "Error on gathering statistics on bucket '%s'", e, getName());
       }
   }
