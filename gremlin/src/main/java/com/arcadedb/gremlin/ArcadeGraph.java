@@ -271,7 +271,12 @@ public class ArcadeGraph implements Graph, Closeable {
     if (configured > 0)
       return configured;
     final int advertised = remoteDatabase.getAdvertisedPort("gremlin");
-    return advertised > 0 ? advertised : GREMLIN_SERVER_PORT;
+    if (advertised > 0)
+      return advertised;
+    // NEITHER SAID: A GREMLIN SERVER ON ANOTHER PORT IS THEN UNREACHABLE, AND THE FALLBACK TO THE EMBEDDED TRAVERSAL HIDES IT
+    LogManager.instance().log(ArcadeGraph.class, Level.FINE,
+        "No Gremlin port configured or advertised by the server: using the default %d", null, GREMLIN_SERVER_PORT);
+    return GREMLIN_SERVER_PORT;
   }
 
   public ArcadeSQL sql(final String query) {

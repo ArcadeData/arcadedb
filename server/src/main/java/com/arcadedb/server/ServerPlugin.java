@@ -59,7 +59,8 @@ public interface ServerPlugin {
    * The network ports this plugin listens on for clients, by service name (e.g. {@code gremlin}), once it is started.
    * Published by {@code GET /api/v1/server?mode=cluster}, so a remote client that must reach the plugin's own listener
    * learns the port from the server instead of assuming the protocol's well-known default (issue #8578). Only ports a
-   * client is expected to connect to belong here.
+   * client is expected to connect to belong here. Service names are unique across plugins: when two plugins advertise
+   * the same name, the first one wins and the other is logged and ignored.
    *
    * @return the service name to bound port map, empty by default and while the plugin is not listening
    */

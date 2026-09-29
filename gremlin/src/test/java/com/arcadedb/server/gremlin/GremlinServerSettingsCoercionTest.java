@@ -49,6 +49,16 @@ class GremlinServerSettingsCoercionTest {
   }
 
   @Test
+  void aBooleanIsOnlyTrueOrFalse() {
+    final Settings settings = new Settings();
+    final boolean defaultValue = settings.strictTransactionManagement;
+    GremlinServerPlugin.applyServerSetting(settings, "strictTransactionManagement", "yes");
+    assertThat(settings.strictTransactionManagement).as("'yes' is not a boolean: ignored, not turned into false").isEqualTo(defaultValue);
+    GremlinServerPlugin.applyServerSetting(settings, "strictTransactionManagement", "TRUE");
+    assertThat(settings.strictTransactionManagement).isTrue();
+  }
+
+  @Test
   void anUnknownSettingIsIgnored() {
     final Settings settings = new Settings();
     final int defaultPort = settings.port;
