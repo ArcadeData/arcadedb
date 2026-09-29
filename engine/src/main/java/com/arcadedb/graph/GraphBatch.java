@@ -888,7 +888,6 @@ public class GraphBatch implements AutoCloseable {
 
       totalEdgesCreated += flushDurableOutEdges;
       totalFlushes++;
-      noteUnidirectionalEdges(bufferedEdges);
       totalFlushTimeNs += System.nanoTime() - startNs;
 
       // Reset buffer
@@ -904,25 +903,12 @@ public class GraphBatch implements AutoCloseable {
       // close() drains separately. Counting them is right; the connect pass has already excluded whatever it
       // failed to make durable (issue #6083 item 4).
       totalEdgesCreated += flushDurableOutEdges;
-      noteUnidirectionalEdges(bufferedEdges);
 
       // Discard the buffered edges so a subsequent close() / flush() doesn't replay them.
       Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
       edgeCount = 0;
       throw e;
     }
-  }
-
-  /**
-   * Lets the running queries know their scans of the unidirectional edge types are stale when this flush wrote edges of
-   * such a type (issue #8625). Once per flush, not per edge.
-   */
-  private void noteUnidirectionalEdges(final int bufferedEdges) {
-    for (int i = 0; i < bufferedEdges; i++)
-      if (!edgeIsBidirectional[i]) {
-        database.getGraphEngine().edgesChanged(database.getSchema().getTypeByBucketId(edgeTypeBucketIds[i]));
-        return;
-      }
   }
 
   /**

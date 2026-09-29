@@ -37,6 +37,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
@@ -269,6 +270,9 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
+  // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
+  private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -353,6 +357,8 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    if (unidirectionalEdgeChanges != null)
+      unidirectionalEdgeChanges.transactionEnded();
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
@@ -2725,7 +2731,21 @@ public class TransactionContext implements Transaction {
     this.asyncFlush = value;
   }
 
+  /** The unidirectional edge changes of this context, created on the first call. */
+  public UnidirectionalEdgeChanges getUnidirectionalEdgeChanges() {
+    if (unidirectionalEdgeChanges == null)
+      unidirectionalEdgeChanges = new UnidirectionalEdgeChanges();
+    return unidirectionalEdgeChanges;
+  }
+
+  /** The unidirectional edge changes of this context, or null when it never made one. */
+  public UnidirectionalEdgeChanges getUnidirectionalEdgeChangesIfAny() {
+    return unidirectionalEdgeChanges;
+  }
+
   public void reset() {
+    if (unidirectionalEdgeChanges != null)
+      unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
     // rollback passes through - the commit, and each durable-but-locally-failed regime concludePhase2 routes here -
     // so it is where a replay that deferred its non-transactional writes gets to make them. A rollback never

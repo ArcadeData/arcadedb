@@ -189,6 +189,11 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
         .contains("ExpandAll(q)-[:TAGGED_WITH]->(t:Tag)");
     assertThat(explain("sql", "MATCH {type: Tag, as: t}<-TAGGED_WITH-{type: Question, as: q} RETURN q, t"))
         .contains("FETCH FROM TYPE Question");
+    // An outgoing chain reads only what is stored: the count push-down stays
+    assertThat(explain("opencypher", "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) RETURN count(*) AS n"))
+        .contains("Count Push-Down");
+    assertThat(explain("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN count(*) AS n"))
+        .doesNotContain("Count Push-Down");
   }
 
   @Test
@@ -338,6 +343,27 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
       database.command("opencypher", "MATCH (t:Tag {name: 't3'}) MERGE (t)<-[:TAGGED_WITH]-(q:Question {qid: 3})");
     });
     assertThat(groundTruth()).as("MERGE must match the existing edges, not create new ones").isEqualTo(EXPECTED);
+  }
+
+  @Test
+  void writesInTheQueryTransactionAreOverlaidWithoutANewScan() {
+    createSchema(false);
+    loadWithNewEdge();
+    final long degree = tagDegree("t3");
+    database.transaction(() -> {
+      // A MERGE per row that creates and then reads the incoming side: the scan taken by the first row is kept
+      final long scansBefore = IncomingEdgeLookup.getScansTaken();
+      database.command("opencypher",
+          "UNWIND range(1000, 1099) AS i CREATE (q:Question {qid: i}) WITH q MATCH (t:Tag {name: 't3'}) "
+              + "MERGE (t)<-[:TAGGED_WITH]-(q) WITH t RETURN COUNT { (t)<-[:TAGGED_WITH]-() } AS n");
+      assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore).as("one scan for the whole query").isEqualTo(1);
+      assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
+          .isEqualTo(degree + 100);
+      database.command("sql", "DELETE FROM TAGGED_WITH WHERE @out IN (SELECT FROM Question WHERE qid >= 1050)");
+      assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree + 50);
+    });
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
+        .isEqualTo(degree + 50);
   }
 
   @Test

@@ -21,6 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -43,6 +44,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The incoming side of the edge types declared unidirectional, for the query languages (issue #8625).
@@ -66,14 +68,27 @@ import java.util.concurrent.ConcurrentHashMap;
  * unidirectional type - written by a bulk load that did not follow the type - is skipped, since the scan already
  * answers for that edge.
  * <p>
- * A scan is a snapshot of the edges visible when it is taken. It is taken again when an edge of a unidirectional type
- * was created or deleted since, in any transaction ({@link GraphEngine#getUnidirectionalEdgeChanges()}), so a script
- * that writes such edges and then reads them, or a query that deletes some, sees what the vertex lists hold now.
+ * A scan is a snapshot of the edges visible when it is taken, and stays the one the query reads: the edges its own
+ * transaction creates or deletes afterwards are added or left out from the {@link UnidirectionalEdgeChanges} the
+ * transaction keeps, so a {@code MERGE} or a script that writes such edges and then reads them sees them without
+ * paying for a new scan. A scan is taken again only when the transaction it was taken in ended since (a script that
+ * commits statement by statement), because the changes it missed are no longer kept. Other transactions' changes are not
+ * seen, as a query does not see them in the records it already read either.
+ * <p>
+ * A scan reads the edge records of the type, which are the edges the source vertices list: an edge record that no
+ * vertex lists (the leftover of a failed write, which {@code CHECK DATABASE} reports) would be answered here and not by
+ * a walk from its source.
+ * <p>
+ * The heap a scan takes is charged to the query when it is taken and given back when the scan is replaced. Nothing ends
+ * a query explicitly, so the last scans are given back with the query's {@code QueryHeapTracker}, when the query is no
+ * longer reachable - which is also when their arrays stop taking heap.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class IncomingEdgeLookup {
-  private static final long LIGHTWEIGHT_POSITION = -1L;
+  private static final long       LIGHTWEIGHT_POSITION = -1L;
+  // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
+  private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
 
   // CREATED ON FIRST USE: A QUERY OVER A SCHEMA WITHOUT UNIDIRECTIONAL TYPES NEVER NEEDS IT
   private volatile Map<String, Snapshot> snapshots;
@@ -206,6 +221,11 @@ public final class IncomingEdgeLookup {
     return closure(schema, edgeTypes).unidirectional.length > 0;
   }
 
+  /** The scans taken since the JVM started. */
+  static long getScansTaken() {
+    return SCANS_TAKEN.get();
+  }
+
   private static Involved involved(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,
       final String[] edgeTypes) {
     if (direction == Vertex.DIRECTION.OUT || context == null)
@@ -271,21 +291,22 @@ public final class IncomingEdgeLookup {
   }
 
   /**
-   * The scans of {@code unidirectionalTypes}, taking the ones this query has not taken yet or whose edges changed since
-   * (see {@link GraphEngine#getUnidirectionalEdgeChanges()}). The common case - every scan present and current - reads
-   * a concurrent map and takes no lock; the missing ones are taken under the lock, so parallel workers wait for one scan
-   * rather than repeat it.
+   * The scans of {@code unidirectionalTypes}, taking the ones this query has not taken yet, or took in a transaction
+   * that has ended since (see {@link UnidirectionalEdgeChanges}). The common case - every scan present and current -
+   * reads a concurrent map and takes no lock; the missing ones are taken under the lock, so parallel workers wait for
+   * one scan rather than repeat it.
    */
   private Snapshot[] snapshots(final DatabaseInternal database, final String[] unidirectionalTypes,
       final CommandContext context) {
-    final long version = database.getGraphEngine().getUnidirectionalEdgeChanges();
+    final TransactionContext tx = database.getTransactionIfExists();
+    final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;
     final Snapshot[] result = new Snapshot[unidirectionalTypes.length];
     Map<String, Snapshot> map = snapshots;
     if (map != null) {
       boolean allCurrent = true;
       for (int i = 0; i < unidirectionalTypes.length && allCurrent; i++) {
         final Snapshot snapshot = map.get(unidirectionalTypes[i]);
-        if (snapshot == null || snapshot.version != version)
+        if (snapshot == null || snapshot.isStale(changes))
           allCurrent = false;
         else
           result[i] = snapshot;
@@ -303,15 +324,17 @@ public final class IncomingEdgeLookup {
       final List<String> missing = new ArrayList<>(unidirectionalTypes.length);
       for (final String typeName : unidirectionalTypes) {
         final Snapshot snapshot = map.get(typeName);
-        if (snapshot == null || snapshot.version != version)
+        if (snapshot == null || snapshot.isStale(changes))
           missing.add(typeName);
       }
-      if (!missing.isEmpty())
-        for (final Snapshot snapshot : Snapshot.build(database, missing, version, context)) {
+      if (!missing.isEmpty()) {
+        final UnidirectionalEdgeChanges builtBy = tx != null ? tx.getUnidirectionalEdgeChanges() : null;
+        for (final Snapshot snapshot : Snapshot.build(database, missing, builtBy, context)) {
           final Snapshot previous = map.put(snapshot.typeName, snapshot);
           if (previous != null)
             previous.limit.release();
         }
+      }
       for (int i = 0; i < unidirectionalTypes.length; i++)
         result[i] = map.get(unidirectionalTypes[i]);
     }
@@ -384,7 +407,9 @@ public final class IncomingEdgeLookup {
    */
   private static final class Snapshot {
     private final String             typeName;
-    private final long               version;
+    // THE CHANGES OF THE TRANSACTION THE SCAN WAS TAKEN IN, AND HOW FAR THEY WENT THEN: LATER ONES ARE OVERLAID
+    private final UnidirectionalEdgeChanges builtBy;
+    private final long                      builtAt;
     private final OperationHeapLimit limit;
     private final DatabaseInternal   database;
     private final int                size;
@@ -395,10 +420,12 @@ public final class IncomingEdgeLookup {
     private final int[]              edgeBuckets;
     private final long[]             edgePositions;
 
-    private Snapshot(final String typeName, final long version, final DatabaseInternal database, final Builder builder) {
+    private Snapshot(final String typeName, final UnidirectionalEdgeChanges builtBy, final DatabaseInternal database,
+        final Builder builder) {
       builder.sortByTarget();
       this.typeName = typeName;
-      this.version = version;
+      this.builtBy = builtBy;
+      this.builtAt = builtBy != null ? builtBy.getSequence() : 0L;
       this.database = database;
       this.limit = builder.limit;
       this.size = builder.size;
@@ -410,8 +437,9 @@ public final class IncomingEdgeLookup {
       this.edgePositions = builder.edgePositions;
     }
 
-    static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames, final long version,
-        final CommandContext context) {
+    static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
+        final UnidirectionalEdgeChanges builtBy, final CommandContext context) {
+      SCANS_TAKEN.addAndGet(typeNames.size());
       final Schema schema = database.getSchema();
       final Map<String, Builder> builders = new HashMap<>();
       final List<Builder> lightweight = new ArrayList<>();
@@ -435,7 +463,7 @@ public final class IncomingEdgeLookup {
 
       final List<Snapshot> result = new ArrayList<>(typeNames.size());
       for (final String typeName : typeNames)
-        result.add(new Snapshot(typeName, version, database, builders.get(typeName)));
+        result.add(new Snapshot(typeName, builtBy, database, builders.get(typeName)));
       return result;
     }
 
@@ -476,27 +504,47 @@ public final class IncomingEdgeLookup {
       }
     }
 
+    /**
+     * Whether the transaction the scan was taken in ended since, so the changes it made after the scan are no longer
+     * kept for the overlay. A scan read from another transaction's thread (a parallel worker) is read as taken.
+     */
+    boolean isStale(final UnidirectionalEdgeChanges current) {
+      return builtBy != null && current == builtBy && builtAt < builtBy.getTransactionStart();
+    }
+
+    /** The changes to overlay: the current transaction's, when it is the one the scan was taken in and changed since. */
+    private UnidirectionalEdgeChanges overlay() {
+      if (builtBy == null || builtBy.getSequence() == builtAt)
+        return null;
+      final TransactionContext tx = database.getTransactionIfExists();
+      return tx != null && tx.getUnidirectionalEdgeChangesIfAny() == builtBy ? builtBy : null;
+    }
+
     long count(final RID target) {
-      final int from = firstIndex(target);
-      int to = from;
-      while (to < size && isTarget(to, target))
-        ++to;
-      return to - from;
+      final UnidirectionalEdgeChanges changes = overlay();
+      if (changes == null) {
+        final int from = firstIndex(target);
+        int to = from;
+        while (to < size && isTarget(to, target))
+          ++to;
+        return to - from;
+      }
+      long count = 0;
+      for (final Iterator<Edge> it = edgesInto(target, changes); it.hasNext(); it.next())
+        ++count;
+      return count;
     }
 
     Iterator<Edge> edgesInto(final RID target) {
-      final int from = firstIndex(target);
-      if (from >= size || !isTarget(from, target))
-        return Collections.emptyIterator();
-      return new RangeIterator<>(from, target) {
-        @Override
-        Edge get(final int i) {
-          return edgeAt(i);
-        }
-      };
+      final UnidirectionalEdgeChanges changes = overlay();
+      return changes == null ? storedEdgesInto(target) : edgesInto(target, changes);
     }
 
     Iterator<Vertex> sourcesOf(final RID target) {
+      final UnidirectionalEdgeChanges changes = overlay();
+      if (changes != null)
+        return new SourceVertices(edgesInto(target, changes));
+
       final int from = firstIndex(target);
       if (from >= size || !isTarget(from, target))
         return Collections.emptyIterator();
@@ -504,6 +552,32 @@ public final class IncomingEdgeLookup {
         @Override
         Vertex get(final int i) {
           return (Vertex) database.lookupByRID(database.newRID(sourceBuckets[i], sourcePositions[i]), false);
+        }
+      };
+    }
+
+    /** The scanned edges into {@code target}, less the ones the transaction deleted since, plus the ones it created. */
+    private Iterator<Edge> edgesInto(final RID target, final UnidirectionalEdgeChanges changes) {
+      final List<Edge> result = new ArrayList<>();
+      for (final Iterator<Edge> it = storedEdgesInto(target); it.hasNext(); ) {
+        final Edge edge = it.next();
+        if (!changes.isDeletedAfter(edge.getIdentity(), builtAt))
+          result.add(edge);
+      }
+      for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
+        if (created.sequence() > builtAt && !changes.isDeletedAfter(created.edge().getIdentity(), created.sequence()))
+          result.add(created.edge());
+      return result.iterator();
+    }
+
+    private Iterator<Edge> storedEdgesInto(final RID target) {
+      final int from = firstIndex(target);
+      if (from >= size || !isTarget(from, target))
+        return Collections.emptyIterator();
+      return new RangeIterator<>(from, target) {
+        @Override
+        Edge get(final int i) {
+          return edgeAt(i);
         }
       };
     }
