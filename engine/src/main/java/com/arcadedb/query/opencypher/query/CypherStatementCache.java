@@ -23,13 +23,11 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser.ParsedQuery;
-import com.arcadedb.utility.LRUCache;
-
-import java.util.Collections;
-import java.util.Map;
+import com.arcadedb.utility.SegmentedLRUCache;
 
 /**
- * LRU cache for parsed OpenCypher statements. Caches the AST (Abstract Syntax Tree) to avoid
+ * Scan-resistant LRU cache (a burst of one-off query texts does not evict the statements hit repeatedly, issue #8286) for parsed
+ * OpenCypher statements. Caches the AST (Abstract Syntax Tree) to avoid
  * expensive ANTLR parsing on every query execution.
  * <p>
  * This cache provides significant performance improvements for repeated queries by eliminating
@@ -38,7 +36,7 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CypherStatementCache {
-  private final Map<String, ParsedQuery> cache;
+  private final SegmentedLRUCache<String, ParsedQuery> cache;
   private final Cypher25AntlrParser      parser;
 
   /**
@@ -51,8 +49,7 @@ public class CypherStatementCache {
    */
   public CypherStatementCache(final Database database, final int size) {
     this.parser = new Cypher25AntlrParser(database);
-    // Use LRUCache wrapped in synchronizedMap for thread-safety
-    this.cache = Collections.synchronizedMap(new LRUCache<>(size));
+    this.cache = new SegmentedLRUCache<>(size);
   }
 
   /**
@@ -79,10 +76,15 @@ public class CypherStatementCache {
     // Strip trailing semicolons - Neo4j clients (e.g., Neo4j Desktop) commonly append them
     final String normalizedQuery = query.endsWith(";") ? query.substring(0, query.length() - 1).trim() : query;
 
-    ParsedQuery parsed = cache.get(normalizedQuery);
+    ParsedQuery parsed;
+    synchronized (cache) {
+      parsed = cache.get(normalizedQuery);
+    }
     if (parsed == null) {
       parsed = parse(normalizedQuery);
-      cache.put(normalizedQuery, parsed);
+      synchronized (cache) {
+        cache.put(normalizedQuery, parsed);
+      }
     }
     return parsed;
   }
@@ -124,7 +126,9 @@ public class CypherStatementCache {
    * @return true if the statement is cached
    */
   public boolean contains(final String query) {
-    return cache.containsKey(query);
+    synchronized (cache) {
+      return cache.containsKey(query);
+    }
   }
 
   /**
@@ -132,7 +136,9 @@ public class CypherStatementCache {
    * Should be called when schema changes invalidate cached ASTs.
    */
   public void clear() {
-    cache.clear();
+    synchronized (cache) {
+      cache.clear();
+    }
   }
 
   /**
@@ -141,6 +147,8 @@ public class CypherStatementCache {
    * @return number of cached statements
    */
   public int size() {
-    return cache.size();
+    synchronized (cache) {
+      return cache.size();
+    }
   }
 }
