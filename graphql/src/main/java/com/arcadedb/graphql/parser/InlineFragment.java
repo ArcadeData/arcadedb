@@ -28,5 +28,16 @@ public class InlineFragment extends SimpleNode {
   public InlineFragment(final int id) {
     super(id);
   }
+
+  /**
+   * The type named by {@code on T}, or null when the inline fragment has no type condition and so always applies.
+   */
+  public String getTypeConditionName() {
+    return typeCondition != null ? typeCondition.getTypeName() : null;
+  }
+
+  public SelectionSet getSelectionSet() {
+    return selectionSet;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=b25dd549b07816d5a3cbcf5cf42f3a6f (do not edit this line) */

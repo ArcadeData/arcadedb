@@ -28,5 +28,17 @@ public class FragmentDefinition extends Definition {
   public FragmentDefinition(final int id) {
     super(id);
   }
+
+  public String getName() {
+    return name != null ? name.getName() : null;
+  }
+
+  public String getTypeConditionName() {
+    return type != null ? type.getTypeName() : null;
+  }
+
+  public SelectionSet getSelectionSet() {
+    return selectionSet;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=588294b34a10e410fa87ff81f52b5be4 (do not edit this line) */
