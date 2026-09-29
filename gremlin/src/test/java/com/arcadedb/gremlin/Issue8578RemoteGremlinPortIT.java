@@ -27,6 +27,7 @@ import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8578: the remote {@link ArcadeGraph} hardcoded the Gremlin Server port 8182, so a server whose Gremlin plugin
@@ -76,6 +77,17 @@ class Issue8578RemoteGremlinPortIT extends AbstractGremlinServerIT {
       final Cluster cluster = graph.getCluster();
       assertThat(cluster).isNotNull();
       assertThat(cluster.getPort()).isEqualTo(45678);
+    }
+  }
+
+  @Test
+  void aClientPortOutsideTheTcpRangeIsRefused() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.GREMLIN_CLIENT_PORT, 70000);
+
+    try (final RemoteDatabase database = remoteDatabase(configuration);
+        final ArcadeGraph graph = ArcadeGraph.open(database)) {
+      assertThatThrownBy(graph::traversal).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("1-65535");
     }
   }
 

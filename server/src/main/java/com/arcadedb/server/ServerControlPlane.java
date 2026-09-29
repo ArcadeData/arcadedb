@@ -624,6 +624,8 @@ public class ServerControlPlane {
               + ". It is a cluster member enforcing its own copy of them");
 
     if (!gate.giveUpLogged) {
+      gate.gaveUpDocuments = unconverged;
+      gate.gaveUpArmed = armed;
       gate.giveUpLogged = true;
       if (!armed)
         // A static member (issue #8465): it was never admitted, so 'connect cluster' is not its remedy. What asks the
@@ -653,13 +655,24 @@ public class ServerControlPlane {
    * evaluates the same window the readiness probe does and on the same shared state, so the status document and
    * {@code /api/v1/ready} cannot disagree, and it is {@link SecurityConvergenceStatus#NOT_CONVERGING} where the gate
    * does not apply: no HA layer, readiness that does not depend on it, or a node the probe still holds for an earlier
-   * reason - the gate is only evaluated where the probe would reach it, because evaluating it opens its window.
+   * reason - the gate is only evaluated where the probe would reach it, because evaluating it opens its window. It is
+   * therefore not a pure read: on a node the probe would reach the gate for, a poll opens the window and can emit the
+   * one-shot give-up line, exactly as a probe would.
    */
   public SecurityConvergenceStatus getSecurityConvergenceStatus() {
-    // A window that already gave up has no clock left to protect, so it stays reported while the node is briefly held for
-    // another reason: the critical alert must not flap with replication lag
-    if (!isHAReadinessRequired() || (notReadyReasonBeforeSecurityGate() != null && !gate().giveUpLogged))
+    if (!isHAReadinessRequired())
       return SecurityConvergenceStatus.NOT_CONVERGING;
+    if (notReadyReasonBeforeSecurityGate() != null) {
+      // A window that already gave up stays reported while the node is briefly held for another reason, so the critical
+      // alert does not flap with replication lag. Read from what the give-up recorded, never by evaluating the gate: an
+      // evaluation can reset the window on a moved join index and open a fresh one, which is a clock the readiness
+      // probe has not reached.
+      final SecurityConvergenceGate gate = gate();
+      if (gate.giveUpLogged)
+        return new SecurityConvergenceStatus(false, gate.gaveUpDocuments, gate.gaveUpArmed, gate.joinIndex, gate.windowOpenedAt,
+            true, false, null);
+      return SecurityConvergenceStatus.NOT_CONVERGING;
+    }
     final HAServerPlugin ha = server.getHA();
     return ha == null ? SecurityConvergenceStatus.NOT_CONVERGING : securityConvergenceStatus(ha);
   }

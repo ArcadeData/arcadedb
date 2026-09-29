@@ -168,9 +168,20 @@ public class GremlinServerPlugin implements ServerPlugin {
     try {
       field.set(settings, coerce(field.getType(), value));
     } catch (final IllegalAccessException | IllegalArgumentException e) {
+      if (!isScalar(field.getType())) {
+        // A TEXT VALUE FOR A LIST, MAP OR NESTED SETTING CANNOT BE EXPRESSED AS A FLAT KEY: IT WAS ALWAYS SKIPPED
+        LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
+            "Ignoring the Gremlin Server setting 'gremlin.%s': a value of type %s cannot be set from a flat key", null, name,
+            field.getType().getSimpleName());
+        return;
+      }
       throw new ServerException("Invalid Gremlin Server setting 'gremlin." + name + "' with value '" + value + "': " + e.getMessage(),
           e);
     }
+  }
+
+  private static boolean isScalar(final Class<?> type) {
+    return type.isPrimitive() || Number.class.isAssignableFrom(type) || type == Boolean.class || type == String.class;
   }
 
   /**
