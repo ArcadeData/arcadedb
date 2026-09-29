@@ -798,6 +798,9 @@ public class LocalSchema implements Schema {
         stagedBucketId2TypeMap != null ? stagedBucketId2TypeMap : previous.bucketId2TypeMap(),
         stagedBucketId2InvolvedTypeMap != null ? stagedBucketId2InvolvedTypeMap : previous.bucketId2InvolvedTypeMap());
     publishedFromStaging = publishedTypes;
+    // The staged load rebuilt the bucket map before this swap, while readers still saw the previous graph: an answer
+    // derived from the types in that window describes the old generation (issue #8625)
+    typesChanged();
 
     // Only now, with nothing able to reach them through the schema any more. A TimeSeries type owns an engine with
     // open files; the rebuild has already opened a fresh one per type, so leaving these behind would leak them.
@@ -4506,8 +4509,11 @@ public class LocalSchema implements Schema {
   public boolean hasUnidirectionalEdgeTypes() {
     Boolean cached = hasUnidirectionalEdgeTypes;
     if (cached == null) {
+      final long serial = typesChangeSerial;
       cached = Schema.super.hasUnidirectionalEdgeTypes();
-      hasUnidirectionalEdgeTypes = cached;
+      // KEPT ONLY IF THE TYPES DID NOT CHANGE WHILE IT WAS COMPUTED: IT MAY DESCRIBE THE GRAPH THAT WAS REPLACED
+      if (typesChangeSerial == serial)
+        hasUnidirectionalEdgeTypes = cached;
     }
     return cached;
   }
@@ -4517,9 +4523,14 @@ public class LocalSchema implements Schema {
     return typesChangeSerial;
   }
 
-  private void rebuildBucketTypeMap() {
-    hasUnidirectionalEdgeTypes = null;
+  /** Forgets what was derived from the types: {@link #hasUnidirectionalEdgeTypes()} and the serial memos key on. */
+  private void typesChanged() {
     ++typesChangeSerial;
+    hasUnidirectionalEdgeTypes = null;
+  }
+
+  private void rebuildBucketTypeMap() {
+    typesChanged();
     final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getBuckets(false))
