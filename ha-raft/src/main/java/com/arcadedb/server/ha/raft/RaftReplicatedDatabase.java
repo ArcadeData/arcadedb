@@ -645,6 +645,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         // Read-only transaction: nothing to replicate.
         tx.reset();
+        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
         if (leader)
           getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         current.popIfNotLastTransaction();

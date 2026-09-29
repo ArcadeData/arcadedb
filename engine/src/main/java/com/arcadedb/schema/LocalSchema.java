@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.Document;
@@ -4297,9 +4298,10 @@ public class LocalSchema implements Schema {
    * the end of it - a rollback included, since a schema change is not transactional and stands either way. Two
    * transaction ends are not the place to write it, and both used to:
    * <ul>
-   * <li>a NESTED transaction: the one enclosing it is still open, so its own end is where the save belongs.
-   * {@link #saveConfiguration()} tells the two apart on its own, as long as it is asked AFTER the nested transaction
-   * left the stack - which is why this is called once the commit or the rollback has popped it;</li>
+   * <li>a NESTED transaction: the one enclosing it is still open, so its own end is where the save belongs. Told
+   * apart by the depth of this thread's transaction stack rather than by {@code isTransactionActive()}, so the answer
+   * does not depend on whether the caller asks before the ending transaction left the stack - as the Raft commit paths
+   * do - or after, as {@code LocalDatabase} does;</li>
    * <li>a transaction committed INSIDE an outermost {@link #recordFileChanges} frame on this thread - the dictionary
    * entry for a new type or property name, an index built bucket by bucket - where the frame writes the file on its
    * way out anyway.</li>
@@ -4314,6 +4316,13 @@ public class LocalSchema implements Schema {
       recordingSavePending = true;
       return;
     }
+
+    // MORE THAN ONE TRANSACTION STACKED ON THIS THREAD: BEFORE THE POP, THE ENDING ONE IS NESTED; AFTER IT, THE ONE ON
+    // TOP IS. EITHER WAY AN ENCLOSING TRANSACTION IS STILL OPEN, AND ITS END WRITES THE FILE. WITH ONE LEFT,
+    // saveConfiguration() POSTPONES ON ITS OWN IF THAT ONE IS STILL ACTIVE
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.transactions.size() > 1)
+      return;
 
     saveConfiguration();
   }
