@@ -78,9 +78,14 @@ import static org.awaitility.Awaitility.await;
  * log: an ordinary AppendEntries carrying entries, and no second install notification.
  * <p>
  * The control runs the same scenario with the pre-#8449 boundary S-1 on the STOCK Ratis appender - no
- * {@code FixedGrpcLogAppender}, so the outcome does not depend on any appender-side workaround - and observes the
- * loop the fix removed: repeated notifications answered ALREADY_INSTALLED and a follower that never receives an entry.
- * Without the control the main test could pass for a reason unrelated to the boundary.
+ * {@code FixedGrpcLogAppender}, so the outcome does not depend on any appender-side workaround. Up to Apache Ratis
+ * 3.3.0 it observed the loop the fix removed: repeated notifications answered ALREADY_INSTALLED and a follower that
+ * never received an entry. Ratis 3.3.1 exempts that state itself ({@code LogAppender.shouldInstallSnapshot} skips the
+ * snapshot when the follower's {@code nextIndex} is its snapshot index + 1), so the stock appender now carries the
+ * S-1 boundary too, and the control pins that instead (issue #8548). The consequence is worth stating: on 3.3.1 the
+ * boundary is no longer what separates a follower that catches up from one that loops, so the main test pins the
+ * value #8449 registers rather than proving it necessary. If a Ratis upgrade drops the exemption, the control fails
+ * and the loop is back for any follower still registering S-1.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -107,17 +112,19 @@ class Issue8460LeaderAppenderAfterInstallBoundaryTest {
   }
 
   @Test
-  void controlThePre8449BoundaryLoopsOnTheStockAppender() throws Exception {
+  void controlThePre8449BoundaryNoLongerLoopsOnTheStockRatis331Appender() throws Exception {
     final Scenario scenario = new Scenario(false,
         (firstTermIndexInLog, leaderMarker) -> TermIndex.valueOf(firstTermIndexInLog.getTerm(),
             firstTermIndexInLog.getIndex() - 1));
     scenario.run();
 
     assertThat(scenario.installedBoundary.get().getIndex()).isEqualTo(scenario.logStart - 1);
-    assertThat(scenario.notificationsAfterInstall.get()).as("the leader re-notified the same boundary")
-        .isGreaterThan(10);
-    assertThat(scenario.appendsWithEntriesAfterInstall.get()).as("and never sent an entry").isZero();
-    assertThat(scenario.caughtUp).isFalse();
+    // Up to Ratis 3.3.0 these read "more than 10 re-notifications, no entry, never caught up" (issue #8548).
+    assertThat(scenario.notificationsAfterInstall.get())
+        .as("Ratis 3.3.1's own exemption: no second notification for a follower anchored on its snapshot").isZero();
+    assertThat(scenario.appendsWithEntriesAfterInstall.get()).as("the next replication carried log entries")
+        .isGreaterThan(0);
+    assertThat(scenario.caughtUp).as("the follower reached the leader's log end").isTrue();
   }
 
   /** One leader, two followers; one of them falls behind a compacted leader log and installs from it. */
