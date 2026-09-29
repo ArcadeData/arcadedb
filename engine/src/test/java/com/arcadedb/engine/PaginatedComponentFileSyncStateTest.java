@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -245,11 +246,16 @@ class PaginatedComponentFileSyncStateTest {
     final ExecutorService executor = Executors.newFixedThreadPool(writers + 1);
     try {
       final AtomicBoolean writing = new AtomicBoolean(true);
+      final CountDownLatch syncerRunning = new CountDownLatch(1);
       final Future<Integer> syncer = executor.submit(() -> {
         int forced = 0;
-        while (writing.get())
+        // DO-WHILE, AND THE WRITERS WAIT FOR THE FIRST PASS: THE SYNCER RUNS AT LEAST ONCE AND IS ALREADY LOOPING WHEN THE
+        // FIRST PAGE IS WRITTEN, HOWEVER THE THREADS ARE SCHEDULED
+        do {
           if (file.forceIfModified() != PaginatedComponentFile.SYNC_CLEAN)
             ++forced;
+          syncerRunning.countDown();
+        } while (writing.get());
         return forced;
       });
 
@@ -257,6 +263,7 @@ class PaginatedComponentFileSyncStateTest {
       for (int w = 0; w < writers; w++) {
         final int writer = w;
         writes.add(executor.submit(() -> {
+          assertThat(syncerRunning.await(30, TimeUnit.SECONDS)).isTrue();
           for (int i = 0; i < pagesPerWriter; i++) {
             final int pageNumber = writer * pagesPerWriter + i;
             file.write(new MutablePage(new PageId(db, FILE_ID, pageNumber), PAGE_SIZE, pageContent(pageNumber), 1,
@@ -268,7 +275,8 @@ class PaginatedComponentFileSyncStateTest {
       for (final Future<Void> f : writes)
         f.get(60, TimeUnit.SECONDS);
       writing.set(false);
-      assertThat(syncer.get(60, TimeUnit.SECONDS)).as("the syncer must have raced the writers").isPositive();
+      // THE FIRST PASS ALWAYS FORCES: A CREATED FILE OWES ITS METADATA
+      assertThat(syncer.get(60, TimeUnit.SECONDS)).as("the syncer must have run").isPositive();
 
       // Every write returned before this sync was invoked, so this one - or an earlier one that claimed after the
       // write - covers it. Either way the file is settled afterwards and a further sync has nothing left to force.
@@ -319,7 +327,8 @@ class PaginatedComponentFileSyncStateTest {
 
   private static void awaitBlocked(final Thread[] thread, final Future<?> future) throws InterruptedException {
     final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-    while (thread[0] == null || thread[0].getState() != Thread.State.BLOCKED) {
+    // BLOCKED ON A MONITOR, OR WAITING ON A java.util.concurrent LOCK: EITHER WAY PARKED ON THE SYNC LOCK
+    while (thread[0] == null || (thread[0].getState() != Thread.State.BLOCKED && thread[0].getState() != Thread.State.WAITING)) {
       assertThat(future.isDone()).as("the second sync returned while the first one's fsync was still in flight").isFalse();
       assertThat(System.nanoTime()).as("the second sync never blocked").isLessThan(deadline);
       Thread.sleep(1);
