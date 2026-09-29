@@ -37,7 +37,6 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -934,10 +933,6 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       LogManager.instance().log(requester, Level.WARNING, "%s", report);
   }
 
-  /** The entry types that replicate a security document; extend it when a new one is added. */
-  private static final EnumSet<RaftLogEntryType> SECURITY_ENTRY_TYPES = EnumSet.of(RaftLogEntryType.SECURITY_USERS_ENTRY,
-      RaftLogEntryType.SECURITY_GROUPS_ENTRY, RaftLogEntryType.SECURITY_API_TOKENS_ENTRY);
-
   /**
    * The index of the last entry in {@code server}'s Raft log, committed or not, so an entry still in flight is not
    * missed by a later {@link #securityEntriesInLogAfter(RaftHAServer, long)}.
@@ -973,7 +968,8 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       if (data.isEmpty())
         continue;
       final RaftLogEntryType type = RaftLogEntryType.fromId(data.byteAt(0));
-      if (type != null && SECURITY_ENTRY_TYPES.contains(type))
+      // By name, so a security entry type added later is caught without anyone remembering to list it here.
+      if (type != null && type.name().startsWith("SECURITY_"))
         found.add(i + ":" + type);
     }
     return found;
