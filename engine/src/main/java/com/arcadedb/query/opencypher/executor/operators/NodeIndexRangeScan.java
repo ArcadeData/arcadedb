@@ -30,6 +30,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
+import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -370,6 +371,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             value = context.getInputParameters().get(paramName);
           }
 
+          if (predicate.isPrefixSuccessor()) {
+            // STARTS WITH (issue #8666): the bound is the string after every one with the prefix. With none (an empty or
+            // non-string prefix, a prefix of characters that cannot be bumped) the range is open above, and the
+            // predicate the scan stands for is evaluated on each row anyway
+            if (!(value instanceof String prefix) || (value = QueryHelper.prefixSuccessor(prefix)) == null)
+              continue;
+          }
+
           if (predicate.isLowerBound()) {
             resolvedLowerBound = value;
             resolvedLowerInclusive = predicate.isInclusive();
@@ -454,11 +463,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         sb.append(predicate.isInclusive() ? "<=" : "<");
       }
       sb.append(" ");
+      if (predicate.isPrefixSuccessor())
+        sb.append("next(");
       if (predicate.isParameter()) {
         sb.append("$").append(predicate.getValue());
       } else {
         sb.append(predicate.getValue());
       }
+      if (predicate.isPrefixSuccessor())
+        sb.append(")");
     }
 
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
