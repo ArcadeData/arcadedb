@@ -37,6 +37,7 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -933,6 +934,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       LogManager.instance().log(requester, Level.WARNING, "%s", report);
   }
 
+  /** The entry types that replicate a security document; extend it when a new one is added. */
+  private static final EnumSet<RaftLogEntryType> SECURITY_ENTRY_TYPES = EnumSet.of(RaftLogEntryType.SECURITY_USERS_ENTRY,
+      RaftLogEntryType.SECURITY_GROUPS_ENTRY, RaftLogEntryType.SECURITY_API_TOKENS_ENTRY);
+
   /**
    * The index of the last entry in {@code server}'s Raft log, committed or not, so an entry still in flight is not
    * missed by a later {@link #securityEntriesInLogAfter(RaftHAServer, long)}.
@@ -948,6 +953,9 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * The way to tell "the leader seeded the security documents" apart from "the leader wrote nothing" (issue #8455):
    * the raw applied index cannot, because the cluster commits entries of its own in the same window, and an index
    * that moved by one says nothing about which kind of entry moved it.
+   * <p>
+   * Read {@code afterIndex} once the cluster is quiet on the security front: a startup seed still in flight when it is
+   * read lands after it and is reported here too. That fails loudly (a false red), never silently.
    */
   protected static List<String> securityEntriesInLogAfter(final RaftHAServer server, final long afterIndex)
       throws Exception {
@@ -957,15 +965,15 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     for (long i = afterIndex + 1; i <= last; i++) {
       final LogEntryProto entry = log.get(i);
       if (entry == null)
-        throw new IllegalStateException("Raft log entry " + i + " is no longer readable (purged?)");
+        throw new IllegalStateException(
+            "Raft log entry " + i + " of the scanned range (" + afterIndex + ", " + last + "] is no longer readable (purged?)");
       if (!entry.hasStateMachineLogEntry())
         continue;
       final ByteString data = entry.getStateMachineLogEntry().getLogData();
       if (data.isEmpty())
         continue;
       final RaftLogEntryType type = RaftLogEntryType.fromId(data.byteAt(0));
-      if (type == RaftLogEntryType.SECURITY_USERS_ENTRY || type == RaftLogEntryType.SECURITY_GROUPS_ENTRY
-          || type == RaftLogEntryType.SECURITY_API_TOKENS_ENTRY)
+      if (type != null && SECURITY_ENTRY_TYPES.contains(type))
         found.add(i + ":" + type);
     }
     return found;
