@@ -29,7 +29,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -414,11 +413,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
+
+        // No transaction exists yet and nothing ran: a retryable refusal keeps its type for transaction()'s retry loop
+        if (detail instanceof NeedRetryException retryable)
+          throw retryable;
+
         throw new TransactionException("Error on transaction begin", detail);
       }
 
       captureResponseHeaders(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
+    } catch (final NeedRetryException e) {
+      throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     } finally {
@@ -451,15 +457,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
-        if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
-          // SUPPORT RETRY
-          throw detail;
+        // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry
+        // reached the replicated log, so a retry runs it for the first time. An outcome that may have landed is a
+        // TransactionException (ReplicationDispatchedTimeoutException) and one that did land is
+        // TransactionCommittedRemotelyException (409): neither is retried.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          throw (RuntimeException) detail;
 
         throw new TransactionException("Error on transaction commit", detail);
       }
       captureResponseHeaders(response);
       committed = true;
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final NeedRetryException | DuplicatedKeyException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
