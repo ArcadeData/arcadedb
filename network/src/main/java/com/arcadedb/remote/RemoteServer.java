@@ -67,7 +67,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public List<String> databases() {
-    return (List<String>) serverCommand("POST", "list databases", true, true,
+    return (List<String>) serverCommand("POST", "list databases", "list databases", true, true, true,
         (connection, response) -> response.getJSONArray("result").toList());
   }
 
@@ -395,7 +395,16 @@ public class RemoteServer extends RemoteHttpComponent {
    */
   private Object serverCommand(final String method, final String command, final String errorOperation,
       final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
+    return serverCommand(method, command, errorOperation, leaderIsPreferable, autoReconnect, false, callback);
+  }
+
+  /**
+   * As above, stating that the command is read-only so a transport failure after it was sent does not stop the
+   * failover loop (issue #8570). Every other server command may write, so it defaults to not replayable.
+   */
+  private Object serverCommand(final String method, final String command, final String errorOperation,
+      final boolean leaderIsPreferable, final boolean autoReconnect, final boolean replayable, final Callback callback) {
     return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback,
-        errorOperation);
+        errorOperation, replayable);
   }
 }

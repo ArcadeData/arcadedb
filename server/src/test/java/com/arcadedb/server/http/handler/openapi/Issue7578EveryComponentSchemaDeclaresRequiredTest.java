@@ -187,6 +187,6 @@ class Issue7578EveryComponentSchemaDeclaresRequiredTest {
         .containsExactlyInAnyOrder("user", "version", "serverName", "languages");
     assertThat(serverInfo.getProperties().keySet())
         .as("and the optional sections are the ones 'mode' selects")
-        .contains("metrics", "settings", "ha");
+        .contains("metrics", "settings", "ha", "ports");
   }
 }

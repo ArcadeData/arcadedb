@@ -111,34 +111,10 @@ public class ServerControlPlane {
   private final ArcadeDBServer server;
 
   /**
-   * When this node first found itself a member of a multi-node cluster holding none of the cluster's replicated
-   * security documents, or {@code 0} while there is no such window open (issue #7532). Read and written by
-   * concurrent readiness probes on HTTP worker and gRPC threads, hence volatile; two probes racing to open the
-   * window differ by the time between them, which is not a difference this gate can act on.
+   * The security-convergence window used when the server does not own one (a stub server in a unit test); a real
+   * server shares one {@link SecurityConvergenceGate} between every control plane, see {@link #gate()}.
    */
-  private volatile long    securityConvergenceWindowOpenedAt = 0L;
-  /**
-   * Whether the SEVERE give-up line has already been emitted for the window currently open, so the window
-   * expiring does not log once per probe. Cleared together with the window, because "once" means once per
-   * window: a node that converges and later opens a fresh window has a fresh decision to report.
-   */
-  private volatile boolean securityConvergenceGiveUpLogged   = false;
-  /**
-   * The highest {@link HAServerPlugin#getRuntimeJoinIndex()} an armed reading of this gate has seen, {@code -1}
-   * before any (issue #8414). The window is per join, not per process: when a re-add moves the join index forward
-   * the window and the give-up flag are cleared exactly as convergence clears them, so the new join is held for a
-   * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
-   * index - a Raft server that is not readable this tick - never restarts the bound. On an unarmed node held after
-   * a snapshot install (issue #8432) it is that install's index instead: both are log positions that only move
-   * forward, and a later one of either is a fresh window. One reading reports one or the other, never both: the
-   * hold is consulted only while the node is unarmed, and arming is one-way.
-   */
-  private volatile long    securityConvergenceJoinIndex      = -1L;
-  /**
-   * The {@link #securityConvergenceJoinIndex} for which the "leading, so nobody can confirm" line was last emitted,
-   * {@code -1} before any (issue #8465): once per join or install, not once per probe.
-   */
-  private volatile long    securityConvergenceLeaderLoggedFor = -1L;
+  private final SecurityConvergenceGate ownGate = new SecurityConvergenceGate();
 
   public ServerControlPlane(final ArcadeDBServer server) {
     this.server = server;
@@ -401,6 +377,33 @@ public class ServerControlPlane {
    * and the gRPC status description identical.
    */
   public String notReadyReason() {
+    final String hold = notReadyReasonBeforeSecurityGate();
+    if (hold != null)
+      return hold;
+
+    if (isHAReadinessRequired()) {
+      // Consensus readiness says nothing about the three security documents, which do not travel in the Raft
+      // snapshot and reach a new peer only through the admission seed (issue #7532).
+      final HAServerPlugin ha = server.getHA();
+      if (ha != null)
+        return securityConvergenceStatus(ha).reason();
+    }
+
+    return null;
+  }
+
+  private boolean isHAReadinessRequired() {
+    return server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
+        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+  }
+
+  /**
+   * Every readiness check that comes before the security-convergence gate, in the order they are answered. Split out so
+   * the status document evaluates the gate only where the probe would reach it (issue #8555): the gate is not a pure
+   * read, it opens its window on first sight, and a status poll during catch-up must not start the clock of a node that
+   * {@code /api/v1/ready} still holds for another reason.
+   */
+  private String notReadyReasonBeforeSecurityGate() {
     if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
       return "Server not started yet";
 
@@ -446,21 +449,16 @@ public class ServerControlPlane {
       final long maxLag = Math.max(0L, server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG));
       if (ha.getReadinessSignal(maxLag) == HAServerPlugin.READINESS_SIGNAL.NOT_READY)
         return "Node is not yet in the Raft configuration or has not caught up";
-
-      // Consensus readiness says nothing about the three security documents, which do not travel in the Raft
-      // snapshot and reach a new peer only through the admission seed (issue #7532).
-      final String unconverged = securityConvergenceNotReadyReason(ha);
-      if (unconverged != null)
-        return unconverged;
     }
 
     return null;
   }
 
   /**
-   * The issue #7532 readiness gate: why this node is not ready to enforce the cluster's security documents, or
-   * {@code null} when it is - or when the bounded convergence window has expired and the node is reporting READY
-   * anyway.
+   * The issue #7532 readiness gate: what it sees on this node. {@link SecurityConvergenceStatus#reason()} is why this
+   * node is not ready to enforce the cluster's security documents, and {@code null} when it is - or when the bounded
+   * convergence window has expired and the node is reporting READY anyway. The rest of the status is what
+   * {@code GET /api/v1/cluster} publishes (issue #8555).
    * <p>
    * <b>The gap it closes.</b> {@link HAServerPlugin#getReadinessSignal(long)} asks whether this node has a
    * leader, is in the configuration and has replayed the committed log. None of that covers
@@ -525,11 +523,12 @@ public class ServerControlPlane {
    * restarted rather than spent, and the hold itself is left in place: when this node steps down, the catch-up asks
    * the new leader and the gate holds it, with a full window, until that answer arrives.
    */
-  private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
+  private SecurityConvergenceStatus securityConvergenceStatus(final HAServerPlugin ha) {
+    final SecurityConvergenceGate gate = gate();
     final long window = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT);
     if (window <= 0)
-      return null;
+      return SecurityConvergenceStatus.NOT_CONVERGING;
 
     final List<String> unconverged;
     final long joinIndex;
@@ -551,7 +550,7 @@ public class ServerControlPlane {
         // which is exactly what #7819 must not hold - only the installs and matches recorded since the install.
         final long installIndex = ha.getLastSnapshotInstallIndex();
         if (installIndex <= 0)
-          return null;
+          return SecurityConvergenceStatus.NOT_CONVERGING;
         unconverged = ha.securityDocumentsNotConfirmedSinceSnapshotInstall();
         joinIndex = installIndex;
         armed = false;
@@ -571,17 +570,17 @@ public class ServerControlPlane {
       // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
       LogManager.instance().log(this, Level.WARNING,
           "Cannot read the security-convergence signal for the readiness probe", e);
-      return null;
+      return SecurityConvergenceStatus.NOT_CONVERGING;
     }
 
     // A later join is a fresh window (issue #8414, #8382): a node whose first window expired unconverged and that
     // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
     // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
     // counts, so a reading that reports none cannot restart the bound.
-    if (joinIndex > securityConvergenceJoinIndex) {
-      securityConvergenceJoinIndex = joinIndex;
-      securityConvergenceWindowOpenedAt = 0L;
-      securityConvergenceGiveUpLogged = false;
+    if (joinIndex > gate.joinIndex) {
+      gate.joinIndex = joinIndex;
+      gate.windowOpenedAt = 0L;
+      gate.giveUpLogged = false;
     }
 
     if (unconverged.isEmpty()) {
@@ -589,9 +588,9 @@ public class ServerControlPlane {
       // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
       // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
       // flapping would never reach the give-up branch at all. The bound has to be a bound.
-      securityConvergenceWindowOpenedAt = 0L;
-      securityConvergenceGiveUpLogged = false;
-      return null;
+      gate.windowOpenedAt = 0L;
+      gate.giveUpLogged = false;
+      return new SecurityConvergenceStatus(false, List.of(), armed, joinIndex, 0L, false, false, null);
     }
 
     if (leading) {
@@ -599,10 +598,10 @@ public class ServerControlPlane {
       // window restarts, and a step-down is held for a full one while its catch-up asks the new leader. A window that
       // already gave up stays given up: its give-up is the bound's final answer for this join, and restarting it would
       // pull a node that has been READY for hours out of the Service because it once led an election.
-      if (!securityConvergenceGiveUpLogged)
-        securityConvergenceWindowOpenedAt = 0L;
-      if (securityConvergenceLeaderLoggedFor != joinIndex) {
-        securityConvergenceLeaderLoggedFor = joinIndex;
+      if (!gate.giveUpLogged)
+        gate.windowOpenedAt = 0L;
+      if (gate.leaderLoggedFor != joinIndex) {
+        gate.leaderLoggedFor = joinIndex;
         LogManager.instance().log(this, Level.WARNING,
             "This node leads the cluster while its security documents are still unconfirmed since %s: %s. Nobody can "
                 + "confirm them while it leads, so readiness is not held for them; its security catch-up asks the next "
@@ -611,19 +610,23 @@ public class ServerControlPlane {
             armed ? "it was added to the cluster" : "its snapshot install at index " + joinIndex,
             String.join(", ", unconverged));
       }
-      return null;
+      return new SecurityConvergenceStatus(false, unconverged, armed, joinIndex, gate.windowOpenedAt, gate.giveUpLogged, true,
+          null);
     }
 
     final long now = System.currentTimeMillis();
-    if (securityConvergenceWindowOpenedAt == 0L)
-      securityConvergenceWindowOpenedAt = now;
+    if (gate.windowOpenedAt == 0L)
+      gate.windowOpenedAt = now;
 
-    if (now - securityConvergenceWindowOpenedAt < window)
-      return "Cluster security documents have not reached this node yet: " + String.join(", ", unconverged)
-          + ". It is a cluster member enforcing its own copy of them";
+    if (now - gate.windowOpenedAt < window)
+      return new SecurityConvergenceStatus(true, unconverged, armed, joinIndex, gate.windowOpenedAt, false, false,
+          "Cluster security documents have not reached this node yet: " + String.join(", ", unconverged)
+              + ". It is a cluster member enforcing its own copy of them");
 
-    if (!securityConvergenceGiveUpLogged) {
-      securityConvergenceGiveUpLogged = true;
+    if (!gate.giveUpLogged) {
+      gate.gaveUpDocuments = unconverged;
+      gate.gaveUpArmed = armed;
+      gate.giveUpLogged = true;
       if (!armed)
         // A static member (issue #8465): it was never admitted, so 'connect cluster' is not its remedy. What asks the
         // leader again is its own catch-up - on the next leader change, or once per start - or an admission route.
@@ -644,7 +647,40 @@ public class ServerControlPlane {
                 + "held any longer because a node that is never seeded must not stall a rolling restart; raise "
                 + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
     }
-    return null;
+    return new SecurityConvergenceStatus(false, unconverged, armed, joinIndex, gate.windowOpenedAt, true, false, null);
+  }
+
+  /**
+   * What the security-convergence gate sees on this node right now, for {@code GET /api/v1/cluster} (issue #8555). It
+   * evaluates the same window the readiness probe does and on the same shared state, so the status document and
+   * {@code /api/v1/ready} cannot disagree, and it is {@link SecurityConvergenceStatus#NOT_CONVERGING} where the gate
+   * does not apply: no HA layer, readiness that does not depend on it, or a node the probe still holds for an earlier
+   * reason - the gate is only evaluated where the probe would reach it, because evaluating it opens its window. It is
+   * therefore not a pure read: on a node the probe would reach the gate for, a poll opens the window and can emit the
+   * one-shot give-up line, exactly as a probe would.
+   */
+  public SecurityConvergenceStatus getSecurityConvergenceStatus() {
+    if (!isHAReadinessRequired())
+      return SecurityConvergenceStatus.NOT_CONVERGING;
+    if (notReadyReasonBeforeSecurityGate() != null) {
+      // A window that already gave up stays reported while the node is briefly held for another reason, so the critical
+      // alert does not flap with replication lag. Read from what the give-up recorded, never by evaluating the gate: an
+      // evaluation can reset the window on a moved join index and open a fresh one, which is a clock the readiness
+      // probe has not reached.
+      final SecurityConvergenceGate gate = gate();
+      if (gate.giveUpLogged)
+        return new SecurityConvergenceStatus(false, gate.gaveUpDocuments, gate.gaveUpArmed, gate.joinIndex, gate.windowOpenedAt,
+            true, false, null);
+      return SecurityConvergenceStatus.NOT_CONVERGING;
+    }
+    final HAServerPlugin ha = server.getHA();
+    return ha == null ? SecurityConvergenceStatus.NOT_CONVERGING : securityConvergenceStatus(ha);
+  }
+
+  /** The server's own convergence window, or this instance's when the server has none (a stub in a unit test). */
+  private SecurityConvergenceGate gate() {
+    final SecurityConvergenceGate shared = server.getSecurityConvergenceGate();
+    return shared != null ? shared : ownGate;
   }
 
   /** The documents named by either list, in the order users, groups, API tokens both of them report. */
