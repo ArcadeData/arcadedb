@@ -4,9 +4,9 @@
 // panel opening and GET /api/v1/cluster answering, the gate treats the cluster as ready and Create stays
 // enabled. That window is deliberate and not a bug to be "fixed" into a loading spinner: an unknown answer
 // gates nothing ANYWHERE in this feature - a follower, a standalone server and a not-yet-loaded status are
-// one case - and the leader's own 409, rendered by clusterCapabilityRefusal(), is the authority that cannot
-// be raced. Blocking the form on a status that may never arrive would disable Create on every standalone
-// server (PR #7939 review).
+// one case, and so is a peer a follower's own probe got no answer from (issue #8540) - and the leader's own 409,
+// rendered by clusterCapabilityRefusal(), is the authority that cannot be raced. Blocking the form on a status
+// that may never arrive would disable Create on every standalone server (PR #7939 review).
 var securityInitialized = false;
 var usersLoaded = false;
 var usersDataTable = null;
@@ -102,7 +102,7 @@ function securityCapabilityBlocks(gap) {
 function securityCapabilityBanner(gap) {
   if (!gap) return "";
 
-  var unverifiedNote = typeof clusterCapabilityUnverifiedNote === "function" ? clusterCapabilityUnverifiedNote(gap) : "";
+  var unverifiedNote = clusterCapabilityUnverifiedNote(gap);
 
   if (gap.ready !== false)
     return (
@@ -114,10 +114,7 @@ function securityCapabilityBanner(gap) {
       "</div>"
     );
 
-  var peers = "";
-  for (var i = 0; i < gap.missing.length; i++) {
-    peers += "<li><b>" + escapeHtml(gap.missing[i].id) + "</b>: " + escapeHtml(gap.missing[i].reason) + "</li>";
-  }
+  var peers = clusterCapabilityPeerList(gap.missing);
 
   return (
     '<div class="alert alert-warning py-2 px-3 mb-3" style="font-size:0.82rem;">' +
