@@ -311,11 +311,6 @@ public final class SetClauseApplier {
   }
 
   /**
-   * Replaces {@code doc} with its mutable, latest-committed version in every alias of the row that binds it.
-   *
-   * @return whether the row now holds a different record than before
-   */
-  /**
    * Replaces {@code doc} with its mutable version, pinning its page and reloading it if the page moved on, in every
    * alias of the row that binds the record (a row can bind it twice: WITH c, c AS d), and in {@code variable} when the
    * record has no identity to match aliases by.
@@ -339,6 +334,10 @@ public final class SetClauseApplier {
     if (variable != null)
       ((ResultInternal) result).setProperty(variable, mutable);
 
+    // Coupled to how modify() hands a record over (ImmutableDocument.prepareForModify): a reload REPLACES the record's
+    // buffer (BaseRecord.reload), so the same instance with another buffer is a record that moved on since the read;
+    // a lazily loaded record had no buffer to compare; and the transaction's own modified copy, answered from its
+    // record cache, can differ from the committed image the row read. Any of the three asks for a new evaluation.
     final boolean contentChanged = readImage == null || ((BaseRecord) doc).getBuffer() != readImage
         || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
     if (!contentChanged || rid == null)
