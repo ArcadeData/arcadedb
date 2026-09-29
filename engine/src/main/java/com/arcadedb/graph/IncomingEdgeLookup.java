@@ -243,7 +243,8 @@ public final class IncomingEdgeLookup {
   }
 
   /**
-   * Runs {@code walk} as the evaluation of a pattern: the SQL graph functions it calls ({@code in()}, {@code inE()},
+   * Runs {@code walk} as the evaluation of a pattern (on the calling thread: the SQL MATCH traversers and Cypher's
+   * shortestPath() run the SQL graph functions there, never on a parallel worker): the SQL graph functions it calls ({@code in()}, {@code inE()},
    * {@code both()}, {@code bothE()}, {@code shortestPath()}) answer the incoming side of the unidirectional types.
    * Called on their own, those functions read what the vertices store, as the vertex API does - embedded, remote and
    * through Gremlin alike: a SQL {@code MATCH} or a Cypher pattern asks which edges end in a vertex, a function call
@@ -333,7 +334,7 @@ public final class IncomingEdgeLookup {
       boolean allCurrent = true;
       for (int i = 0; i < unidirectionalTypes.length && allCurrent; i++) {
         final Snapshot snapshot = map.get(unidirectionalTypes[i]);
-        if (snapshot == null || snapshot.isStale(changes, database))
+        if (snapshot == null || snapshot.isStale(changes, tx))
           allCurrent = false;
         else
           result[i] = snapshot;
@@ -351,7 +352,7 @@ public final class IncomingEdgeLookup {
       final List<String> missing = new ArrayList<>(unidirectionalTypes.length);
       for (final String typeName : unidirectionalTypes) {
         final Snapshot snapshot = map.get(typeName);
-        if (snapshot == null || snapshot.isStale(changes, database))
+        if (snapshot == null || snapshot.isStale(changes, tx))
           missing.add(typeName);
       }
       if (!missing.isEmpty()) {
@@ -457,22 +458,20 @@ public final class IncomingEdgeLookup {
    * one never holds a second copy.
    */
   private static final class Snapshot {
-    private final String             typeName;
+    private final String                    typeName;
     // THE CHANGES OF THE TRANSACTION THE SCAN WAS TAKEN IN, AND HOW FAR THEY WENT THEN: LATER ONES ARE OVERLAID
     private final UnidirectionalEdgeChanges builtBy;
     private final long                      builtAt;
     private final long                      builtIn;
-    // TAKEN OUTSIDE A TRANSACTION: NOTHING TO OVERLAY, SO ANY WRITE TO THE DATABASE SINCE MAKES IT STALE
-    private final long                      builtAtModification;
-    private final OperationHeapLimit limit;
-    private final DatabaseInternal   database;
-    private final int                size;
-    private final int[]              targetBuckets;
-    private final long[]             targetPositions;
-    private final int[]              sourceBuckets;
-    private final long[]             sourcePositions;
-    private final int[]              edgeBuckets;
-    private final long[]             edgePositions;
+    private final OperationHeapLimit        limit;
+    private final DatabaseInternal          database;
+    private final int                       size;
+    private final int[]                     targetBuckets;
+    private final long[]                    targetPositions;
+    private final int[]                     sourceBuckets;
+    private final long[]                    sourcePositions;
+    private final int[]                     edgeBuckets;
+    private final long[]                    edgePositions;
 
     private Snapshot(final String typeName, final UnidirectionalEdgeChanges builtBy, final DatabaseInternal database,
         final Builder builder) {
@@ -481,7 +480,6 @@ public final class IncomingEdgeLookup {
       this.builtBy = builtBy;
       this.builtAt = builtBy != null ? builtBy.getSequence() : 0L;
       this.builtIn = builtBy != null ? builtBy.getTransaction() : 0L;
-      this.builtAtModification = database.getModificationCount();
       this.database = database;
       this.limit = builder.limit;
       this.size = builder.size;
@@ -499,6 +497,19 @@ public final class IncomingEdgeLookup {
       final Schema schema = database.getSchema();
       final Map<String, Builder> builders = new HashMap<>();
       final List<Builder> lightweight = new ArrayList<>();
+      try {
+        return build(database, typeNames, builtBy, context, schema, builders, lightweight);
+      } catch (final RuntimeException | Error e) {
+        // A SCAN THAT FAILED (THE HEAP CAP, AN UNREADABLE RECORD) GIVES BACK WHAT ITS BUILDERS CHARGED AT ONCE
+        for (final Builder builder : builders.values())
+          builder.limit.release();
+        throw e;
+      }
+    }
+
+    private static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
+        final UnidirectionalEdgeChanges builtBy, final CommandContext context, final Schema schema,
+        final Map<String, Builder> builders, final List<Builder> lightweight) {
       for (final String typeName : typeNames) {
         final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
             "incoming-edge lookup over the unidirectional edge type " + typeName));
@@ -568,11 +579,13 @@ public final class IncomingEdgeLookup {
     /**
      * Whether the transaction the scan was taken in ended since, so the changes it made after the scan are no longer
      * kept for the overlay. A scan read from another transaction's thread (a parallel worker) is read as taken. A scan
-     * taken outside any transaction has no changes to overlay, and is stale once the database was written at all.
+     * taken with no transaction on the thread has no changes to overlay, and is taken again once the thread has one:
+     * other threads' writes never make it stale.
      */
-    boolean isStale(final UnidirectionalEdgeChanges current, final DatabaseInternal database) {
+    boolean isStale(final UnidirectionalEdgeChanges current, final TransactionContext tx) {
       if (builtBy == null)
-        return database.getModificationCount() != builtAtModification;
+        // TAKEN WITH NO TRANSACTION ON THE THREAD: ONLY THIS THREAD STARTING ONE (TO WRITE) CAN MAKE IT MISS AN EDGE
+        return tx != null;
       return current == builtBy && builtIn != builtBy.getTransaction();
     }
 
