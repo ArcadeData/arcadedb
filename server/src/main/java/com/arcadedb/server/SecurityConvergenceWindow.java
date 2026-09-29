@@ -62,7 +62,8 @@ final class SecurityConvergenceWindow {
   /**
    * Forgets every window and every logged decision: a server that (re)starts has not been held yet. Called at the top
    * of the server's start, before the HTTP listener and the HA and gRPC plugins exist, so no probe can interleave with
-   * it; taken under the same monitor as the join-index transition anyway, since it writes the same fields.
+   * it. It takes the monitor the join-index transition takes, which is the only other writer that locks: the
+   * convergence and leader-path clears in {@link ServerControlPlane} are plain writes (see there).
    */
   synchronized void reset() {
     openedAt = 0L;

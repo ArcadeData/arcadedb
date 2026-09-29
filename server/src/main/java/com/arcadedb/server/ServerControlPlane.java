@@ -586,6 +586,9 @@ public class ServerControlPlane {
       // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
       // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
       // flapping would never reach the give-up branch at all. The bound has to be a bound.
+      // Not under the holder's monitor (issue #8446): this runs on every converged probe of both surfaces. A reading
+      // that converges at the instant another surface's reading expires the window can clear the give-up flag that
+      // one just set, so a flapping signal may log the give-up twice; a duplicate log line is the whole cost.
       convergence.openedAt = 0L;
       convergence.giveUpLogged.set(false);
       return null;
