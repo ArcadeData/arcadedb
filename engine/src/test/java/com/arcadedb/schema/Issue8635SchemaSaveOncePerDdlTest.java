@@ -19,8 +19,10 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -190,6 +192,34 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
     reopenDatabase();
     assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).hasSize(indexesInMemory);
     assertThat(database.countType("Doc", false)).isEqualTo(2);
+  }
+
+  /**
+   * The Raft commit paths ask for the save BEFORE the ending transaction leaves the stack, where it is already
+   * inactive and {@code isTransactionActive()} therefore answers {@code false} even though an enclosing transaction is
+   * open. The stack depth is what tells.
+   */
+  @Test
+  void aTransactionEndAskedBeforeTheNestedTransactionLeftTheStackDoesNotWrite() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("Doc");
+    database.begin();
+
+    // WHAT THE RAFT READ-ONLY COMMIT DOES: RESET THE NESTED TRANSACTION, ASK FOR THE SAVE, THEN POP
+    final TransactionContext nested = ((DatabaseInternal) database).getTransaction();
+    nested.reset();
+    assertThat(database.isTransactionActive()).as("the inactive nested transaction is still on top").isFalse();
+
+    schema.saveConfigurationAtTransactionEnd();
+    assertThat(schema.getVersion()).as("an enclosing transaction is open").isEqualTo(before);
+
+    DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).popIfNotLastTransaction();
+    assertThat(database.isTransactionActive()).isTrue();
+    database.commit();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
   }
 
   @Test
