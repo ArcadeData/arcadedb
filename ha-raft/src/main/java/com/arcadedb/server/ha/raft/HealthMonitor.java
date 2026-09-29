@@ -84,6 +84,15 @@ public final class HealthMonitor {
     }
 
     /**
+     * This node's last-applied Raft log index, or {@code -1} when it cannot be read. The stuck-at-stale-term streak
+     * restarts whenever it advances (issue #8375): a follower that is still applying entries is making progress, not
+     * stuck, even if it matches {@link #isFollowerStuckDiverged()} at every tick.
+     */
+    default long getLastAppliedIndex() {
+      return -1;
+    }
+
+    /**
      * Reconciles the inbound Raft gRPC peer allowlist with cluster membership and with current DNS. A peer
      * that restarted with a new pod IP is admitted without first being rejected (issue #4696), a peer that
      * joined at runtime is admitted at all (issue #7132), and a peer removed from the Raft configuration is
@@ -259,6 +268,8 @@ public final class HealthMonitor {
   private          int                      closingStreak;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
+  // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
+  private final    long                     divergedFollowerRecoveryDurationMs;
   private final    boolean                  divergedFollowerRecoveryEnabled;
   private final    int                      divergedFollowerMaxReformats;
   // Crash-loop escalation (issue #5291): how many consecutive CLOSED/EXCEPTION restarts may fail to stick
@@ -270,6 +281,9 @@ public final class HealthMonitor {
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
   private          long                     stuckObservedSinceMs        = -1;
+  // Last readable applied index seen while the stuck signature held; -1 = none yet. An advance restarts the streak
+  // (issue #8375). Tick executor only.
+  private          long                     stuckLastAppliedIndex       = -1;
   // Whether a tick has seen the stuck signature AGAIN after the one that started the streak (issue #8289). Set and
   // cleared only on the tick executor, read from an HTTP worker via isFollowerStuckDivergedConfirmed(), hence
   // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
@@ -331,10 +345,25 @@ public final class HealthMonitor {
   public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
       final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
       final int divergedFollowerMaxReformats, final int crashLoopRestartThreshold) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, divergedFollowerRecoveryEnabled,
+        divergedFollowerMaxReformats, crashLoopRestartThreshold, staleFollowerRecoveryDurationMs);
+  }
+
+  /**
+   * @param divergedFollowerRecoveryDurationMs how long the stuck-at-stale-term signature must persist, with no
+   *                                           applied-index progress, before the reformat fires (issue #8375). The
+   *                                           shorter constructors pass {@code staleFollowerRecoveryDurationMs}, the
+   *                                           single duration both paths shared before the split.
+   */
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
+      final int divergedFollowerMaxReformats, final int crashLoopRestartThreshold,
+      final long divergedFollowerRecoveryDurationMs) {
     this.target = target;
     this.intervalMs = intervalMs;
     this.staleFollowerLagThreshold = staleFollowerLagThreshold;
     this.staleFollowerRecoveryDurationMs = staleFollowerRecoveryDurationMs;
+    this.divergedFollowerRecoveryDurationMs = divergedFollowerRecoveryDurationMs;
     this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
     this.divergedFollowerMaxReformats = divergedFollowerMaxReformats;
     this.crashLoopRestartThreshold = crashLoopRestartThreshold;
@@ -700,6 +729,7 @@ public final class HealthMonitor {
   private void resetStreaksAfterRestart() {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
+    stuckLastAppliedIndex = -1;
     stuckConfirmed = false;
     divergenceReformatCount = 0;
     divergenceHealthySinceMs = -1;
@@ -738,10 +768,11 @@ public final class HealthMonitor {
 
   /**
    * Reformats and rejoins a follower that has been stuck-diverged from the leader for at least
-   * {@link #staleFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
+   * {@link #divergedFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
    * the first observation only starts the streak, any tick where the stuck condition clears resets
-   * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
-   * so both self-healing paths share the same "must persist this long" knob.
+   * it, and the recovery fires at most once per streak. Since issue #8375 the window is its own knob,
+   * shorter by default than the lag-recovery one, and any advance of the applied index restarts it:
+   * the streak measures how long the follower has been stuck, not merely how long it has matched the signature.
    * <p>
    * The streak itself is tracked regardless of {@link #divergedFollowerRecoveryEnabled} (issue #8289):
    * only the destructive reformat action is gated on that flag. With it {@code false} a node that gets
@@ -754,6 +785,7 @@ public final class HealthMonitor {
 
     if (!target.isFollowerStuckDiverged()) {
       stuckObservedSinceMs = -1;
+      stuckLastAppliedIndex = -1;
       stuckConfirmed = false;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
@@ -761,7 +793,7 @@ public final class HealthMonitor {
       if (divergenceReformatCount > 0) {
         if (divergenceHealthySinceMs == -1)
           divergenceHealthySinceMs = now;
-        else if (now - divergenceHealthySinceMs >= staleFollowerRecoveryDurationMs * REFORMAT_EPISODE_RESET_MULTIPLIER) {
+        else if (now - divergenceHealthySinceMs >= divergedFollowerRecoveryDurationMs * REFORMAT_EPISODE_RESET_MULTIPLIER) {
           divergenceReformatCount = 0;
           divergenceHealthySinceMs = -1;
           divergenceRecoveryExhausted = false;
@@ -772,17 +804,28 @@ public final class HealthMonitor {
 
     divergenceHealthySinceMs = -1; // still stuck: the episode is ongoing
 
-    if (stuckObservedSinceMs == -1) {
-      stuckObservedSinceMs = now; // first observation; require persistence before acting
+    // Issue #8375: the raw signature does not look at progress, so a follower still applying old-term entries - a
+    // slow catch-up whose applier drains every batch before the next one lands, leaving commitIndex == appliedIndex at
+    // every tick - matches it too. A genuinely diverged follower rejects the leader's entries and cannot apply
+    // anything, so an advance proves this is not that case: restart the streak from here. An unreadable index (-1)
+    // is no information either way and neither restarts the streak nor becomes the baseline.
+    final long appliedIndex = target.getLastAppliedIndex();
+    final boolean advanced = appliedIndex >= 0 && stuckLastAppliedIndex >= 0 && appliedIndex > stuckLastAppliedIndex;
+    if (appliedIndex >= 0)
+      stuckLastAppliedIndex = appliedIndex;
+
+    if (stuckObservedSinceMs == -1 || advanced) {
+      stuckObservedSinceMs = now; // first observation (or progress since the last one); require persistence before acting
+      stuckConfirmed = false;
       return;
     }
 
-    stuckConfirmed = true; // seen again on a later tick: no longer a single-tick blip
+    stuckConfirmed = true; // seen again on a later tick with no progress: no longer a single-tick blip
 
     if (!divergedFollowerRecoveryEnabled)
       return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
 
-    if (now - stuckObservedSinceMs < staleFollowerRecoveryDurationMs)
+    if (now - stuckObservedSinceMs < divergedFollowerRecoveryDurationMs)
       return; // not persisted long enough yet
 
     // Bounded reformat budget (#4741 review): a reformat that restarts cleanly resets the shared Ratis
@@ -808,6 +851,7 @@ public final class HealthMonitor {
         now - stuckObservedSinceMs, divergenceReformatCount);
     target.recoverFromDivergence();
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
+    stuckLastAppliedIndex = -1;
     stuckConfirmed = false;
   }
 
@@ -818,9 +862,9 @@ public final class HealthMonitor {
    * the new leader's current-term no-op (see that method's javadoc) - so reporting it unfiltered to an
    * operator would flag a routine leader change as an incident on every status poll. This applies the same
    * "must not be a single-tick blip" reasoning {@link #checkStuckFollower()} already relies on before it will
-   * even start counting toward {@link #staleFollowerRecoveryDurationMs}, without waiting for that much longer
+   * even start counting toward {@link #divergedFollowerRecoveryDurationMs}, without waiting for that longer
    * duration: {@code intervalMs} is typically a few seconds (the default health-check interval) against a
-   * default recovery duration of a full minute.
+   * default recovery duration of several times that. An advance of the applied index clears it (issue #8375).
    * <p>
    * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
    */

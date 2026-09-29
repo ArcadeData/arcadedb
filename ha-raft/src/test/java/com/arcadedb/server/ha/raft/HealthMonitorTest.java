@@ -38,6 +38,7 @@ class HealthMonitorTest {
     volatile boolean                          shutdownRequested    = false;
     volatile boolean                          lagging              = false;
     volatile boolean                          stuckDiverged        = false;
+    volatile long                             appliedIndex         = -1;
 
     @Override
     public LifeCycle.State getRaftLifeCycleState() {
@@ -72,6 +73,11 @@ class HealthMonitorTest {
     @Override
     public void recoverFromDivergence() {
       divergenceRecover.incrementAndGet();
+    }
+
+    @Override
+    public long getLastAppliedIndex() {
+      return appliedIndex;
     }
 
     @Override
@@ -558,6 +564,121 @@ class HealthMonitorTest {
       runStuckCycle(monitor, clock, 5000);
 
     assertThat(fake.divergenceRecover.get()).isEqualTo(4);
+  }
+
+  // --- Own recovery duration and no-progress requirement for the stuck-at-stale-term path (issue #8375) ---
+
+  private static HealthMonitor splitDurationMonitor(final FakeHealthTarget fake, final AtomicLong clock,
+      final long lagDurationMs, final long divergedDurationMs) {
+    final HealthMonitor monitor = new HealthMonitor(fake, 1000, 10L, lagDurationMs, true, 0, 0, divergedDurationMs);
+    monitor.setClock(clock::get);
+    return monitor;
+  }
+
+  @Test
+  void divergenceUsesItsOwnDurationNotTheLagRecoveryOne() {
+    // The stuck-at-stale-term reformat no longer waits for the lag-recovery window: a minute of no fault tolerance
+    // on a confirmed, debounced signature is what #8375 asked to cut.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    fake.appliedIndex = 42;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = splitDurationMonitor(fake, clock, 60_000, 5000);
+
+    monitor.tick();                 // t=0: start streak
+    clock.set(6000);
+    monitor.tick();                 // 6s >= the 5s diverged duration, far below the 60s lag one
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void lagRecoveryKeepsItsOwnDurationWhenTheDivergedOneIsShorter() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.lagging = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = splitDurationMonitor(fake, clock, 60_000, 5000);
+
+    monitor.tick();                 // t=0: start lag streak
+    clock.set(30_000);
+    monitor.tick();                 // well past the diverged duration, still inside the lag one
+    assertThat(fake.persistentLagRecover.get()).isZero();
+
+    clock.set(61_000);
+    monitor.tick();
+    assertThat(fake.persistentLagRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void legacyConstructorKeepsOneSharedDuration() {
+    // Callers that predate the split pass a single duration, which must keep governing both paths.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    fake.appliedIndex = 42;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 60_000, true);
+
+    monitor.tick();
+    clock.set(30_000);
+    monitor.tick();
+    assertThat(fake.divergenceRecover.get()).isZero();
+
+    clock.set(61_000);
+    monitor.tick();
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void divergenceStreakRestartsWhileTheAppliedIndexAdvances() {
+    // A follower still applying old-term entries (a slow catch-up whose applier drains every batch before the next
+    // arrives) can match the raw signature on every tick. It is making progress, so it is not stuck, and a shorter
+    // window must not reformat it.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    fake.appliedIndex = 100;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = splitDurationMonitor(fake, clock, 60_000, 5000);
+
+    monitor.tick(); // t=0: start streak at index 100
+    for (int i = 1; i <= 20; i++) {
+      clock.set(i * 1000L);
+      fake.appliedIndex = 100 + i;   // progress on every tick
+      monitor.tick();
+    }
+    assertThat(fake.divergenceRecover.get()).as("progress keeps restarting the streak").isZero();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("a progressing follower is not reported stuck").isFalse();
+
+    // Progress stops: now the window runs from the last advance.
+    clock.set(21_000);
+    monitor.tick();                 // same index: confirmed, streak runs from t=20000
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isTrue();
+    assertThat(fake.divergenceRecover.get()).isZero();
+
+    clock.set(25_000);
+    monitor.tick();                 // 5s since the last advance
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anUnreadableAppliedIndexIsNotProgress() {
+    // -1 means "state unreadable" (e.g. during an in-place Ratis restart); flipping to or from it must neither restart
+    // the streak nor count as an advance.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    fake.appliedIndex = -1;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = splitDurationMonitor(fake, clock, 60_000, 5000);
+
+    monitor.tick();                 // t=0: start streak, index unknown
+    clock.set(2000);
+    fake.appliedIndex = 7;
+    monitor.tick();                 // unknown -> known: not an advance
+    clock.set(4000);
+    fake.appliedIndex = -1;
+    monitor.tick();                 // known -> unknown: not an advance
+    clock.set(6000);
+    fake.appliedIndex = 7;
+    monitor.tick();                 // 6s since t=0 -> recover
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
   }
 
   // --- Crash-loop escalation (issue #5291) ---
