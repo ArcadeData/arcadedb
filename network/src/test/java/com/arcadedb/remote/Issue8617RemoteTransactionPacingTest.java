@@ -46,9 +46,11 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.net.ssl.SSLSession;
@@ -93,8 +95,9 @@ class Issue8617RemoteTransactionPacingTest {
     database.transaction(executions::incrementAndGet, false, 3);
 
     assertThat(executions.get()).isEqualTo(1);
-    // THE 5 SECONDS THE SERVER ASKED FOR DWARF THE BACKOFF WINDOW (2 AND 4 MS), SO EACH PAUSE IS EXACTLY THE RETRY-AFTER
-    assertThat(database.pauses).containsExactly(5_000L, 5_000L);
+    // THE 5 SECONDS THE SERVER ASKED FOR DWARF THE BACKOFF WINDOW (2 AND 4 MS): EACH PAUSE IS THE RETRY-AFTER, SPREAD BY
+    // UP TO A TENTH OF IT
+    assertRetryAfterPauses(database.pauses, 5_000L, 2);
   }
 
   @Test
@@ -107,7 +110,7 @@ class Issue8617RemoteTransactionPacingTest {
     database.transaction(() -> {
     }, false, 3);
 
-    assertThat(database.pauses).containsExactly(1_200L);
+    assertRetryAfterPauses(database.pauses, 1_200L, 1);
   }
 
   @Test
@@ -150,7 +153,7 @@ class Issue8617RemoteTransactionPacingTest {
     database.transaction(() -> {
     }, false, 3);
 
-    assertThat(database.pauses).containsExactly(3_000L);
+    assertRetryAfterPauses(database.pauses, 3_000L, 1);
   }
 
   @Test
@@ -273,6 +276,20 @@ class Issue8617RemoteTransactionPacingTest {
     }
   }
 
+  /** A server that says it already ended the session leaves nothing to release: no rollback round trip. */
+  @Test
+  void aFailedCommitWhoseSessionTheServerClosedIsNotFollowedByARollback() {
+    final ScriptedDatabase database = open(new ContextConfiguration());
+    database.script("commit",
+        new Scripted(503, typed(ConcurrentModificationException.class.getName(), "conflict").toString(), null, true));
+
+    database.begin();
+    assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(database.log).containsExactly("begin", "commit AS-1");
+  }
+
   /**
    * A commit that failed in transport may still be running on a server that may not be reachable: it is not followed by
    * a rollback that could only wait on the same failure.
@@ -332,6 +349,31 @@ class Issue8617RemoteTransactionPacingTest {
     assertThat(notRetryable).isNotInstanceOf(NeedRetryException.class);
   }
 
+  /**
+   * The clients a node refuses together get the same hint: the spread keeps them from coming back at the same instant.
+   */
+  @Test
+  void theRetryAfterPauseIsSpreadByUpToATenthOfTheHint() {
+    final ScriptedDatabase database = open(new ContextConfiguration());
+    final NeedRetryException refusal = new NeedRetryException("installing");
+    refusal.setRetryAfterMs(10_000L);
+
+    final Set<Long> pauses = new HashSet<>();
+    for (int i = 0; i < 200; i++) {
+      final long pause = database.retryAfterPauseMs(refusal);
+      assertThat(pause).isBetween(10_000L, 11_000L);
+      pauses.add(pause);
+    }
+    assertThat(pauses).as("200 draws from a 1000 ms spread").hasSizeGreaterThan(1);
+    assertThat(database.retryAfterPauseMs(new NeedRetryException("no hint"))).isZero();
+  }
+
+  private static void assertRetryAfterPauses(final List<Long> pauses, final long retryAfterMs, final int expected) {
+    assertThat(pauses).hasSize(expected);
+    for (final long pause : pauses)
+      assertThat(pause).isBetween(retryAfterMs, retryAfterMs + retryAfterMs / 10);
+  }
+
   private static void assertBackoffPauses(final List<Long> pauses, final ContextConfiguration configuration,
       final int expected) {
     assertThat(pauses).hasSize(expected);
@@ -351,17 +393,24 @@ class Issue8617RemoteTransactionPacingTest {
   }
 
   private static Scripted scripted(final int status, final JSONObject body, final String retryAfter) {
-    return new Scripted(status, body.toString(), retryAfter);
+    return new Scripted(status, body.toString(), retryAfter, false);
   }
 
   private static HttpHeaders headers(final String retryAfter) {
+    return headers(retryAfter, false);
+  }
+
+  private static HttpHeaders headers(final String retryAfter, final boolean sessionClosed) {
     final Map<String, List<String>> map = new HashMap<>();
     if (retryAfter != null)
       map.put("Retry-After", List.of(retryAfter));
+    if (sessionClosed)
+      map.put(RemoteDatabase.ARCADEDB_SESSION_CLOSED, List.of("true"));
     return HttpHeaders.of(map, (name, value) -> true);
   }
 
-  private record Scripted(int status, String body, String retryAfter) {
+  /** A scripted answer. {@code sessionClosed} sets the header a server sends when the request ended its session. */
+  private record Scripted(int status, String body, String retryAfter, boolean sessionClosed) {
   }
 
   /**
@@ -415,7 +464,8 @@ class Issue8617RemoteTransactionPacingTest {
       final Deque<Scripted> script = scripts.get(route);
       if (script != null && !script.isEmpty()) {
         final Scripted answer = script.poll();
-        return new ScriptedResponse(request, answer.status(), answer.body(), headers(answer.retryAfter()));
+        return new ScriptedResponse(request, answer.status(), answer.body(),
+            headers(answer.retryAfter(), answer.sessionClosed()));
       }
 
       final Map<String, List<String>> headers = new HashMap<>();

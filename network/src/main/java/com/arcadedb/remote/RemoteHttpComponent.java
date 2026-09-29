@@ -61,6 +61,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -511,7 +512,7 @@ public class RemoteHttpComponent extends RWLockContext {
           break;
         }
         // THE SERVER'S Retry-After, WHEN IT SENT ONE, IS A FLOOR ON THE CONFIGURED DELAY (ISSUE #8617)
-        final long retryDelayMs = Math.max(electionRetryDelayMs, boundedRetryAfterMs(e));
+        final long retryDelayMs = Math.max(electionRetryDelayMs, retryAfterPauseMs(e));
         try {
           Thread.sleep(retryDelayMs);
         } catch (final InterruptedException ie) {
@@ -898,11 +899,22 @@ public class RemoteHttpComponent extends RWLockContext {
    * GlobalConfiguration#NETWORK_RETRY_AFTER_MAX_WAIT}, so a misbehaving server cannot park the client, and none of it
    * when that cap is 0 (issue #8617).
    */
-  long boundedRetryAfterMs(final Exception exception) {
+  private long boundedRetryAfterMs(final Exception exception) {
     if (!(exception instanceof NeedRetryException retryable) || retryable.getRetryAfterMs() <= 0)
       return 0L;
     return Math.min(retryable.getRetryAfterMs(),
         Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.NETWORK_RETRY_AFTER_MAX_WAIT)));
+  }
+
+  /**
+   * The pause a server's {@code Retry-After} asks for before the next attempt: the {@link #boundedRetryAfterMs bounded}
+   * hint plus a random spread of up to a tenth of it, or 0 when there is none. A node answers every client it refuses
+   * with the same hint, so without the spread they would all come back at the same instant and be refused together
+   * again - the synchronised re-entry the full jitter of {@code RetryBackoff} exists to break (issue #8617).
+   */
+  long retryAfterPauseMs(final Exception exception) {
+    final long bounded = boundedRetryAfterMs(exception);
+    return bounded <= 0 ? 0L : bounded + ThreadLocalRandom.current().nextLong(bounded / 10 + 1);
   }
 
   protected Exception manageException(final int statusCode, final String responseBody, final String operation) {

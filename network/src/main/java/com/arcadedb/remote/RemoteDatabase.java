@@ -109,6 +109,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    */
   public static final String ARCADEDB_SESSION_PARTIAL_COMMIT = "arcadedb-session-partial-commit";
 
+  /**
+   * Response header the server sets when the request ended the session it named (issue #8618): a failed commit that
+   * carries it leaves nothing for this driver to release. Deliberately duplicated as
+   * {@code DatabaseAbstractHandler.SESSION_CLOSED} in the {@code server} module, which this module cannot depend on.
+   */
+  public static final String ARCADEDB_SESSION_CLOSED = "arcadedb-session-closed";
+
   private final    String                               databaseName;
   private          BinarySerializer                     serializer;
   private          String                               sessionId;
@@ -394,7 +401,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * (issue #8617). The pause is the exponential backoff with full jitter {@code LocalDatabase.transaction()} applies
    * ({@link RetryBackoff}: {@code arcadedb.txRetryDelayBase} doubling up to {@code arcadedb.txRetryDelay}), stretched to
    * the {@code Retry-After} the server sent with the refusal, if any, bounded by
-   * {@code arcadedb.network.retryAfterMaxWait}. Retrying at once spent the whole budget within a few milliseconds against
+   * {@code arcadedb.network.retryAfterMaxWait} and spread by a random tenth of it. Retrying at once spent the whole budget within a few milliseconds against
    * a node that had said when to come back, and ran transport failures (gRPC's {@code UNAVAILABLE}) back to back.
    * <p>
    * An interrupt ends the retries: the exception of the attempt that just failed is the answer, and the interrupt flag is
@@ -403,7 +410,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private void pauseBeforeRetry(final int attempt, final ArcadeDBException cause) {
     final long delayMs = Math.max(
         RetryBackoff.delayMs(attempt, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
-            configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)), boundedRetryAfterMs(cause));
+            configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)), retryAfterPauseMs(cause));
     if (delayMs <= 0)
       return;
 
@@ -553,8 +560,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // Only for the outcomes that prove the commit did not land, which are also the ones the retry loop re-runs. A
         // commit that did or may have landed (409 committed remotely, a dispatched replication that timed out) is not
         // retried, and a rollback sent for it would only count as one in the stats. Neither is a commit that failed in
-        // transport: it may still be running, on a server that may not be reachable at all.
-        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+        // transport: it may still be running, on a server that may not be reachable at all. And not when the server
+        // says it already ended the session, which a server with the fix does for every commit its handler ran.
+        if ((detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+            && response.headers().firstValue(ARCADEDB_SESSION_CLOSED).isEmpty())
           rollbackQuietly();
 
         // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry

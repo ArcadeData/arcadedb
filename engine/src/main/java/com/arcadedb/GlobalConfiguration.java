@@ -1378,8 +1378,10 @@ public enum GlobalConfiguration {
   NETWORK_RETRY_AFTER_MAX_WAIT("arcadedb.network.retryAfterMaxWait", SCOPE.SERVER, """
       Upper bound, in milliseconds, on how long the remote client honors the Retry-After a server sends with a request it \
       refused before running it (a 503 from a node installing a snapshot) before retrying it: the transaction retry loop \
-      and the election retry loop wait at least that long, and never longer than this, so a misbehaving server cannot \
-      park the client. 0 ignores Retry-After, leaving only the retry backoff (issue #8617)""", Long.class, 30_000L),
+      and the election retry loop wait at least that long, and the hint is capped at this value, so a misbehaving \
+      server cannot park the client. A random spread of up to a tenth of the hint is added on top, so the clients a node \
+      refused together do not all come back at once. 0 ignores Retry-After, leaving only the retry backoff \
+      (issue #8617)""", Long.class, 30_000L),
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
