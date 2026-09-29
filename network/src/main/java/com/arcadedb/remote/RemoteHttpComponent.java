@@ -51,6 +51,9 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -58,6 +61,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -69,8 +73,14 @@ import javax.net.ssl.SSLSession;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteHttpComponent extends RWLockContext {
-  public static final  int    DEFAULT_PORT = 2480;
-  private static final String charset      = "UTF-8";
+  public static final  int    DEFAULT_PORT       = 2480;
+  private static final String charset            = "UTF-8";
+  private static final String RETRY_AFTER_HEADER = "Retry-After";
+  /**
+   * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
+   * class lives in the server module, which this client does not depend on.
+   */
+  private static final String RETRY_LATER_EXCEPTION = "com.arcadedb.server.http.RetryLaterException";
 
   protected       String                      protocol                  = "http";
   private final   String                      originalServer;
@@ -524,14 +534,16 @@ public class RemoteHttpComponent extends RWLockContext {
           lastException = e;
           break;
         }
+        // THE SERVER'S Retry-After, WHEN IT SENT ONE, IS A FLOOR ON THE CONFIGURED DELAY (ISSUE #8617)
+        final long retryDelayMs = Math.max(electionRetryDelayMs, retryAfterPauseMs(e));
         try {
-          Thread.sleep(electionRetryDelayMs);
+          Thread.sleep(retryDelayMs);
         } catch (final InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw new RemoteException("Request interrupted during election retry", ie);
         }
         LogManager.instance().log(this, Level.WARNING,
-            "Server asked to retry, retrying after %dms (retry=%d/%d)...", null, electionRetryDelayMs, retry,
+            "Server asked to retry, retrying after %dms (retry=%d/%d)...", null, retryDelayMs, retry,
             maxElectionRetries);
       } catch (final RuntimeException e) {
         // Propagate any RuntimeException unchanged (issue #4580): a callback-side bug (e.g. NPE), a
@@ -863,7 +875,75 @@ public class RemoteHttpComponent extends RWLockContext {
    * an {@link java.io.InputStream} - can reach the same mapping instead of growing a second, divergent one.
    */
   protected Exception manageException(final HttpResponse<String> response, final String operation) {
-    return manageException(response.statusCode(), response.body(), operation);
+    final Exception exception = manageException(response.statusCode(), response.body(), operation);
+
+    // A REFUSAL THAT SAYS HOW LONG TO WAIT CARRIES IT TO THE RETRY LOOP, WHATEVER TYPE IT WAS REBUILT AS (ISSUE #8617). THE
+    // HEADER WINS OVER THE BODY: IT IS THE STANDARD CARRIER, AND THE ONLY ONE A PROXY IN FRONT OF THE SERVER SETS
+    final HttpHeaders headers = response.headers();
+    if (exception instanceof NeedRetryException retryable && headers != null) {
+      final long retryAfterMs = retryAfterMs(headers.firstValue(RETRY_AFTER_HEADER).orElse(null), System.currentTimeMillis());
+      if (retryAfterMs > 0)
+        retryable.setRetryAfterMs(retryAfterMs);
+    }
+    return exception;
+  }
+
+  /**
+   * The wait a {@code Retry-After} value asks for, in milliseconds, or 0 when there is none or it cannot be read (issue
+   * #8617). Both forms of RFC 9110 are accepted: delay-seconds, which ArcadeDB sends, and an HTTP-date, which a proxy or
+   * a load balancer in front of it may send instead. A date already past asks for no wait.
+   */
+  static long retryAfterMs(final String value, final long nowMs) {
+    if (value == null)
+      return 0L;
+
+    final String trimmed = value.trim();
+    if (trimmed.isEmpty())
+      return 0L;
+
+    if (Character.isDigit(trimmed.charAt(0))) {
+      try {
+        final long seconds = Long.parseLong(trimmed);
+        return seconds > Long.MAX_VALUE / 1_000L ? Long.MAX_VALUE : seconds * 1_000L;
+      } catch (final NumberFormatException e) {
+        return unreadableRetryAfter(trimmed);
+      }
+    }
+
+    try {
+      return Math.max(0L, ZonedDateTime.parse(trimmed, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - nowMs);
+    } catch (final DateTimeParseException e) {
+      return unreadableRetryAfter(trimmed);
+    }
+  }
+
+  /** A hint neither form of RFC 9110 can read is ignored, and said so for whoever is diagnosing the proxy that sent it. */
+  private static long unreadableRetryAfter(final String value) {
+    LogManager.instance().log(RemoteHttpComponent.class, Level.FINE, "Ignoring unreadable Retry-After value '%s'", null, value);
+    return 0L;
+  }
+
+  /**
+   * The part of a server's {@code Retry-After} the client honors: all of it up to {@link
+   * GlobalConfiguration#NETWORK_RETRY_AFTER_MAX_WAIT}, so a misbehaving server cannot park the client, and none of it
+   * when that cap is 0 (issue #8617).
+   */
+  private long boundedRetryAfterMs(final Exception exception) {
+    if (!(exception instanceof NeedRetryException retryable) || retryable.getRetryAfterMs() <= 0)
+      return 0L;
+    return Math.min(retryable.getRetryAfterMs(),
+        Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.NETWORK_RETRY_AFTER_MAX_WAIT)));
+  }
+
+  /**
+   * The pause a server's {@code Retry-After} asks for before the next attempt: the {@link #boundedRetryAfterMs bounded}
+   * hint plus a random spread of up to a tenth of it, or 0 when there is none. A node answers every client it refuses
+   * with the same hint, so without the spread they would all come back at the same instant and be refused together
+   * again - the synchronised re-entry the full jitter of {@code RetryBackoff} exists to break (issue #8617).
+   */
+  long retryAfterPauseMs(final Exception exception) {
+    final long bounded = boundedRetryAfterMs(exception);
+    return bounded <= 0 ? 0L : bounded + ThreadLocalRandom.current().nextLong(bounded / 10 + 1);
   }
 
   protected Exception manageException(final int statusCode, final String responseBody, final String operation) {
@@ -951,6 +1031,12 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NeedRetryException(detail);
       } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);
+      } else if (RETRY_LATER_EXCEPTION.equals(exception)) {
+        // A NODE REFUSED THE REQUEST BEFORE RUNNING IT AND SAID HOW LONG TO WAIT, IN exceptionArgs AS WELL AS IN THE
+        // Retry-After HEADER, SO THE BACK-OFF SURVIVES A HOP THAT DROPS THE HEADER (ISSUES #8355, #8617)
+        final NeedRetryException retryLater = new NeedRetryException(detail);
+        retryLater.setRetryAfterMs(retryAfterMs(exceptionArgs, System.currentTimeMillis()));
+        return retryLater;
       } else if (statusCode == 503) {
         // An unrecognised exception type (e.g. added by a newer server) delivered with 503 is still
         // retry-worthy by the status-code contract below.

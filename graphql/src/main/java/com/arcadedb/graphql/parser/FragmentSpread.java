@@ -30,5 +30,12 @@ public class FragmentSpread extends SimpleNode {
   public String getName() {
     return name != null ? name.getName() : null;
   }
+
+  /**
+   * The directives written on the spread ({@code ...F @include(if: $x)}), or null when it carries none.
+   */
+  public Directives getDirectives() {
+    return directives;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=d963ff13f71ad79b35665827792399de (do not edit this line) */
