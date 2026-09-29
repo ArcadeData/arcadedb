@@ -178,11 +178,29 @@ class Issue8529LeaderServiceGapHandOffTest {
 
   /**
    * The path production takes: the health tick asks {@link RaftHAServer#queueReplacingDatabaseHandOff}, which used to
-   * return before reaching the state machine unless a database was being REPLACED. A leader with a stale-snapshot gap
-   * and nothing being replaced must still get its hand-off queued and run.
+   * return before reaching the state machine unless a database was being REPLACED. A leader with any of the three new
+   * gaps, and nothing being replaced, must still get its hand-off queued and run.
    */
   @Test
   void theHealthTickQueuesTheHandOffForAStaleSnapshotGap() throws Exception {
+    assertTheHealthTickHandsOff(sm -> staleSnapshotAppliedFloor(sm).set(100L));
+  }
+
+  @Test
+  void theHealthTickQueuesTheHandOffForAPendingBootstrapReplacement() throws Exception {
+    assertTheHealthTickHandsOff(sm -> pendingBootstrapReplacements(sm).add(KEPT_DB));
+  }
+
+  @Test
+  void theHealthTickQueuesTheHandOffForAMissingDatabase() throws Exception {
+    assertTheHealthTickHandsOff(sm -> sm.markBootstrapUnreconciled(MISSING_DB));
+  }
+
+  private interface GapSetup {
+    void apply(ArcadeStateMachine sm) throws Exception;
+  }
+
+  private void assertTheHealthTickHandsOff(final GapSetup gap) throws Exception {
     final CountDownLatch transferred = new CountDownLatch(1);
     final RaftHAServer smRaft = leader(true);
     when(smRaft.transferLeadership(anyLong())).thenAnswer(invocation -> {
@@ -190,20 +208,10 @@ class Issue8529LeaderServiceGapHandOffTest {
       return true;
     });
     final ArcadeStateMachine sm = stateMachine(smRaft);
-    staleSnapshotAppliedFloor(sm).set(100L);
+    gap.apply(sm);
     assertThat(sm.getDatabasesBeingReplaced()).as("nothing is being replaced").isEmpty();
 
-    final ContextConfiguration config = new ContextConfiguration();
-    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getServerName()).thenReturn("ArcadeDB_0");
-    when(server.getConfiguration()).thenReturn(config);
-    final RaftHAServer tick = new RaftHAServer(server, config) {
-      @Override
-      public boolean isLeader() {
-        return true;
-      }
-    };
+    final RaftHAServer tick = tickServer(true);
     try {
       final Field field = RaftHAServer.class.getDeclaredField("stateMachine");
       field.setAccessible(true);
@@ -211,6 +219,7 @@ class Issue8529LeaderServiceGapHandOffTest {
 
       tick.queueReplacingDatabaseHandOff(sm);
 
+      // A hang detector, not a latency bound: the hand-off runs on the recovery executor.
       assertThat(transferred.await(10, TimeUnit.SECONDS)).as("the queued hand-off transferred leadership").isTrue();
     } finally {
       tick.stop();
@@ -281,7 +290,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     sm.replacingLeaderHandOffClock = clock::get;
     sm.markBootstrapUnreconciled(MISSING_DB);
 
-    final RaftHAServer followerTick = followerTickServer();
+    final RaftHAServer followerTick = tickServer(false);
     try {
       sm.handOffLeadershipWhileReplacingDatabase();
       followerTick.queueReplacingDatabaseHandOff(sm); // stepped down, gap persists
@@ -299,7 +308,9 @@ class Issue8529LeaderServiceGapHandOffTest {
       Files.createDirectories(restored);
       Files.writeString(restored.resolve("schema.json"), "{}");
       followerTick.queueReplacingDatabaseHandOff(sm);
-      Files.delete(restored.resolve("schema.json")); // and a new episode starts
+      // And a new episode starts. The directory is left behind on purpose: an EMPTY directory is not a copy (issue
+      // #8045, databaseDirectoryExists), which is also exactly what a failed install leaves.
+      Files.delete(restored.resolve("schema.json"));
       sm.handOffLeadershipWhileReplacingDatabase();
       assertThat(attempts.get()).as("a new episode waits the base interval only").isEqualTo(3);
     } finally {
@@ -309,7 +320,7 @@ class Issue8529LeaderServiceGapHandOffTest {
 
   // -- helpers -----------------------------------------------------------------------------------------------------
 
-  private static RaftHAServer followerTickServer() {
+  private static RaftHAServer tickServer(final boolean isLeader) {
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
@@ -318,7 +329,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     return new RaftHAServer(server, config) {
       @Override
       public boolean isLeader() {
-        return false;
+        return isLeader;
       }
     };
   }
