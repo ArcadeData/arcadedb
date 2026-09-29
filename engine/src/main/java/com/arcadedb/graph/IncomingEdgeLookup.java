@@ -93,6 +93,8 @@ public final class IncomingEdgeLookup {
   private static final long       LIGHTWEIGHT_POSITION = -1L;
   // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
   private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
+  // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
+  private static final ThreadLocal<int[]> PATTERN_WALKS = ThreadLocal.withInitial(() -> new int[1]);
 
   // CREATED ON FIRST USE: A QUERY OVER A SCHEMA WITHOUT UNIDIRECTIONAL TYPES NEVER NEEDS IT
   private volatile Map<String, Snapshot> snapshots;
@@ -231,9 +233,6 @@ public final class IncomingEdgeLookup {
   public static boolean isAnyUnidirectional(final Schema schema, final String... edgeTypes) {
     return schema.hasUnidirectionalEdgeTypes() && closure(schema, edgeTypes).unidirectional.length > 0;
   }
-
-  // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
-  private static final ThreadLocal<int[]> PATTERN_WALKS = ThreadLocal.withInitial(() -> new int[1]);
 
   /**
    * Runs {@code walk} as the evaluation of a pattern: the SQL graph functions it calls ({@code in()}, {@code inE()},
