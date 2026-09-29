@@ -4212,6 +4212,9 @@ public class LocalSchema implements Schema {
           // still holds the database write lock, which is what excludes the observers #7457 is about.
           if (!outermost) {
             recordingSavePending = true;
+            // THE MAP saveConfiguration() REBUILDS BEFORE IT POSTPONES: A BUCKET THIS FRAME CREATED OR ATTACHED MUST
+            // RESOLVE TO ITS TYPE FOR THE STEPS THAT FOLLOW IN THE ENCLOSING FRAME
+            rebuildBucketTypeMap();
             return callbackResult;
           }
 
@@ -4338,7 +4341,7 @@ public class LocalSchema implements Schema {
     // TOP IS. EITHER WAY AN ENCLOSING TRANSACTION IS STILL OPEN, AND ITS END WRITES THE FILE. WITH ONE LEFT,
     // saveConfiguration() POSTPONES ON ITS OWN IF THAT ONE IS STILL ACTIVE
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    if (context != null && context.getTransactionDepth() > 1)
+    if (context != null && context.getTransactionDepth() > 1 && context.hasActiveTransaction())
       return;
 
     saveConfiguration();
