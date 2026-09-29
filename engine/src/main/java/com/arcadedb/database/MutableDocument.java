@@ -27,7 +27,6 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.lang.reflect.Array;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,6 +50,11 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 public class MutableDocument extends BaseDocument implements RecordInternal {
   protected Map<String, Object> map;
   protected boolean             dirty = false;
+  // #8610: set by every call that assigns or removes a property, never by a write to a vertex edge list, so that a save
+  // can tell a property write computed from an earlier read from an edge-list-only change
+  protected boolean             propertiesAssigned;
+  // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it
+  private   boolean             basedOnStaleRead;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
@@ -86,6 +90,35 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
+   * Whether a property was assigned or removed since this record was last loaded or saved (issue #8610).
+   */
+  public boolean arePropertiesAssigned() {
+    return propertiesAssigned;
+  }
+
+  /**
+   * Whether this record was built by {@code modify()} from content reloaded because a concurrent transaction committed
+   * a change to it after this transaction read it (issue #8610). Assigning a property then is refused at save as a
+   * retryable conflict: the value is presumably computed from the older read.
+   */
+  public boolean isBasedOnStaleRead() {
+    return basedOnStaleRead;
+  }
+
+  public void markBasedOnStaleRead() {
+    basedOnStaleRead = true;
+  }
+
+  /**
+   * For a caller that computes the values it assigns from THIS record, i.e. from the content {@code modify()} reloaded,
+   * and not from the record it read before (a query engine evaluating its assignments after {@code modify()}): there is
+   * no stale read left for the save to refuse.
+   */
+  public void clearBasedOnStaleRead() {
+    basedOnStaleRead = false;
+  }
+
+  /**
    * Forces the next save to re-serialize this record even if no property has changed. Used by maintenance commands
    * like `REBUILD TYPE` to apply schema layout changes (e.g. EXTERNAL flag toggles) to existing records on disk.
    */
@@ -98,6 +131,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     dirty = false;
+    propertiesAssigned = false;
     //map = null; // AVOID RESETTING HERE FOR INDEXES THAT CAN LOOKUP UP FOR FIELDS CAUSING AN UNMARSHALLING
   }
 
@@ -105,6 +139,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public void unsetDirty() {
     //map = null;
     dirty = false;
+    propertiesAssigned = false;
   }
 
   public MutableDocument fromMap(final Map<String, Object> map) {
@@ -119,6 +154,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     }
 
     dirty = true;
+    propertiesAssigned = true;
     return this;
   }
 
@@ -200,6 +236,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public MutableDocument set(final String name, Object value) {
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
     value = setTransformValue(value, name);
     map.put(name, convertValueToSchemaType(name, value, type));
     return this;
@@ -211,6 +248,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public MutableDocument set(final String name1, final Object value1, final String name2, final Object value2) {
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
 
     Object v1 = setTransformValue(value1, name1);
     map.put(name1, convertValueToSchemaType(name1, v1, type));
@@ -228,6 +266,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                              final String name3, final Object value3) {
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
 
     Object v1 = setTransformValue(value1, name1);
     map.put(name1, convertValueToSchemaType(name1, v1, type));
@@ -256,6 +295,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
 
     for (int p = 0; p < properties.length; p += 2) {
       final String propertyName = (String) properties[p];
@@ -269,8 +309,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Creates a new embedded document attached to the current document. If the property name already exists, and it is
    * a collection, then the embedded document
-   * is added to the collection. If that collection is immutable (e.g. a {@code List.of()} the caller set), it is replaced
-   * by a mutable copy that carries the new element, so a reference the caller kept to the original does not see it.
+   * is added to the collection.
    *
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored
@@ -281,19 +320,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
         embeddedTypeName);
-    if (old instanceof Collection<?> collection) {
-      try {
-        ((Collection<EmbeddedDocument>) old).add(emb);
-        dirty = true;
-      } catch (final UnsupportedOperationException e) {
-        // THE STORED COLLECTION IS IMMUTABLE (E.G. A List.of() THE CALLER SET, WHICH A LIST PROPERTY KEEPS AS-IS BECAUSE
-        // IT IS ALREADY A List): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE NEW ELEMENT (ISSUE #7777). TRY/CATCH
-        // RATHER THAN A CHECK UP FRONT BECAUSE THE JDK EXPOSES NO "IS IT MUTABLE" QUERY, AND IT COSTS NOTHING ON THE
-        // COMMON PATH WHERE add() SUCCEEDS
-        final Collection<Object> copy = old instanceof Set ? new LinkedHashSet<>(collection) : new ArrayList<>(collection);
-        copy.add(emb);
-        set(propertyName, copy);
-      }
+    if (old instanceof Collection) {
+      ((Collection<EmbeddedDocument>) old).add(emb);
+      dirty = true;
+      propertiesAssigned = true;
     } else
       set(propertyName, emb);
 
@@ -374,6 +404,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String propertyName = entry.getKey();
@@ -391,6 +422,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public Object remove(final String name) {
     checkForLazyLoadingProperties();
     dirty = true;
+    propertiesAssigned = true;
     return map.remove(name);
   }
 

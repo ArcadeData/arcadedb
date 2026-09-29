@@ -334,6 +334,9 @@ public final class SetClauseApplier {
     final MutableDocument mutable = doc.modify();
     if (mutable == doc)
       return false;
+    // #8610: the values this clause writes are evaluated again against the reloaded content (below), never against the
+    // read that went stale, so the write is not the stale read-modify-write the save refuses
+    mutable.clearBasedOnStaleRead();
     if (rid != null)
       RowAliases.propagateUpdate(result, doc, mutable);
     if (variable != null)
