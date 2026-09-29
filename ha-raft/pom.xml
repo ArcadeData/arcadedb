@@ -25,7 +25,7 @@
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
-        <version>26.9.1-SNAPSHOT</version>
+        <version>26.10.1-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,7 +34,10 @@
     <name>ArcadeDB HA Raft</name>
 
     <properties>
-        <ratis.version>3.3.0</ratis.version>
+        <!-- On a bump, re-read LogAppender.shouldInstallSnapshot / getPrevious against FixedGrpcLogAppender (it re-derives
+             a Ratis clause, issue #8548) and run Issue8459InstallSnapshotNotifyLoopTest and
+             Issue8460LeaderAppenderAfterInstallBoundaryTest, which pin the stock appender's behaviour. -->
+        <ratis.version>3.3.1</ratis.version>
     </properties>
 
     <dependencies>
