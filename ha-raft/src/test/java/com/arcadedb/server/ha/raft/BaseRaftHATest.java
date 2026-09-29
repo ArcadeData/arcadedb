@@ -293,6 +293,8 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   @Override
   protected void startServers() {
     super.startServers();
+    // Normally a no-op by now: waitAllReplicasAreConnected() already patched. Kept for a subclass that overrides that
+    // wait without calling this class's version.
     patchPeerHttpAddressesWithBoundPorts();
   }
 
