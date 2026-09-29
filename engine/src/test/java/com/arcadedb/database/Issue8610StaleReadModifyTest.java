@@ -412,6 +412,47 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
+   * This transaction's own writes never count as a concurrent change: modifying the same record again after saving
+   * it, while an unrelated record on the same page is committed by another transaction, is no conflict.
+   */
+  @Test
+  void ownWritesAndAnUnrelatedCommitOnTheSamePageAreNoConflict() {
+    final AtomicReference<RID> neighbour = new AtomicReference<>();
+    database.transaction(() -> neighbour.set(database.newVertex("V").set("n", 0).save().getIdentity()));
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Vertex read = rid.asVertex();
+    read.modify().set("a", 1).save();
+    commitConcurrently(() -> neighbour.get().asVertex().modify().set("n", 9).save());
+    read.modify().set("b", 2).save();
+    database.commit();
+
+    final Vertex reloaded = rid.asVertex();
+    assertThat(reloaded.getInteger("a")).isEqualTo(1);
+    assertThat(reloaded.getInteger("b")).isEqualTo(2);
+    assertThat(neighbour.get().asVertex().getInteger("n")).isEqualTo(9);
+  }
+
+  /**
+   * A nested transaction is a transaction of its own: a record read in the outer one and modified in the nested one is
+   * held across transactions, and refreshed silently.
+   */
+  @Test
+  void aRecordReadInTheOuterTransactionIsRefreshedInANestedOne() {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Vertex read = rid.asVertex();
+    commitConcurrently("n", 5);
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    read.modify().set("other", 1).save();
+    database.commit();
+    database.commit();
+
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().getInteger("other")).isEqualTo(1);
+  }
+
+  /**
    * Creating an edge changes only the vertex edge lists, which is what the reload exists for: a concurrent change to the
    * vertex properties must not turn it into a conflict, nor be lost.
    */

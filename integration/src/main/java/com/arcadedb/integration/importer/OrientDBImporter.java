@@ -613,6 +613,8 @@ public class OrientDBImporter {
       try {
         for (RID rid : documentsWithLinksToUpdate) {
           final MutableDocument record = database.lookupByRID(rid, true).asDocument().modify();
+          // The links are rewritten from this very record's reloaded content: no stale-read refusal (#8610)
+          record.clearBasedOnStaleRead();
           for (String pName : record.getPropertyNames()) {
             final Object pValue = record.get(pName);
             final RID converted = convertRIDs(pValue);
