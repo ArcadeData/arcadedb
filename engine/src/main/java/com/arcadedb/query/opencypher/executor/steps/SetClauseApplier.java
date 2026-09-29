@@ -337,10 +337,14 @@ public final class SetClauseApplier {
       ((ResultInternal) result).setProperty(variable, mutable);
 
     // Coupled to how modify() hands a record over (ImmutableDocument.prepareForModify): a reload REPLACES the record's
-    // buffer (BaseRecord.reload), so the same instance with another buffer is a record that moved on since the read;
-    // a lazily loaded record had no buffer to compare; and the transaction's own modified copy, answered from its
-    // record cache, can differ from the committed image the row read. Any of the three asks for a new evaluation.
-    final boolean contentChanged = readImage == null || ((BaseRecord) doc).getBuffer() != readImage
+    // buffer (BaseRecord.reload), so only a record whose buffer changed identity can have moved on since the read, and
+    // then only if the bytes differ: a record found through an index carries no page version, so modify() reloads it
+    // every time, and comparing the bytes is what keeps the uncontended write at a single evaluation. A lazily loaded
+    // record had no buffer to compare, and the transaction's own modified copy, answered from its record cache, can
+    // differ from the committed image the row read (an UNWIND fanning out onto a record already written re-evaluates
+    // once per row for that reason). Any of the three asks for a new evaluation.
+    final Binary current = ((BaseRecord) doc).getBuffer();
+    final boolean contentChanged = readImage == null || (current != readImage && !sameContent(readImage, current))
         || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
     // A record with no identity has nothing to reload, so it never asks for another round: the loop would not settle
     if (!contentChanged || rid == null)
@@ -348,6 +352,10 @@ public final class SetClauseApplier {
     if (reloadedRids == null)
       reloadedRids = new HashSet<>();
     return reloadedRids.add(rid);
+  }
+
+  private static boolean sameContent(final Binary a, final Binary b) {
+    return b != null && a.size() == b.size() && a.isSameRegionAs(0, b, 0, a.size());
   }
 
   /**

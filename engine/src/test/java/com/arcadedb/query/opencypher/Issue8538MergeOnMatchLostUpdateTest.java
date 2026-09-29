@@ -27,6 +27,8 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -387,6 +389,34 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * A record found through an index carries no page version, so modify() reloads it on every write. The right-hand side
+   * must still be evaluated once when nothing changed (the reload read back the same bytes), and again only when a
+   * concurrent commit really changed the record.
+   */
+  @Test
+  void rightHandSideIsEvaluatedAgainOnlyWhenTheReloadChangedTheRecord() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+    final CountingPlusOne plusOne = new CountingPlusOne();
+    database.getSchema().registerFunctionLibrary(new SingleFunctionLibrary(plusOne));
+    try {
+      final String merge = "MERGE (c:C {id: 'c0'}) ON MATCH SET c.n = " + COUNTING_LIBRARY + ".plusOne(c.n)";
+
+      database.transaction(() -> database.command("cypher", merge).close());
+      assertThat(plusOne.invocations.get()).as("uncontended write").isEqualTo(1);
+      assertThat(readN("c0")).isEqualTo(1);
+
+      plusOne.invocations.set(0);
+      final boolean committed = runWithConcurrentIncrementAfterFirstRead(
+          () -> database.command("cypher", merge).close());
+      assertThat(committed).isTrue();
+      assertThat(plusOne.invocations.get()).as("write over a concurrent commit").isEqualTo(2);
+      assertThat(readN("c0")).isEqualTo(3);
+    } finally {
+      database.getSchema().unregisterFunctionLibrary(COUNTING_LIBRARY);
+    }
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
@@ -570,6 +600,60 @@ class Issue8538MergeOnMatchLostUpdateTest {
       assertThat(committedTx.get()).isEqualTo(writers * batches);
       assertThat(writtenValues).as("values committed to c0").doesNotHaveDuplicates();
       assertThat(readN("c0")).isEqualTo(writers * batches);
+    }
+  }
+
+  private static final String COUNTING_LIBRARY = "issue8538";
+
+  /**
+   * {@code issue8538.plusOne(x)}: returns x + 1, counting its invocations.
+   */
+  private static final class CountingPlusOne implements FunctionDefinition {
+    private final AtomicInteger invocations = new AtomicInteger();
+
+    @Override
+    public String getName() {
+      return "plusOne";
+    }
+
+    @Override
+    public Object execute(final Object... parameters) {
+      invocations.incrementAndGet();
+      return ((Number) parameters[0]).longValue() + 1;
+    }
+  }
+
+  private record SingleFunctionLibrary(FunctionDefinition function) implements FunctionLibraryDefinition<FunctionDefinition> {
+    @Override
+    public String getName() {
+      return COUNTING_LIBRARY;
+    }
+
+    @Override
+    public Iterable<FunctionDefinition> getFunctions() {
+      return List.of(function);
+    }
+
+    @Override
+    public FunctionDefinition getFunction(final String functionName) {
+      if (!function.getName().equals(functionName))
+        throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+      return function;
+    }
+
+    @Override
+    public boolean hasFunction(final String functionName) {
+      return function.getName().equals(functionName);
+    }
+
+    @Override
+    public FunctionLibraryDefinition<FunctionDefinition> registerFunction(final FunctionDefinition registerFunction) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public FunctionLibraryDefinition<FunctionDefinition> unregisterFunction(final String functionName) {
+      throw new UnsupportedOperationException();
     }
   }
 
