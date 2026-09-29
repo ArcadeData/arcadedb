@@ -491,8 +491,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // once this node no longer has the gap (resetReplacingLeaderHandOffBackOff), not when it stops being leader.
   // Per node, so it bounds, not stops, the rotation: once every node's count has grown, a cluster of N nodes that share
   // the gap still sees up to N hand-offs per REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS. Stopping it would need each
-  // node to know whether its target shares the gap, which nothing tells it today.
-
+  // node to know whether its target shares the gap, which nothing tells it today (issue #8665).
   private volatile int           leaderHandOffsMovedWhileGapPersisted;
   // Claimed by the caller running a hand-off, so a concurrent caller does not start a second one meanwhile.
   private final    AtomicBoolean replacingLeaderHandOffRunning = new AtomicBoolean();
@@ -4802,8 +4801,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
     // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
-    final List<String> replacing = describeLeaderServiceGaps();
-    if (replacing.isEmpty()) {
+    final List<String> gaps = describeLeaderServiceGaps();
+    if (gaps.isEmpty()) {
       // The last gap closed between the two reads: the episode is over, as on the fast path above.
       resetReplacingLeaderHandOffBackOff();
       return false;
@@ -4825,24 +4824,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING,
           "This node is the leader but cannot serve every database a peer can: %s. A leader cannot install the "
               + "missing data from itself, so it stays that way for as long as it leads. Handing leadership to a peer "
-              + "that holds the data (issues #8491, #8529)", replacing);
+              + "that holds the data (issues #8491, #8529)", gaps);
       attempted = true;
       try {
         moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Leadership hand-off of a leader that cannot serve every database (%s) failed: %s. Retrying in %d ms",
-            replacing, e.getMessage(),
+            gaps, e.getMessage(),
             replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
         return false;
       }
       if (moved)
         LogManager.instance().log(this, Level.INFO,
-            "Leadership handed off (%s); the missing data is installed from the new leader", replacing);
+            "Leadership handed off (%s); the missing data is installed from the new leader", gaps);
       else
         LogManager.instance().log(this, Level.WARNING,
             "Could not hand off leadership (%s): no peer took over. Retrying in %d ms; to move "
-                + "it by hand, run POST /api/v1/cluster/leader", replacing,
+                + "it by hand, run POST /api/v1/cluster/leader", gaps,
             replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
       return moved;
     } finally {
