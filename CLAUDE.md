@@ -1,11 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme performance. It's a Java-based project that supports multiple data models (Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding) and query languages (SQL, Cypher, Gremlin, GraphQL, MongoDB Query Language).
-
 ## Response Formatting
 - Never use the em dash character (`—`) in responses. Use a normal dash (`-`), a comma, or rephrase instead.
 
@@ -122,19 +116,8 @@ green or spuriously red* run rather than an error that tells you what you did wr
 
 ## Pull Request Reviews
 
-The automated reviewers on a PR write to three different places, and a poll that reads only one of them misses
-findings for hours (PR #7437):
-
-- `gh pr view <N> --json comments` shows the ISSUE comments only: the `claude-review` job, Codacy, Codecov.
-- CodeRabbit posts PR REVIEWS: `gh api repos/ArcadeData/arcadedb/pulls/<N>/reviews` carries their bodies (the
-  nitpicks and the "outside diff range" findings) and `gh api repos/ArcadeData/arcadedb/pulls/<N>/comments` the inline
-  threads, one per actionable finding. Reply to a thread with `POST pulls/<N>/comments/<id>/replies`: CodeRabbit
-  re-verifies the next push, answers in the thread and resolves it itself, and it re-reviews every push.
-- The `claude-review` job often finishes with `permission_denials_count > 0` in its result block and posts nothing.
-  `gh run rerun <runId>` gets a real review on the same commit without writing a comment; never use the `@claude`
-  trigger phrase in a comment.
-- A PR is ready when the latest substantive review says nothing blocks the merge, no major issue is open, every
-  CodeRabbit thread is resolved and the checks are green.
+- Before polling or answering PR reviews, load the `pr-review-surfaces` skill: the bots write to three different places.
+- Never use the `@claude` trigger phrase in a PR comment.
 
 ## Development Guidelines
 

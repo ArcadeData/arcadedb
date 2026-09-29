@@ -16,12 +16,6 @@ Webpack is used **solely** to copy vendor libraries from `node_modules/` into `s
 
 ### Maven Integration
 
-The `pom.xml` uses `frontend-maven-plugin` to run npm during Maven build:
-- `npm install` runs during dependency resolution phase
-- `npm run build` runs during `generate-resources` phase
-- Node.js v18.19.0 is auto-installed by the plugin
-- Build output is packaged into the JAR at `static/`
-
 **Full build from project root**: `mvn clean install` (includes Studio build)
 **Studio-only build**: `cd studio && npm run build`
 
@@ -61,63 +55,9 @@ All modules are loaded via `<script>` tags in `index.html` (no ES modules, no im
 9. `studio-graph-widget.js` - Graph interactions
 10. `studio-graph-functions.js` - Graph utilities
 
-### Global State Variables
-
-All state is in global (window) scope. Key variables:
-
-| Variable | Purpose |
-|----------|---------|
-| `globalCredentials` | Bearer token for API auth |
-| `globalUsername` | Logged-in username |
-| `globalResultset` | Current query results (`{ vertices, edges, records }`) |
-| `globalCy` | Cytoscape graph instance |
-| `globalSelected` | Currently selected graph element |
-| `globalGraphSettings` | Graph visualization preferences |
-| `globalGraphMaxResult` | Max graph results (default: 1000) |
-| `studioCurrentTab` | Active tab name string |
-| `editor` | CodeMirror instance |
-| `Toast` | SweetAlert2 Toast mixin |
-
-### Session/Auth stored in localStorage:
-- `arcadedb-session` - Bearer token
-- `arcadedb-username` - Username
-
-### Query Result Flow
-
-1. User writes query in CodeMirror editor
-2. Selects language (SQL, Cypher, Gremlin, GraphQL, MongoDB, Redis)
-3. Clicks execute -> AJAX POST to server
-4. Response parsed into `globalResultset`
-5. Rendered in one of three sub-tabs:
-   - **Graph** tab: Cytoscape visualization (for vertices/edges)
-   - **Table** tab: DataTables rendering (for tabular data)
-   - **JSON** tab: Raw JSON display
-
 ## Server API Integration
 
-### Authentication
-
-- **Login**: `POST /api/v1/login` with Basic Auth header -> returns `{ token, user }`
-- **Logout**: `POST /api/v1/logout`
-- All subsequent calls include `Authorization: Bearer {token}` header
-- Session persisted in localStorage for auto-login on reload
-
 The endpoint set is registered in `server/src/main/java/com/arcadedb/server/http/HttpServer.java` and served by the handlers in `com.arcadedb.server.http.handler`.
-
-### AJAX Pattern
-
-All API calls use jQuery `$.ajax()` with this pattern:
-```javascript
-$.ajax({
-  url: "api/v1/endpoint",
-  type: "GET",
-  headers: { Authorization: globalCredentials },
-  success: function(data) { ... },
-  error: function(jqXHR, textStatus, errorThrown) {
-    globalNotifyError(jqXHR.responseText);
-  }
-});
-```
 
 ## Key Coding Patterns
 
@@ -173,13 +113,6 @@ Backend integration with the Studio is tested through the server module's Java t
 3. Add a nav item `<li>` in the sidebar
 4. Create a corresponding `studio-newtab.js` file
 5. Add the `<script>` tag to `index.html` (after dependencies)
-
-### Adding Functionality to an Existing Tab
-
-1. Read the relevant `studio-*.js` file to understand existing patterns
-2. Add new functions following the same global function pattern
-3. Add UI elements to the corresponding HTML file
-4. Use existing utility functions from `studio-utils.js`
 
 ## Important Conventions
 
