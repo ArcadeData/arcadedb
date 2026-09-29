@@ -1345,6 +1345,10 @@ public class ArcadeDBServer {
     final HAServerPlugin ha = haServer;
     if (ha == null || !ha.isLeader())
       return false;
+    // Already open (the slow path is also taken while STARTING): nothing is reopened, so there is nothing to ask about.
+    final ServerDatabase registered = databases.get(databaseName);
+    if (registered != null && registered.isOpen())
+      return false;
     checkDatabaseNameIsValid(databaseName);
     final File databaseDirectory = new File(
         configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
@@ -1718,11 +1722,14 @@ public class ArcadeDBServer {
     // A leader about to reopen a copy a resync could not verify asks its peers first (issue #8605), and does so here,
     // before the registry lock: the answer may take a round trip to every peer, and the lock serialises every open on
     // this server. The lock re-checks below: a copy that became leader-held only after this point is refused rather
-    // than reopened unasked. The verdict is a point-in-time answer: a peer whose copy changes between the check and the
-    // open, or a leadership lost in that window, is not re-asked - the window is one request long, and the mark is
-    // dropped only when the check passed. The snapshot installer's own reopen is not asked about: it runs holding the registry lock,
-    // and a copy it restored with its mark stays closed, as a rolled-back install on a follower leaves it.
-    final boolean peersVerifiedCopy = allowLoad && !underSnapshotRecovery && verifyUnverifiedClosedCopyWithPeers(databaseName);
+    // than reopened unasked.
+    // The verdict is a point-in-time answer: a peer whose copy changes between the check and the open, or a leadership
+    // lost in that window, is not re-asked. The window is one request long, and the mark is dropped only when the
+    // check passed.
+    // The snapshot installer's own reopen is not asked about: it runs holding the registry lock, and a copy it restored
+    // with its mark stays closed, as a rolled-back install on a follower leaves it.
+    final boolean peersVerifiedCopy =
+        allowLoad && !underSnapshotRecovery && verifyUnverifiedClosedCopyWithPeers(databaseName);
 
     boolean loaded = false;
     synchronized (databasesLock) {

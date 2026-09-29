@@ -127,8 +127,9 @@ final class UnverifiedClosedCopyCheck {
   String check(final String databaseName) {
     final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
     final BootstrapElection election = raftHAServer.getBootstrapElection();
+    // A transient state of a starting node: refused, but neither logged at SEVERE nor raised as the cluster alert.
     if (stateMachine == null || election == null)
-      return record(databaseName, "the HA layer of this server has not started yet");
+      return "the HA layer of this server has not started yet";
 
     final boolean useSSL = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> urls = election.peerProbeUrls(useSSL);
@@ -159,6 +160,10 @@ final class UnverifiedClosedCopyCheck {
   String check(final String databaseName, final CopyState local, final Map<RaftPeerId, String> peerUrls,
       final PeerQuestion question) {
     synchronized (rounds.computeIfAbsent(databaseName, k -> new Object())) {
+      // A round that just passed let its caller reopen the copy and drop the mark: a request that waited behind it has
+      // nothing left to verify, and would otherwise run a round of its own.
+      if (!hasMarker(databaseName))
+        return null;
       final Refusal recent = refusals.get(databaseName);
       if (recent != null && System.currentTimeMillis() - recent.atMs() < refusalReuseMs)
         return recent.reason();
@@ -274,13 +279,17 @@ final class UnverifiedClosedCopyCheck {
   Map<String, String> getRefusals() {
     if (refusals.isEmpty())
       return Collections.emptyMap();
-    final String root = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
-    refusals.keySet().removeIf(name -> !Files.exists(Path.of(root, name, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)));
+    refusals.keySet().removeIf(name -> !hasMarker(name));
     lastLogged.keySet().retainAll(refusals.keySet());
     final Map<String, String> reasons = new TreeMap<>();
     for (final Map.Entry<String, Refusal> entry : refusals.entrySet())
       reasons.put(entry.getKey(), entry.getValue().reason());
     return reasons;
+  }
+
+  private boolean hasMarker(final String databaseName) {
+    return Files.exists(Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE));
   }
 
   private String record(final String databaseName, final String refusal) {

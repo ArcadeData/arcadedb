@@ -146,7 +146,8 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   // ---------------------------------------------------------------------------------------------- the fan-out
 
   @Test
-  void everyPeerIsAskedAndAPeerWithNoAddressOrAFailedCallRefuses() {
+  void everyPeerIsAskedAndAPeerWithNoAddressOrAFailedCallRefuses() throws IOException {
+    createClosedCopy(true);
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
     final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
     urls.put(PEER_1, "http://peer-1/api/v1/cluster/bootstrap-state");
@@ -198,7 +199,8 @@ class Issue8605UnverifiedClosedCopyCheckTest {
 
   /** A client retrying, or a dashboard polling the database, does not run one round per request. */
   @Test
-  void aRecentRefusalIsHandedBackWithoutAskingAgain() {
+  void aRecentRefusalIsHandedBackWithoutAskingAgain() throws IOException {
+    createClosedCopy(true);
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
     final Map<RaftPeerId, String> urls = Map.of(PEER_1, "http://peer-1/x");
     final AtomicInteger asked = new AtomicInteger();
@@ -216,9 +218,26 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     assertThat(asked.get()).isEqualTo(1);
   }
 
+  /**
+   * A request that waited behind a round which passed finds the mark gone - its caller reopened the copy - and has
+   * nothing left to verify: no second round.
+   */
+  @Test
+  void aCopyWhoseMarkIsGoneIsNotAskedAbout() {
+    final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    final AtomicInteger asked = new AtomicInteger();
+
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), Map.of(PEER_1, "http://peer-1/x"), (url, name) -> {
+      asked.incrementAndGet();
+      return done(new CopyState(true, 9L));
+    })).isNull();
+    assertThat(asked.get()).isZero();
+  }
+
   /** Every peer is asked at once; one that never answers is unanswered once the round's deadline passes. */
   @Test
-  void peersThatNeverAnswerAreUnansweredAtTheRoundsDeadline() {
+  void peersThatNeverAnswerAreUnansweredAtTheRoundsDeadline() throws IOException {
+    createClosedCopy(true);
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
     check.roundTimeoutMs = 50L;
     final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
@@ -240,6 +259,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   /** The real HTTP path: the request a peer receives, its answer, and an older peer's answer that is not one. */
   @Test
   void peersAreAskedOverHttpAndAnOlderPeersListingIsNotAnAnswer() throws IOException {
+    createClosedCopy(true);
     final AtomicReference<String> body = new AtomicReference<>();
     final AtomicReference<String> forwardedUser = new AtomicReference<>();
     final com.sun.net.httpserver.HttpServer current = peer(exchange -> {
