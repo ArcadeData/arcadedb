@@ -29,6 +29,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
@@ -518,6 +519,7 @@ public final class IncomingEdgeLookup {
     private static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
         final UnidirectionalEdgeChanges builtBy, final CommandContext context, final Schema schema,
         final Map<String, Builder> builders, final List<Builder> lightweight) {
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       for (final String typeName : typeNames) {
         final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
             "incoming-edge lookup over the unidirectional edge type " + typeName));
@@ -528,7 +530,7 @@ public final class IncomingEdgeLookup {
         // CALLER CANNOT READ IS LEFT OUT, AS IN THE LIGHTWEIGHT WALK BELOW
         for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
           if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
-            scan(database, bucket, record -> {
+            scan(database, bucket, guard, record -> {
               final Edge edge = record.asEdge();
               builder.add(edge.getIn(), edge.getOut(), edge.getIdentity().getBucketId(), edge.getIdentity().getPosition());
               return true;
@@ -538,7 +540,7 @@ public final class IncomingEdgeLookup {
       }
 
       if (!lightweight.isEmpty())
-        addLightweightEdges(database, builders, lightweight.size());
+        addLightweightEdges(database, builders, lightweight.size(), guard);
 
       final List<Snapshot> result = new ArrayList<>(typeNames.size());
       for (final String typeName : typeNames) {
@@ -558,7 +560,7 @@ public final class IncomingEdgeLookup {
      * holds.
      */
     private static void addLightweightEdges(final DatabaseInternal database, final Map<String, Builder> builders,
-        final int lightweightTypes) {
+        final int lightweightTypes, final WorkGuard guard) {
       final Schema schema = database.getSchema();
       final String[] names = new String[lightweightTypes];
       int n = 0;
@@ -572,7 +574,7 @@ public final class IncomingEdgeLookup {
         for (final Bucket bucket : type.getBuckets(false)) {
           if (!SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
             continue;
-          scan(database, bucket, record -> {
+          scan(database, bucket, guard, record -> {
             final Vertex vertex = record.asVertex();
             for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, names)) {
               final RID identity = edge.getIdentity();
@@ -614,9 +616,15 @@ public final class IncomingEdgeLookup {
      * Scans a bucket, failing on the first record that cannot be read or indexed: the bucket scan logs such a record and
      * goes on, which here would leave a partial scan answering with no error - the heap cap included.
      */
-    private static void scan(final DatabaseInternal database, final Bucket bucket, final RecordCallback callback) {
+    private static void scan(final DatabaseInternal database, final Bucket bucket, final WorkGuard guard,
+        final RecordCallback callback) {
       final Throwable[] failure = new Throwable[1];
-      database.scanBucket(bucket.getName(), callback, (rid, e) -> {
+      final int[] records = new int[1];
+      // THE SCAN IS PART OF THE QUERY: ITS DEADLINE (TIMEOUT, COMMAND TIMEOUT) APPLIES WHILE IT RUNS
+      database.scanBucket(bucket.getName(), record -> {
+        guard.checkPeriodically(++records[0]);
+        return callback.onRecord(record);
+      }, (rid, e) -> {
         failure[0] = e;
         return false;
       });
