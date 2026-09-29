@@ -507,6 +507,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   static final class InstallApplyGate extends ReentrantLock {
     private volatile long appliedUnderGate = -1L;
     private volatile long installedIndex   = -1L;
+    private volatile long servedCopyIndex  = -1L;
 
     /** Called by the apply thread, holding this lock, for every entry it applied (or tried to) to the database. */
     void recordApplied(final long index) {
@@ -537,6 +538,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
      */
     long installedIndex() {
       return installedIndex;
+    }
+
+    /**
+     * Called by an install, still holding this lock, with the applied index the leader reported for the copy it just
+     * put in place ({@code SnapshotManager.APPLIED_INDEX_HEADER}), or {@code -1} when the leader did not report one
+     * (issue #8579). REPLACES the previous value rather than keeping the highest: the copy on disk is the last one
+     * installed, and a later install can legitimately be served at a lower index than an earlier one (a new leader
+     * that has not applied as far, accepted because this node's own floor was lower), in which case the entries
+     * between the two are no longer in the copy and must be applied again.
+     */
+    void recordServedCopy(final long index) {
+      servedCopyIndex = index;
+    }
+
+    /**
+     * The applied index the leader reported for the copy of this database installed last, or {@code -1} when there
+     * is none (issue #8579). Every entry for this database up to it is already in that copy: the leader applied it and
+     * published its pages before it read that index and captured the copy (issue #8454).
+     */
+    long servedCopyIndex() {
+      return servedCopyIndex;
     }
   }
 
@@ -1316,20 +1338,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
             index, decoded.databaseName(), installGate.installedIndex());
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
+      // Already in the copy an install just put in place (issue #8579): the leader that served it had applied this
+      // entry before capturing the copy, so applying it again would at best redo what the copy carries, and at worst
+      // roll a newer copy back to an older state until the replay catches up (a schema document is written whole).
+      // Unlike the #8577 skip above, the entry still advances the applied position below exactly as if it had been
+      // applied: an install that is not Ratis's own moves neither lastAppliedIndex nor the Ratis applied position, so
+      // this entry is the next one in order and leaving it unrecorded would stall every reader waiting on it.
+      final boolean carriedByServedCopy = installGate != null && index <= installGate.servedCopyIndex()
+          && isCarriedByInstalledCopy(decoded.type(), originatedLocally);
       try {
-        applyWithRetry(index, decoded.databaseName(), () -> {
-          securitySuperseded[0] = false;
-          switch (decoded.type()) {
-          case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
-          case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
-          case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
-          case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-          case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
-          case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
-          case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
-          case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
-          }
-        });
+        if (carriedByServedCopy)
+          LogManager.instance().log(this, Level.FINE,
+              "Not re-applying entry %d to database '%s': the copy installed from the leader, served at applied index %d, "
+                  + "already carries it (issue #8579)", index, decoded.databaseName(), installGate.servedCopyIndex());
+        else
+          applyWithRetry(index, decoded.databaseName(), () -> {
+            securitySuperseded[0] = false;
+            switch (decoded.type()) {
+            case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
+            case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
+            case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
+            case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+            case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
+            case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !applySecurityGroupsEntry(decoded, index);
+            case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !applySecurityApiTokensEntry(decoded, index);
+            case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index, originatedLocally);
+            }
+          });
       } finally {
         if (installGate != null) {
           // Recorded even when the apply failed: the floor an install derives from it can only be too high, which
@@ -4430,6 +4465,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Whether an entry of {@code type} at or below the applied index a leader served the installed copy at has nothing
+   * left to do on this node (issue #8579). Only the entries whose whole effect is the database's own files qualify: a
+   * transaction and a schema change. Every other type that names a database also acts on this node's own state (the
+   * bootstrap baselines and the readiness holders they release, the install and drop bookkeeping), which a copy of the
+   * database's files does not carry. An entry this node originated is always applied: its apply publishes a commit a
+   * local caller is waiting on.
+   */
+  private boolean isCarriedByInstalledCopy(final RaftLogEntryType type, final boolean originatedLocally) {
+    if (originatedLocally || pendingLocalCommits() > 0)
+      return false;
+    return type == RaftLogEntryType.TX_ENTRY || type == RaftLogEntryType.SCHEMA_ENTRY;
+  }
+
+  /**
    * Whether the current thread holds the install lock of any database (issue #7958): it is then running an install
    * that may have the apply thread waiting on it, so it must not wait on the apply thread in turn.
    */
@@ -4452,9 +4501,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * moment it receives the request, so what has to be excluded is every entry this node would otherwise apply
    * between that moment and the swap. Holding it from the start means everything this node applied to the old copy
    * was applied before it asked for the new one; the entries committed after that wait, and are applied to the
-   * installed copy once the lock is released. An entry that is ALSO already in the leader's copy is applied a second
-   * time, which the apply path tolerates by design (page versions and file existence are checked, the same replay
-   * safety a restart relies on).
+   * installed copy once the lock is released. An entry that is ALSO already in the leader's copy - at or below the
+   * applied index the leader reported serving it at - is not applied a second time (issue #8579): it only advances
+   * the applied position, see {@link InstallApplyGate#servedCopyIndex()}.
    * <p>
    * The cost is that replication of this database pauses for as long as the install runs, download retries
    * included, and every database behind it with it, since the apply thread is shared - the same cost the installs
@@ -4472,8 +4521,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * database under that lock. It may throw to abandon the install with the local copy untouched (issue #8490).
    * <p>
    * Not tied to a Raft install boundary (issue #8577): a targeted single-database resync is not the leader's
-   * compacted log catching this node up, so the entries waiting behind the gate are still assumed newer than what
-   * gets installed, exactly as {@link #installLeaderCopy} describes.
+   * compacted log catching this node up, so nothing moves the applied position here. The entries waiting behind the
+   * gate that the installed copy already carries are recognised by the applied index the leader served it at instead
+   * (issue #8579), exactly as {@link #installLeaderCopy} describes.
    */
   private void installLeaderCopy(final String dbName, final Supplier<String> leaderHttpAddr,
       final Supplier<String> leaderHttpsAddr, final String clusterToken, final LongConsumer underGate) throws IOException {
@@ -4530,7 +4580,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
-        SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+        final long servedAt = SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
         // The install replaced the database's files, so no reservation taken against the previous copy can still hold
         // (issue #8022) - the rule applyInstallDatabaseEntry and applyDropDatabaseEntry already apply, here for every
         // install path, the targeted resync of a quarantined database included. Success only and still under the lock:
@@ -4545,6 +4595,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // whether it was already blocked behind it or arrives later.
         if (installedBoundaryIndex >= 0)
           gate.recordInstalled(installedBoundaryIndex);
+        // Every install path, whatever started it (issue #8579): the operator and #8490 targeted resyncs, the full
+        // resync, the bootstrap-mismatch retry and the Ratis-initiated one alike. Success only and before the unlock,
+        // for the same reasons as the boundary above; -1 when the install downloaded nothing or the leader did not say.
+        gate.recordServedCopy(servedAt);
       } finally {
         gate.unlock();
       }

@@ -169,6 +169,15 @@ public final class SnapshotInstaller {
    */
   private static final ThreadLocal<Long> REQUIRED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
 
+  /**
+   * Where the install {@link #runRequiringSourceAppliedIndex} scopes on this thread records the applied index the
+   * leader reported for the copy it downloaded (issue #8579), {@code -1} until a download is extracted or when the
+   * leader did not report one. A one-element array so the download, several overloads deep, can write what the caller
+   * that took the install lock reads back, the same reach {@link #REQUIRED_SOURCE_APPLIED_INDEX} has in the other
+   * direction. Overwritten by every extracted download, so a retried install reports the copy it actually kept.
+   */
+  private static final ThreadLocal<long[]> SERVED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
+
   /** Logged at most once: a leader predating issue #8454 cannot say how current its copy is. */
   private static final AtomicBoolean APPLIED_INDEX_HEADER_MISSING_WARNED = new AtomicBoolean(false);
 
@@ -1832,6 +1841,12 @@ public final class SnapshotInstaller {
         source = new ProgressReportingInputStream(rawCounter, new SnapshotDownloadProgressMeter(dbName, intervalMs));
       }
       extractAndVerifySnapshot(source, rawCounter, targetDir, manifestRequired, server);
+
+      // Only once the copy is extracted and verified: a transfer that fails after the headers says nothing about the
+      // copy that ends up installed (issue #8579).
+      final long[] served = SERVED_SOURCE_APPLIED_INDEX.get();
+      if (served != null)
+        served[0] = parseAppliedIndex(connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER));
     } finally {
       connection.disconnect();
     }
@@ -1850,18 +1865,44 @@ public final class SnapshotInstaller {
   /**
    * Runs {@code install} with {@code floor} as the lowest applied index a snapshot it downloads may be served at
    * (issue #8454). Restores the previous floor afterwards, because the apply thread installs reentrantly.
+   *
+   * @return the applied index the leader reported for the last copy {@code install} downloaded and extracted (issue
+   * #8579), or {@code -1} when it downloaded none or the leader did not report one. A nested install reports to its
+   * own caller only.
    */
-  static void runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
+  static long runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
       throws IOException {
     final Long previous = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    final long[] previousServed = SERVED_SOURCE_APPLIED_INDEX.get();
+    final long[] served = { -1L };
     REQUIRED_SOURCE_APPLIED_INDEX.set(floor);
+    SERVED_SOURCE_APPLIED_INDEX.set(served);
     try {
       install.run();
+      return served[0];
     } finally {
       if (previous == null)
         REQUIRED_SOURCE_APPLIED_INDEX.remove();
       else
         REQUIRED_SOURCE_APPLIED_INDEX.set(previous);
+      if (previousServed == null)
+        SERVED_SOURCE_APPLIED_INDEX.remove();
+      else
+        SERVED_SOURCE_APPLIED_INDEX.set(previousServed);
+    }
+  }
+
+  /**
+   * Parses the {@link SnapshotManager#APPLIED_INDEX_HEADER} value (issue #8579): absent, malformed or negative reads
+   * as unknown ({@code -1}), which records no boundary.
+   */
+  static long parseAppliedIndex(final String header) {
+    if (header == null || header.isBlank())
+      return -1L;
+    try {
+      return Math.max(-1L, Long.parseLong(header.trim()));
+    } catch (final NumberFormatException e) {
+      return -1L;
     }
   }
 
