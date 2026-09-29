@@ -166,7 +166,9 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
     final long nextIndex = follower.getNextIndex();
     if (!super.shouldInstallSnapshot(hasSnapshot)) {
       // The appender asks on every iteration, so the log-start comparison comes first: getPrevious() is only looked
-      // up in the one position where the stock exemption can have hidden a missing previous entry.
+      // up in the one position where the stock exemption can have hidden a missing previous entry. It repeats a
+      // condition of leaderLacksPreviousEntry on purpose, as a guard for that lookup; the helper stays complete on its
+      // own so its unit tests describe the whole clause.
       final long leaderStartIndex = getRaftLog().getStartIndex();
       if (nextIndex != leaderStartIndex
           || !leaderLacksPreviousEntry(nextIndex, getRaftLog().getNextIndex(), leaderStartIndex, getPrevious(nextIndex) == null))

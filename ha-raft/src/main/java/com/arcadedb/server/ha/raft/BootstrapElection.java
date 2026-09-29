@@ -842,12 +842,15 @@ class BootstrapElection {
     return (https ? httpsClient : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
           final ProbeOutcome outcome = probeOutcomeOf(peerId, resp.statusCode(), resp.body(), dbFilter);
-          if (outcome.result() != ProbeResult.OK)
-            // Transient failures are expected during a parallel cold boot and are retried, so they are logged at
-            // INFO (not WARNING) to avoid alarming operators mid-recovery (issue #5273).
-            LogManager.instance().log(this, outcome.result() == ProbeResult.RETRYABLE ? Level.INFO : Level.WARNING,
+          if (outcome.result() != ProbeResult.OK) {
+            // A transient status is expected during a parallel cold boot and is retried, so it is logged at INFO (not
+            // WARNING) to avoid alarming operators mid-recovery (issue #5273). A malformed answer is retried too, but
+            // stays a WARNING as it always was: it is not what a peer still starting up sends.
+            final boolean quiet = outcome.result() == ProbeResult.RETRYABLE && !outcome.detail().startsWith(MALFORMED_ANSWER);
+            LogManager.instance().log(this, quiet ? Level.INFO : Level.WARNING,
                 "Bootstrap: probe of peer %s at %s gave no usable state: %s%s", peerId, url, outcome.detail(),
-                outcome.result() == ProbeResult.RETRYABLE ? " (transient; retrying within the bootstrap budget)" : "");
+                outcome.result() == ProbeResult.RETRYABLE ? " (retrying within the bootstrap budget)" : "");
+          }
           return outcome;
         })
         .exceptionally(t -> {
@@ -888,9 +891,12 @@ class BootstrapElection {
         result.put(e.getKey(), new PeerState(peerId, e.getKey(), e.getValue().fingerprint(), e.getValue().lastTxId()));
       return ProbeOutcome.ok(result);
     } catch (final Exception e) {
-      return ProbeOutcome.retryable("malformed JSON: " + e.getMessage());
+      return ProbeOutcome.retryable(MALFORMED_ANSWER + e.getMessage());
     }
   }
+
+  /** Prefix of the {@link ProbeOutcome#detail()} {@link #probeOutcomeOf} gives an answer it cannot parse. */
+  static final String MALFORMED_ANSWER = "malformed JSON: ";
 
   private Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
     final Map<String, PeerState> result = new HashMap<>();

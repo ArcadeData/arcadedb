@@ -90,7 +90,9 @@ class Issue8548BootstrapProbeAnsweredByAnotherPeerTest {
 
   @Test
   void aMalformedAnswerIsStillRetried() {
-    assertThat(BootstrapElection.probeOutcomeOf(ASKED, 200, "not json", Set.of("graph")).result())
-        .isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    final BootstrapElection.ProbeOutcome outcome = BootstrapElection.probeOutcomeOf(ASKED, 200, "not json", Set.of("graph"));
+    assertThat(outcome.result()).isEqualTo(BootstrapElection.ProbeResult.RETRYABLE);
+    // queryPeer keeps this case at WARNING by its prefix, where a transient status is logged at INFO.
+    assertThat(outcome.detail()).startsWith(BootstrapElection.MALFORMED_ANSWER);
   }
 }

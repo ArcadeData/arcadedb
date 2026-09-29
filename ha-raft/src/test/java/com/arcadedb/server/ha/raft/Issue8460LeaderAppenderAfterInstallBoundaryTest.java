@@ -121,7 +121,8 @@ class Issue8460LeaderAppenderAfterInstallBoundaryTest {
     assertThat(scenario.installedBoundary.get().getIndex()).isEqualTo(scenario.logStart - 1);
     // Up to Ratis 3.3.0 these read "more than 10 re-notifications, no entry, never caught up" (issue #8548).
     assertThat(scenario.notificationsAfterInstall.get())
-        .as("Ratis 3.3.1's own exemption: no second notification for a follower anchored on its snapshot").isZero();
+        .as("Ratis 3.3.1's own exemption: no second notification for a follower anchored on its snapshot - if this "
+            + "fails after a Ratis upgrade, the stock exemption changed: re-read FixedGrpcLogAppender (issue #8548)").isZero();
     assertThat(scenario.appendsWithEntriesAfterInstall.get()).as("the next replication carried log entries")
         .isGreaterThan(0);
     assertThat(scenario.caughtUp).as("the follower reached the leader's log end").isTrue();
