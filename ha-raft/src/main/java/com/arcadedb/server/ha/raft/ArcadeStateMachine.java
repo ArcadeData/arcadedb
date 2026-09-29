@@ -3846,8 +3846,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
-    // An install replaces the database's files, so no reservation taken against the previous copy can still hold.
-    pageVersions.clear(databaseName);
+    // No page-version ledger clear here (issue #8598). Only the arm that actually replaces the database's files may
+    // drop the reservations taken against the previous copy, and that arm - the follower's forced reinstall below -
+    // clears through runUnderInstallGate on success (issue #8022). Every other arm replaces nothing: the leader skipping
+    // its own forced reinstall, the replay guard skipping one a previous session ran, the create arm finding the
+    // database present. Clearing there dropped the reservation of an entry appended after this one and not yet
+    // applied, and a second entry validated against the same base could then be appended - the equal-version splice
+    // #6965 guards against. The create arm that does create a database replaces no copy either, so it has no reason
+    // to clear.
 
     if (forceSnapshot) {
       // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
@@ -4532,8 +4538,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
         SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
         // The install replaced the database's files, so no reservation taken against the previous copy can still hold
-        // (issue #8022) - the rule applyInstallDatabaseEntry and applyDropDatabaseEntry already apply, here for every
-        // install path, the targeted resync of a quarantined database included. Success only and still under the lock:
+        // (issue #8022) - the rule applyDropDatabaseEntry already applies, here for every install path: the forced
+        // reinstall of applyInstallDatabaseEntry (which clears nothing itself, issue #8598) and the targeted resync of
+        // a quarantined database included. Success only and still under the lock:
         // a failed install leaves the old copy, and the entries behind the reservations are still to be applied to it.
         // Nothing in flight is dropped: reservations are taken only by a leader, a leader cannot install from itself,
         // so this node stepped down (clearing its ledger) before the download could succeed, and a node elected
