@@ -401,8 +401,12 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * (issue #8617). The pause is the exponential backoff with full jitter {@code LocalDatabase.transaction()} applies
    * ({@link RetryBackoff}: {@code arcadedb.txRetryDelayBase} doubling up to {@code arcadedb.txRetryDelay}), stretched to
    * the {@code Retry-After} the server sent with the refusal, if any, bounded by
-   * {@code arcadedb.network.retryAfterMaxWait} and spread by a random tenth of it. Retrying at once spent the whole budget within a few milliseconds against
-   * a node that had said when to come back, and ran transport failures (gRPC's {@code UNAVAILABLE}) back to back.
+   * {@code arcadedb.network.retryAfterMaxWait} and spread by a random tenth of it. Retrying at once spent the whole
+   * budget within a few milliseconds against a node that had said when to come back, and ran transport failures (gRPC's
+   * {@code UNAVAILABLE}) back to back.
+   * <p>
+   * The worst case a refused {@code begin()} or {@code commit()} adds is {@code attempts - 1} pauses of at most 1.1 times
+   * {@code retryAfterMaxWait}: both calls send their request once, outside the election retry loop of {@code httpCommand}.
    * <p>
    * An interrupt ends the retries: the exception of the attempt that just failed is the answer, and the interrupt flag is
    * restored for the caller.

@@ -203,6 +203,10 @@ class Issue8615SkipIncludeDirectivesTest extends AbstractGraphQLTest {
       assertRejected(database, "{ bookById(id: \"book-1\") { name @skip(if: true) @skip(if: false) } }", null, "more than once");
       assertRejected(database, "fragment F on Book @skip(if: true) { name }  { bookById(id: \"book-1\") { ...F } }", null,
           "cannot be used on the definition of fragment 'F'");
+      // THE SAME RULES ON A FRAGMENT SPREAD AND ON AN INLINE FRAGMENT
+      assertRejected(database, "fragment F on Book { name }  { bookById(id: \"book-1\") { ...F @include(if: $missing) } }", null,
+          "not declared");
+      assertRejected(database, "{ bookById(id: \"book-1\") { ... on Book @skip(if: 1) { name } } }", null, "must be a Boolean");
       // VALIDATION DOES NOT DEPEND ON THE VARIABLES: AN INVALID DIRECTIVE INSIDE A SKIPPED BRANCH IS STILL REPORTED
       assertRejected(database, "{ bookById(id: \"book-1\") { authors @skip(if: true) { firstName @include(if: 1) } } }", null,
           "must be a Boolean");
