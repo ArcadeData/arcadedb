@@ -3319,7 +3319,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure();
+      releaseResourcesOnOpenFailure(null);
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -3343,10 +3343,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       releaseResourcesOnOpenFailure(e);
       throw e;
     }
-  }
-
-  private void releaseResourcesOnOpenFailure() {
-    releaseResourcesOnOpenFailure(null);
   }
 
   /**

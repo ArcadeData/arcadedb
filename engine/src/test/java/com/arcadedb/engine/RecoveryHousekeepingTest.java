@@ -103,9 +103,43 @@ class RecoveryHousekeepingTest extends TestHelper {
     manager.afterFirstReplay = () -> { throw new IllegalStateException("injected replay failure"); };
     assertThatThrownBy(manager::checkIntegrity).isInstanceOf(IllegalStateException.class);
 
-    assertThat(manager.close(false, false)).as("the close must report the WAL as preserved, so the lock file stays too")
-        .isTrue();
+    final List<Object[]> logs = captureLogs(() -> assertThat(manager.close(false, false))
+        .as("the close must report the WAL as preserved, so the lock file stays too").isTrue());
     assertThat(wal).as("a clean close must not delete a WAL the replay never finished").exists();
+    assertThat(logs).as("the preservation must name the failed replay as its reason, not unacked pages")
+        .anySatisfy(arguments -> assertThat(arguments).contains("a replay of this WAL did not complete"));
+  }
+
+  /**
+   * #8626: when the fsync after a full replay fails, the replayed files are retired into the inactive pool so the
+   * housekeeping pass drops them once an fsync succeeds. They must stay open and locked there like any retired WAL file:
+   * the replay's own cleanup must not close files it no longer owns.
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aReplayWhoseFsyncFailsHandsItsInputToHousekeepingStillOpen() throws Exception {
+    final ObservingManager manager = installManager();
+    final Path wal = writeRecoveryInput();
+    manager.failReplaySync = true;
+
+    final List<Object[]> logs = captureLogs(manager::checkIntegrity);
+    assertThat(manager.replayed).containsExactly(FIRST_TX, FIRST_TX + 1);
+    assertThat(wal).as("the fsync failed, so the WAL is still the only durable copy of the replayed pages").exists();
+    assertThat(logs).extracting(arguments -> arguments[2])
+        .contains("Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds")
+        .doesNotContain("Recovery of database '%s' completed");
+
+    final Field field = TransactionManager.class.getDeclaredField("inactiveWALFilePool");
+    field.setAccessible(true);
+    final List<WALFile> retired = List.copyOf((List<WALFile>) field.get(manager));
+    assertThat(retired).extracting(WALFile::getFilePath).contains(wal.toString());
+    assertThat(retired).as("a retired WAL file stays open and locked until the housekeeping pass drops it")
+        .allSatisfy(file -> assertThat(file.isOpen()).isTrue());
+
+    // The data files can be synced again: the next pass fsyncs them and only then drops the replayed WAL.
+    driveHousekeeping(manager);
+    assertThat(wal).as("once an fsync succeeds, the fully replayed WAL goes").doesNotExist();
+    assertThat((List<WALFile>) field.get(manager)).isEmpty();
   }
 
   @Test
@@ -204,6 +238,13 @@ class RecoveryHousekeepingTest extends TestHelper {
   }
 
   private static void assertNoSuccessLog(final Runnable action) {
+    final List<Object> messages = captureLogs(action).stream().map(arguments -> arguments[2]).toList();
+    assertThat(messages).doesNotContain("Recovery of database '%s' completed")
+        .contains("Recovery of database '%s' did not complete");
+  }
+
+  /** The arguments of every log call {@code action} makes: requester, level, message format, exception, context, args. */
+  private static List<Object[]> captureLogs(final Runnable action) {
     final Logger previous = LogManager.instance().getLogger();
     final Logger capture = spy(previous);
     LogManager.instance().setLogger(capture);
@@ -212,11 +253,9 @@ class RecoveryHousekeepingTest extends TestHelper {
     } finally {
       LogManager.instance().setLogger(previous);
     }
-    final List<String> messages = mockingDetails(capture).getInvocations().stream()
+    return mockingDetails(capture).getInvocations().stream()
         .filter(invocation -> invocation.getMethod().getName().equals("log"))
-        .map(invocation -> (String) invocation.getArgument(2)).toList();
-    assertThat(messages).doesNotContain("Recovery of database '%s' completed")
-        .contains("Recovery of database '%s' did not complete");
+        .map(invocation -> invocation.getArguments()).toList();
   }
 
   private ObservingManager installManager() throws Exception {
@@ -273,6 +312,7 @@ class RecoveryHousekeepingTest extends TestHelper {
   private static final class ObservingManager extends TransactionManager {
     private final List<Long> replayed = new ArrayList<>();
     private Runnable afterFirstReplay;
+    private boolean  failReplaySync;
 
     ObservingManager(final DatabaseInternal db) throws Exception {
       super(db);
@@ -287,6 +327,11 @@ class RecoveryHousekeepingTest extends TestHelper {
       if (tx.txId == FIRST_TX && afterFirstReplay != null)
         afterFirstReplay.run();
       return false;
+    }
+
+    @Override
+    boolean syncReplayedDataFiles() {
+      return !failReplaySync && super.syncReplayedDataFiles();
     }
   }
 

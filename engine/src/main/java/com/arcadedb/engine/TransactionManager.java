@@ -282,7 +282,9 @@ public class TransactionManager {
       // above; leave them (and the caller leaves the lock file) so the next open runs recovery and replays.
       LogManager.instance().log(this, Level.SEVERE,
           "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
-          null, database.getName(), preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
+          null, database.getName(), recoveryInputUnreplayed ?
+              "a replay of this WAL did not complete" :
+              preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
     } else {
       // DELETE ALL THE WAL FILES AT OS-LEVEL. By this point every file THIS instance's own pool tracked
       // has already been dropped one by one above; anything a directory scan still finds here is, under
@@ -447,6 +449,10 @@ public class TransactionManager {
    * loop then read the next transaction from the empty replacement, took it for the end of the log and finished
    * "successfully" without replaying the rest, and a tick after a failed replay deleted the input the next open
    * needed. The recovery also runs under {@link #walMaintenanceLock}, so no pass can observe the pool half replaced.
+   * <p>
+   * Only a replay that has applied every transaction lets its input go. It drops the files once the replayed pages are
+   * fsynced, and when that fsync fails (#8626) it retires them into the inactive pool instead, where the housekeeping
+   * pass drops them after a later fsync succeeds: by then there is nothing left in them to replay.
    */
   public void checkIntegrity() {
     walMaintenanceLock.lock();
@@ -460,7 +466,9 @@ public class TransactionManager {
   private void recoverWALFiles() {
     LogManager.instance().log(this, Level.WARNING, "Started recovery of database '%s'", null, database);
     boolean completed = false;
-    boolean inputHandedToHousekeeping = false;
+    // Set once the input is dropped, moved aside as .corrupt or retired into the inactive pool: no longer this replay's.
+    boolean inputReleased = false;
+    boolean walKeptForFsync = false;
     WALFile[] recoveryFiles = null;
 
     try {
@@ -620,7 +628,7 @@ public class TransactionManager {
           // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
           // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
           // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
-          if (database.getFileManager().syncFiles()) {
+          if (syncReplayedDataFiles()) {
             // REMOVE ALL WAL FILES
             for (final WALFile file : recoveryFiles) {
               if (file == null)
@@ -639,14 +647,14 @@ public class TransactionManager {
             LogManager.instance().log(this, Level.SEVERE,
                 "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
                 null, database);
+            // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
+            // succeeds: they stay open and locked like any other retired WAL file.
             for (final WALFile file : recoveryFiles)
               if (file != null) {
                 file.setActive(false);
                 inactiveWALFilePool.add(file);
               }
-            // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
-            // succeeds: they stay open and locked like any other retired WAL file.
-            inputHandedToHousekeeping = true;
+            walKeptForFsync = true;
           }
         } else {
           // Close WAL files without deleting: preserve for manual inspection after gap detection.
@@ -682,18 +690,20 @@ public class TransactionManager {
               "WAL files for database '%s' have been preserved in '%s' with the '.corrupt' extension for manual inspection.",
               null, database, database.getDatabasePath());
         }
+        inputReleased = true;
         createWALFilePool();
         database.getPageManager().removeAllReadPagesOfDatabase(database);
         completed = !walGapDetected;
       }
     } catch (final RuntimeException | Error e) {
-      recoveryInputUnreplayed = true;
+      // A failure after the input was released (creating the new pool, say) leaves nothing unreplayed to protect.
+      if (!inputReleased)
+        recoveryInputUnreplayed = true;
       throw e;
     } finally {
-      // A replay that did not reach its own drop or rename step (an exception escaped it) releases its input exactly
-      // as it found it: closed, not deleted, so the next open replays it again. The files it did drop or rename are
-      // already closed, and the ones it handed to the inactive pool are no longer its own.
-      if (recoveryFiles != null && !inputHandedToHousekeeping)
+      // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
+      // not deleted, so the next open replays it again.
+      if (recoveryFiles != null && !inputReleased)
         for (final WALFile file : recoveryFiles)
           if (file != null && file.isOpen())
             try {
@@ -702,9 +712,23 @@ public class TransactionManager {
               LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
             }
 
-      LogManager.instance().log(this, Level.WARNING,
-          completed ? "Recovery of database '%s' completed" : "Recovery of database '%s' did not complete", null, database);
+      if (!completed)
+        LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
+      else if (walKeptForFsync)
+        LogManager.instance().log(this, Level.WARNING,
+            "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null,
+            database);
+      else
+        LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  /**
+   * Forces the pages the replay wrote straight to the data files before the WAL that is their only durable copy goes
+   * away (#8626). Package-visible so a test can fail it without breaking a real data file.
+   */
+  boolean syncReplayedDataFiles() {
+    return database.getFileManager().syncFiles();
   }
 
   /**
