@@ -184,6 +184,11 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.inE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.both('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
     assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.bothE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
+    // A pattern hop consumed lazily (a while: traversal cut by LIMIT) keeps the incoming side: the choice is taken when
+    // the hop is called, and the iterable it returns holds it
+    assertThat(rows("sql",
+        "MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q, while: ($depth < 1)} RETURN q LIMIT 3"))
+        .isEqualTo(3);
     // An in() in a MATCH where: condition is an expression, not a hop: it answers as the function does anywhere else
     assertThat(sum("sql",
         "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3' AND in('TAGGED_WITH').size() > 0)} RETURN t)"))
