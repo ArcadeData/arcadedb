@@ -318,16 +318,41 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     assertThat(sm.isResyncInProgress()).as("the node stays out of the ready set while it holds that copy").isTrue();
   }
 
-  /** Only the closed ones are isolated: a REGISTERED database the leader cannot serve still fails the install. */
+  /**
+   * Only the closed ones are isolated: a REGISTERED database the leader failed to serve still fails the install. The
+   * failure is a 503, which says nothing about whether the leader holds it; a 404 is the leader-missing verdict (issue
+   * #8588), pinned by the next test.
+   */
   @Test
   void theLegacyRefreshStillFailsTheInstallForARegisteredDatabaseTheLeaderCannotServe() {
     server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
-    // No context at all: the leader answers 404 for DB_NAME, which is registered here
+    leaderFails(DB_NAME);
 
     assertThatThrownBy(() -> markerOnlyReconciler().reconcileDatabasesFromLeader(leaderAddress, null, null, -1L))
         .as("Ratis must re-drive the install for a database this node serves")
         .isInstanceOf(IOException.class);
     assertThat(liveCount(DB_NAME)).isEqualTo(LIVE_COUNT);
+  }
+
+  /**
+   * Issue #8588: a REGISTERED database the leader answers 404 for is not a failed refresh - the same leader answers the
+   * same on every retry, so failing the install for it made Ratis re-drive it forever. It is reported
+   * {@code LEADER_MISSING}, kept and served, and not recorded as refreshed.
+   */
+  @Test
+  void theLegacyRefreshReportsARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
+    server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    // No context at all: the leader answers 404 for DB_NAME, which is registered here
+
+    final DatabaseReconciler reconciler = markerOnlyReconciler();
+    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader(leaderAddress,
+        null, null, -1L);
+
+    assertThat(result.leaderMissing()).as("reported instead of thrown").containsExactly(DB_NAME);
+    assertThat(result.notInstalled()).isEmpty();
+    assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
+    assertThat(server.existsDatabase(DB_NAME)).as("still registered and served").isTrue();
+    assertThat(liveCount(DB_NAME)).as("nothing replaced the copy").isEqualTo(LIVE_COUNT);
   }
 
   /**
