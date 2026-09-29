@@ -605,7 +605,7 @@ public enum GlobalConfiguration {
       Long.class, 16L * 1024 * 1024),
 
   TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
-      "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Set to false to restore the previous last-writer-wins behavior",
+      "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
       Boolean.class, true),
 
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
