@@ -90,4 +90,12 @@ class OrderByIndexNullScanTest extends TestHelper {
     assertThat(asc.getFirst()).isNull();
     assertThat(values("SELECT x FROM D WHERE x IS NULL OR x < 3 ORDER BY x")).hasSize(3);
   }
+
+  /** {@code >=} and {@code <=} answer true for two nulls, so they must not be taken as excluding null rows. */
+  @Test
+  void selfComparisonWithGreaterOrEqualKeepsTheNullRow() {
+    load("D", false, true);
+    assertThat(plan("SELECT x FROM D WHERE x >= x ORDER BY x LIMIT 3")).contains("FETCH FROM TYPE");
+    assertThat(values("SELECT x FROM D WHERE x >= x ORDER BY x")).hasSize(21);
+  }
 }
