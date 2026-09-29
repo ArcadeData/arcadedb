@@ -85,6 +85,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     sm.markBootstrapUnreconciled(MISSING_DB); // marked, and no directory on disk: missing
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
+    assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
     verify(raft).transferLeadership(anyLong());
   }
@@ -96,6 +97,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     pendingBootstrapReplacements(sm).add(KEPT_DB);
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
+    assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
     verify(raft).transferLeadership(anyLong());
   }
@@ -107,6 +109,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     staleSnapshotAppliedFloor(sm).set(100L);
 
     assertThat(sm.hasLeaderServiceGap()).isTrue();
+    assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
     verify(raft).transferLeadership(anyLong());
   }
@@ -127,6 +130,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     sm.markBootstrapUnreconciled(KEPT_DB);
 
     assertThat(sm.hasLeaderServiceGap()).isFalse();
+    assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
     verify(raft, never()).transferLeadership(anyLong());
   }
@@ -148,8 +152,26 @@ class Issue8529LeaderServiceGapHandOffTest {
     final ArcadeStateMachine sm = stateMachine(raft);
 
     assertThat(sm.hasLeaderServiceGap()).isFalse();
+    assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
     verify(raft, never()).transferLeadership(anyLong());
+  }
+
+  /**
+   * The hand-off reads {@link ArcadeStateMachine#describeLeaderServiceGaps()} after the predicate and treats an empty
+   * list as "the gap closed in between": a condition one reports and the other omits would make every hand-off a silent
+   * no-op. Every condition, together, is one line each.
+   */
+  @Test
+  void theLogListMirrorsThePredicateForEveryCondition() throws Exception {
+    final ArcadeStateMachine sm = stateMachine(leader(true));
+    sm.markBootstrapUnreconciled(MISSING_DB);
+    pendingBootstrapReplacements(sm).add(KEPT_DB);
+    staleSnapshotAppliedFloor(sm).set(100L);
+    sm.runUnderInstallGate("replaced", () -> {
+      assertThat(sm.hasLeaderServiceGap()).isTrue();
+      assertThat(sm.describeLeaderServiceGaps()).hasSize(4);
+    });
   }
 
   // -- the health tick reaches it ----------------------------------------------------------------------------------
@@ -219,14 +241,15 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
     sm.resetReplacingLeaderHandOffBackOff(); // a follower tick: the gap persists
     clock.addAndGet(ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
-    assertThat(sm.handOffLeadershipWhileReplacingDatabase()).as("re-elected: the second hand-off waits the base").isTrue();
+    assertThat(sm.handOffLeadershipWhileReplacingDatabase()).as("re-elected: the second waits the base").isTrue();
     assertThat(attempts.get()).isEqualTo(2);
 
     sm.resetReplacingLeaderHandOffBackOff();
     clock.addAndGet(ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
     sm.handOffLeadershipWhileReplacingDatabase();
     assertThat(attempts.get()).as("the third waits a widened interval").isEqualTo(2);
-    clock.addAndGet(ArcadeStateMachine.replacingLeaderHandOffIntervalMs(2) - ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
+    clock.addAndGet(
+        ArcadeStateMachine.replacingLeaderHandOffIntervalMs(2) - ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
     sm.handOffLeadershipWhileReplacingDatabase();
     assertThat(attempts.get()).isEqualTo(3);
 
@@ -239,7 +262,66 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(attempts.get()).as("a new gap waits the base interval, not the widened one").isEqualTo(4);
   }
 
+  /**
+   * The same back-off, forgotten through the path production takes: a FOLLOWER's health tick, which returns from
+   * {@link RaftHAServer#queueReplacingDatabaseHandOff} before reaching the state machine's hand-off. It must keep the
+   * count while the gap persists - the node handed off and is waiting to be re-elected into the same gap - and drop it
+   * once the gap closes. A missing database this time, the gap whose check stats a directory.
+   */
+  @Test
+  void aFollowerHealthTickForgetsTheBackOffOnlyOnceTheGapCloses() throws Exception {
+    final AtomicLong clock = new AtomicLong(1_000_000L);
+    final AtomicInteger attempts = new AtomicInteger();
+    final RaftHAServer raft = leader(true);
+    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+      attempts.incrementAndGet();
+      return true;
+    });
+    final ArcadeStateMachine sm = stateMachine(raft);
+    sm.replacingLeaderHandOffClock = clock::get;
+    sm.markBootstrapUnreconciled(MISSING_DB);
+
+    final RaftHAServer followerTick = followerTickServer();
+    try {
+      sm.handOffLeadershipWhileReplacingDatabase();
+      followerTick.queueReplacingDatabaseHandOff(sm); // stepped down, gap persists
+      clock.addAndGet(ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
+      sm.handOffLeadershipWhileReplacingDatabase();
+      assertThat(attempts.get()).isEqualTo(2);
+
+      followerTick.queueReplacingDatabaseHandOff(sm); // gap still persists: the count is kept
+      clock.addAndGet(ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_INTERVAL_MS);
+      sm.handOffLeadershipWhileReplacingDatabase();
+      assertThat(attempts.get()).as("still inside the widened interval").isEqualTo(2);
+
+      // The database is back (the follower installed it): the next follower tick ends the episode.
+      final Path restored = serverDir.resolve(MISSING_DB);
+      Files.createDirectories(restored);
+      Files.writeString(restored.resolve("schema.json"), "{}");
+      followerTick.queueReplacingDatabaseHandOff(sm);
+      Files.delete(restored.resolve("schema.json")); // and a new episode starts
+      sm.handOffLeadershipWhileReplacingDatabase();
+      assertThat(attempts.get()).as("a new episode waits the base interval only").isEqualTo(3);
+    } finally {
+      followerTick.stop();
+    }
+  }
+
   // -- helpers -----------------------------------------------------------------------------------------------------
+
+  private static RaftHAServer followerTickServer() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getServerName()).thenReturn("ArcadeDB_0");
+    when(server.getConfiguration()).thenReturn(config);
+    return new RaftHAServer(server, config) {
+      @Override
+      public boolean isLeader() {
+        return false;
+      }
+    };
+  }
 
   private static RaftHAServer leader(final boolean isLeader) {
     final RaftHAServer raft = mock(RaftHAServer.class);
