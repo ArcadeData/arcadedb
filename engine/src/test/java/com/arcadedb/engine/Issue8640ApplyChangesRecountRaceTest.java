@@ -77,6 +77,8 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
 
     // The state a snapshot install leaves behind: counter unknown.
     bucket.setCachedRecordCount(-1);
+    // Generous, so a JVM stall while the test parks cannot turn the wait into a timeout (#6260)
+    final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 60_000L);
 
     // A count() recompute in flight: it owns the bucket's file lock from before its scan until after its publish.
     final Object recompute = new Object();
@@ -111,6 +113,7 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
       if (!released)
         txManager.unlockFile(fileId, recompute);
       applier.shutdownNow();
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
   }
 

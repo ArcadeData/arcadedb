@@ -745,24 +745,29 @@ public class TransactionManager {
     if (bucketRecordDelta == null || bucketRecordDelta.isEmpty())
       return null;
 
-    int[] fileIds = null;
+    LocalBucket[] buckets = null;
     int count = 0;
     for (final Integer fileId : bucketRecordDelta.keySet())
       if (database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket && bucket.getCachedRecordCount() < 0) {
-        if (fileIds == null)
-          fileIds = new int[bucketRecordDelta.size()];
-        fileIds[count++] = fileId;
+        if (buckets == null)
+          buckets = new LocalBucket[bucketRecordDelta.size()];
+        // Insertion in ascending file-id order, like a commit (tryLockFiles), so the two can never wait on each other in
+        // a cycle. An entry touches a handful of buckets, so this beats a sort with a comparator
+        int pos = count++;
+        while (pos > 0 && buckets[pos - 1].getFileId() > fileId) {
+          buckets[pos] = buckets[pos - 1];
+          --pos;
+        }
+        buckets[pos] = bucket;
       }
 
     if (count == 0)
       return null;
 
-    // Ascending order, like a commit (tryLockFiles), so the two can never wait on each other in a cycle
-    Arrays.sort(fileIds, 0, count);
     final BucketLocks result = new BucketLocks(count);
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
     try {
-      lockBuckets(fileIds, count, timeout, requester, result);
+      lockBuckets(buckets, count, timeout, requester, result);
     } catch (final RuntimeException | Error e) {
       // The caller never receives the partially filled result, so the locks taken so far are released here
       for (int i = 0; i < result.lockedCount; i++)
@@ -772,13 +777,11 @@ public class TransactionManager {
     return result;
   }
 
-  private void lockBuckets(final int[] fileIds, final int count, final long timeout, final Object requester,
+  private void lockBuckets(final LocalBucket[] buckets, final int count, final long timeout, final Object requester,
       final BucketLocks result) {
     for (int i = 0; i < count; i++) {
-      final int fileId = fileIds[i];
-      if (!(database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket))
-        continue;
-
+      final LocalBucket bucket = buckets[i];
+      final int fileId = bucket.getFileId();
       final boolean contended = bucket.isApplyLockContended();
       // 1ms, not 0: LockManager reads a zero timeout as "wait forever"
       final LockManager.LOCK_STATUS status = tryLockFile(fileId, contended ? 1L : timeout, requester);
