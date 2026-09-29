@@ -545,6 +545,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return raftHAServer != null && raftHAServer.isLeader();
   }
 
+  /** Asks every peer about its copy first (issue #8605); see {@link UnverifiedClosedCopyCheck}. */
+  @Override
+  public String refuseToReopenUnverifiedClosedCopy(final String databaseName) {
+    final RaftHAServer s = raftHAServer;
+    if (s == null)
+      return "the HA layer of this server has not started yet";
+    return s.getUnverifiedClosedCopyCheck().check(databaseName);
+  }
+
   @Override
   public HAReplicationStats getHAReplicationStats() {
     final RaftHAServer s = raftHAServer;

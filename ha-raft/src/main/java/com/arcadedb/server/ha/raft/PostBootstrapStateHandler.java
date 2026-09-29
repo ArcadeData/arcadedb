@@ -133,6 +133,19 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
 
     final ArcadeDBServer server = httpServer.getServer();
 
+    // Issue #8605: a leader about to reopen a closed copy a resync could not verify asks about this node's copy of that
+    // one database. Answered from the registry, the directory and the persisted applied index alone: nothing is opened
+    // or hashed, a closed copy included.
+    final String copyOf = payload != null ? payload.getString(UnverifiedClosedCopyCheck.COPY_OF, null) : null;
+    if (copyOf != null) {
+      server.checkDatabaseNameIsValid(copyOf);
+      final JSONObject response = new JSONObject();
+      response.put("peerId", raftHAServer.getLocalPeerId().toString());
+      response.put(UnverifiedClosedCopyCheck.COPY,
+          UnverifiedClosedCopyCheck.localCopyState(server, raftHAServer.getStateMachine(), copyOf).toJSON(copyOf));
+      return new ExecutionResponse(200, response.toString());
+    }
+
     // Issue #8368: the probe of a running first-formation pass says so, and this is the only local signal a
     // follower gets that a pass is under way before the committed baseline reaches it. Taken before the
     // fingerprints below are computed: the pass is already running, and hashing a large database is not quick.
