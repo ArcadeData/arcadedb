@@ -86,6 +86,41 @@ class GrpcTimeSeriesSupportTest {
     assertThat(samples.getFirst().getTimestampMs()).isEqualTo(1_000L);
   }
 
+  /**
+   * Issue #8563, the gRPC sibling of the line protocol's empty-tag-key rule: an empty key names no column, so the
+   * sample would be stored with that tag silently dropped, under a different series than the one the client sent.
+   */
+  @Test
+  void anEmptyTagKeyIsRefused() {
+    final TimeSeriesPoint emptyKey = point()
+        .putTags("", GrpcValue.newBuilder().setStringValue("east").build())
+        .putTags("host", GrpcValue.newBuilder().setStringValue("a").build())
+        .build();
+
+    assertThatThrownBy(() -> GrpcTimeSeriesSupport.toSamples(List.of(emptyKey), "weather",
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> {
+          assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(((StatusRuntimeException) e).getStatus().getDescription()).contains("tag key");
+        });
+  }
+
+  @Test
+  void anEmptyFieldKeyIsRefused() {
+    final TimeSeriesPoint emptyKey = point()
+        .putFields("", GrpcValue.newBuilder().setDoubleValue(1.0).build())
+        .build();
+
+    assertThatThrownBy(() -> GrpcTimeSeriesSupport.toSamples(List.of(emptyKey), "weather",
+        TimeSeriesPrecision.TS_PRECISION_MILLISECONDS))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(e -> {
+          assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+          assertThat(((StatusRuntimeException) e).getStatus().getDescription()).contains("field key");
+        });
+  }
+
   @Test
   void aPrecisionOtherThanMillisecondsIsConvertedNotAssumed() {
     final TimeSeriesPoint seconds = TimeSeriesPoint.newBuilder().setType("weather").setTimestamp(5L)
