@@ -3758,8 +3758,9 @@ public class SelectExecutionPlanner {
 
     if (conjunct instanceof BinaryCondition binary) {
       final BinaryCompareOperator operator = binary.getOperator();
-      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof GeOperator
-          || operator instanceof LtOperator || operator instanceof LeOperator) && isPropertyReference(binary.getLeft(), propertyName);
+      // >= and <= are left out: they answer true for two nulls (WHERE x >= x), so a null row can satisfy them
+      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof LtOperator)
+          && isPropertyReference(binary.getLeft(), propertyName);
     }
     return false;
   }
