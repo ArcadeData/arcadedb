@@ -46,17 +46,19 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli
  */
 public class ImmutableDocument extends BaseDocument {
+  // #8610: a read that went stale, set in place of the transaction the record was read in (one field, not two)
+  private static final int STALE_READ = -2;
+
   /**
    * Version of the page this record's content was read from, when it was read straight from its own page by a scan
    * (issue #8312), -1 when unknown. It lets {@link #pinPageAndReloadIfStale()} skip the reload of a record whose page
    * has not changed since: same page version, same bytes.
    */
-  // #8610: a read that went stale, set in place of the transaction the record was read in (one field, not two)
-  private static final int STALE_READ = -2;
-
   private long contentPageVersion = -1;
   // #8610: TransactionContext.getBeginSequence() of the transaction this record was read in, -1 when unknown, or
-  // STALE_READ once the reload modify() performs found the content changed since that read. An int, not a long: 8 more
+  // STALE_READ once the reload modify() performs found the content changed since that read - for good: every later
+  // modify() of this instance gets the same page without reloading, so a value computed from the read before would
+  // otherwise slip through a second modify(). An int, not a long: 8 more
   // bytes pushed a vertex into a larger allocation size and cost ~10% of a vertex scan. It wraps after 2^32
   // transactions, so a record held across exactly that many is taken for one read in the current transaction; the worst
   // that can do is a retryable conflict, never a lost update.
@@ -243,6 +245,7 @@ public class ImmutableDocument extends BaseDocument {
    * the refresh stays silent.
    */
   public void setReadInTransaction(final long transactionBeginSequence) {
+    // Narrowed to an int on purpose, see the field
     this.readInTransaction = (int) transactionBeginSequence;
   }
 
@@ -280,10 +283,8 @@ public class ImmutableDocument extends BaseDocument {
    * when the reload found the content changed since.
    */
   protected <T extends MutableDocument> T markIfReadWentStale(final T mutable) {
-    if (readInTransaction == STALE_READ) {
-      readInTransaction = -1;
+    if (readInTransaction == STALE_READ)
       mutable.markBasedOnStaleRead();
-    }
     return mutable;
   }
 
