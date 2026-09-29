@@ -3313,6 +3313,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
+    } catch (final Error e) {
+      // An Error (an OutOfMemoryError replaying a large WAL, a StackOverflowError, a class that failed to load) used to
+      // skip the release above: the instance stayed marked open, kept database.lck locked and its WAL timer running,
+      // and the path could not be opened again in this JVM until a restart. Rethrown as it is, never wrapped.
+      open = false;
+      try {
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+      } catch (final Throwable t) {
+        e.addSuppressed(t);
+      }
+      releaseResourcesOnOpenFailure();
+      throw e;
     }
   }
 
