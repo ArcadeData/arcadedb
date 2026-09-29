@@ -23,7 +23,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -66,8 +65,10 @@ public class BucketIterator implements Iterator<Record> {
   private final long[] positions;
   private       int    positionIndex;
   private final int    positionsEnd;
-  // #8610: the transaction the records are read in (-1 outside one), recorded on each record built by this iterator
-  private final long   readInTransaction;
+  // #8610: the transaction the current batch is read in (-1 outside one), recorded on each record of the batch. Taken
+  // per batch, not per iterator: an iterator kept across commit() and begin() reads its next batch in the new
+  // transaction, and a record read there must be checked there
+  private       long   readInTransaction = -1;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     this(bucket, forwardDirection, 0, -1);
@@ -106,9 +107,7 @@ public class BucketIterator implements Iterator<Record> {
     this.positionsEnd = positionsTo;
     this.totalPages = bucket.pageCount.get();
 
-    final TransactionContext tx = database.getTransaction();
-    this.readInTransaction = tx.getBeginSequence();
-    final Integer txPageCounter = tx.getPageCounter(bucket.fileId);
+    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
     if (txPageCounter != null && txPageCounter > totalPages)
       this.totalPages = txPageCounter;
 
@@ -366,6 +365,9 @@ public class BucketIterator implements Iterator<Record> {
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
+
+    // One lookup per batch: every record of the batch is read now, in this transaction
+    readInTransaction = database.getTransaction().getBeginSequence();
 
     recordsRead = 0;
     try {

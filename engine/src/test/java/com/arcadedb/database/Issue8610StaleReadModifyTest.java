@@ -453,6 +453,40 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
+   * A scan kept across commit() and begin() reads its next batch in the new transaction, so a record of that batch is
+   * checked there: its stale read is refused, not refreshed silently.
+   */
+  @Test
+  void aScanBatchReadAfterANewBeginIsCheckedInThatTransaction() {
+    // More records than one prefetch batch (1024), so the scan reads a second batch
+    database.transaction(() -> {
+      for (int i = 0; i < 1_100; i++)
+        database.newDocument("D").set("i", i, "n", 0).save();
+    });
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Iterator<Record> scan = database.iterateType("D", false);
+    // The iterator refills as soon as a batch runs out: stop one short so the second batch is read after the new begin
+    for (int i = 0; i < 1_023; i++)
+      scan.next();
+    database.commit();
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    scan.next(); // the last record of the first batch, which reads the second batch now, in this transaction
+    final Document read = scan.next().asDocument();
+    final int n = read.getInteger("n");
+    final RID readRid = read.getIdentity();
+    commitConcurrently(() -> readRid.asDocument().modify().set("n", 5).save());
+
+    assertThatThrownBy(() -> {
+      read.modify().set("n", n + 1).save();
+      database.commit();
+    }).isInstanceOf(ConcurrentModificationException.class);
+
+    assertThat(readRid.asDocument().getInteger("n")).isEqualTo(5);
+  }
+
+  /**
    * Creating an edge changes only the vertex edge lists, which is what the reload exists for: a concurrent change to the
    * vertex properties must not turn it into a conflict, nor be lost.
    */
