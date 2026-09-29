@@ -80,8 +80,9 @@ import java.util.function.Supplier;
  * commits statement by statement), because the changes it missed are no longer kept. Other transactions' changes are not
  * seen, as a query does not see them in the records it already read either.
  * <p>
- * An edge or a source vertex another transaction deletes after the scan is still in it: the step that reads it meets
- * the missing record as it meets a ghost edge-list entry, and skips it through {@link GhostEdgeReporter}. With an overlay
+ * An edge or a source vertex another transaction deletes after the scan is still in it: the Cypher expansions meet the
+ * missing record as they meet a ghost edge-list entry and skip it through {@link GhostEdgeReporter}; elsewhere the
+ * {@code RecordNotFoundException} fails the query, as a record deleted under any running read does. With an overlay
  * (the query's own writes since the scan), the edges of the target are materialized rather than streamed.
  * <p>
  * A scan reads the edge records of the type, which are the edges the source vertices list: an edge record that no
