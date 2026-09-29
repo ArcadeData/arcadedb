@@ -281,10 +281,18 @@ public class AnchorSelector {
 
       for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet()) {
         final String propertyName = rangeEntry.getKey();
-        final List<RangePredicate> predicates = rangeEntry.getValue();
+        List<RangePredicate> predicates = rangeEntry.getValue();
 
         // Check if there's an index on this property
         final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+
+        // A case-insensitive index holds its keys case-folded, so the range a STARTS WITH stands for is not a range of
+        // it: 'AZ' bumped to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666). Its other bounds stand
+        if (indexStats != null && indexStats.isCaseInsensitive()) {
+          predicates = predicates.stream().filter(p -> !p.isFromPrefix()).toList();
+          if (predicates.isEmpty())
+            continue;
+        }
 
         if (indexStats != null) {
           // INDEX RANGE SCAN - Good performance for range queries
@@ -757,6 +765,22 @@ public class AnchorSelector {
           predicates.computeIfAbsent(propertyName, k -> new ArrayList<>()).add(predicate);
         }
       }
+    }
+
+    // prop STARTS WITH 'abc' is the range [abc, abd) on an ordered index (issue #8666). The predicate stays in the WHERE
+    // as a filter, so what the range returns beyond it (a different collation, a non-string key) is dropped there.
+    if (expression instanceof StringMatchExpression match
+        && match.getMatchType() == StringMatchExpression.MatchType.STARTS_WITH
+        && match.getExpression() instanceof PropertyAccessExpression propAccess
+        && propAccess.getVariableName().equals(variable)) {
+      final Expression pattern = match.getPattern();
+      if (pattern instanceof LiteralExpression literal) {
+        if (literal.getValue() instanceof String prefix && !prefix.isEmpty())
+          predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+              .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), prefix, false));
+      } else if (pattern instanceof ParameterExpression parameter)
+        predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+            .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), parameter.getParameterName(), true));
     }
 
     // Handle AND expressions - both sides may contain range predicates

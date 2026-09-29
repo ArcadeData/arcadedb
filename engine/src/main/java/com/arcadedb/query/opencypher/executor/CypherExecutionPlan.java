@@ -120,6 +120,7 @@ import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.GAVOneHopScanStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.IndexMinMaxStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
@@ -151,9 +152,12 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -5281,6 +5285,76 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Optimizes {@code MATCH (n:Label) RETURN min(n.prop)} (and {@code max}) into a read of one end of the index on the
+   * property (issue #8666), as SQL's {@code MIN FROM INDEX} does.
+   * <p>
+   * The shape is the type count's: one non-optional MATCH of one labelled node, no WHERE or property map, nothing but
+   * the RETURN, whose only item is the aggregate. On top of that the index has to hold exactly the values the aggregate
+   * looks at, in the order Cypher gives them:
+   * <ul>
+   *   <li>defined on the label itself, not inherited: a parent's index also holds the siblings' vertices;</li>
+   *   <li>on that property alone, ordered, and skipping the vertices with no value (with {@code NULL_STRATEGY INDEX} its
+   *   first entry can be a null, which {@code min} and {@code max} ignore);</li>
+   *   <li>case sensitive, on a key type whose index order is Cypher's ({@link CypherOptimizer#INDEX_ORDERED_KEY_TYPES},
+   *   the set the ORDER BY from an index already relies on).</li>
+   * </ul>
+   *
+   * @return the step, or null when the statement or the schema is not that shape, which leaves the aggregate to scan
+   */
+  private AbstractExecutionStep tryCreateIndexMinMaxOptimization(final CommandContext context) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    if (matchClause.isOptional() || matchClause.hasWhereClause() || statement.getWhereClause() != null
+        || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    if (!pathPattern.isSingleNode())
+      return null;
+    final NodePattern nodePattern = pathPattern.getFirstNode();
+    if (nodePattern.getVariable() == null || !nodePattern.hasLabels() || nodePattern.getLabels().size() != 1
+        || nodePattern.isLabelDisjunction() || nodePattern.hasProperties())
+      return null;
+
+    // The statement is the MATCH and the RETURN, nothing else (a write, a WITH or an UNWIND would be dropped)
+    if (!isMatchReturnOnlyStatement() || !statement.getWithClauses().isEmpty() || !statement.getUnwindClauses().isEmpty())
+      return null;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
+      return null;
+    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().getFirst();
+    if (!(returnItem.getExpression() instanceof FunctionCallExpression function) || function.getArguments().size() != 1
+        || !(function.getArguments().getFirst() instanceof PropertyAccessExpression access)
+        || !nodePattern.getVariable().equals(access.getVariableName()))
+      return null;
+    final boolean max;
+    if ("max".equalsIgnoreCase(function.getFunctionName()))
+      max = true;
+    else if ("min".equalsIgnoreCase(function.getFunctionName()))
+      max = false;
+    else
+      return null;
+
+    final String typeName = nodePattern.getLabels().getFirst();
+    final String propertyName = access.getPropertyName();
+    final Schema schema = context.getDatabase().getSchema();
+    if (!schema.existsType(typeName) || !(schema.getType(typeName) instanceof VertexType type))
+      return null;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null || !CypherOptimizer.INDEX_ORDERED_KEY_TYPES.contains(property.getType()))
+      return null;
+
+    final TypeIndex index = type.getIndexByProperties(propertyName);
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || index.getMetadata() == null
+        || index.getMetadata().isCaseInsensitive(0))
+      return null;
+
+    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
+  }
+
+  /**
    * The name a {@link TypeCountStep} over a single-node pattern publishes its count under, or null when the RETURN
    * is not asking for that count.
    * <p>
@@ -6223,6 +6297,8 @@ public class CypherExecutionPlan {
     // The O(1) type counter answers "how many vertices carry this label", which is not a question a bound anchor
     // narrows: a seeded MATCH (q:Q) is one vertex tested against a label, not a count over the label.
     AbstractExecutionStep step = correlation.isCorrelated() ? null : tryCreateTypeCountOptimization(context, countRowsMode);
+    if (step == null && !countRowsMode && !correlation.isCorrelated())
+      step = tryCreateIndexMinMaxOptimization(context);
     if (step == null)
       step = tryOptimizeCountStar(context, countRowsMode, correlation);
     if (step == null)
