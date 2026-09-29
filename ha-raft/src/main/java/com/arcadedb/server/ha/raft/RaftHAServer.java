@@ -1779,7 +1779,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Runs the #8491 hand-off ({@link ArcadeStateMachine#handOffLeadershipWhileReplacingDatabase()}) on
+   * Runs the #8491/#8529 hand-off ({@link ArcadeStateMachine#handOffLeadershipWhileReplacingDatabase()}) on
    * {@link #channelRecoveryExecutor}, the single worker the #8483 and #5346 hand-offs already run on, rather than inline
    * on the health-monitor thread (issue #8557).
    * <p>
@@ -1792,10 +1792,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Package-private for unit tests.
    */
   void queueReplacingDatabaseHandOff(final ArcadeStateMachine sm) {
-    // The common case, every tick on a healthy node: nothing is being replaced, so nothing is queued. The episode is
-    // over, though, so its failures in a row are forgotten here, where the state machine's own reset is never reached
-    // (issue #8556): one volatile read when there is nothing to forget.
-    if (sm.getDatabasesBeingReplaced().isEmpty() || !isLeader()) {
+    // The common case, every tick on a healthy node: no leader service gap (issue #8529; a database being replaced,
+    // issue #8491, is one kind), so nothing is queued. The episode is over, though, so its failures in a row are
+    // forgotten here, where the state machine's own reset is never reached (issue #8556): one volatile read when there
+    // is nothing to forget. Leadership is tested first: hasLeaderServiceGap() can stat a directory per marked
+    // database, which a follower's tick has no reason to pay for.
+    if (!isLeader() || !sm.hasLeaderServiceGap()) {
       sm.resetReplacingLeaderHandOffBackOff();
       return;
     }

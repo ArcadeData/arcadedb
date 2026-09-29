@@ -165,7 +165,9 @@ public final class HealthMonitor {
     /**
      * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
      * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
-     * write to it fails while it stays leader. No-op on a follower, when nothing is being replaced, and between
+     * write to it fails while it stays leader. Likewise for a leader missing a database the bootstrap baseline
+     * committed, holding a pending bootstrap replacement, or holding an unfilled stale-snapshot gap (issue #8529):
+     * each needs an install a leader cannot run from itself. No-op on a follower, when none of those holds, and between
      * throttled attempts. Must not run the transfer on the calling thread: it is queued behind any other automatic
      * hand-off of this node (issue #8557).
      * <p>
