@@ -63,9 +63,12 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
   private final List<RID> vertices = new ArrayList<>();
   private final Map<Integer, RID> edges = new LinkedHashMap<>();
   private Callable<Void> recoveryCallback;
+  // Thrown by the instrumented manager's close() after it has really closed, when set.
+  private static volatile Runnable closeFailure;
 
   @Override
   protected void endTest() {
+    closeFailure = null;
     // A failed factory.open() can leave a context for the rejected instance, while database still refers to the
     // killed fixture. Do not let TestHelper's teardown mistake those two instances for the same active owner.
     if (!database.isOpen())
@@ -144,6 +147,32 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
     assertThatThrownBy(() -> database = factory.open()).isInstanceOf(OutOfMemoryError.class)
         .hasMessage("injected error after real WAL apply");
     assertThat(observed.get().appliedTransactions).isOne();
+    assertInputPreserved(input);
+
+    observed.get().owner.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, recoveryCallback);
+    database = factory.open();
+    verifyGraph();
+    assertTimerStopped(observed.get());
+  }
+
+  /**
+   * An OutOfMemoryError is likely to strike again inside the cleanup. That second Error used to replace the one that
+   * failed the open, hiding the cause, and skip every cleanup step after it.
+   */
+  @Test
+  void aSecondErrorDuringCleanupDoesNotHideTheOneThatFailedTheOpen() throws Exception {
+    final Map<Path, String> input = prepareCrashedGraph();
+    final AtomicReference<BoundaryManager> observed = installOnNextRecovery(false, () -> {
+      throw new OutOfMemoryError("injected error after real WAL apply");
+    });
+    closeFailure = () -> {
+      throw new OutOfMemoryError("injected error while closing the failed open");
+    };
+    assertThatThrownBy(() -> database = factory.open()).isInstanceOf(OutOfMemoryError.class)
+        .hasMessage("injected error after real WAL apply")
+        .satisfies(error -> assertThat(error.getSuppressed()).extracting(Throwable::getMessage)
+            .contains("injected error while closing the failed open"));
+    closeFailure = null;
     assertInputPreserved(input);
 
     observed.get().owner.unregisterCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, recoveryCallback);
@@ -331,6 +360,15 @@ class RecoveryHousekeepingGraphTest extends TestHelper {
       if (applyFailure != null)
         applyFailure.run();
       return changed;
+    }
+
+    @Override
+    public boolean close(final boolean drop, final boolean preserveWalFiles) {
+      final boolean preserved = super.close(drop, preserveWalFiles);
+      final Runnable failure = closeFailure;
+      if (failure != null)
+        failure.run();
+      return preserved;
     }
 
     @Override

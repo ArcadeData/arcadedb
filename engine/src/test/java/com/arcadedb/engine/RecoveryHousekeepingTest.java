@@ -91,6 +91,23 @@ class RecoveryHousekeepingTest extends TestHelper {
     assertThat(manager.replayed).containsExactly(FIRST_TX);
   }
 
+  /**
+   * After an escaped replay failure the pool slots still name the input's paths, closed. A clean close then retired them
+   * as ordinary files and its directory sweep deleted the WAL the next open needed; only the failed-open path, which
+   * always asks for preservation, was safe.
+   */
+  @Test
+  void aCleanCloseAfterAFailedReplayStillPreservesItsInput() throws Exception {
+    final ObservingManager manager = installManager();
+    final Path wal = writeRecoveryInput();
+    manager.afterFirstReplay = () -> { throw new IllegalStateException("injected replay failure"); };
+    assertThatThrownBy(manager::checkIntegrity).isInstanceOf(IllegalStateException.class);
+
+    assertThat(manager.close(false, false)).as("the close must report the WAL as preserved, so the lock file stays too")
+        .isTrue();
+    assertThat(wal).as("a clean close must not delete a WAL the replay never finished").exists();
+  }
+
   @Test
   void normalRotationStillWorksAfterSuccessfulRecovery() throws Exception {
     final ObservingManager manager = installManager();
