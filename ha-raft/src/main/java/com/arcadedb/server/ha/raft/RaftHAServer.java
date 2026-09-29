@@ -1608,7 +1608,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final RaftServer.Division division = raftServer.getDivision(raftGroup.getGroupId());
       final LifeCycle.State divisionState = division.getInfo().getLifeCycleState();
-      if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION)
+      // CLOSING too (issue #8651): Ratis closes the division from the dying StateMachineUpdater thread, and that
+      // close can stay in CLOSING while the proxy reports RUNNING - a zombie that answered raftState=RUNNING.
+      if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION
+          || divisionState == LifeCycle.State.CLOSING)
         return divisionState;
     } catch (final Exception e) {
       // The division cannot be read - typically a transient window while the server is starting or an
