@@ -86,44 +86,6 @@ public class PaginatedComponentFile extends ComponentFile {
   private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> TOTAL_PAGES_UPDATER =
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "totalPages");
 
-  /** Nothing happened to the file since its last successful fsync: forcing it would persist nothing (issue #8626). */
-  static final int SYNC_CLEAN    = 0;
-  /** A page was written since the last successful fsync: the data has to be forced, the metadata does not. */
-  static final int SYNC_DATA     = 1;
-  /**
-   * The file was created, renamed or its state is unknown (recovery) since the last successful fsync: forced with its
-   * metadata, and its directory entry with it.
-   */
-  static final int SYNC_METADATA = 2;
-
-  /**
-   * What this file owes the disk, one of {@link #SYNC_CLEAN}, {@link #SYNC_DATA} or {@link #SYNC_METADATA} (issue
-   * #8626). {@link FileManager#syncFiles()} runs before every WAL deletion, the clean close included, and used to force
-   * every file of the database whether or not anything had been written to it: each of those calls still costs a
-   * device cache flush, about half a millisecond per file on an NVMe drive, so a read-only open + close of a database
-   * with a hundred indexed types spent 100 ms persisting nothing.
-   * <p>
-   * The protocol is ordered so that a concurrent write can never be lost between the two sides:
-   * <ul>
-   *   <li>a writer raises the state AFTER its bytes reached the channel, so a sync that observes the raised state
-   *   forces those bytes;</li>
-   *   <li>a sync CLAIMS the state (swaps it to clean) BEFORE it forces, so a write landing after the claim raises it
-   *   again and the next sync forces it; a write that landed before the claim is covered by this force;</li>
-   *   <li>a failed force gives the claimed state back, so the next pass retries it instead of skipping pages that
-   *   never reached the disk (#4934).</li>
-   * </ul>
-   * Every caller that deletes a WAL waits for the page writes the WAL protects to complete first (the pending-pages
-   * counter, or the flush-queue drain on close), and the state is raised inside {@link #write} before it returns, so
-   * those writes are always visible to the sync that follows.
-   * <p>
-   * Like {@link #totalPages} it is declared without an initializer: {@link #open} runs from the superclass constructor
-   * and may already have raised it, and an initializer would reset it once this class's constructor body runs.
-   */
-  private volatile int syncState;
-
-  private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> SYNC_STATE_UPDATER =
-      AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "syncState");
-
   public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
     public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
@@ -187,66 +149,13 @@ public class PaginatedComponentFile extends ComponentFile {
     }
   }
 
-  /**
-   * Forces the file to disk unconditionally, with its metadata when {@code metaData} is true or when the file still
-   * owes a metadata sync (see {@link #syncState}).
-   */
   public void force(final boolean metaData) throws IOException {
-    force(SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN), metaData);
-  }
-
-  /**
-   * Forces the file to disk only when it was written, created or renamed since its last successful fsync (issue
-   * #8626). Page writes alone need only the data forced ({@code fdatasync}): the file length they may have extended is
-   * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
-   * skips are not needed by anything. A created or renamed file is forced with its metadata.
-   *
-   * @return what was forced: {@link #SYNC_CLEAN} when the file owed nothing and no fsync ran, otherwise
-   * {@link #SYNC_DATA} or {@link #SYNC_METADATA}
-   *
-   * @throws IOException when the fsync failed; the file then still owes it, so the next call retries
-   */
-  public int forceIfModified() throws IOException {
-    final int claimed = SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN);
-    if (claimed == SYNC_CLEAN)
-      return SYNC_CLEAN;
-    return force(claimed, false) ? claimed : SYNC_CLEAN;
-  }
-
-  /** Whether the file was written, created or renamed since its last successful fsync (issue #8626). */
-  public boolean isModifiedSinceLastSync() {
-    return syncState != SYNC_CLEAN;
-  }
-
-  /**
-   * Makes the next {@link #forceIfModified()} force the file and its metadata whatever happened to it in this session.
-   * Used after an unclean shutdown, when nothing is known about which of the previous process's writes reached the
-   * disk (issue #8626).
-   */
-  public void markUnsynced() {
-    raiseSyncState(SYNC_METADATA);
-  }
-
-  private void raiseSyncState(final int state) {
-    SYNC_STATE_UPDATER.accumulateAndGet(this, state, Math::max);
-  }
-
-  /**
-   * @param claimed the sync state the caller took over; given back when the force does not complete, so a failed or
-   *                skipped fsync never lets the file look settled
-   *
-   * @return whether the file was forced; false when its channel is closed
-   */
-  private boolean force(final int claimed, final boolean metaData) throws IOException {
-    boolean forced = false;
     channelLock.readLock().lock();
     try {
       if (channel == null)
-        return false;
-
-      final boolean withMetaData = metaData || claimed == SYNC_METADATA;
+        return;
       try {
-        channel.force(withMetaData);
+        channel.force(metaData);
       } catch (final ClosedChannelException e) {
         logReopen("force");
         // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
@@ -254,18 +163,14 @@ public class PaginatedComponentFile extends ComponentFile {
         final boolean wasInterrupted = Thread.interrupted();
         try {
           reopenChannelUnderWriteLock();
-          channel.force(withMetaData);
+          channel.force(metaData);
         } finally {
           if (wasInterrupted)
             Thread.currentThread().interrupt();
         }
       }
-      forced = true;
-      return true;
     } finally {
       channelLock.readLock().unlock();
-      if (!forced && claimed != SYNC_CLEAN)
-        raiseSyncState(claimed);
     }
   }
 
@@ -314,8 +219,6 @@ public class PaginatedComponentFile extends ComponentFile {
         newFile = new File(osFile.getParentFile(), newFileName);
       try {
         Files.move(osFile.getAbsoluteFile().toPath(), newFile.getAbsoluteFile().toPath(), StandardCopyOption.ATOMIC_MOVE);
-        // THE NEW NAME IS A METADATA CHANGE THE NEXT SYNC HAS TO PERSIST (ISSUE #8626)
-        raiseSyncState(SYNC_METADATA);
         open(newFile.getAbsolutePath(), mode);
       } catch (Exception e) {
         open(filePath, mode);
@@ -450,11 +353,6 @@ public class PaginatedComponentFile extends ComponentFile {
       final int pagesAfterThisWrite = pageNumber + 1;
       if (pagesAfterThisWrite > totalPages)
         TOTAL_PAGES_UPDATER.accumulateAndGet(this, pagesAfterThisWrite, Math::max);
-
-      // AFTER THE WRITE TOO, SO A SYNC THAT SEES THE FILE AS MODIFIED FORCES THESE BYTES (ISSUE #8626). A CAS ONLY
-      // FROM CLEAN: A PENDING METADATA SYNC MUST NOT BE DOWNGRADED, AND A FILE ALREADY OWING ONE PAYS NO WRITE HERE
-      if (syncState == SYNC_CLEAN)
-        SYNC_STATE_UPDATER.compareAndSet(this, SYNC_CLEAN, SYNC_DATA);
     } finally {
       channelLock.readLock().unlock();
     }
@@ -623,10 +521,6 @@ public class PaginatedComponentFile extends ComponentFile {
     fileName = FileUtils.getFileNameFromPath(filePath);
 
     this.osFile = new File(filePath);
-    // A FILE THIS OPEN CREATES OWES ITS METADATA TO THE NEXT SYNC (ISSUE #8626). AN EXISTING ONE OWES NOTHING: IT WAS
-    // SYNCED BY THE CLEAN CLOSE THAT RELEASED IT, OR RECOVERY MARKS IT. A REOPEN (INTERRUPTED CHANNEL, RENAME) KEEPS
-    // WHATEVER THE FILE ALREADY OWED
-    final boolean creating = mode == MODE.READ_WRITE && !osFile.exists();
     this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
     this.channel = this.file.getChannel();
     doNotCloseOnInterrupt(this.channel);
@@ -635,8 +529,6 @@ public class PaginatedComponentFile extends ComponentFile {
     // rename. set() and not max(), so a file whose content was replaced under a rename cannot leave a stale higher
     // count behind. A partial tail left by a kill is floored away exactly as PaginatedComponent does it.
     this.totalPages = (int) (osFile.length() / pageSize);
-    if (creating)
-      raiseSyncState(SYNC_METADATA);
     this.open = true;
   }
 

@@ -20,15 +20,12 @@ package com.arcadedb.engine;
 
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,8 +42,6 @@ public class FileManager {
   private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap       = new ConcurrentHashMap<>();
   private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap         = new ConcurrentHashMap<>();
   private final        AtomicLong                                maxFilesOpened    = new AtomicLong();
-  // Data files forced by syncFiles() (issue #8626): what a clean close or a WAL rotation actually paid in fsyncs.
-  private final        AtomicLong                                syncedFiles       = new AtomicLong();
   // Bumps on every file registration / drop. Lets callers (e.g. PaginatedSparseVectorEngine's
   // refreshSegmentsFromFileManager) skip the O(total files) walk on the hot query path when the
   // FileManager is unchanged since their last observation - they cache the value here, compare on
@@ -116,7 +111,6 @@ public class FileManager {
   public static class FileManagerStats {
     public long maxOpenFiles;
     public long totalOpenFiles;
-    public long syncedFiles;
   }
 
   public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt) {
@@ -268,11 +262,7 @@ public class FileManager {
   }
 
   /**
-   * Forces to disk every data file written, created or renamed since its last successful fsync (issue #8626), and the
-   * directory of every created or renamed one. A file that nothing touched since then is skipped: it has nothing left
-   * to persist, and the WAL about to be deleted protects nothing in it.
-   *
-   * @return {@code true} when every file that needed it was fsynced; {@code false} when any fsync failed (#4934). After a
+   * @return {@code true} when every file was fsynced; {@code false} when any fsync failed (#4934). After a
    *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
    *     about to delete the WAL protecting that data must preserve it instead: the clean-close path keeps
    *     the WAL and the lock file so the next open recovers, and the runtime WAL-rotation path skips the
@@ -280,50 +270,17 @@ public class FileManager {
    */
   public boolean syncFiles() {
     boolean allSynced = true;
-    Set<Path> directoriesToSync = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
-          // #8626: ONLY THE FILES WRITTEN, CREATED OR RENAMED SINCE THEIR LAST SUCCESSFUL FSYNC. THOSE ARE EXACTLY THE
-          // ONES THE WAL ABOUT TO BE DELETED STILL PROTECTS: A FILE SYNCED BY A PREVIOUS PASS AND NOT WRITTEN SINCE HAS
-          // NOTHING LEFT TO PERSIST, AND FORCING IT ANYWAY STILL COSTS A DEVICE CACHE FLUSH PER FILE
-          final int synced = pcf.forceIfModified();
-          if (synced != PaginatedComponentFile.SYNC_CLEAN) {
-            syncedFiles.incrementAndGet();
-            if (synced == PaginatedComponentFile.SYNC_METADATA) {
-              // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO,
-              // WHICH AN FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES
-              final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-              if (parent != null) {
-                if (directoriesToSync == null)
-                  directoriesToSync = new HashSet<>();
-                directoriesToSync.add(parent.toPath());
-              }
-            }
-          }
+          pcf.force(true);
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, f.getFileName());
           allSynced = false;
         }
       }
     }
-
-    if (directoriesToSync != null)
-      for (final Path dir : directoriesToSync)
-        FileUtils.forceDirectory(dir);
-
     return allSynced;
-  }
-
-  /**
-   * Makes the next {@link #syncFiles()} force every data file, metadata included, whatever this session writes. Called
-   * before recovery replays the WAL of an unclean shutdown: which of the crashed process's writes reached the disk is
-   * unknown, so no file can be trusted to be settled (issue #8626).
-   */
-  public void markAllFilesUnsynced() {
-    for (final ComponentFile f : fileNameMap.values())
-      if (f instanceof PaginatedComponentFile pcf)
-        pcf.markUnsynced();
   }
 
   public synchronized void close() {
@@ -441,7 +398,6 @@ public class FileManager {
     final FileManagerStats stats = new FileManagerStats();
     stats.maxOpenFiles = maxFilesOpened.get();
     stats.totalOpenFiles = fileIdMap.size();
-    stats.syncedFiles = syncedFiles.get();
     return stats;
   }
 

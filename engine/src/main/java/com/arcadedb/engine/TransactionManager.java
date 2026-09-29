@@ -550,33 +550,16 @@ public class TransactionManager {
         }
 
         if (!walGapDetected) {
-          // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
-          // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
-          // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
-          if (database.getFileManager().syncFiles()) {
-            // REMOVE ALL WAL FILES
-            for (final WALFile file : activeWALFilePool) {
-              if (file == null)
-                continue;
-              try {
-                file.drop();
-                LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
-              } catch (final IOException e) {
-                LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
-              }
+          // REMOVE ALL WAL FILES
+          for (final WALFile file : activeWALFilePool) {
+            if (file == null)
+              continue;
+            try {
+              file.drop();
+              LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
             }
-          } else {
-            // #4934: THE FSYNC FAILED, SO THE REPLAYED PAGES MAY NEVER REACH THE DISK. KEEP THE WAL: RETIRED INTO THE
-            // INACTIVE POOL, IT IS DROPPED BY THE WAL ROTATION ONLY AFTER A LATER FSYNC SUCCEEDS, AND A CLOSE WHOSE FSYNC
-            // FAILS TOO PRESERVES IT WITH THE LOCK FILE SO THE NEXT OPEN REPLAYS IT AGAIN
-            LogManager.instance().log(this, Level.SEVERE,
-                "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
-                null, database);
-            for (final WALFile file : activeWALFilePool)
-              if (file != null) {
-                file.setActive(false);
-                inactiveWALFilePool.add(file);
-              }
           }
         } else {
           // Close WAL files without deleting: preserve for manual inspection after gap detection.

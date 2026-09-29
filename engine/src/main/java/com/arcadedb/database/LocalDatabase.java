@@ -137,7 +137,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -2850,12 +2849,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
 
-  /**
-   * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
-   * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
-   */
-  static volatile Consumer<LocalDatabase> TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
-
   private void closeInternal(final boolean drop) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
@@ -3238,16 +3231,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       ((LocalBucket) b).setCachedRecordCount(-1);
 
     executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
-
-    // #8626: A SYNC FORCES ONLY THE FILES WRITTEN SINCE THEIR LAST FSYNC, AND A CLEAN CLOSE IS WHAT LEAVES EVERY FILE
-    // SYNCED FOR THE NEXT OPEN. AFTER A CRASH NOTHING IS KNOWN ABOUT WHICH WRITES OF THE DEAD PROCESS REACHED THE DISK
-    // (A PROCESS CRASH LEAVES THEM IN THE OS PAGE CACHE, WHERE A LATER POWER LOSS STILL DROPS THEM), SO EVERY FILE IS
-    // TREATED AS UNSYNCED UNTIL THE FIRST SUCCESSFUL SYNC
-    fileManager.markAllFilesUnsynced();
-
-    final Consumer<LocalDatabase> beforeReplayHook = TEST_BEFORE_RECOVERY_REPLAY_HOOK;
-    if (beforeReplayHook != null)
-      beforeReplayHook.accept(this);
 
     transactionManager.checkIntegrity();
   }

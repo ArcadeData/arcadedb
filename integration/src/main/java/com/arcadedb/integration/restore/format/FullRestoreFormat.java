@@ -123,13 +123,6 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     checkRestoredDirectoryIsADatabase(databaseDirectory);
 
-    // THE FILES WERE SYNCED ONE BY ONE AS THEY WERE EXTRACTED; THEIR NAMES LIVE IN THE DIRECTORY, AND THE DIRECTORY ITSELF
-    // WAS JUST CREATED IN ITS PARENT, SO BOTH ARE FORCED TOO OR A POWER LOSS CAN STILL LOSE THE RESTORE (ISSUE #8626)
-    FileUtils.forceDirectory(databaseDirectory.toPath());
-    final File parentDirectory = databaseDirectory.getAbsoluteFile().getParentFile();
-    if (parentDirectory != null)
-      FileUtils.forceDirectory(parentDirectory.toPath());
-
     logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs,
         FileUtils.getSizeAsString(inputSource.fileSize()), FileUtils.getSizeAsString(stats.uncompressedSize()),
         stats.uncompressedSize() > 0 ? (stats.uncompressedSize() - inputSource.fileSize()) * 100 / stats.uncompressedSize() : 0);
@@ -254,8 +247,6 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       while ((len = inputFile.read(BUFFER)) > 0) {
         fileOut.write(BUFFER, 0, len);
       }
-      // DURABLE BEFORE THE RESTORE REPORTS SUCCESS: SEE ParallelZipExtractor, WHICH DOES THE SAME PER ENTRY (ISSUE #8626)
-      fileOut.getFD().sync();
     }
 
     final long origSize = uncompressedFile.length();
