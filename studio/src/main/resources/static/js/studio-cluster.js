@@ -109,21 +109,31 @@ var CLUSTER_SECURITY_CAPABILITIES = [
 /**
  * Whether every peer in the cluster status payload advertises `capability`.
  *
- * Returns { capability, determinable, ready, missing: [{ id, reason }], unjudged: [id] }.
+ * Returns { capability, determinable, ready, missing: [{ id, reason }], unverified: [{ id, reason }], unjudged: [id] }.
  *
  * Every node probes its peers since issue #7549, so the answer is read off the rows themselves and not off the
- * role of the node Studio happens to be served from (issue #8055). A row that carries `capabilities` or a
- * `capabilitiesUnknownReason` is an answer, whoever wrote it. A row that carries NEITHER is a peer this node has
+ * role of the node Studio happens to be served from (issue #8055). A row that carries `capabilities` is an
+ * answer, whoever wrote it. A row that carries NEITHER field is a peer this node has
  * no answer for yet - its first probe round has not finished. On the leader that is still a refusal, because the
  * leader's own gate refuses for any peer that has not proved it can decode the entry, so the row is reported. On
  * any other node it is not evidence of anything: the peer is listed in `unjudged` and left out of `missing`, so a
  * follower that has just started does not put a red banner on a healthy cluster.
  *
+ * A row that carries a `capabilitiesUnknownReason` but no `capabilities` is this node's probe failing to get an
+ * answer. On the leader that is a refusal - the leader's gate decides on its own probe - so the row is missing. On
+ * any other node it is this node's view only (issue #8540): a partial partition, or a firewall rule between two
+ * followers, fails the follower's probe while the leader, whose probe is the one that decides the 409, reaches the
+ * same peer fine. Such a row is listed in `unverified`, with the reason, and left out of `missing`, so the
+ * Security page names it without taking the Create controls away from a change the leader may accept; the
+ * leader's own 409 stays the authority and is rendered by clusterCapabilityRefusal(). A row whose peer ANSWERED
+ * without the capability is missing on every node, because the leader probes the same peer and gets the same
+ * build.
+ *
  * `determinable` says every peer could be judged; `ready` says no judged peer is missing the capability. A peer
- * this node did judge is reported even while another one is still unjudged.
+ * this node did judge is reported even while another one is still unjudged or unverified.
  */
 function clusterCapabilityReadiness(data, capability) {
-  var readiness = { capability: capability, determinable: false, ready: true, missing: [], unjudged: [] };
+  var readiness = { capability: capability, determinable: false, ready: true, missing: [], unverified: [], unjudged: [] };
 
   var peers = data && data.peers ? data.peers : [];
   if (peers.length === 0) return readiness;
@@ -138,8 +148,9 @@ function clusterCapabilityReadiness(data, capability) {
     var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
     if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
 
-    if (advertised === null && !peer.capabilitiesUnknownReason && !isLeader) {
-      readiness.unjudged.push(peer.id);
+    if (advertised === null && !isLeader) {
+      if (peer.capabilitiesUnknownReason) readiness.unverified.push({ id: peer.id, reason: peer.capabilitiesUnknownReason });
+      else readiness.unjudged.push(peer.id);
       continue;
     }
 
@@ -153,26 +164,56 @@ function clusterCapabilityReadiness(data, capability) {
     });
   }
 
-  readiness.determinable = readiness.unjudged.length === 0;
+  readiness.determinable = readiness.unjudged.length === 0 && readiness.unverified.length === 0;
   readiness.ready = readiness.missing.length === 0;
   return readiness;
 }
 
 /**
- * Every security capability that is not ready, as one array. Used by the banner here and, through
- * clusterLastData, by the Security page's gate.
+ * Every security capability that is not ready, or that has a peer this node could not verify, as one array. Used
+ * by the banner here and by the Security page's gate. An entry whose `ready` is still true carries only
+ * `unverified` peers: it is reported so the operator is told, and it gates nothing (issue #8540).
  */
 function clusterSecurityCapabilityGaps(data) {
   var gaps = [];
   for (var i = 0; i < CLUSTER_SECURITY_CAPABILITIES.length; i++) {
     var entry = CLUSTER_SECURITY_CAPABILITIES[i];
     var readiness = clusterCapabilityReadiness(data, entry.capability);
-    if (!readiness.ready) {
+    if (!readiness.ready || readiness.unverified.length > 0) {
       readiness.what = entry.what;
       gaps.push(readiness);
     }
   }
   return gaps;
+}
+
+/** The `<li>` rows naming each peer and its reason, escaped. Shared by the Cluster page and the Security page. */
+function clusterCapabilityPeerList(peers) {
+  var html = "";
+  for (var p = 0; p < peers.length; p++)
+    html += "<li><b>" + escapeHtml(peers[p].id) + "</b>: " + escapeHtml(peers[p].reason) + "</li>";
+  return html;
+}
+
+/**
+ * The paragraph naming the peers this node could not verify (issue #8540), or "" when there are none. It says the
+ * verdict is this node's view and that the leader decides on its own probe, because a follower cut off from a peer
+ * the leader still reaches is exactly the case in which the change goes through. It does not claim the peer is
+ * merely unreachable: a peer on a build without the capability route answers 404 and lands here too, and on a
+ * follower the client cannot tell the two apart without matching the server's message text.
+ */
+function clusterCapabilityUnverifiedNote(gap) {
+  if (!gap || !gap.unverified || gap.unverified.length === 0) return "";
+  return (
+    '<div class="mt-1">This node got no answer from the peer(s) below when it asked whether they can decode a <code>' +
+    escapeHtml(gap.capability) +
+    "</code> entry. That is this node's view only: they may be unreachable from here alone, or run a build that " +
+    "predates the question. The leader asks them itself and decides, so the change may well be accepted - if the " +
+    "leader cannot confirm them either, it refuses the change and nothing is written.</div>" +
+    '<ul class="mb-1 mt-1">' +
+    clusterCapabilityPeerList(gap.unverified) +
+    "</ul>"
+  );
 }
 
 // Renders the banner that says the cluster is not ready for a security change, BEFORE the operator attempts one
@@ -195,10 +236,22 @@ function renderClusterCapabilityReadiness(data) {
 
   for (var i = 0; i < gaps.length; i++) {
     var gap = gaps[i];
-    var peerList = "";
-    for (var p = 0; p < gap.missing.length; p++) {
-      peerList +=
-        '<li><b>' + escapeHtml(gap.missing[p].id) + "</b>: " + escapeHtml(gap.missing[p].reason) + "</li>";
+    var peerList = clusterCapabilityPeerList(gap.missing);
+    var unverifiedNote = clusterCapabilityUnverifiedNote(gap);
+
+    if (gap.ready) {
+      // Only peers THIS node got no answer from (issue #8540): the leader decides on its own probe, so this is not a
+      // refusal and must not read like one.
+      container.append(
+        '<div class="alert alert-info py-2 px-3 mb-2" style="font-size:0.82rem;">' +
+          '<div><i class="fas fa-info-circle" style="margin-right:6px;"></i>' +
+          "<b>" +
+          escapeHtml(gap.what) +
+          " could not be verified from this node.</b></div>" +
+          unverifiedNote +
+          "</div>"
+      );
+      continue;
     }
 
     container.append(
@@ -214,6 +267,7 @@ function renderClusterCapabilityReadiness(data) {
         "</ul>" +
         "<div>Finish the rolling upgrade - or restore contact with those peers - and the change succeeds unchanged, " +
         "with no sequencing by hand.</div>" +
+        unverifiedNote +
         "</div>"
     );
   }
