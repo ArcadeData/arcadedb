@@ -371,6 +371,10 @@ public class TransactionContext implements Transaction {
     newPages = new LinkedHashMap<>(16);
   }
 
+  /**
+   * Commits this transaction. It does not save a pending schema change: {@link LocalDatabase#commit()} does, once this
+   * context has left the stack (#8635), so a commit has to go through it rather than call this directly.
+   */
   @Override
   public Binary commit() {
     if (status == STATUS.INACTIVE)
