@@ -188,27 +188,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     open = false;
   }
 
+  /**
+   * Goes through {@code httpCommand} like {@link RemoteServer#drop}, for its election retry, failover and typed exceptions.
+   */
   @Override
   public void drop() {
     checkDatabaseIsOpen();
-    try {
-      final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
-      String payload = getRequestPayload(jsonRequest);
-
-      HttpRequest request =
-          createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
-              .header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
-
-      if (response.statusCode() != 200) {
-        final Exception detail = manageException(response, "drop database");
-        throw new RemoteException("Error on deleting database", detail);
-      }
-
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on deleting database", e);
-    }
+    httpCommand("POST", null, "server", null, "drop database " + databaseName, null, true, true, null);
     close();
   }
 
