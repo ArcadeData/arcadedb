@@ -418,7 +418,7 @@ public class LocalSchema implements Schema {
    */
   private             boolean                                recordingSavePending          = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
-  private volatile    Boolean                                hasUnidirectionalEdgeTypes;
+  private volatile    UnidirectionalFlag                     unidirectionalFlag;
   private volatile    long                                   typesChangeSerial;
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
@@ -4548,15 +4548,18 @@ public class LocalSchema implements Schema {
    */
   @Override
   public boolean hasUnidirectionalEdgeTypes() {
-    Boolean cached = hasUnidirectionalEdgeTypes;
-    if (cached == null) {
-      final long serial = typesChangeSerial;
-      cached = Schema.super.hasUnidirectionalEdgeTypes();
-      // KEPT ONLY IF THE TYPES DID NOT CHANGE WHILE IT WAS COMPUTED: IT MAY DESCRIBE THE GRAPH THAT WAS REPLACED
-      if (typesChangeSerial == serial)
-        hasUnidirectionalEdgeTypes = cached;
-    }
-    return cached;
+    // THE ANSWER CARRIES THE SERIAL IT WAS COMPUTED AT AND IS SERVED ONLY UNDER THAT SERIAL: ONE COMPUTED FROM A GRAPH
+    // REPLACED MEANWHILE, EVEN IF STORED AFTER THE REPLACEMENT, IS NEVER ANSWERED
+    final long serial = typesChangeSerial;
+    final UnidirectionalFlag cached = unidirectionalFlag;
+    if (cached != null && cached.serial() == serial)
+      return cached.value();
+    final boolean value = Schema.super.hasUnidirectionalEdgeTypes();
+    unidirectionalFlag = new UnidirectionalFlag(serial, value);
+    return value;
+  }
+
+  private record UnidirectionalFlag(long serial, boolean value) {
   }
 
   /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */
@@ -4564,10 +4567,9 @@ public class LocalSchema implements Schema {
     return typesChangeSerial;
   }
 
-  /** Forgets what was derived from the types: {@link #hasUnidirectionalEdgeTypes()} and the serial memos key on. */
+  /** Moves the serial every answer derived from the types is stamped with, so none computed before is served again. */
   private void typesChanged() {
     ++typesChangeSerial;
-    hasUnidirectionalEdgeTypes = null;
   }
 
   private void rebuildBucketTypeMap() {
