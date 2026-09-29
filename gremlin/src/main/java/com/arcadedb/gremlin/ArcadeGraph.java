@@ -269,8 +269,8 @@ public class ArcadeGraph implements Graph, Closeable {
    */
   private static int resolveRemoteGremlinPort(final RemoteDatabase remoteDatabase) {
     final int configured = remoteDatabase.getClientConfiguration().getValueAsInteger(GlobalConfiguration.GREMLIN_CLIENT_PORT);
-    if (configured > 65535)
-      throw new IllegalArgumentException(GlobalConfiguration.GREMLIN_CLIENT_PORT.getKey() + " must be a TCP port (1-65535), found "
+    if (configured < 0 || configured > 65535)
+      throw new IllegalArgumentException(GlobalConfiguration.GREMLIN_CLIENT_PORT.getKey() + " must be a TCP port (1-65535), or 0 for unset, found "
           + configured);
     if (configured > 0)
       return configured;

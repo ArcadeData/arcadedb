@@ -196,6 +196,7 @@ public class ClusterAlerts {
     static NodeStatus of(final ArcadeStateMachine stateMachine) {
       if (stateMachine == null)
         return new NodeStatus(null, null, false, true);
+      // Only GetClusterHandler samples the security-convergence gate: it needs the server, which this overload lacks
       return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true,
           stateMachine.getBootstrapInstallsInFlight(), stateMachine.getBootstrapPassesDeciding(),
           SecurityConvergenceStatus.NOT_CONVERGING);
