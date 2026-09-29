@@ -1,0 +1,255 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.schema;
+
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mockStatic;
+
+/**
+ * Issue #8635: every DDL statement rewrote {@code schema.json} several times - five for a type, two for a property
+ * or an index - and each rewrite is an fsync'd atomic publication, so on a real disk a type with one property and one
+ * index cost about 150 ms. Wrapping the DDL in a transaction did not help as much as it should have, because the
+ * internal transactions a DDL runs (the dictionary entry for a new name, the index build) committed on their own and
+ * saved the schema on the way out, outer transaction or not.
+ * <p>
+ * The number counted here is {@link LocalSchema#getVersion()}, which moves once per write of {@code schema.json} and
+ * never otherwise, so the assertions are exact and independent of the disk the test runs on.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
+
+  @Test
+  void createDocumentTypeWritesTheSchemaOnce() {
+    assertThat(schemaWritesOf(() -> database.getSchema().createDocumentType("Doc"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.getSchema().buildDocumentType().withName("Doc4").withTotalBuckets(4).create()))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void createVertexAndEdgeTypeWriteTheSchemaOnce() {
+    assertThat(schemaWritesOf(() -> database.getSchema().createVertexType("V1"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.getSchema().createEdgeType("E1"))).isEqualTo(1);
+  }
+
+  @Test
+  void createPropertyWritesTheSchemaOnce() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    // A NAME THE DICTIONARY HAS NEVER SEEN: ITS ENTRY IS COMMITTED BY AN INTERNAL TRANSACTION, WHICH USED TO SAVE TOO
+    assertThat(schemaWritesOf(() -> type.createProperty("neverSeenBefore", Type.LONG))).isEqualTo(1);
+  }
+
+  @Test
+  void createTypeIndexWritesTheSchemaOnce() {
+    database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(3).create().createProperty("k", Type.LONG);
+    assertThat(schemaWritesOf(
+        () -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Doc", "k"))).isEqualTo(1);
+  }
+
+  @Test
+  void createTypeIndexOnAPopulatedTypeWritesTheSchemaOnce() {
+    database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(3).create().createProperty("k", Type.LONG);
+    database.transaction(() -> {
+      for (int i = 0; i < 300; i++)
+        database.newDocument("Doc").set("k", i).save();
+    });
+
+    assertThat(schemaWritesOf(
+        () -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "k"))).isEqualTo(1);
+    assertThat(database.query("sql", "select from Doc where k = 150").stream().count()).isEqualTo(1);
+  }
+
+  @Test
+  void sqlDdlStatementsWriteTheSchemaOnceEach() {
+    assertThat(schemaWritesOf(() -> database.command("sql", "CREATE DOCUMENT TYPE SqlDoc"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.command("sql", "CREATE PROPERTY SqlDoc.k LONG"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.command("sql", "CREATE INDEX ON SqlDoc (k) NOTUNIQUE"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.command("sql", "CREATE VERTEX TYPE SqlVertex"))).isEqualTo(1);
+    assertThat(schemaWritesOf(() -> database.command("sql", "CREATE EDGE TYPE SqlEdge"))).isEqualTo(1);
+  }
+
+  @Test
+  void ddlScriptWritesTheSchemaOnce() {
+    // A PURE-DDL SCRIPT RUNS AS ONE SCHEMA SESSION (#6990), SO THE WHOLE SCRIPT IS ONE WRITE
+    assertThat(schemaWritesOf(() -> database.command("sqlscript", """
+        CREATE DOCUMENT TYPE S1;
+        CREATE PROPERTY S1.k LONG;
+        CREATE INDEX ON S1 (k) NOTUNIQUE;
+        CREATE DOCUMENT TYPE S2;
+        CREATE PROPERTY S2.k LONG;
+        CREATE INDEX ON S2 (k) NOTUNIQUE;
+        """))).isEqualTo(1);
+  }
+
+  @Test
+  void ddlInsideATransactionWritesTheSchemaOnceAtCommit() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    for (int i = 0; i < 10; i++) {
+      final DocumentType type = database.getSchema().createDocumentType("T" + i);
+      type.createProperty("k" + i, Type.LONG);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "T" + i, "k" + i);
+    }
+    // NOTHING WRITTEN WHILE THE TRANSACTION IS OPEN: NOT BY THE DDL, NOT BY THE INTERNAL TRANSACTIONS IT RAN
+    assertThat(schema.getVersion()).isEqualTo(before);
+    assertThat(schema.isDirty()).isTrue();
+
+    database.commit();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+
+    // AND THE ONE WRITE HOLDS ALL OF IT
+    reopenDatabase();
+    for (int i = 0; i < 10; i++) {
+      assertThat(database.getSchema().existsType("T" + i)).isTrue();
+      assertThat(database.getSchema().getType("T" + i).existsProperty("k" + i)).isTrue();
+      assertThat(database.getSchema().getType("T" + i).getAllIndexes(false)).hasSize(1);
+    }
+  }
+
+  @Test
+  void bulkChangeWritesTheSchemaOnce() {
+    assertThat(schemaWritesOf(() -> database.getSchema().bulkChange(() -> {
+      for (int i = 0; i < 5; i++) {
+        database.getSchema().createDocumentType("B" + i).createProperty("k", Type.LONG);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "B" + i, "k");
+      }
+    }))).isEqualTo(1);
+  }
+
+  @Test
+  void ddlInsideARolledBackTransactionIsWrittenAtTheRollback() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("Doc").createProperty("k", Type.LONG);
+    assertThat(schema.getVersion()).isEqualTo(before);
+
+    // A SCHEMA CHANGE IS NOT TRANSACTIONAL: THE TYPE AND ITS BUCKET FILE STAND AFTER THE ROLLBACK, SO THE FILE HAS TO
+    // SAY SO NOW, NOT WHENEVER THE NEXT UNRELATED SCHEMA CHANGE OR THE CLOSE HAPPENS TO WRITE IT
+    database.rollback();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Doc").existsProperty("k")).isTrue();
+  }
+
+  @Test
+  void aFailedDdlStillWritesWhatItsNestedStepsApplied() {
+    // TWO BUCKETS, THE SAME KEY IN EACH: THE UNIQUE INDEX IS CREATED AND BUILT BUCKET BY BUCKET, EACH IN A TRANSACTION
+    // OF ITS OWN, AND THE SECOND ONE FAILS. THE STEPS BEFORE IT LEFT THEIR SAVE TO THE DDL, WHICH NEVER GOT TO ITS OWN
+    database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(2).create().createProperty("k", Type.LONG);
+    database.transaction(() -> {
+      database.newDocument("Doc").set("k", 1).save();
+      database.newDocument("Doc").set("k", 1).save();
+    });
+
+    assertThatThrownBy(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "k"))
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    assertThat(schema.isDirty()).isFalse();
+    final int indexesInMemory = database.getSchema().getType("Doc").getAllIndexes(false).size();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).hasSize(indexesInMemory);
+    assertThat(database.countType("Doc", false)).isEqualTo(2);
+  }
+
+  @Test
+  void aSchemaWriteForcesTheDatabaseDirectoryOnce() {
+    // schema.prev.json AND schema.json ARE PUBLISHED INTO THE SAME DIRECTORY, AND ONE FSYNC OF IT AFTER THE SECOND
+    // RENAME MAKES BOTH DURABLE: THE COPY USED TO FORCE IT TOO, A SECOND FULL DEVICE FLUSH ON EVERY SCHEMA CHANGE
+    final Path databaseDirectory = ((LocalSchema) database.getSchema().getEmbedded()).getConfigurationFile().toPath()
+        .toAbsolutePath().getParent();
+    final AtomicInteger opens = new AtomicInteger();
+    try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+      if ("open".equals(invocation.getMethod().getName()) && invocation.getMethod().getParameterCount() == 2
+          && databaseDirectory.equals(invocation.getArgument(0)))
+        opens.incrementAndGet();
+      return invocation.callRealMethod();
+    })) {
+      assertThat(schemaWritesOf(() -> database.getSchema().createDocumentType("Doc").createProperty("k", Type.LONG)))
+          .isEqualTo(2);
+    }
+    assertThat(opens.get()).isEqualTo(System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win") ? 0 : 2);
+  }
+
+  @Test
+  void nestedTransactionCommitDoesNotWriteWhileTheOuterOneIsOpen() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("Doc");
+    assertThat(schema.isDirty()).isTrue();
+
+    // A PROPERTY NAME THE DICTIONARY HAS NEVER SEEN: ITS ENTRY IS COMMITTED BY A NESTED TRANSACTION, WHICH USED TO
+    // WRITE THE DIRTY SCHEMA UNDER THE OUTER TRANSACTION'S FEET
+    final MutableDocument doc = database.newDocument("Doc");
+    doc.set("aNameTheDictionaryHasNeverSeen", 1).save();
+    assertThat(schema.getVersion()).isEqualTo(before);
+
+    database.commit();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+  }
+
+  @Test
+  void everyDdlIsDurableAfterItsSingleWrite() {
+    database.getSchema().createDocumentType("Doc").createProperty("k", Type.LONG);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "k");
+    database.getSchema().createVertexType("V").createProperty("name", Type.STRING);
+    database.getSchema().createEdgeType("E");
+
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    assertThat(schema.isDirty()).isFalse();
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Doc").existsProperty("k")).isTrue();
+    assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).hasSize(1);
+    assertThat(database.getSchema().getType("Doc").getBuckets(false)).isNotEmpty();
+    assertThat(database.getSchema().getType("V").existsProperty("name")).isTrue();
+    assertThat(database.getSchema().existsType("E")).isTrue();
+  }
+
+  private long schemaWritesOf(final Runnable ddl) {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final long before = schema.getVersion();
+    ddl.run();
+    assertThat(schema.isDirty()).isFalse();
+    return schema.getVersion() - before;
+  }
+}
