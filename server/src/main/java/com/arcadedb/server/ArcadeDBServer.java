@@ -1634,7 +1634,7 @@ public class ArcadeDBServer {
   }
 
   /** The security-convergence readiness window every readiness surface of this server shares (issue #8446). */
-  public SecurityConvergenceWindow getSecurityConvergenceWindow() {
+  SecurityConvergenceWindow getSecurityConvergenceWindow() {
     return securityConvergenceWindow;
   }
 

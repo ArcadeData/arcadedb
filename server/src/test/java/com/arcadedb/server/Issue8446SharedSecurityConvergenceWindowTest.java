@@ -34,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -160,6 +161,58 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
   }
 
   /**
+   * A forward join move seen by both surfaces at once (issue #8414's fresh window, now shared): exactly one of them
+   * clears the spent window, both are held by the fresh one, and when it expires it is reported once.
+   */
+  @Test
+  void surfacesRacingOverAJoinMoveShareOneFreshWindow() throws Exception {
+    final int rounds = 200;
+    final AtomicInteger giveUpLines = new AtomicInteger();
+    final Logger original = installGiveUpCountingLogger(giveUpLines);
+    final ExecutorService probes = Executors.newFixedThreadPool(2);
+    try {
+      for (int round = 0; round < rounds; round++) {
+        final AtomicLong joinIndex = new AtomicLong(10L);
+        final ArcadeDBServer server = heldServer(1L, joinIndex);
+        final ServerControlPlane http = new ServerControlPlane(server);
+        final ServerControlPlane grpc = new ServerControlPlane(server);
+
+        http.notReadyReason();  // the first join opens its window
+        await(2L);
+        http.notReadyReason();  // and gives up on it
+        assertThat(giveUpLines.get()).isEqualTo(2 * round + 1);
+
+        // The window is read at every probe: long while the surfaces race, so neither can find it expired merely
+        // because its thread was scheduled late, and short again to watch it expire.
+        final ContextConfiguration configuration = server.getConfiguration();
+        configuration.setValue(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT, 60_000L);
+        joinIndex.set(20L);     // the operator re-adds the node
+        final CountDownLatch start = new CountDownLatch(1);
+        final Future<String> fromHttp = probes.submit(() -> {
+          start.await();
+          return http.notReadyReason();
+        });
+        final Future<String> fromGrpc = probes.submit(() -> {
+          start.await();
+          return grpc.notReadyReason();
+        });
+        start.countDown();
+        assertThat(fromHttp.get(10, TimeUnit.SECONDS)).as("the re-add holds the HTTP surface").isNotNull();
+        assertThat(fromGrpc.get(10, TimeUnit.SECONDS)).as("and the gRPC one").isNotNull();
+
+        configuration.setValue(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT, 1L);
+        await(2L);
+        assertThat(grpc.notReadyReason()).isNull();
+        assertThat(http.notReadyReason()).isNull();
+        assertThat(giveUpLines.get()).as("the re-add's window is reported once").isEqualTo(2 * round + 2);
+      }
+    } finally {
+      probes.shutdownNow();
+      LogManager.instance().setLogger(original);
+    }
+  }
+
+  /**
    * Reachability: a real server hands every control plane built on it - the HTTP handler's and the gRPC service's
    * alike - its one window, and a start forgets whatever a previous run of the same instance left in it, as a start
    * did when the handlers holding the window were rebuilt by every start.
@@ -177,7 +230,7 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     window.joinIndex = 42L;
     window.openedAt = 1L;
     window.giveUpLogged.set(true);
-    window.leaderLoggedFor = 42L;
+    window.leaderLoggedFor.set(42L);
 
     realServer.start();
 
@@ -185,19 +238,24 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     assertThat(window.joinIndex).isEqualTo(-1L);
     assertThat(window.openedAt).isZero();
     assertThat(window.giveUpLogged.get()).isFalse();
-    assertThat(window.leaderLoggedFor).isEqualTo(-1L);
+    assertThat(window.leaderLoggedFor.get()).isEqualTo(-1L);
   }
 
   // -----------------------------------------------------------------------------------------------------------
 
   /** A server held by the gate: an armed, caught-up runtime joiner missing every security document. */
   private static ArcadeDBServer heldServer(final long windowMs) {
+    return heldServer(windowMs, new AtomicLong(10L));
+  }
+
+  /** As above, with the join index read from {@code joinIndex} at every probe. */
+  private static ArcadeDBServer heldServer(final long windowMs, final AtomicLong joinIndex) {
     final HAServerPlugin ha = mock(HAServerPlugin.class);
     when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
     when(ha.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.READY);
     when(ha.getConfiguredServers()).thenReturn(3);
     when(ha.hasJoinedClusterAtRuntime()).thenReturn(true);
-    when(ha.getRuntimeJoinIndex()).thenReturn(10L);
+    when(ha.getRuntimeJoinIndex()).thenAnswer(invocation -> joinIndex.get());
     when(ha.securityDocumentsNotInstalledSinceRuntimeJoin()).thenReturn(List.of("users"));
 
     final ServerSecurity security = mock(ServerSecurity.class);

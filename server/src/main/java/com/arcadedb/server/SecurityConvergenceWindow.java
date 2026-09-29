@@ -19,6 +19,7 @@
 package com.arcadedb.server;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The state of the security-convergence readiness window (issue #7532, per join since #8414), owned by the
@@ -33,10 +34,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * a window of its own, as it did when the handlers holding it were rebuilt by every start.
  * <p>
  * The fields are read and written by concurrent readiness probes on HTTP worker and gRPC threads, hence volatile;
- * the decisions made on them are {@link ServerControlPlane}'s. The give-up flag is an {@link AtomicBoolean} so that
- * the probes of both surfaces racing past the expiry still emit the SEVERE line exactly once.
+ * the decisions made on them are {@link ServerControlPlane}'s. The give-up flag and the leader line's marker are
+ * atomics so that the probes of both surfaces racing past the same check still emit each line exactly once.
  */
-public final class SecurityConvergenceWindow {
+final class SecurityConvergenceWindow {
   /**
    * When this node first found itself held by the gate, or {@code 0} while there is no such window open. Two probes
    * racing to open the window differ by the time between them, which is not a difference this gate can act on.
@@ -56,13 +57,17 @@ public final class SecurityConvergenceWindow {
    * The {@link #joinIndex} for which the "leading, so nobody can confirm" line was last emitted, {@code -1} before
    * any (issue #8465).
    */
-  volatile long          leaderLoggedFor = -1L;
+  final    AtomicLong    leaderLoggedFor = new AtomicLong(-1L);
 
-  /** Forgets every window and every logged decision: a server that (re)starts has not been held yet. */
-  void reset() {
+  /**
+   * Forgets every window and every logged decision: a server that (re)starts has not been held yet. Called at the top
+   * of the server's start, before the HTTP listener and the HA and gRPC plugins exist, so no probe can interleave with
+   * it; taken under the same monitor as the join-index transition anyway, since it writes the same fields.
+   */
+  synchronized void reset() {
     openedAt = 0L;
     giveUpLogged.set(false);
     joinIndex = -1L;
-    leaderLoggedFor = -1L;
+    leaderLoggedFor.set(-1L);
   }
 }

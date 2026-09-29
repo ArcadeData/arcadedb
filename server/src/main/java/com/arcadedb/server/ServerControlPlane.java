@@ -598,8 +598,7 @@ public class ServerControlPlane {
       // pull a node that has been READY for hours out of the Service because it once led an election.
       if (!convergence.giveUpLogged.get())
         convergence.openedAt = 0L;
-      if (convergence.leaderLoggedFor != joinIndex) {
-        convergence.leaderLoggedFor = joinIndex;
+      if (convergence.leaderLoggedFor.getAndSet(joinIndex) != joinIndex) {
         LogManager.instance().log(this, Level.WARNING,
             "This node leads the cluster while its security documents are still unconfirmed since %s: %s. Nobody can "
                 + "confirm them while it leads, so readiness is not held for them; its security catch-up asks the next "
