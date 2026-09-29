@@ -247,6 +247,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   // #4958: both fields are read/written outside the freeSpaceInPages monitor on some paths (delete,
   // updatePageStatistics), so they must be safe on their own: volatile timestamp + atomic counter.
   private volatile       long                      timeOfLastStats                  = 0L;
+  // #8660: a gather stops at MAX_PAGES_GATHER_STATS entries. When it did, the next one resumes at the page after the one it
+  // stopped on instead of rescanning the same head of the file, and is not held back by the timeout. Guarded by the
+  // `freeSpaceInPages` monitor.
+  private                int                       gatherResumePage                 = 0;
+  private                boolean                   gatherTruncated                  = false;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
@@ -492,6 +497,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void close() {
     super.close();
     freeSpaceInPages.clear();
+    gatherTruncated = false;
+    gatherResumePage = 0;
     insertReservations.clear();
   }
 
@@ -6287,6 +6294,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord,
                       avoidPageNumber);
           }
+
+          if (bestPageAnalysis == null && gatherTruncated) {
+            // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
+            gatherPageStatistics();
+            if (!freeSpaceInPages.isEmpty())
+              bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord, avoidPageNumber);
+          }
         }
 
         if (bestPageAnalysis != null) {
@@ -6412,19 +6426,28 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    */
   public void gatherPageStatistics() {
     final boolean firstRun = timeOfLastStats == 0L;
-    if (!firstRun && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+    // #8660: a scan cut short by the entry cap left pages unvisited, so the next one is due whatever the clock and the change
+    // counter say. It cannot loop on a bucket with nothing to offer: the cursor moves on, and only a scan that reaches the
+    // end of the file without filling the map goes back to being throttled.
+    final boolean resuming = gatherTruncated;
+    if (!firstRun && !resuming && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
       return;
 
     // #5063: consume the change counter atomically at the decision point. The previous
     // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
     // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
     final long consumedChanges = changesFromLastStats.getAndSet(0L);
-    if (consumedChanges > 0 || firstRun)
+    if (consumedChanges > 0 || firstRun || resuming)
       try {
         int txPageCount = getTotalPages();
 
         synchronized (freeSpaceInPages) {
-          for (int pageId = 0; pageId < txPageCount - 2; ++pageId) {
+          final int pagesToScan = Math.max(0, txPageCount - 2);
+          final int startPage = gatherTruncated && gatherResumePage < pagesToScan ? gatherResumePage : 0;
+          gatherTruncated = false;
+
+          int pageId = startPage;
+          for (int scanned = 0; scanned < pagesToScan; ++scanned) {
             final BasePage page = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageId), pageSize);
             final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
             final List<int[]> orderedRecordContentInPage = getOrderedRecordsInPage(page, recordCountInPage);
@@ -6438,8 +6461,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC)
               freeSpaceInPages.put(pageId, freeSpaceInPage);
 
-            if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS)
+            ++pageId;
+            if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
+              // #8660: THE MAP IS FULL. REMEMBER WHERE TO PICK UP WHEN IT DRAINS
+              gatherTruncated = scanned + 1 < pagesToScan;
+              gatherResumePage = pageId < pagesToScan ? pageId : 0;
               break;
+            }
+            if (pageId >= pagesToScan)
+              pageId = 0;
           }
 
           timeOfLastStats = System.currentTimeMillis();
@@ -6513,8 +6543,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final int newSpace = availableSpace + delta;
 
         if (hasEntry) {
-          if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS
-                  && newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC))
+          // #8660: a page under the threshold is one gatherPageStatistics() would not list, and keeping it until the map fills
+          // up leaves the map full of pages that cannot take a record, which nothing then removes
+          if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC)
             freeSpaceInPages.remove(pageId, -1);
           else
             freeSpaceInPages.put(pageId, newSpace);

@@ -57,6 +57,7 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
@@ -3677,9 +3678,10 @@ public class SelectExecutionPlanner {
           filterClusterIds = filterClusters.stream()
               .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).boxed().toList();
 
-        // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index
-        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
-          // NULLs are indexed, just use the index directly
+        // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index. The same goes when no record
+        // can hold a null for the first indexed property: it is NOTNULL, or the WHERE clause filters nulls out (#8664)
+        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.getFirst(), info)) {
+          // NULLs are indexed or there are none, just use the index directly
           plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
           plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
         } else {
@@ -3722,6 +3724,48 @@ public class SelectExecutionPlanner {
       }
     }
     return false;
+  }
+
+  /**
+   * True when no record this query returns can have a null (or missing) value for {@code propertyName}: the property is declared
+   * NOTNULL, or every branch of the WHERE clause has a conjunct that a null cannot satisfy. Lets an index-ordered read skip the
+   * full scan that would otherwise look for the records the index does not hold (#8664).
+   */
+  private static boolean cannotHoldNull(final DocumentType type, final String propertyName, final QueryPlanningInfo info) {
+    final Property property = type.getPropertyIfExists(propertyName);
+    if (property != null && property.isNotNull())
+      return true;
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+      return false;
+
+    for (final AndBlock branch : info.flattenedWhereClause) {
+      boolean excludes = false;
+      for (final BooleanExpression conjunct : branch.getSubBlocks())
+        if (excludesNull(conjunct, propertyName)) {
+          excludes = true;
+          break;
+        }
+      if (!excludes)
+        return false;
+    }
+    return true;
+  }
+
+  private static boolean excludesNull(final BooleanExpression conjunct, final String propertyName) {
+    if (conjunct instanceof IsNotNullCondition notNull)
+      return isPropertyReference(notNull.expression, propertyName);
+
+    if (conjunct instanceof BinaryCondition binary) {
+      final BinaryCompareOperator operator = binary.getOperator();
+      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof GeOperator
+          || operator instanceof LtOperator || operator instanceof LeOperator) && isPropertyReference(binary.getLeft(), propertyName);
+    }
+    return false;
+  }
+
+  private static boolean isPropertyReference(final Expression expression, final String propertyName) {
+    return expression != null && expression.isBaseIdentifier() && propertyName.equals(expression.getDefaultAlias().getStringValue());
   }
 
   private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
