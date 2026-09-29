@@ -601,7 +601,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               state.bufferedBytes += wal.length;
           } else
             tx.reset();
-          // DEFERRED TO THE recordFileChanges FRAME THIS COMMIT RUNS INSIDE, WHICH WRITES THE FILE ONCE ON ITS WAY OUT (#8635)
+          // THIS ARM RUNS ONLY ON THE THREAD OF AN OPEN recordFileChanges FRAME, WHICH WRITES THE FILE ON ITS WAY OUT (#8635)
           getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         } catch (final ArcadeDBException e) {
           // Issue #8149: the same answer as the ordinary arm below. Without it a refused DDL commit left its
