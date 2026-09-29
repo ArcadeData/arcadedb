@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.server.http.handler.PostBatchHandler.WriteBoundedOutputStream;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -95,14 +94,24 @@ class WriteBoundedOutputStreamTest {
         "a write bounded by the watchdog from one held until the peer goes away");
   }
 
-  /** Every call that can block is bounded, not only the flush that usually reaches the socket. */
+  /**
+   * Every call that can reach the response is bounded: a write too large for the stream's own buffer, a flush and a
+   * close - the last two also when all they have to hand on is what earlier, unarmed writes buffered.
+   */
   @Test
   void theBoundCoversEveryBlockingCallOfTheStream() throws Exception {
     for (final ThrowingCall call : new ThrowingCall[] {
-        stream -> stream.write(new byte[] { 1, 2, 3 }),
-        stream -> stream.write(7),
+        stream -> stream.write(new byte[WriteBoundedOutputStream.BUFFER_SIZE + 1]),
         OutputStream::flush,
-        OutputStream::close }) {
+        OutputStream::close,
+        stream -> {
+          stream.write(7);
+          stream.flush();
+        },
+        stream -> {
+          stream.write(new byte[] { 1, 2, 3 });
+          stream.close();
+        } }) {
 
       final CountDownLatch connectionClosed = new CountDownLatch(1);
       final WriteBoundedOutputStream out = new WriteBoundedOutputStream(blockingUntil(connectionClosed),
@@ -138,6 +147,109 @@ class WriteBoundedOutputStreamTest {
     assertThat(fired.get())
         .as("and must still leave none once the budget it would have used has elapsed")
         .isZero();
+  }
+
+  /**
+   * Issue #7806: the NDJSON query encoding writes one row per call. A call that only fills the stream's buffer cannot
+   * reach the socket, so it must not pay for a timer either - only the call that hands the buffer on does.
+   */
+  @Test
+  void aWriteThatFitsTheBufferArmsNothing() throws Exception {
+    final AtomicInteger armed = new AtomicInteger();
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink, countingWatchdog(armed));
+
+    final byte[] row = "{\"record\":{\"n\":1}}\n".getBytes();
+    final int rows = WriteBoundedOutputStream.BUFFER_SIZE / row.length;
+    for (int i = 0; i < rows; i++)
+      out.write(row);
+    assertThat(armed.get()).as("rows that fit the buffer arm no timer").isZero();
+    assertThat(sink.size()).as("and reach nothing below it").isZero();
+
+    out.flush();
+    assertThat(armed.get()).as("the flush hands the buffer on and flushes it under ONE timer").isEqualTo(1);
+    assertThat(sink.size()).isEqualTo(rows * row.length);
+  }
+
+  /**
+   * A write larger than the buffer is handed on in chunks, each armed on its own, so a large row sent to a slow but
+   * reading client is bounded per chunk of progress rather than charged its whole transfer time (code review).
+   */
+  @Test
+  void aLargeWriteIsBoundedPerChunk() throws Exception {
+    final AtomicInteger armed = new AtomicInteger();
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink, countingWatchdog(armed));
+
+    final byte[] large = new byte[WriteBoundedOutputStream.MAX_BOUNDED_CHUNK * 3 + 17];
+    for (int i = 0; i < large.length; i++)
+      large[i] = (byte) i;
+    out.write(large);
+
+    assertThat(armed.get()).isEqualTo(4);
+    assertThat(sink.toByteArray()).isEqualTo(large);
+  }
+
+  /** A close whose pending bytes cannot be handed on still closes the response, and reports the write that failed. */
+  @Test
+  void aCloseThatCannotHandOnItsBufferStillClosesAndReportsTheWrite() throws Exception {
+    final AtomicInteger closed = new AtomicInteger();
+    final OutputStream failing = new OutputStream() {
+      @Override
+      public void write(final int b) throws IOException {
+        throw new IOException("write refused");
+      }
+
+      @Override
+      public void write(final byte[] b, final int off, final int len) throws IOException {
+        throw new IOException("write refused");
+      }
+
+      @Override
+      public void close() throws IOException {
+        closed.incrementAndGet();
+        throw new IOException("close refused");
+      }
+    };
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(failing,
+        WriteBoundedOutputStream.WriteWatchdog.NONE);
+    out.write(new byte[] { 1, 2, 3 });
+
+    assertThatThrownBy(out::close)
+        .hasMessage("write refused")
+        .satisfies(e -> assertThat(e.getSuppressed()).extracting(Throwable::getMessage).containsExactly("close refused"));
+    assertThat(closed.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anOutOfBoundsWriteIsRefusedBeforeAnythingIsBuffered() {
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink, WriteBoundedOutputStream.WriteWatchdog.NONE);
+    assertThatThrownBy(() -> out.write(new byte[4], 2, 3)).isInstanceOf(IndexOutOfBoundsException.class);
+    assertThatThrownBy(() -> out.write(new byte[4], -1, 1)).isInstanceOf(IndexOutOfBoundsException.class);
+  }
+
+  /** Bytes buffered by writes of every shape come out in order, whole, on close. */
+  @Test
+  void bufferedBytesAreDeliveredInOrderOnClose() throws Exception {
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+    final ByteArrayOutputStream expected = new ByteArrayOutputStream();
+    try (final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink,
+        WriteBoundedOutputStream.WriteWatchdog.NONE)) {
+      for (int i = 0; i < 5_000; i++) {
+        final byte[] chunk = ("line-" + i + "\n").getBytes();
+        out.write(chunk);
+        expected.write(chunk);
+        out.write('#');
+        expected.write('#');
+        if (i % 997 == 0) {
+          final byte[] big = new byte[WriteBoundedOutputStream.BUFFER_SIZE + i];
+          out.write(big);
+          expected.write(big);
+        }
+      }
+    }
+    assertThat(sink.toByteArray()).isEqualTo(expected.toByteArray());
   }
 
   /** {@code NONE} is what a non-positive budget configures, and it must not get in the way of anything. */
@@ -200,6 +312,15 @@ class WriteBoundedOutputStreamTest {
         connectionClosed.countDown();
       }, budgetMs, TimeUnit.MILLISECONDS);
       return () -> scheduled.cancel(false);
+    };
+  }
+
+  /** Counts how often a timer is armed; never fires. */
+  private static WriteBoundedOutputStream.WriteWatchdog countingWatchdog(final AtomicInteger armed) {
+    return () -> {
+      armed.incrementAndGet();
+      return () -> {
+      };
     };
   }
 

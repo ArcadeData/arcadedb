@@ -604,6 +604,10 @@ public enum GlobalConfiguration {
       "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
       Long.class, 16L * 1024 * 1024),
 
+  TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
+      "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
+      Boolean.class, true),
+
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
       "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. This ordering guarantee applies only to the OLTP edge-list read walks (edgeIterator/vertexIterator/ridIterator): iteration order on promoted vertices is APPROXIMATELY newest-first instead of exactly newest-first, the stripe chains are interleaved so the newest edge is always within the first 'supernodeStripes' entries and an edge of recency rank r is returned at a position of order r, but only the order WITHIN a stripe is exact - an application needing an exact order must sort or use an index. That rank-fidelity holds for the whole read: the first 'supernodeInterleaveRounds x supernodeStripes' entries are taken one per stripe per turn and past that the rotation widens into geometrically growing batches, which costs the position of an entry a bounded factor rather than the relation to its rank (see GRAPH_SUPERNODE_INTERLEAVE_ROUNDS). It does NOT hold for a query the planner routes through a GraphAnalyticalView (e.g. GAVExpandAll): a view returns neighbours ordered by internal dense node ID, which carries no relationship to recency. 0 disables promotion entirely (databases stay fully readable by older versions)",
       Integer.class, 4096),
@@ -1375,6 +1379,15 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",
       Integer.class, 0),
 
+  NETWORK_RETRY_AFTER_MAX_WAIT("arcadedb.network.retryAfterMaxWait", SCOPE.SERVER, """
+      Upper bound, in milliseconds, on how long the remote client honors the Retry-After a server sends with a request it \
+      refused before running it (a 503 from a node installing a snapshot) before retrying it: the transaction retry loop \
+      and the election retry loop wait at least that long, and the hint is capped at this value, so a misbehaving \
+      server cannot park the client. A random spread of up to a tenth of the hint is added on top, so the clients a node \
+      refused together do not all come back at once. The most a refused request can wait is therefore 1.1 times this \
+      value per retry: txRetries - 1 pauses for a transaction, arcadedb.ha.clientElectionRetryCount for a command. 0 \
+      ignores Retry-After, leaving only the retry backoff (issue #8617)""", Long.class, 30_000L),
+
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
   NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT("arcadedb.network.remoteFetchConnectTimeout", SCOPE.SERVER, """
@@ -1715,19 +1728,22 @@ public enum GlobalConfiguration {
 
   SERVER_HTTP_STREAMING_WRITE_TIMEOUT("arcadedb.server.httpStreamingWriteTimeout", SCOPE.SERVER,
       """
-      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for \
-      (today only the newline-delimited answer of the bulk-load /api/v1/batch endpoint). That response is \
-      written while the request body is still being read, and its size grows with the size of the load, so a \
-      client that uploads everything before reading anything can fill the socket buffers between the two: the \
-      server then blocks inside a response write, and a server blocked there is not reading the upload either \
-      (issue #7381). This bounds that block instead of leaving it indefinite - the connection is closed, the \
-      load fails with a logged diagnosis and the worker thread is released. It is the write-side counterpart \
+      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for: \
+      the newline-delimited answer of the bulk-load /api/v1/batch endpoint, the newline-delimited query \
+      encoding of /query and /command (Accept: application/x-ndjson), the Server-Sent Events of the AI chat and \
+      of the long-running server commands, and a follower's relay of any of them. Their size grows with the \
+      size of a load, a result set or a conversation, so a client that stops reading fills the socket buffers \
+      and the server blocks inside a response write - on /batch, while not reading the upload either (issue \
+      #7381); everywhere else, holding a worker thread for as long as the client keeps the connection open \
+      (issue #7806). This bounds that block instead of leaving it indefinite - the connection is closed, the \
+      failure is logged with a diagnosis and the worker thread is released. It is the write-side counterpart \
       of 'arcadedb.server.httpStreamingReadTimeout' and is shorter than it on purpose: that budget covers a \
       pause nobody is at fault for (the server committing), while a write that has made no progress at all \
-      for this long means the peer stopped consuming. The timer is armed around one write and disarmed as \
-      soon as it returns, so a long server-side pause BETWEEN two writes never trips it. Set to 0, or to any \
-      negative value, to leave streamed writes unbounded (WARNING: restores the indefinite block). Default is \
-      1 minute""",
+      for this long means the peer stopped consuming. The timer is armed around each hand-off of at most \
+      64 KB to the socket and disarmed as soon as it returns, so a long server-side pause BETWEEN two writes \
+      never trips it, and a large response sent to a slow but reading client restarts it with every chunk. \
+      Set to 0, or to any negative value, to leave streamed writes unbounded (WARNING: restores the indefinite \
+      block). Default is 1 minute""",
       Integer.class, 60_000), // 1 MINUTE DEFAULT
 
   // SERVER gRPC

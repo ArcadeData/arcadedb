@@ -186,6 +186,8 @@ public class MergeRelationship implements CypherProcedure {
           + "' is declared LIGHTWEIGHT, so its edges cannot have properties and onMatchProps cannot be applied");
 
     final MutableEdge mutableEdge = existingEdge.modify();
+    // onMatchProps are constants, not computed from the edge read above: nothing for the stale-read refusal (#8610)
+    mutableEdge.clearBasedOnStaleRead();
     for (final Map.Entry<String, Object> entry : onMatchProps.entrySet())
       mutableEdge.set(entry.getKey(), entry.getValue());
     mutableEdge.save();

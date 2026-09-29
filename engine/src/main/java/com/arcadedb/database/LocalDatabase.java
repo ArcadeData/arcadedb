@@ -137,6 +137,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -1079,6 +1080,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+        // #8610: recorded before the read events run, which may hand back another record
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(tx.getBeginSequence());
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1086,6 +1090,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+      if (record instanceof ImmutableDocument document)
+        document.setReadInTransaction(tx.getBeginSequence());
 
       return record;
     });
@@ -2849,6 +2855,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
 
+  /**
+   * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
+   * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
+   */
+  static volatile Consumer<LocalDatabase> TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
+
   private void closeInternal(final boolean drop) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
@@ -3232,6 +3244,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 
+    // #8626: A SYNC FORCES ONLY THE FILES WRITTEN SINCE THEIR LAST FSYNC, AND A CLEAN CLOSE IS WHAT LEAVES EVERY FILE
+    // SYNCED FOR THE NEXT OPEN. AFTER A CRASH NOTHING IS KNOWN ABOUT WHICH WRITES OF THE DEAD PROCESS REACHED THE DISK
+    // (A PROCESS CRASH LEAVES THEM IN THE OS PAGE CACHE, WHERE A LATER POWER LOSS STILL DROPS THEM), SO EVERY FILE IS
+    // TREATED AS UNSYNCED UNTIL THE FIRST SUCCESSFUL SYNC
+    fileManager.markAllFilesUnsynced();
+
+    final Consumer<LocalDatabase> beforeReplayHook = TEST_BEFORE_RECOVERY_REPLAY_HOOK;
+    if (beforeReplayHook != null)
+      beforeReplayHook.accept(this);
+
     transactionManager.checkIntegrity();
   }
 
@@ -3302,7 +3324,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure();
+      releaseResourcesOnOpenFailure(null);
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -3313,6 +3335,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
+    } catch (final Error e) {
+      // An Error (an OutOfMemoryError replaying a large WAL, a StackOverflowError, a class that failed to load) used to
+      // skip the release above: the instance stayed marked open, kept database.lck locked and its WAL timer running,
+      // and the path could not be opened again in this JVM until a restart. Rethrown as it is, never wrapped.
+      open = false;
+      try {
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+      } catch (final Throwable t) {
+        e.addSuppressed(t);
+      }
+      releaseResourcesOnOpenFailure(e);
+      throw e;
     }
   }
 
@@ -3321,8 +3355,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * In particular it releases the JVM file lock and closes the lock-file I/O channels, the {@link FileManager} and the
    * {@link TransactionManager}. The {@code database.lck} marker is intentionally left on disk so the next open still
    * performs recovery. Every step is best-effort and isolated so a failure in one does not skip the others.
+   *
+   * @param primaryError the Error that failed the open, or null when an Exception did. With one, a step's failure of
+   *                     any kind is attached to it as suppressed and the next step still runs: a second Error thrown
+   *                     from here (an OutOfMemoryError is likely to strike again right away) would otherwise replace
+   *                     the original and skip the steps after it, leaving database.lck locked.
    */
-  private void releaseResourcesOnOpenFailure() {
+  private void releaseResourcesOnOpenFailure(final Error primaryError) {
     try {
       if (lockFile != null) {
         if (lockFileLock != null) {
@@ -3338,15 +3377,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           lockFileIO = null;
         }
       }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on releasing lock file '%s' after a failed open", e, lockFile);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on releasing lock file '%s' after a failed open", lockFile);
     }
 
     try {
       if (fileManager != null)
         fileManager.close();
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on closing file manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing file manager after a failed open of database '%s'", name);
     }
 
     try {
@@ -3357,10 +3396,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // recovery-capable open needs to replay - discarding every change that had not yet reached the
         // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
         transactionManager.close(false, true);
-    } catch (final Exception e) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "Error on closing transaction manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing transaction manager after a failed open of database '%s'",
+          name);
     }
+  }
+
+  /**
+   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. Without a primary Error the behaviour is the one
+   * the Exception path always had: an Exception is logged and the next step runs, an Error propagates.
+   */
+  private void onOpenFailureReleaseError(final Error primaryError, final Throwable failure, final String message,
+      final Object argument) {
+    if (primaryError != null)
+      primaryError.addSuppressed(failure);
+    else if (failure instanceof Error error)
+      throw error;
+    else
+      LogManager.instance().log(this, Level.WARNING, message, failure, argument);
   }
 
   /**

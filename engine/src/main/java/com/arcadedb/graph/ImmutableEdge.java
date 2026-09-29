@@ -94,7 +94,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     final Binary content = buffer;
     if (content != null) {
       content.rewind();
-      return new MutableEdge(database, (EdgeType) type, rid, content.copyOfContent());
+      return markIfReadWentStale(new MutableEdge(database, (EdgeType) type, rid, content.copyOfContent()));
     }
     // AN EDGE BUILT OVER ITS TWO ENDPOINTS HAS NO RECORD CONTENT TO CARRY OVER, AND MODIFYING IT IS LEGITIMATE. BOTH
     // ENDPOINTS MISSING INSTEAD MEANS THE CONTENT SHOULD HAVE BEEN THERE AND IS NOT, AND THIS BRANCH WOULD HAND BACK A

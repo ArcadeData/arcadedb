@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.event.BeforeRecordReadListener;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
@@ -41,6 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8312: a full scan builds each record from the page it already holds, instead of handing out a lazy shell that
@@ -141,7 +143,9 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
 
   /**
    * The reload modify() skips is only skippable while the page is unchanged: a commit landing between the scan and the
-   * modify() must be seen, or the modify would write back the stale content and silently undo it.
+   * modify() must be seen, or the modify would write back the stale content and silently undo it. Since #8610 a
+   * property write on that record is refused as a retryable conflict, since it may be computed from the stale scan;
+   * the concurrent commit survives either way, and the retry, reading again, applies the write.
    */
   @Test
   void modifyAfterAConcurrentCommitStillSeesIt() throws Exception {
@@ -158,8 +162,10 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
 
     final MutableVertex modified = scanned.modify();
     assertThat(modified.getString("other")).isEqualTo("yes");
-    modified.set("mine", "yes").save();
-    database.commit();
+    assertThatThrownBy(() -> modified.set("mine", "yes").save()).isInstanceOf(ConcurrentModificationException.class);
+    database.rollback();
+
+    database.transaction(() -> database.iterateType("V8312", false).next().asVertex().modify().set("mine", "yes").save());
 
     final Vertex reloaded = rid.asVertex();
     assertThat(reloaded.getString("other")).isEqualTo("yes");
@@ -168,7 +174,8 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
 
   /**
    * The same guarantee for a document and an edge: their content now comes from the scan, not from a lazy load at
-   * modify() time, so modify() has to notice the page moved on and reload, as it does for a vertex.
+   * modify() time, so modify() has to notice the page moved on and reload, as it does for a vertex. The property write
+   * that follows is refused as a retryable conflict (#8610), and the retry applies it.
    */
   @Test
   void modifyOfDocumentAndEdgeAfterAConcurrentCommitStillSeesIt() throws Exception {
@@ -193,8 +200,11 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
 
       final MutableDocument modified = scanned.modify();
       assertThat(modified.getString("other")).as("%s sees the concurrent commit", type).isEqualTo("yes");
-      modified.set("mine", "yes").save();
-      database.commit();
+      assertThatThrownBy(() -> modified.set("mine", "yes").save()).as(type)
+          .isInstanceOf(ConcurrentModificationException.class);
+      database.rollback();
+
+      database.transaction(() -> database.iterateType(type, false).next().asDocument().modify().set("mine", "yes").save());
 
       final Document reloaded = rid.asDocument();
       assertThat(reloaded.getString("other")).as(type).isEqualTo("yes");
