@@ -728,6 +728,8 @@ public class WebSocketInsertSession {
         return false;
 
       final MutableDocument existing = match.getElement().get().asDocument().modify();
+      // The upsert writes the client's values, not values computed from the record read: no stale-read refusal (#8610)
+      existing.clearBasedOnStaleRead();
 
       final boolean mergeAll = options.updateColumnsOnConflict.isEmpty();
       final Iterable<String> columns = mergeAll ? properties.keySet() : options.updateColumnsOnConflict;

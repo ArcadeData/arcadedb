@@ -1022,6 +1022,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         final DocumentType type = document.getType();
         final MutableDocument mutable = document.modify();
+        // The references are rewritten from this very record's reloaded content: no stale-read refusal (#8610)
+        mutable.clearBasedOnStaleRead();
         boolean changed = false;
 
         for (final Map.Entry<String, Set<RID>> propertyEntry : entry.getValue().entrySet()) {
