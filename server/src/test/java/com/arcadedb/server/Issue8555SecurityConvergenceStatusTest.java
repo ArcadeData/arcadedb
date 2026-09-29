@@ -180,6 +180,34 @@ class Issue8555SecurityConvergenceStatusTest {
     assertThat(gate.windowOpenedAt).as("opened once the probe would reach the gate").isPositive();
   }
 
+  /**
+   * A node that gave up keeps being reported as given up while it is briefly held for another reason, and reading it does
+   * not evaluate the gate: a join index that moved forward (a re-add) must not reset the window or open a new one.
+   */
+  @Test
+  void aGaveUpNodeStaysReportedWhileHeldForAnotherReasonWithoutStartingAClock() throws InterruptedException {
+    final HAServerPlugin ha = staticMemberHa("users");
+    final SecurityConvergenceGate gate = new SecurityConvergenceGate();
+    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(1L));
+    when(server.getSecurityConvergenceGate()).thenReturn(gate);
+    final ServerControlPlane controlPlane = new ServerControlPlane(server);
+
+    assertThat(controlPlane.notReadyReason()).isNotNull();
+    Thread.sleep(5L);
+    assertThat(controlPlane.getSecurityConvergenceStatus().gaveUp()).isTrue();
+    final long opened = gate.windowOpenedAt;
+
+    when(ha.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.NOT_READY);
+    when(ha.getLastSnapshotInstallIndex()).thenReturn(INSTALL_INDEX + 1000L);
+
+    final SecurityConvergenceStatus status = controlPlane.getSecurityConvergenceStatus();
+    assertThat(controlPlane.notReadyReason()).as("held for an earlier reason").contains("caught up");
+    assertThat(status.gaveUp()).as("the critical alert does not flap").isTrue();
+    assertThat(status.unconvergedDocuments()).containsExactly("users");
+    assertThat(gate.windowOpenedAt).as("no clock started or reset by the poll").isEqualTo(opened);
+    assertThat(gate.giveUpLogged).isTrue();
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   /** An unarmed, caught-up HA plugin held after a snapshot install at {@link #INSTALL_INDEX}. */

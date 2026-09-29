@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import java.util.List;
+
 /**
  * The mutable state of the issue #7532 security-convergence readiness gate: one window per join or snapshot install,
  * owned by the server and not by a {@link ServerControlPlane}, because several of those exist at once - the HTTP
@@ -58,4 +60,12 @@ final class SecurityConvergenceGate {
    * (issue #8465): once per join or install, not once per probe.
    */
   volatile long    leaderLoggedFor  = -1L;
+  /**
+   * The documents that were unconfirmed, and whether the node was armed, when the window gave up (issue #8555). Kept so
+   * the status document can keep reporting the give-up while the node is held for another reason, WITHOUT evaluating the
+   * gate: an evaluation opens and resets windows, and nothing may start a clock the readiness probe has not reached.
+   * Meaningful only while {@link #giveUpLogged} is set.
+   */
+  volatile List<String> gaveUpDocuments = List.of();
+  volatile boolean gaveUpArmed = false;
 }

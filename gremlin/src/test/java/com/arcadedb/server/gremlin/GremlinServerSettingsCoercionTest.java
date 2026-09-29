@@ -70,6 +70,13 @@ class GremlinServerSettingsCoercionTest {
   }
 
   @Test
+  void aTextValueForANonScalarSettingIsSkippedNotFatal() {
+    final Settings settings = new Settings();
+    GremlinServerPlugin.applyServerSetting(settings, "serializers", "not-a-list");
+    assertThat(settings.serializers).isNotEqualTo("not-a-list");
+  }
+
+  @Test
   void anUnknownSettingIsIgnored() {
     final Settings settings = new Settings();
     final int defaultPort = settings.port;
