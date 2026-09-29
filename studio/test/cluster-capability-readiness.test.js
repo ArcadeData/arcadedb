@@ -225,6 +225,18 @@ test("on a follower that cannot probe the leader itself, the leader's row is unv
   }
 });
 
+// GetClusterHandler always writes isLeader; a payload without it is not the leader's, so it is read as a
+// follower's view. Pinned so a change to that default is a decision rather than an accident.
+test("a payload without isLeader is read as a non-leader view, so a probe failure is unverified", () => {
+  const data = readyCluster();
+  delete data.isLeader;
+  data.peers[1] = { id: "arcadedb2", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" };
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, true);
+  assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb2"]);
+});
+
 test("on the leader, a probe failure is still missing, because the leader's own gate refuses on it", () => {
   const data = readyCluster();
   data.peers[1] = { id: "arcadedb2", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" };
@@ -276,6 +288,7 @@ test("the Security page keeps Create enabled on a follower whose only gaps are p
   assert.equal(calls["#btnCreateGroup"].disabled, false, "the leader may well accept it, so the operator can try");
   assert.equal(calls["#btnCreateToken"].disabled, false);
   assert.equal(calls["#groupModalSaveBtn"].disabled, false, "and the Edit Group modal can save");
+  assert.match(calls["#groupsCapabilityGate"].html, /alert-info/, "an informational banner, not a warning");
   assert.match(calls["#groupsCapabilityGate"].html, /arcadedb3/, "the banner still names the peer");
   assert.match(calls["#groupsCapabilityGate"].html, /this node/i, "and says the verdict is this node's view");
   assert.match(calls["#groupsCapabilityGate"].html, /leader/, "and that the leader decides");
@@ -306,11 +319,14 @@ test("the cluster page banner does not say 'refused' when this follower merely c
   assert.match(container.html, /arcadedb3/);
   assert.match(container.html, /this node/i);
   assert.ok(!/are refused right now/.test(container.html), "but not that the change is refused");
+  assert.match(container.html, /alert-info/);
+  assert.ok(!/alert-warning/.test(container.html));
 
   const lagging = followerView(readyCluster());
   lagging.peers.push({ id: "arcadedb4", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
   run(fake$, clusterSecurityCapabilityGaps, escapeHtml, lagging);
   assert.match(container.html, /are refused right now/, "a peer that answered without it is a refusal");
+  assert.match(container.html, /alert-warning/);
 });
 
 // The one case the old role arm was right about, kept without the role: a row carrying neither field is a peer
