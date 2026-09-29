@@ -31,13 +31,16 @@ import java.util.Map;
  * query's {@link IncomingEdgeLookup} can stay on the scan it took and add what its own transaction changed since,
  * rather than scan the type again after every write (issue #8625).
  * <p>
- * Every change takes the next value of a sequence that is never reset, so a scan knows which changes came after it. The
- * changes themselves only live until the transaction ends: {@link #transactionEnded()} drops them and records where the
- * next transaction starts, and a scan taken before that point is no longer covered by what is kept - it has to be taken
- * again, since the changes it missed are now committed or rolled back.
+ * Nothing is recorded until a query of the transaction takes a scan ({@link #scanTaken()}): a scan taken later sees
+ * the earlier writes by itself, so a transaction that writes such edges and never reads their incoming side - a bulk
+ * load - keeps nothing. Every change recorded takes the next value of a sequence, so a scan knows which changes came
+ * after it. The changes live until the transaction ends: {@link #transactionEnded()} drops them and moves to the next
+ * transaction, and a scan taken in an ended transaction is taken again, since the changes it missed are now committed
+ * or rolled back.
  * <p>
  * Changes of other transactions are never seen here: a query keeps reading the scan it took, as it keeps reading the
- * records it already loaded.
+ * records it already loaded. A nested transaction has a context, and so changes, of its own: a scan taken in the outer
+ * transaction does not see the edges an inner one writes.
  * <p>
  * Not thread-safe: a transaction belongs to one thread.
  *
@@ -49,7 +52,8 @@ public final class UnidirectionalEdgeChanges {
   }
 
   private long                                    sequence;
-  private long                                    transactionStart;
+  private long                                    transaction;
+  private boolean                                 recording;
   // BY TYPE, THEN BY TARGET: A LOOKUP READS THE CHANGES OF ONE TYPE INTO ONE VERTEX
   private Map<String, Map<RID, List<Created>>> created;
   private Map<RID, Long>                        deleted;
@@ -59,12 +63,24 @@ public final class UnidirectionalEdgeChanges {
     return sequence;
   }
 
-  /** The sequence the current transaction started at: the changes kept are the ones after it. */
-  public long getTransactionStart() {
-    return transactionStart;
+  /** The number of the current transaction of the context: a scan taken in another one is not covered. */
+  public long getTransaction() {
+    return transaction;
+  }
+
+  /** Whether a query of the current transaction took a scan, so its changes have to be recorded. */
+  public boolean isRecording() {
+    return recording;
+  }
+
+  /** A query of the current transaction took a scan: record the changes from now on. */
+  public void scanTaken() {
+    recording = true;
   }
 
   public void edgeCreated(final String typeName, final Edge edge, final RID source, final RID target) {
+    if (!recording)
+      return;
     if (created == null)
       created = new HashMap<>();
     created.computeIfAbsent(typeName, k -> new HashMap<>()).computeIfAbsent(target, k -> new ArrayList<>(2))
@@ -72,6 +88,8 @@ public final class UnidirectionalEdgeChanges {
   }
 
   public void edgeDeleted(final RID edgeIdentity) {
+    if (!recording)
+      return;
     if (deleted == null)
       deleted = new HashMap<>();
     deleted.put(edgeIdentity, ++sequence);
@@ -81,7 +99,14 @@ public final class UnidirectionalEdgeChanges {
   public void transactionEnded() {
     created = null;
     deleted = null;
-    transactionStart = sequence;
+    recording = false;
+    ++transaction;
+  }
+
+  /** The changes kept, for tests. */
+  int size() {
+    return (created == null ? 0 : created.values().stream().mapToInt(m -> m.values().stream().mapToInt(List::size).sum()).sum())
+        + (deleted == null ? 0 : deleted.size());
   }
 
   /** The edges of {@code typeName} into {@code target} the transaction created, in creation order. */

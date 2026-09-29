@@ -108,9 +108,11 @@ public class GraphEngine {
    */
   private void recordCreated(final DocumentType type, final Edge edge, final RID source, final RID target) {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      // ONLY WHILE A QUERY OF THE TRANSACTION HOLDS A SCAN: A BULK LOAD THAT NEVER READS THE INCOMING SIDE KEEPS NOTHING
       final TransactionContext tx = database.getTransactionIfExists();
-      if (tx != null)
-        tx.getUnidirectionalEdgeChanges().edgeCreated(type.getName(), edge, source, target);
+      final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;
+      if (changes != null && changes.isRecording())
+        changes.edgeCreated(type.getName(), edge, source, target);
     }
   }
 
@@ -770,8 +772,9 @@ public class GraphEngine {
   public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
     if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()
-        && this.database.getTransactionIfExists() instanceof TransactionContext tx)
-      tx.getUnidirectionalEdgeChanges().edgeDeleted(edge.getIdentity());
+        && this.database.getTransactionIfExists() instanceof TransactionContext tx
+        && tx.getUnidirectionalEdgeChangesIfAny() instanceof UnidirectionalEdgeChanges changes && changes.isRecording())
+      changes.edgeDeleted(edge.getIdentity());
 
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);

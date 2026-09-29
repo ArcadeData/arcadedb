@@ -21,13 +21,16 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
@@ -45,6 +48,7 @@ import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * The incoming side of the edge types declared unidirectional, for the query languages (issue #8625).
@@ -92,9 +96,8 @@ public final class IncomingEdgeLookup {
 
   // CREATED ON FIRST USE: A QUERY OVER A SCHEMA WITHOUT UNIDIRECTIONAL TYPES NEVER NEEDS IT
   private volatile Map<String, Snapshot> snapshots;
-  private volatile Boolean               anyUnidirectionalType;
   // THE STEPS ASK ONCE PER ROW, MOSTLY FOR THE SAME TYPES: THE LAST ANSWER AND THE UNTYPED ONE ARE KEPT, UNTIL THE
-  // DATABASE CHANGES (A SCRIPT MAY CREATE OR DROP AN EDGE TYPE BETWEEN TWO STATEMENTS THAT SHARE THIS LOOKUP)
+  // TYPES CHANGE (A SCRIPT MAY CREATE OR DROP AN EDGE TYPE BETWEEN TWO STATEMENTS THAT SHARE THIS LOOKUP)
   private volatile ClosureEntry          lastClosure;
   private volatile Closure               untypedClosure;
   private volatile long                  memoizedAt = -1L;
@@ -175,9 +178,14 @@ public final class IncomingEdgeLookup {
     if (direction == Vertex.DIRECTION.OUT)
       return graphEngine.getEdgesConnectedTo(vertex, Vertex.DIRECTION.OUT, target, edgeTypes);
 
-    final VertexInternal targetVertex = (VertexInternal) database.lookupByRID(target, false);
-    final Iterator<Edge> incoming = graphEngine.getEdgesConnectedTo(targetVertex, Vertex.DIRECTION.OUT,
-        vertex.getIdentity(), edgeTypes);
+    Iterator<Edge> incoming;
+    try {
+      final VertexInternal targetVertex = (VertexInternal) database.lookupByRID(target, true);
+      incoming = graphEngine.getEdgesConnectedTo(targetVertex, Vertex.DIRECTION.OUT, vertex.getIdentity(), edgeTypes);
+    } catch (final RecordNotFoundException e) {
+      // THE OTHER END WAS DELETED: NO EDGE OF IT CAN REACH THIS VERTEX
+      incoming = Collections.emptyIterator();
+    }
     if (direction == Vertex.DIRECTION.IN || vertex.getIdentity().equals(target))
       return incoming;
 
@@ -199,9 +207,11 @@ public final class IncomingEdgeLookup {
     final IncomingEdgeLookup lookup = context.getIncomingEdgeLookup();
     if (lookup == null)
       return false;
-    lookup.refreshMemos(database);
-    return lookup.hasAnyUnidirectionalType(database.getSchema())
-        && lookup.closureOf(database.getSchema(), edgeTypes).unidirectional.length > 0;
+    final Schema schema = database.getSchema();
+    if (!schema.hasUnidirectionalEdgeTypes())
+      return false;
+    lookup.refreshMemos(schema);
+    return lookup.closureOf(schema, edgeTypes).unidirectional.length > 0;
   }
 
   /**
@@ -211,14 +221,40 @@ public final class IncomingEdgeLookup {
    */
   public static boolean isIncomingSideMissing(final Schema schema, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
-    return direction != Vertex.DIRECTION.OUT && closure(schema, edgeTypes).unidirectional.length > 0;
+    return direction != Vertex.DIRECTION.OUT && schema.hasUnidirectionalEdgeTypes()
+        && closure(schema, edgeTypes).unidirectional.length > 0;
   }
 
   /**
    * Whether any of {@code edgeTypes} (all when empty), or one of their subtypes, is declared unidirectional.
    */
   public static boolean isAnyUnidirectional(final Schema schema, final String... edgeTypes) {
-    return closure(schema, edgeTypes).unidirectional.length > 0;
+    return schema.hasUnidirectionalEdgeTypes() && closure(schema, edgeTypes).unidirectional.length > 0;
+  }
+
+  // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
+  private static final ThreadLocal<int[]> PATTERN_WALKS = ThreadLocal.withInitial(() -> new int[1]);
+
+  /**
+   * Runs {@code walk} as the evaluation of a pattern: the SQL graph functions it calls ({@code in()}, {@code inE()},
+   * {@code both()}, {@code bothE()}, {@code shortestPath()}) answer the incoming side of the unidirectional types.
+   * Called on their own, those functions read what the vertices store, as the vertex API does - embedded, remote and
+   * through Gremlin alike: a SQL {@code MATCH} or a Cypher pattern asks which edges end in a vertex, a function call
+   * asks what the vertex holds.
+   */
+  public static <T> T walkingPattern(final Supplier<T> walk) {
+    final int[] depth = PATTERN_WALKS.get();
+    ++depth[0];
+    try {
+      return walk.get();
+    } finally {
+      --depth[0];
+    }
+  }
+
+  /** Whether the thread is evaluating a pattern (see {@link #walkingPattern}). */
+  public static boolean isWalkingPattern() {
+    return PATTERN_WALKS.get()[0] > 0;
   }
 
   /** The scans taken since the JVM started. */
@@ -236,9 +272,9 @@ public final class IncomingEdgeLookup {
 
     final Database database = vertex.getDatabase();
     final Schema schema = database.getSchema();
-    lookup.refreshMemos(database);
-    if (!lookup.hasAnyUnidirectionalType(schema))
+    if (!schema.hasUnidirectionalEdgeTypes())
       return null;
+    lookup.refreshMemos(schema);
 
     final Closure closure = lookup.closureOf(schema, edgeTypes);
     if (closure.unidirectional.length == 0)
@@ -247,30 +283,14 @@ public final class IncomingEdgeLookup {
     return new Involved(schema, closure, lookup.snapshots((DatabaseInternal) database, closure.unidirectional, context));
   }
 
-  private void refreshMemos(final Database database) {
-    if (!(database instanceof DatabaseInternal internal))
-      return;
-    final long modifications = internal.getModificationCount();
-    if (modifications != memoizedAt) {
-      anyUnidirectionalType = null;
+  private void refreshMemos(final Schema schema) {
+    final LocalSchema embedded = schema.getEmbedded();
+    final long serial = embedded != null ? embedded.getTypesChangeSerial() : -1L;
+    if (serial != memoizedAt || serial < 0) {
       untypedClosure = null;
       lastClosure = null;
-      memoizedAt = modifications;
+      memoizedAt = serial;
     }
-  }
-
-  private boolean hasAnyUnidirectionalType(final Schema schema) {
-    Boolean any = anyUnidirectionalType;
-    if (any == null) {
-      any = Boolean.FALSE;
-      for (final DocumentType type : schema.getTypes())
-        if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
-          any = Boolean.TRUE;
-          break;
-        }
-      anyUnidirectionalType = any;
-    }
-    return any;
   }
 
   private Closure closureOf(final Schema schema, final String[] edgeTypes) {
@@ -329,6 +349,8 @@ public final class IncomingEdgeLookup {
       }
       if (!missing.isEmpty()) {
         final UnidirectionalEdgeChanges builtBy = tx != null ? tx.getUnidirectionalEdgeChanges() : null;
+        if (builtBy != null)
+          builtBy.scanTaken();
         for (final Snapshot snapshot : Snapshot.build(database, missing, builtBy, context)) {
           final Snapshot previous = map.put(snapshot.typeName, snapshot);
           if (previous != null)
@@ -410,6 +432,7 @@ public final class IncomingEdgeLookup {
     // THE CHANGES OF THE TRANSACTION THE SCAN WAS TAKEN IN, AND HOW FAR THEY WENT THEN: LATER ONES ARE OVERLAID
     private final UnidirectionalEdgeChanges builtBy;
     private final long                      builtAt;
+    private final long                      builtIn;
     private final OperationHeapLimit limit;
     private final DatabaseInternal   database;
     private final int                size;
@@ -426,6 +449,7 @@ public final class IncomingEdgeLookup {
       this.typeName = typeName;
       this.builtBy = builtBy;
       this.builtAt = builtBy != null ? builtBy.getSequence() : 0L;
+      this.builtIn = builtBy != null ? builtBy.getTransaction() : 0L;
       this.database = database;
       this.limit = builder.limit;
       this.size = builder.size;
@@ -448,12 +472,16 @@ public final class IncomingEdgeLookup {
             "incoming-edge lookup over the unidirectional edge type " + typeName));
         builders.put(typeName, builder);
 
-        // OWN BUCKETS ONLY: THE SUBTYPES ARE IN THE SET ON THEIR OWN
-        final Iterator<Record> records = database.iterateType(typeName, false);
-        while (records.hasNext()) {
-          final Edge edge = records.next().asEdge();
-          builder.add(edge.getIn(), edge.getOut(), edge.getIdentity().getBucketId(), edge.getIdentity().getPosition());
-        }
+        // OWN BUCKETS ONLY: THE SUBTYPES ARE IN THE SET ON THEIR OWN. SCANNED RATHER THAN ITERATED: THE ITERATORS APPLY
+        // THE USER'S resultSetLimit, AND A SCAN CUT SHORT WOULD ANSWER PART OF THE EDGES WITH NO ERROR. A BUCKET THE
+        // CALLER CANNOT READ IS LEFT OUT, AS IN THE LIGHTWEIGHT WALK BELOW
+        for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
+          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+            scan(database, bucket, record -> {
+              final Edge edge = record.asEdge();
+              builder.add(edge.getIn(), edge.getOut(), edge.getIdentity().getBucketId(), edge.getIdentity().getPosition());
+              return true;
+            });
         if (schema.getType(typeName) instanceof EdgeType edgeType && edgeType.isLightweight())
           lightweight.add(builder);
       }
@@ -488,8 +516,8 @@ public final class IncomingEdgeLookup {
         for (final Bucket bucket : type.getBuckets(false)) {
           if (!SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
             continue;
-          for (final Iterator<Record> it = bucket.iterator(); it.hasNext(); ) {
-            final Vertex vertex = it.next().asVertex();
+          scan(database, bucket, record -> {
+            final Vertex vertex = record.asVertex();
             for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, names)) {
               final RID identity = edge.getIdentity();
               // A RECORD-BACKED EDGE CAME FROM THE TYPE SCAN ALREADY; A TYPE NOT BEING SCANNED IS NOT ADDED
@@ -499,7 +527,8 @@ public final class IncomingEdgeLookup {
               if (builder != null)
                 builder.add(edge.getIn(), vertex.getIdentity(), identity.getBucketId(), LIGHTWEIGHT_POSITION);
             }
-          }
+            return true;
+          });
         }
       }
     }
@@ -509,7 +538,7 @@ public final class IncomingEdgeLookup {
      * kept for the overlay. A scan read from another transaction's thread (a parallel worker) is read as taken.
      */
     boolean isStale(final UnidirectionalEdgeChanges current) {
-      return builtBy != null && current == builtBy && builtAt < builtBy.getTransactionStart();
+      return builtBy != null && current == builtBy && builtIn != builtBy.getTransaction();
     }
 
     /** The changes to overlay: the current transaction's, when it is the one the scan was taken in and changed since. */
@@ -518,6 +547,22 @@ public final class IncomingEdgeLookup {
         return null;
       final TransactionContext tx = database.getTransactionIfExists();
       return tx != null && tx.getUnidirectionalEdgeChangesIfAny() == builtBy ? builtBy : null;
+    }
+
+    /**
+     * Scans a bucket, failing on the first record that cannot be read or indexed: the bucket scan logs such a record and
+     * goes on, which here would leave a partial scan answering with no error - the heap cap included.
+     */
+    private static void scan(final DatabaseInternal database, final Bucket bucket, final RecordCallback callback) {
+      final Throwable[] failure = new Throwable[1];
+      database.scanBucket(bucket.getName(), callback, (rid, e) -> {
+        failure[0] = e;
+        return false;
+      });
+      if (failure[0] instanceof RuntimeException e)
+        throw e;
+      if (failure[0] != null)
+        throw new DatabaseOperationException("Cannot scan bucket '" + bucket.getName() + "'", failure[0]);
     }
 
     long count(final RID target) {
@@ -684,13 +729,21 @@ public final class IncomingEdgeLookup {
       ++size;
     }
 
-    /** Sorts the six arrays by target, in place: a quicksort recursing on the smaller side only. */
+    /**
+     * Sorts the six arrays by target, in place: an introsort - a quicksort recursing on the smaller side only, that
+     * falls back to a heapsort on a range it has partitioned too many times, so no order of the targets makes it
+     * quadratic.
+     */
     void sortByTarget() {
-      sort(0, size - 1);
+      sort(0, size - 1, 2 * (32 - Integer.numberOfLeadingZeros(Math.max(size, 1))));
     }
 
-    private void sort(int low, int high) {
+    private void sort(int low, int high, int depth) {
       while (high - low > 16) {
+        if (depth-- == 0) {
+          heapSort(low, high);
+          return;
+        }
         final int mid = medianOfThree(low, (low + high) >>> 1, high);
         final int pivotBucket = targetBuckets[mid];
         final long pivotPosition = targetPositions[mid];
@@ -705,16 +758,42 @@ public final class IncomingEdgeLookup {
             swap(i++, j--);
         }
         if (j - low < high - i) {
-          sort(low, j);
+          sort(low, j, depth);
           low = i;
         } else {
-          sort(i, high);
+          sort(i, high, depth);
           high = j;
         }
       }
       for (int i = low + 1; i <= high; i++)
         for (int j = i; j > low && compareTo(j - 1, targetBuckets[j], targetPositions[j]) > 0; j--)
           swap(j - 1, j);
+    }
+
+    private void heapSort(final int low, final int high) {
+      final int n = high - low + 1;
+      for (int i = n / 2 - 1; i >= 0; i--)
+        siftDown(low, i, n);
+      for (int end = n - 1; end > 0; end--) {
+        swap(low, low + end);
+        siftDown(low, 0, end);
+      }
+    }
+
+    private void siftDown(final int base, int node, final int n) {
+      while (true) {
+        int largest = node;
+        final int left = 2 * node + 1;
+        final int right = left + 1;
+        if (left < n && compare(base + left, base + largest) > 0)
+          largest = left;
+        if (right < n && compare(base + right, base + largest) > 0)
+          largest = right;
+        if (largest == node)
+          return;
+        swap(base + node, base + largest);
+        node = largest;
+      }
     }
 
     private int medianOfThree(final int a, final int b, final int c) {

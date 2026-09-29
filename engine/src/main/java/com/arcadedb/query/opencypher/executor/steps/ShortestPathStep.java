@@ -27,6 +27,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -265,8 +266,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     else
       edgeTypeParam = edgeTypes;
 
-    final List<RID> pathRids = shortestPathFunction.execute(null, null, null,
-        shortestPathArguments(source, target, direction, edgeTypeParam, bounds), context);
+    final Object[] arguments = shortestPathArguments(source, target, direction, edgeTypeParam, bounds);
+    // A pattern: the function answers the incoming side of the unidirectional types (issue #8625)
+    final List<RID> pathRids = IncomingEdgeLookup.walkingPattern(
+        () -> shortestPathFunction.execute(null, null, null, arguments, context));
     if (pathRids == null || pathRids.isEmpty())
       return null;
 
@@ -990,7 +993,11 @@ public class ShortestPathStep extends AbstractExecutionStep {
       // (issue #8625)
       if (dir == Vertex.DIRECTION.IN
           && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray)) {
-        for (final Edge edge : to.getEdges(Vertex.DIRECTION.OUT, typesArray)) {
+        final Iterator<Edge> connecting = from instanceof VertexInternal internal ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, to.getIdentity(), typesArray) :
+            to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
+        while (connecting.hasNext()) {
+          final Edge edge = connecting.next();
           try {
             if (edge.getIn().equals(from.getIdentity()))
               return edge;

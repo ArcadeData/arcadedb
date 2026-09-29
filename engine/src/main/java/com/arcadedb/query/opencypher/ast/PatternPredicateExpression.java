@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -253,7 +254,9 @@ public class PatternPredicateExpression implements BooleanExpression {
       // the end that stores it (issue #8625)
       if (IncomingEdgeLookup.isIncomingSideMissing(startVertex.getDatabase().getSchema(), Vertex.DIRECTION.IN,
           relationshipTypes)) {
-        final Iterator<Edge> outEdges = endVertex.getEdges(Vertex.DIRECTION.OUT, relationshipTypes).iterator();
+        final Iterator<Edge> outEdges = startVertex instanceof VertexInternal internal ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, endVertex.getIdentity(), relationshipTypes) :
+            endVertex.getEdges(Vertex.DIRECTION.OUT, relationshipTypes).iterator();
         while (outEdges.hasNext()) {
           final Edge edge = outEdges.next();
           try {

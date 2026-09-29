@@ -33,6 +33,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -554,11 +555,11 @@ public class MergeStep extends AbstractExecutionStep {
       final String relType, final Map<String, Object> relProps) {
     // An edge type declared unidirectional stores no incoming side: with both ends bound, the edge is looked for from
     // the end that stores it, or MERGE would not find it and create a second one (issue #8625)
-    if (fromDir == Vertex.DIRECTION.IN
-        && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), fromDir, relType))
-      return findFirstEdgeTo(target, from, Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, relType, relProps);
-
-    for (final Edge edge : from.getEdges(fromDir, relType)) {
+    final Iterable<Edge> candidates = fromDir == Vertex.DIRECTION.IN && from instanceof VertexInternal internal
+        && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), fromDir, relType) ?
+        () -> IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, target.getIdentity(), relType) :
+        from.getEdges(fromDir, relType);
+    for (final Edge edge : candidates) {
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
           continue;
