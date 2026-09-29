@@ -873,6 +873,11 @@ class BootstrapElection {
    * {@code FATAL}: the address is resolved once per pass, so a retry would dial the same node and get the same answer
    * until the bootstrap budget ran out. The peer then reaches the SEVERE line naming the peers the election assumes
    * hold no data.
+   * <p>
+   * "Assumed empty" is the conscious choice here, not a neutral one: a peer that really holds the freshest copy behind
+   * a misdeclared address is outvoted. It is no worse than before - that peer's own state was never read then either,
+   * only replaced by another node's - and it is the same outcome as for an unreachable peer, so it needs no new
+   * handling. Failing the pass instead would turn one wrong port into a cluster that cannot bootstrap at all.
    */
   static ProbeOutcome probeOutcomeOf(final RaftPeerId peerId, final int status, final String body,
       final Set<String> dbFilter) {
