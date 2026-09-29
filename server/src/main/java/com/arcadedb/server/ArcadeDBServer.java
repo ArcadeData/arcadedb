@@ -221,6 +221,9 @@ public class ArcadeDBServer {
   // the server rather than with the auto-backup plugin, because the HTTP command backs a database up whether or not
   // that plugin is enabled.
   private final       BackupCoordinator                     backupCoordinator                    = new BackupCoordinator();
+  // The security-convergence readiness window (issue #7532), shared by every ServerControlPlane of this server so the
+  // HTTP and gRPC readiness probes keep ONE window and log ONE give-up (issue #8446). Cleared on every start.
+  private final       SecurityConvergenceWindow             securityConvergenceWindow            = new SecurityConvergenceWindow();
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   // Monitor serialising every check-then-act on the database registry (load, create, register, reopen). The HA
   // snapshot installer also holds it across close->file-swap->reopen so no concurrent open observes the transient
@@ -447,6 +450,9 @@ public class ArcadeDBServer {
       return;
 
     status = STATUS.STARTING;
+
+    // A (re)start has not been held by the security-convergence gate yet (issue #8446).
+    securityConvergenceWindow.reset();
 
     // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
     awaitingHAWrapper = isHARequested();
@@ -1625,6 +1631,11 @@ public class ArcadeDBServer {
    */
   public BackupCoordinator getBackupCoordinator() {
     return backupCoordinator;
+  }
+
+  /** The security-convergence readiness window every readiness surface of this server shares (issue #8446). */
+  public SecurityConvergenceWindow getSecurityConvergenceWindow() {
+    return securityConvergenceWindow;
   }
 
   public void registerTestEventListener(final ReplicationCallback callback) {

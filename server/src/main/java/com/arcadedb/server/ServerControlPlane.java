@@ -111,37 +111,21 @@ public class ServerControlPlane {
   private final ArcadeDBServer server;
 
   /**
-   * When this node first found itself a member of a multi-node cluster holding none of the cluster's replicated
-   * security documents, or {@code 0} while there is no such window open (issue #7532). Read and written by
-   * concurrent readiness probes on HTTP worker and gRPC threads, hence volatile; two probes racing to open the
-   * window differ by the time between them, which is not a difference this gate can act on.
+   * The security-convergence readiness window (issue #7532): the server's own, shared by every control plane of the
+   * process, so the HTTP and the gRPC readiness probes read and advance the same window (issue #8446). A server that
+   * has none - a test double - gets one private to this instance, which is what every instance had before.
    */
-  private volatile long    securityConvergenceWindowOpenedAt = 0L;
-  /**
-   * Whether the SEVERE give-up line has already been emitted for the window currently open, so the window
-   * expiring does not log once per probe. Cleared together with the window, because "once" means once per
-   * window: a node that converges and later opens a fresh window has a fresh decision to report.
-   */
-  private volatile boolean securityConvergenceGiveUpLogged   = false;
-  /**
-   * The highest {@link HAServerPlugin#getRuntimeJoinIndex()} an armed reading of this gate has seen, {@code -1}
-   * before any (issue #8414). The window is per join, not per process: when a re-add moves the join index forward
-   * the window and the give-up flag are cleared exactly as convergence clears them, so the new join is held for a
-   * window of its own and its give-up is reported on its own. Forward only, so a reading that reports no join
-   * index - a Raft server that is not readable this tick - never restarts the bound. On an unarmed node held after
-   * a snapshot install (issue #8432) it is that install's index instead: both are log positions that only move
-   * forward, and a later one of either is a fresh window. One reading reports one or the other, never both: the
-   * hold is consulted only while the node is unarmed, and arming is one-way.
-   */
-  private volatile long    securityConvergenceJoinIndex      = -1L;
-  /**
-   * The {@link #securityConvergenceJoinIndex} for which the "leading, so nobody can confirm" line was last emitted,
-   * {@code -1} before any (issue #8465): once per join or install, not once per probe.
-   */
-  private volatile long    securityConvergenceLeaderLoggedFor = -1L;
+  private final SecurityConvergenceWindow convergence;
 
   public ServerControlPlane(final ArcadeDBServer server) {
     this.server = server;
+    final SecurityConvergenceWindow shared = server != null ? server.getSecurityConvergenceWindow() : null;
+    this.convergence = shared != null ? shared : new SecurityConvergenceWindow();
+  }
+
+  /** The security-convergence window this control plane reads and advances (issue #8446): the server's, when it has one. */
+  SecurityConvergenceWindow securityConvergenceWindow() {
+    return convergence;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -506,6 +490,10 @@ public class ServerControlPlane {
    * and a disarmed reading does not even look at it, so a Raft server that is briefly unreadable cannot restart
    * the bound.
    * <p>
+   * <b>The window is the server's, not this instance's (issue #8446).</b> The HTTP readiness handler and the gRPC
+   * admin service each construct a control plane, so the state lives in the {@link SecurityConvergenceWindow} the
+   * {@link ArcadeDBServer} owns: both surfaces are held by, and give up on, the same window.
+   * <p>
    * <b>A static member caught up by snapshot install is held too, without being armed (issue #8432).</b> Removed
    * while down, re-added and caught up past the leader's compaction point, it never observes the re-add, so the
    * runtime-join event above never happens for it, while no snapshot carries the security documents. On an unarmed
@@ -578,10 +566,10 @@ public class ServerControlPlane {
     // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
     // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
     // counts, so a reading that reports none cannot restart the bound.
-    if (joinIndex > securityConvergenceJoinIndex) {
-      securityConvergenceJoinIndex = joinIndex;
-      securityConvergenceWindowOpenedAt = 0L;
-      securityConvergenceGiveUpLogged = false;
+    if (joinIndex > convergence.joinIndex) {
+      convergence.joinIndex = joinIndex;
+      convergence.openedAt = 0L;
+      convergence.giveUpLogged.set(false);
     }
 
     if (unconverged.isEmpty()) {
@@ -589,8 +577,8 @@ public class ServerControlPlane {
       // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
       // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
       // flapping would never reach the give-up branch at all. The bound has to be a bound.
-      securityConvergenceWindowOpenedAt = 0L;
-      securityConvergenceGiveUpLogged = false;
+      convergence.openedAt = 0L;
+      convergence.giveUpLogged.set(false);
       return null;
     }
 
@@ -599,10 +587,10 @@ public class ServerControlPlane {
       // window restarts, and a step-down is held for a full one while its catch-up asks the new leader. A window that
       // already gave up stays given up: its give-up is the bound's final answer for this join, and restarting it would
       // pull a node that has been READY for hours out of the Service because it once led an election.
-      if (!securityConvergenceGiveUpLogged)
-        securityConvergenceWindowOpenedAt = 0L;
-      if (securityConvergenceLeaderLoggedFor != joinIndex) {
-        securityConvergenceLeaderLoggedFor = joinIndex;
+      if (!convergence.giveUpLogged.get())
+        convergence.openedAt = 0L;
+      if (convergence.leaderLoggedFor != joinIndex) {
+        convergence.leaderLoggedFor = joinIndex;
         LogManager.instance().log(this, Level.WARNING,
             "This node leads the cluster while its security documents are still unconfirmed since %s: %s. Nobody can "
                 + "confirm them while it leads, so readiness is not held for them; its security catch-up asks the next "
@@ -615,15 +603,14 @@ public class ServerControlPlane {
     }
 
     final long now = System.currentTimeMillis();
-    if (securityConvergenceWindowOpenedAt == 0L)
-      securityConvergenceWindowOpenedAt = now;
+    if (convergence.openedAt == 0L)
+      convergence.openedAt = now;
 
-    if (now - securityConvergenceWindowOpenedAt < window)
+    if (now - convergence.openedAt < window)
       return "Cluster security documents have not reached this node yet: " + String.join(", ", unconverged)
           + ". It is a cluster member enforcing its own copy of them";
 
-    if (!securityConvergenceGiveUpLogged) {
-      securityConvergenceGiveUpLogged = true;
+    if (convergence.giveUpLogged.compareAndSet(false, true)) {
       if (!armed)
         // A static member (issue #8465): it was never admitted, so 'connect cluster' is not its remedy. What asks the
         // leader again is its own catch-up - on the next leader change, or once per start - or an admission route.
