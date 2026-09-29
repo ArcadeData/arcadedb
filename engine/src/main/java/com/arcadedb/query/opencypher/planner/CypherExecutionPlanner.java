@@ -25,7 +25,6 @@ import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -238,21 +237,6 @@ public class CypherExecutionPlanner {
             if (node.hasDynamicLabels() || node.hasWhereExpression())
               return false;
 
-            // Anonymous nodes (no variable) with unidirectional edges can't be handled
-            // by the optimizer's expansion chain - anchor validation can't re-anchor
-            // to a node that has no variable in the LogicalPlan.
-            if (node.getVariable() == null && path.getRelationshipCount() > 0) {
-              for (int ri = 0; ri < path.getRelationshipCount(); ri++) {
-                final RelationshipPattern relP = path.getRelationship(ri);
-                if (relP.hasTypes())
-                  for (final String typeName : relP.getTypes())
-                    if (database.getSchema().existsType(typeName)
-                        && database.getSchema().getType(typeName) instanceof EdgeType et
-                        && !et.isBidirectional())
-                      return false;
-              }
-            }
-
             // Unlabeled nodes must have been labeled in another MATCH clause
             if (!node.hasLabels() && (node.getVariable() == null || !labeledVariables.contains(node.getVariable())))
               return false;
@@ -338,36 +322,9 @@ public class CypherExecutionPlanner {
         return false;
     }
 
-    // Unidirectional edges: the optimizer requires reverse traversal in several situations:
-    // 1. Patterns like (a)<-[:TYPE]-(b) with IN direction
-    // 2. Multi-MATCH patterns where the target is bound from a previous MATCH
-    // 3. Anchor selection on the target side of an OUT relationship
-    // Unidirectional edges don't store incoming links on the target vertex, so reverse
-    // traversal returns 0 results. Bail out to the traditional path which handles these
-    // cases by scanning from the source side with forward direction.
-    {
-      boolean hasUnidirectionalEdge = false;
-      for (final MatchClause match : statement.getMatchClauses())
-        if (match.hasPathPatterns())
-          for (final PathPattern path : match.getPathPatterns())
-            for (int i = 0; i < path.getRelationshipCount(); i++) {
-              final RelationshipPattern rel = path.getRelationship(i);
-              if (rel.hasTypes())
-                for (final String typeName : rel.getTypes())
-                  if (database.getSchema().existsType(typeName)
-                      && database.getSchema().getType(typeName) instanceof EdgeType et
-                      && !et.isBidirectional()) {
-                    hasUnidirectionalEdge = true;
-                    // IN direction always needs reverse traversal
-                    if (rel.getDirection() == Direction.IN)
-                      return false;
-                  }
-            }
-      // Multi-MATCH with shared variables + unidirectional edges: the optimizer would
-      // need to reverse direction for the second MATCH's bound target, which fails.
-      if (hasUnidirectionalEdge && statement.getMatchClauses().size() > 1)
-        return false;
-    }
+    // Unidirectional edges need no bail-out: the anchor selection prefers an anchor that walks every such hop from its
+    // source, and a hop that still reads the incoming side no vertex stores is answered by the expansion through the
+    // query's lookup (issue #8625).
 
     // Aggregation queries: the optimizer doesn't enforce Cypher's relationship uniqueness
     // constraint (each edge matched at most once per MATCH clause). Edge uniqueness is scoped

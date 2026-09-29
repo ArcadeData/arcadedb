@@ -102,6 +102,20 @@ public class GraphEngine {
     this.database = database;
   }
 
+  /**
+   * Records in the transaction an edge created over a unidirectional type, for the queries of that transaction that
+   * read its incoming side through a scan they took earlier (see {@link UnidirectionalEdgeChanges}).
+   */
+  private void recordCreated(final DocumentType type, final Edge edge, final RID source, final RID target) {
+    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      // ONLY WHILE A QUERY OF THE TRANSACTION HOLDS A SCAN: A BULK LOAD THAT NEVER READS THE INCOMING SIDE KEEPS NOTHING
+      final TransactionContext tx = database.getTransactionIfExists();
+      final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;
+      if (changes != null && changes.isRecording())
+        changes.edgeCreated(type.getName(), edge, source, target);
+    }
+  }
+
   public static class CreateEdgeOperation {
     final String       edgeTypeName;
     final Identifiable destinationVertex;
@@ -303,6 +317,7 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+    recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -329,6 +344,7 @@ public class GraphEngine {
         setProperties(edge, connection.edgeProperties);
 
       edge.save();
+      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
       outEdgePairs.add(new Pair<>(edge, destinationVertex));
 
@@ -755,6 +771,10 @@ public class GraphEngine {
    */
   public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
+    if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()
+        && this.database.getTransactionIfExists() instanceof TransactionContext tx
+        && tx.getUnidirectionalEdgeChangesIfAny() instanceof UnidirectionalEdgeChanges changes && changes.isRecording())
+      changes.edgeDeleted(edge.getIdentity());
 
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);
@@ -2259,6 +2279,14 @@ public class GraphEngine {
       return InternalBucketNaming.inEdgesBucketName(vertexBucket.getName());
 
     throw new IllegalArgumentException("Invalid direction");
+  }
+
+  /**
+   * The refusal of a unidirectional edge on an edge type declared bidirectional. The type is what the caller has to
+   * change or pick differently, so the message names what it is rather than what it is not (issue #8625).
+   */
+  public static String unidirectionalEdgeOnBidirectionalTypeMessage(final String edgeTypeName) {
+    return "Edge type '" + edgeTypeName + "' is bidirectional; it cannot hold a unidirectional edge";
   }
 
   public static void setProperties(final MutableEdge edge, final Object[] properties) {

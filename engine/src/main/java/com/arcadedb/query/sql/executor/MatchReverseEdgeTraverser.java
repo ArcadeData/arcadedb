@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
@@ -75,7 +76,8 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
   @Override
   protected Iterable<ResultInternal> traversePatternEdge(final Identifiable startingPoint, final CommandContext iCommandContext) {
 
-    final Object qR = this.item.getMethod().executeReverse(startingPoint, iCommandContext);
+    final Object qR = IncomingEdgeLookup.walkingPattern(
+        () -> this.item.getMethod().executeReverse(startingPoint, iCommandContext));
     if (qR == null) {
       return Collections.emptyList();
     }

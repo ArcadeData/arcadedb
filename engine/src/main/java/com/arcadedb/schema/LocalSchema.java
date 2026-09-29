@@ -418,6 +418,8 @@ public class LocalSchema implements Schema {
    */
   private             boolean                                recordingSavePending          = false;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
+  private volatile    UnidirectionalFlag                     unidirectionalFlag;
+  private final       AtomicLong                             typesChangeSerial             = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   /**
@@ -796,6 +798,9 @@ public class LocalSchema implements Schema {
         stagedBucketId2TypeMap != null ? stagedBucketId2TypeMap : previous.bucketId2TypeMap(),
         stagedBucketId2InvolvedTypeMap != null ? stagedBucketId2InvolvedTypeMap : previous.bucketId2InvolvedTypeMap());
     publishedFromStaging = publishedTypes;
+    // The staged load rebuilt the bucket map before this swap, while readers still saw the previous graph: an answer
+    // derived from the types in that window describes the old generation (issue #8625)
+    typesChanged();
 
     // Only now, with nothing able to reach them through the schema any more. A TimeSeries type owns an engine with
     // open files; the rebuild has already opened a fresh one per type, so leaving these behind would leak them.
@@ -4540,7 +4545,39 @@ public class LocalSchema implements Schema {
   /**
    * Replaces the map to allow concurrent usage while rebuilding the map.
    */
+  /**
+   * Whether an edge type of this schema is declared unidirectional: the queries walking the incoming side of an edge
+   * type ask it per row, and on a schema without one it is all they need to know (issue #8625). Cached until the types
+   * change.
+   */
+  @Override
+  public boolean hasUnidirectionalEdgeTypes() {
+    // THE ANSWER CARRIES THE SERIAL IT WAS COMPUTED AT AND IS SERVED ONLY UNDER THAT SERIAL: ONE COMPUTED FROM A GRAPH
+    // REPLACED MEANWHILE, EVEN IF STORED AFTER THE REPLACEMENT, IS NEVER ANSWERED
+    final long serial = typesChangeSerial.get();
+    final UnidirectionalFlag cached = unidirectionalFlag;
+    if (cached != null && cached.serial() == serial)
+      return cached.value();
+    final boolean value = Schema.super.hasUnidirectionalEdgeTypes();
+    unidirectionalFlag = new UnidirectionalFlag(serial, value);
+    return value;
+  }
+
+  private record UnidirectionalFlag(long serial, boolean value) {
+  }
+
+  /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */
+  public long getTypesChangeSerial() {
+    return typesChangeSerial.get();
+  }
+
+  /** Moves the serial every answer derived from the types is stamped with, so none computed before is served again. */
+  private void typesChanged() {
+    typesChangeSerial.incrementAndGet();
+  }
+
   private void rebuildBucketTypeMap() {
+    typesChanged();
     final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getBuckets(false))

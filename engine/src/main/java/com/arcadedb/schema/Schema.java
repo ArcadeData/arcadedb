@@ -482,6 +482,14 @@ public interface Schema {
 
   LocalSchema getEmbedded();
 
+  /** Whether an edge type of this schema is declared unidirectional, i.e. stores no incoming side. */
+  default boolean hasUnidirectionalEdgeTypes() {
+    for (final DocumentType type : getTypes())
+      if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
+        return true;
+    return false;
+  }
+
   /**
    * Registers a function library.
    *
