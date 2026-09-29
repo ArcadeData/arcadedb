@@ -36,6 +36,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -48,8 +49,9 @@ public class FileManager {
   // Data files forced by syncFiles() (issue #8626): what a clean close or a WAL rotation actually paid in fsyncs.
   private final        AtomicLong                                syncedFiles       = new AtomicLong();
   // Serializes syncFiles() (issue #8626). Deliberately NOT this object's monitor: dropFile() holds that one across I/O,
-  // and a WAL rotation fsyncing hundreds of files must not stall file creation and drops behind it.
-  private final        Object                                    syncLock          = new Object();
+  // and a WAL rotation fsyncing hundreds of files must not stall file creation and drops behind it. A ReentrantLock and
+  // not a monitor because it is held across fsyncs: a virtual thread blocked on a monitor pins its carrier thread.
+  private final        ReentrantLock                             syncLock          = new ReentrantLock();
   // Bumps on every file registration / drop. Lets callers (e.g. PaginatedSparseVectorEngine's
   // refreshSegmentsFromFileManager) skip the O(total files) walk on the hot query path when the
   // FileManager is unchanged since their last observation - they cache the value here, compare on
@@ -291,8 +293,11 @@ public class FileManager {
    *     drop and retries on the next pass.
    */
   public boolean syncFiles() {
-    synchronized (syncLock) {
+    syncLock.lock();
+    try {
       return syncFilesSerialized();
+    } finally {
+      syncLock.unlock();
     }
   }
 

@@ -41,6 +41,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -220,7 +221,7 @@ class PaginatedComponentFileSyncStateTest {
           secondThread.set(Thread.currentThread());
           return fileManager.syncFiles();
         });
-        awaitBlocked(secondThread, second);
+        awaitQueuedOnSyncLock(fileManager, secondThread, second);
 
         // Now make the in-flight fsync fail, as #4934 does: channel closed underneath and the OS file gone.
         breakFile(file);
@@ -336,24 +337,21 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   /**
-   * Waits until {@code thread} is parked. The task publishes its thread and calls {@code syncFiles()} as its very next
-   * step, and the sync lock is the first thing that call can wait on, so a parked thread is a thread waiting for the
-   * lock: BLOCKED on a monitor, or WAITING on a java.util.concurrent lock should it ever become one.
+   * Waits until {@code thread} is queued on the {@code syncFiles()} lock itself, asked of the lock rather than inferred
+   * from the thread state, so the wait cannot be satisfied by the thread parking anywhere else.
    */
-  private static void awaitBlocked(final AtomicReference<Thread> thread, final Future<?> future) throws InterruptedException {
+  private static void awaitQueuedOnSyncLock(final FileManager fileManager, final AtomicReference<Thread> thread,
+      final Future<?> future) throws Exception {
+    final Field field = FileManager.class.getDeclaredField("syncLock");
+    field.setAccessible(true);
+    final ReentrantLock syncLock = (ReentrantLock) field.get(fileManager);
+
     final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-    while (!isParked(thread.get())) {
+    while (thread.get() == null || !syncLock.hasQueuedThread(thread.get())) {
       assertThat(future.isDone()).as("the second sync returned while the first one's fsync was still in flight").isFalse();
-      assertThat(System.nanoTime()).as("the second sync never blocked").isLessThan(deadline);
+      assertThat(System.nanoTime()).as("the second sync never queued on the sync lock").isLessThan(deadline);
       Thread.sleep(1);
     }
-  }
-
-  private static boolean isParked(final Thread thread) {
-    if (thread == null)
-      return false;
-    final Thread.State state = thread.getState();
-    return state == Thread.State.BLOCKED || state == Thread.State.WAITING;
   }
 
   private static void breakFile(final PaginatedComponentFile file) throws Exception {
