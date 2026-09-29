@@ -731,7 +731,7 @@ class BootstrapElection {
    * selector thread rather than leaking it. If either caller ever moves onto a hot path, take the cached
    * client from {@link RaftHAServer#getHttpsClients()} instead.
    */
-  static HttpClient newTrustingClient(final ArcadeDBServer server) throws IOException {
+  private static HttpClient newTrustingClient(final ArcadeDBServer server) throws IOException {
     return HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .sslContext(SnapshotInstaller.buildSSLContext(server))

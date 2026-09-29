@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.http.handler.LeaderDial;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.IOException;
@@ -35,8 +34,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.TreeMap;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 /**
@@ -61,8 +67,18 @@ final class UnverifiedClosedCopyCheck {
   /** Response member carrying the {@link CopyState} of the database {@link #COPY_OF} named. */
   static final String COPY    = "copy";
 
-  /** Per-peer budget of one question. Every peer is asked in turn, on the request thread that names the database. */
-  static final long PEER_TIMEOUT_MS = 5_000L;
+  /**
+   * Budget of one round: every peer is asked at once, and the round ends when all have answered or this much time has
+   * passed, whichever comes first. A peer still silent then counts as unanswered.
+   */
+  static final long ROUND_TIMEOUT_MS = 5_000L;
+
+  /**
+   * How long a refusal is handed back without asking the peers again. Every request that names the database reaches
+   * {@link #check(String)}, and a client retrying or a dashboard polling it would otherwise run one round - and hold a
+   * worker thread for up to {@link #ROUND_TIMEOUT_MS} - per request.
+   */
+  static final long REFUSAL_REUSE_MS = 5_000L;
 
   private static final long LOG_INTERVAL_MS = 60_000L;
 
@@ -80,16 +96,21 @@ final class UnverifiedClosedCopyCheck {
     }
   }
 
-  /** How a peer is asked; an HTTP round trip in production. */
+  /** How a peer is asked, without blocking the caller; an asynchronous HTTP round trip in production. */
   @FunctionalInterface
   interface PeerQuestion {
-    CopyState ask(String url, String databaseName) throws Exception;
+    CompletableFuture<CopyState> ask(String url, String databaseName);
   }
 
-  private final RaftHAServer                  raftHAServer;
-  private final ArcadeDBServer                server;
-  private final Map<String, String>           refusals   = new ConcurrentHashMap<>();
-  private final Map<String, Long>             lastLogged = new ConcurrentHashMap<>();
+  private record Refusal(String reason, long atMs) {
+  }
+
+  private final RaftHAServer          raftHAServer;
+  private final ArcadeDBServer        server;
+  private final Map<String, Refusal>  refusals   = new ConcurrentHashMap<>();
+  private final Map<String, Long>     lastLogged = new ConcurrentHashMap<>();
+  private final Map<String, Object>   rounds     = new ConcurrentHashMap<>();
+  long                                refusalReuseMs = REFUSAL_REUSE_MS;
 
   UnverifiedClosedCopyCheck(final RaftHAServer raftHAServer, final ArcadeDBServer server) {
     this.raftHAServer = raftHAServer;
@@ -112,46 +133,74 @@ final class UnverifiedClosedCopyCheck {
     if (useSSL && urls.values().stream().anyMatch(url -> url != null && url.startsWith("http://")))
       PlainHttpFallbackNotice.sayOnce(UnverifiedClosedCopyCheck.class, "asking about an unverified closed copy");
 
-    HttpClient httpsClient = null;
-    try {
-      if (urls.values().stream().anyMatch(url -> url != null && url.startsWith("https://")))
-        httpsClient = BootstrapElection.newTrustingClient(server);
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot build the HTTPS client from the cluster truststore to ask the peers about database '%s': %s", null,
-          databaseName, e.getMessage());
-    }
-    final HttpClient https = httpsClient;
-    try {
-      return check(databaseName, localCopyState(server, stateMachine, databaseName), urls,
-          (url, name) -> askOverHttp(url.startsWith("https://") ? https : BootstrapElection.HTTP, url, name,
-              raftHAServer.getClusterToken()));
-    } finally {
-      if (https != null)
-        https.close();
+    final String clusterToken = raftHAServer.getClusterToken();
+    return check(databaseName, localCopyState(server, stateMachine, databaseName), urls, (url, name) -> {
+      try {
+        // The node's cached peer clients (issue #7301): this runs on the request path, so no client is built per call.
+        final HttpClient client = url.startsWith("https://") ?
+            raftHAServer.getHttpsClients().clientFor(server) :
+            BootstrapElection.HTTP;
+        return askOverHttp(client, url, name, clusterToken);
+      } catch (final IOException e) {
+        return CompletableFuture.failedFuture(e);
+      }
+    });
+  }
+
+  /**
+   * {@link #check(String)} with this node's copy, the peers' URLs and the way to ask them given. Package-private for
+   * tests.
+   * <p>
+   * One round at a time per database: a request arriving while a round runs waits for it and takes its verdict, and a
+   * refusal younger than {@link #refusalReuseMs} is handed back without a round at all.
+   */
+  String check(final String databaseName, final CopyState local, final Map<RaftPeerId, String> peerUrls,
+      final PeerQuestion question) {
+    synchronized (rounds.computeIfAbsent(databaseName, k -> new Object())) {
+      final Refusal recent = refusals.get(databaseName);
+      if (recent != null && System.currentTimeMillis() - recent.atMs() < refusalReuseMs)
+        return recent.reason();
+      return round(databaseName, local, peerUrls, question);
     }
   }
 
-  /** {@link #check(String)} with the peers, their URLs and the way to ask them given. Package-private for tests. */
-  String check(final String databaseName, final CopyState local, final Map<RaftPeerId, String> peerUrls,
+  private String round(final String databaseName, final CopyState local, final Map<RaftPeerId, String> peerUrls,
       final PeerQuestion question) {
     final Map<String, CopyState> answered = new TreeMap<>();
     final List<String> unanswered = new ArrayList<>();
+    final Map<String, CompletableFuture<CopyState>> pending = new LinkedHashMap<>();
     for (final Map.Entry<RaftPeerId, String> entry : peerUrls.entrySet()) {
       final String peer = entry.getKey().toString();
-      if (entry.getValue() == null) {
+      if (entry.getValue() == null)
         unanswered.add(peer + " (no HTTP address this node may dial)");
-        continue;
-      }
+      else
+        pending.put(peer, question.ask(entry.getValue(), databaseName));
+    }
+
+    // Every peer is asked at once and the round shares ONE deadline, so the worst case is one budget rather than one
+    // per peer (nanoTime: immune to wall-clock steps).
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ROUND_TIMEOUT_MS);
+    for (final Map.Entry<String, CompletableFuture<CopyState>> entry : pending.entrySet()) {
+      final String peer = entry.getKey();
+      final CompletableFuture<CopyState> answer = entry.getValue();
       try {
-        answered.put(peer, question.ask(entry.getValue(), databaseName));
+        final long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+        answered.put(peer, answer.get(remainingNanos, TimeUnit.NANOSECONDS));
+      } catch (final TimeoutException e) {
+        answer.cancel(true);
+        unanswered.add(peer + " (no answer within " + ROUND_TIMEOUT_MS + " ms)");
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+        answer.cancel(true);
         unanswered.add(peer + " (interrupted)");
-      } catch (final Exception e) {
-        unanswered.add(peer + " (" + e.getMessage() + ")");
+      } catch (final ExecutionException e) {
+        final Throwable cause = e.getCause() != null ? e.getCause() : e;
+        unanswered.add(peer + " (" + cause.getMessage() + ")");
+      } catch (final CancellationException e) {
+        unanswered.add(peer + " (cancelled)");
       }
     }
+
     final String refusal = verdict(local, answered, unanswered);
     if (refusal == null) {
       refusals.remove(databaseName);
@@ -220,13 +269,17 @@ final class UnverifiedClosedCopyCheck {
       return Collections.emptyMap();
     final String root = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
     refusals.keySet().removeIf(name -> !Files.exists(Path.of(root, name, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)));
-    return new TreeMap<>(refusals);
+    lastLogged.keySet().retainAll(refusals.keySet());
+    final Map<String, String> reasons = new TreeMap<>();
+    for (final Map.Entry<String, Refusal> entry : refusals.entrySet())
+      reasons.put(entry.getKey(), entry.getValue().reason());
+    return reasons;
   }
 
   private String record(final String databaseName, final String refusal) {
-    refusals.put(databaseName, refusal);
-    // Every request that names the database asks again, so the SEVERE is throttled per database, not per request.
     final long now = System.currentTimeMillis();
+    refusals.put(databaseName, new Refusal(refusal, now));
+    // Every request that names the database can ask again, so the SEVERE is throttled per database, not per request.
     final Long previous = lastLogged.get(databaseName);
     if (previous == null || now - previous >= LOG_INTERVAL_MS) {
       lastLogged.put(databaseName, now);
@@ -239,15 +292,22 @@ final class UnverifiedClosedCopyCheck {
     return refusal;
   }
 
-  private static CopyState askOverHttp(final HttpClient client, final String url, final String databaseName,
-      final String clusterToken) throws IOException, InterruptedException {
-    if (client == null)
-      throw new IOException("no HTTPS client could be built from the cluster truststore");
-    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, PEER_TIMEOUT_MS,
+  /**
+   * One peer's answer, asynchronously. The request carries {@link #ROUND_TIMEOUT_MS} as its own timeout, which on JDK
+   * 21-25 stops at the response headers; the round's deadline in {@link #round} bounds a body that stalls after them.
+   * Package-private for tests.
+   */
+  static CompletableFuture<CopyState> askOverHttp(final HttpClient client, final String url, final String databaseName,
+      final String clusterToken) {
+    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, ROUND_TIMEOUT_MS,
         new JSONObject().put(COPY_OF, databaseName).toString());
-    final HttpResponse<String> response = LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(),
-        PEER_TIMEOUT_MS);
-    return parseAnswer(response.statusCode(), response.body());
+    return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
+      try {
+        return parseAnswer(response.statusCode(), response.body());
+      } catch (final IOException e) {
+        throw new CompletionException(e);
+      }
+    });
   }
 
   /**

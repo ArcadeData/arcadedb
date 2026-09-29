@@ -1351,11 +1351,17 @@ public class ArcadeDBServer {
     if (!new File(databaseDirectory, UNVERIFIED_CLOSED_COPY_FILE).exists())
       return false;
     final String refusal = ha.refuseToReopenUnverifiedClosedCopy(databaseName);
-    if (refusal != null)
+    if (refusal != null) {
+      // The reason names peers and carries the text of a failed peer call, so it goes to the log and to the cluster
+      // alert, which filter who sees it, and not to whichever client named the database.
+      LogManager.instance().log(this, Level.FINE, "Database '%s' not reopened on the leader: %s", null, databaseName,
+          refusal);
       throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node is the "
-          + "leader and holds a closed copy the last HA resync could not verify, and reopening it would make it the "
-          + "cluster's copy, but " + refusal + ". Transfer the leadership to the server holding the newer copy, or remove "
-          + "this node's '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker to accept this copy as it is");
+          + "leader and holds a closed copy the last HA resync could not verify, and the other servers did not confirm "
+          + "that none of them holds a newer one, so it is not reopened as the cluster's copy. The reason is in the "
+          + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or "
+          + "remove this node's '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker to accept this copy as it is");
+    }
     return true;
   }
 

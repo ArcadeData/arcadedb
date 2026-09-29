@@ -87,8 +87,10 @@ class Issue8605LeaderReopenGateTest {
 
     assertThatThrownBy(() -> server.getDatabase(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
-        .hasMessageContaining("a newer copy is held by peer-1")
-        .hasMessageContaining(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
+        .hasMessageContaining("did not confirm")
+        .hasMessageContaining(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE)
+        // the reason names peers and failed-call text: it goes to the log and the cluster alert, not to the client
+        .hasMessageNotContaining("peer-1");
     assertThat(server.existsDatabase(MARKED)).as("the copy is not registered").isFalse();
     assertThat(Files.exists(marker(MARKED))).as("and keeps its mark").isTrue();
     verify(ha, times(1)).refuseToReopenUnverifiedClosedCopy(MARKED);
@@ -161,10 +163,35 @@ class Issue8605LeaderReopenGateTest {
     when(ha.isLeader()).thenReturn(true);
     server.setHA(ha);
 
+    assertThat(ha.refuseToReopenUnverifiedClosedCopy(MARKED)).contains("cannot compare");
     assertThatThrownBy(() -> server.getDatabase(MARKED))
         .isInstanceOf(DatabaseNotAvailableException.class)
-        .hasMessageContaining("cannot compare");
+        .hasMessageContaining("did not confirm");
     assertThat(Files.exists(marker(MARKED))).isTrue();
+  }
+
+  /**
+   * The predicate the boot scan and the default-database pass skip on: a node that already leads at the second pass
+   * does not open a marked copy there - that open would ask every peer from the boot thread - and leaves it to the next
+   * request, which goes through the check.
+   */
+  @Test
+  void theBootScansSkipAMarkedCopyOnANodeThatAlreadyLeads() throws IOException {
+    createDatabaseOnDisk(MARKED, true);
+    createDatabaseOnDisk(UNMARKED, false);
+    server = startServer();
+    final Path databases = root.resolve("databases");
+
+    server.setHA(leader(null));
+    assertThat(server.leaderHoldsUnverifiedClosedCopy(databases.resolve(MARKED).toFile())).isTrue();
+    assertThat(server.leaderHoldsUnverifiedClosedCopy(databases.resolve(UNMARKED).toFile())).isFalse();
+
+    final HAServerPlugin follower = mock(HAServerPlugin.class);
+    when(follower.isLeader()).thenReturn(false);
+    server.setHA(follower);
+    assertThat(server.leaderHoldsUnverifiedClosedCopy(databases.resolve(MARKED).toFile()))
+        .as("a follower skips it through the #8589 predicate instead").isFalse();
+    assertThat(server.refusesUnverifiedClosedCopy(databases.resolve(MARKED).toFile())).isTrue();
   }
 
   // ------------------------------------------------------------------------------------------------------------

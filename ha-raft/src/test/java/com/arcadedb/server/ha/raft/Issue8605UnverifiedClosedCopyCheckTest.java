@@ -36,13 +36,21 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.sun.net.httpserver.HttpExchange;
+
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -143,19 +151,18 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     urls.put(PEER_1, "http://peer-1/api/v1/cluster/bootstrap-state");
     urls.put(PEER_2, null);
 
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> new CopyState(false, -1L)))
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(false, -1L))))
         .contains("peer-2").contains("no HTTP address");
 
     urls.put(PEER_2, "http://peer-2/api/v1/cluster/bootstrap-state");
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
-      if (url.contains("peer-2"))
-        throw new IOException("HTTP 503");
-      return new CopyState(false, -1L);
-    })).contains("peer-2").contains("HTTP 503");
+    check.refusalReuseMs = 0L;
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> url.contains("peer-2") ?
+        CompletableFuture.failedFuture(new IOException("HTTP 503")) :
+        done(new CopyState(false, -1L)))).contains("peer-2").contains("HTTP 503");
 
     assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
       assertThat(name).isEqualTo(DB_NAME);
-      return new CopyState(true, 5L);
+      return done(new CopyState(true, 5L));
     })).isNull();
   }
 
@@ -164,9 +171,10 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   void aRefusalIsReportedWhileItsMarkStands() throws IOException {
     createClosedCopy(true);
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    check.refusalReuseMs = 0L;
     final Map<RaftPeerId, String> urls = Map.of(PEER_1, "http://peer-1/x");
 
-    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> new CopyState(true, 9L));
+    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(true, 9L)));
     assertThat(check.getRefusals()).containsOnlyKeys(DB_NAME);
 
     final JSONArray alerts = new JSONArray();
@@ -179,15 +187,88 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     ClusterAlerts.addUnverifiedClosedCopyRefusedAlert(check.getRefusals(), Set.of("other"), true, hidden);
     assertThat(hidden.length()).as("a database the caller cannot see raises nothing").isZero();
 
-    check.check(DB_NAME, new CopyState(true, 9L), urls, (url, name) -> new CopyState(true, 9L));
+    check.check(DB_NAME, new CopyState(true, 9L), urls, (url, name) -> done(new CopyState(true, 9L)));
     assertThat(check.getRefusals()).as("verified: the refusal no longer stands").isEmpty();
 
-    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> new CopyState(true, 9L));
+    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(true, 9L)));
     Files.delete(marker());
     assertThat(check.getRefusals()).as("the operator removed the mark: the refusal no longer stands").isEmpty();
   }
 
+  /** A client retrying, or a dashboard polling the database, does not run one round per request. */
+  @Test
+  void aRecentRefusalIsHandedBackWithoutAskingAgain() {
+    final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    final Map<RaftPeerId, String> urls = Map.of(PEER_1, "http://peer-1/x");
+    final AtomicInteger asked = new AtomicInteger();
+
+    final String first = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+      asked.incrementAndGet();
+      return done(new CopyState(true, 9L));
+    });
+    final String second = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+      asked.incrementAndGet();
+      return done(new CopyState(true, 5L));
+    });
+
+    assertThat(second).isEqualTo(first).isNotNull();
+    assertThat(asked.get()).isEqualTo(1);
+  }
+
+  /** Every peer is asked at once; one that never answers is unanswered once the round's deadline passes. */
+  @Test
+  void peersThatNeverAnswerAreUnansweredAtTheRoundsDeadline() {
+    final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
+    urls.put(PEER_1, "http://peer-1/x");
+    urls.put(PEER_2, "http://peer-2/x");
+    final AtomicInteger asked = new AtomicInteger();
+
+    final String refusal = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+      asked.incrementAndGet();
+      return new CompletableFuture<>();
+    });
+
+    assertThat(asked.get()).as("both asked before either is waited on").isEqualTo(2);
+    assertThat(refusal).contains("peer-1").contains("peer-2").contains("no answer within");
+  }
+
   // ---------------------------------------------------------------------------------------------- the wire
+
+  /** The real HTTP path: the request a peer receives, its answer, and an older peer's answer that is not one. */
+  @Test
+  void peersAreAskedOverHttpAndAnOlderPeersListingIsNotAnAnswer() throws IOException {
+    final AtomicReference<String> body = new AtomicReference<>();
+    final AtomicReference<String> forwardedUser = new AtomicReference<>();
+    final com.sun.net.httpserver.HttpServer current = peer(exchange -> {
+      body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      forwardedUser.set(exchange.getRequestHeaders().getFirst("X-ArcadeDB-Forwarded-User"));
+      return new JSONObject().put("peerId", "peer-1")
+          .put(UnverifiedClosedCopyCheck.COPY, new CopyState(true, 42L).toJSON(DB_NAME)).toString();
+    });
+    final com.sun.net.httpserver.HttpServer older = peer(
+        exchange -> new JSONObject().put("peerId", "peer-2").put("databases", new JSONArray()).toString());
+    try {
+      final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+      check.refusalReuseMs = 0L;
+      final UnverifiedClosedCopyCheck.PeerQuestion http = (url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
+          BootstrapElection.HTTP, url, name, null);
+
+      final String newer = check.check(DB_NAME, new CopyState(true, 10L), Map.of(PEER_1, urlOf(current)), http);
+      assertThat(newer).contains("peer-1").contains("42");
+      assertThat(new JSONObject(body.get()).getString(UnverifiedClosedCopyCheck.COPY_OF)).isEqualTo(DB_NAME);
+      assertThat(forwardedUser.get()).isEqualTo("root");
+
+      assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_1, urlOf(current)), http)).isNull();
+
+      assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_2, urlOf(older)), http))
+          .contains("peer-2").contains("older version");
+    } finally {
+      current.stop(0);
+      older.stop(0);
+    }
+  }
+
 
   @Test
   void anAnswerWithoutTheCopyIsNotAnAnswer() throws IOException {
@@ -241,6 +322,33 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   }
 
   // ------------------------------------------------------------------------------------------------------------
+
+  private static CompletableFuture<CopyState> done(final CopyState state) {
+    return CompletableFuture.completedFuture(state);
+  }
+
+  private static com.sun.net.httpserver.HttpServer peer(final Answer answer) throws IOException {
+    final com.sun.net.httpserver.HttpServer peer = com.sun.net.httpserver.HttpServer.create(
+        new InetSocketAddress("localhost", 0), 0);
+    peer.createContext(BootstrapElection.BOOTSTRAP_STATE_ROUTE, exchange -> {
+      final byte[] bytes = answer.answer(exchange).getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (final OutputStream out = exchange.getResponseBody()) {
+        out.write(bytes);
+      }
+    });
+    peer.start();
+    return peer;
+  }
+
+  private static String urlOf(final com.sun.net.httpserver.HttpServer peer) {
+    return BootstrapElection.chooseUrl("localhost:" + peer.getAddress().getPort(), null, false);
+  }
+
+  @FunctionalInterface
+  private interface Answer {
+    String answer(HttpExchange exchange) throws IOException;
+  }
 
   private JSONObject askHandler(final String name) throws Exception {
     final HttpServer httpServer = mock(HttpServer.class);
