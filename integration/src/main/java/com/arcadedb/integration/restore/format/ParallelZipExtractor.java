@@ -27,7 +27,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -251,12 +250,16 @@ public class ParallelZipExtractor {
       final byte[] buffer = acquireBuffer();
       long origSize = 0L;
       try (final InputStream in = zipFile.getInputStream(entry);
-           final OutputStream out = new FileOutputStream(uncompressedFile)) {
+           final FileOutputStream out = new FileOutputStream(uncompressedFile)) {
         int len;
         while ((len = in.read(buffer)) > 0) {
           out.write(buffer, 0, len);
           origSize += len;
         }
+        // A RESTORED FILE IS DURABLE WHEN THE RESTORE SAYS IT IS DONE, NOT WHEN THE OS GETS ROUND TO WRITING IT BACK: THE
+        // DATABASE OPENED ON IT FORCES ONLY THE FILES IT WRITES ITSELF (ISSUE #8626), SO NOTHING LATER SYNCS A FILE THAT
+        // IS ONLY READ. EACH WORKER SYNCS ITS OWN ENTRY, SO THE FSYNCS RUN AS PARALLEL AS THE EXTRACTION
+        out.getFD().sync();
       } finally {
         bufferPool.offer(buffer);
       }
