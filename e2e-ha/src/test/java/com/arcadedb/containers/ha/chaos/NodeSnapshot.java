@@ -35,6 +35,7 @@ public final class NodeSnapshot {
   private final Keys     duplicates = new Keys();
   private final Keys     multiEdge  = new Keys();
   private       long     rows;
+  private       long     edges;
 
   public NodeSnapshot(final Ledger ledger) {
     this.ledger = ledger;
@@ -48,6 +49,7 @@ public final class NodeSnapshot {
 
   public void add(final long key, final int edges) {
     ++rows;
+    this.edges += edges;
     final int writer = Ledger.writerOf(key);
     final long seq = Ledger.seqOf(key);
     if (key < 0 || writer >= present.length || seq >= ledger.size(writer)) {
@@ -98,6 +100,11 @@ public final class NodeSnapshot {
 
   public long rows() {
     return rows;
+  }
+
+  /** @return the {@code NEXT} edges of every row scanned, as each row's vertex reported them */
+  public long edges() {
+    return edges;
   }
 
   public long[] phantoms() {

@@ -30,9 +30,10 @@ import java.util.Set;
 /**
  * Runs with the workload quiesced: waits until every node reports the same row and edge counts twice in a row, scans
  * every node, re-reads the counts (a change means a late commit landed during the scan: converge and scan again within
- * the same deadline), reports keys that differ between nodes, then checks node 0 against the ledger. A 5xx while
- * scanning is a SAFETY {@code SCAN_ERROR} (the node is up but cannot serve its own data); any other scan failure is an
- * AVAILABILITY {@code SCAN}.
+ * the same deadline), reports keys that differ between nodes, then checks node 0 against the ledger. Counts that never
+ * agree while every node's scans find the same records are a {@code COUNT_DRIFT}: the stored counters {@code count(*)}
+ * reads drifted from the data. A 5xx while scanning is a SAFETY {@code SCAN_ERROR} (the node is up but cannot serve
+ * its own data); any other scan failure is an AVAILABILITY {@code SCAN}.
  */
 public final class Checkpoint {
   public record Result(List<Violation> violations, long[] counts, long convergenceMillis, long durationMillis) {
@@ -78,8 +79,11 @@ public final class Checkpoint {
         if (System.nanoTime() > deadline) {
           final String message = "Nodes did not converge within " + convergenceTimeout + ": [ops, edges] per node = "
               + Arrays.toString(lastCounts) + (lastError == null ? "" : ", last read error: " + lastError);
-          return new Result(List.of(differingKeys("CONVERGENCE", message, scanReadableNodes())), lastCounts,
-              millisSince(start), millisSince(start));
+          final long[] counts = lastCounts;
+          final Scan scan = scanReadableNodes();
+          final Violation drift = scan.recordsIdentical() ? countDrift(counts, scan) : null;
+          final Violation violation = drift != null ? drift : differingKeys("CONVERGENCE", message, scan);
+          return new Result(List.of(violation), counts, millisSince(start), millisSince(start));
         }
         Thread.sleep(pollInterval.toMillis());
       }
@@ -114,7 +118,7 @@ public final class Checkpoint {
 
       final List<Violation> violations = new ArrayList<>();
       final Violation divergence = differingKeys("DIVERGENCE", "nodes hold different keys despite equal counts",
-          new Scan(snapshots, List.of(), 0));
+          new Scan(snapshots, List.of(), 0, null));
       if (divergence.keys().length > 0)
         violations.add(divergence);
       violations.addAll(checker.check(snapshots[0]));
@@ -123,10 +127,25 @@ public final class Checkpoint {
   }
 
   /**
-   * @return {@code [ops, edges]} per node, or null when a node could not be read ({@link #lastCounts} then holds what
-   * was read, with zeros for the unreadable nodes, and {@link #lastReadError} the error)
+   * @param scanned {@code [records, edges]} per node as the scans found them, or null when a node could not be fully
+   *                scanned
    */
-  private record Scan(NodeSnapshot[] snapshots, List<String> notes, int recordAnomalies) {
+  private record Scan(NodeSnapshot[] snapshots, List<String> notes, int recordAnomalies, long[] scanned) {
+    /**
+     * Whether every node was scanned, holds exactly the records its index holds, and holds the same records and edges
+     * as every other node: a disagreement left over is in the counters {@code count(*)} reads, not in the data.
+     */
+    boolean recordsIdentical() {
+      if (scanned == null || recordAnomalies > 0)
+        return false;
+      for (int i = 2; i < scanned.length; i += 2)
+        if (scanned[i] != scanned[0] || scanned[i + 1] != scanned[1])
+          return false;
+      for (int i = 1; i < snapshots.length; i++)
+        if (snapshots[0].diff(snapshots[i], 1).length > 0)
+          return false;
+      return true;
+    }
   }
 
   /**
@@ -138,9 +157,11 @@ public final class Checkpoint {
     final NodeSnapshot[] snapshots = new NodeSnapshot[nodes];
     final List<String> notes = new ArrayList<>();
     int recordAnomalies = 0;
+    long[] scanned = new long[nodes * 2];
     for (int i = 0; i < nodes; i++) {
       if (!lastReadable[i]) {
         notes.add("node " + i + ": not scanned (" + lastReadErrors[i] + ")");
+        scanned = null;
         continue;
       }
       final NodeSnapshot snapshot = new NodeSnapshot(ledger);
@@ -149,21 +170,32 @@ public final class Checkpoint {
         snapshots[i] = snapshot;
       } catch (final IOException e) {
         notes.add("node " + i + ": not scanned (" + e.getMessage() + ")");
+        scanned = null;
         continue;
       }
-      // the scan above goes through the unique index on id, count(*) reads the buckets: a record only the buckets
-      // hold makes the counts disagree while every node's key scan matches
+      // the scan above goes through the unique index on id, the record scan reads the buckets: a record only the
+      // buckets hold makes the counts disagree while every node's key scan matches
       final RecordScan records = new RecordScan();
       try {
         reader.scanRecords(i, records);
-        final List<String> found = records.anomalies(i, snapshot, InvariantChecker.MAX_KEYS);
-        notes.addAll(found);
-        recordAnomalies += found.size();
       } catch (final IOException e) {
         notes.add("node " + i + ": records not scanned (" + e.getMessage() + ")");
+        scanned = null;
+        continue;
+      }
+      // count(*) without a WHERE reads each bucket's stored record counter: printed next to what the scans found, a
+      // counter that drifted from the records reads as such
+      notes.add("node " + i + " counts: count(*) ops=" + lastCounts[i * 2] + " edges=" + lastCounts[i * 2 + 1] + ", scanned "
+          + records.size() + " records, " + snapshot.rows() + " index entries, " + snapshot.edges() + " edges");
+      final List<String> found = records.anomalies(i, snapshot, InvariantChecker.MAX_KEYS);
+      notes.addAll(found);
+      recordAnomalies += found.size();
+      if (scanned != null) {
+        scanned[i * 2] = records.size();
+        scanned[i * 2 + 1] = snapshot.edges();
       }
     }
-    return new Scan(snapshots, notes, recordAnomalies);
+    return new Scan(snapshots, notes, recordAnomalies, scanned);
   }
 
   /**
@@ -198,6 +230,25 @@ public final class Checkpoint {
     return new Violation(ResultKind.SAFETY, invariant, message + summary, keyArray, details);
   }
 
+  /**
+   * The SAFETY violation for counts that never agree while every node holds the same records: the stored counters
+   * {@code count(*)} reads drifted from the data. Lists the nodes whose counter differs from what their scans found;
+   * null when none does (the counts moved between the last poll and the scans), which leaves it a convergence failure.
+   */
+  private static Violation countDrift(final long[] counts, final Scan scan) {
+    final long[] scanned = scan.scanned();
+    final List<String> drifted = new ArrayList<>();
+    for (int i = 0; i < scanned.length / 2; i++)
+      if (counts[i * 2] != scanned[i * 2] || counts[i * 2 + 1] != scanned[i * 2 + 1])
+        drifted.add("node " + i + " count(*) ops=" + counts[i * 2] + " edges=" + counts[i * 2 + 1]);
+    if (drifted.isEmpty())
+      return null;
+    final String message = "count(*) disagrees across nodes that hold identical data: [ops, edges] per node = "
+        + Arrays.toString(counts) + ", while the scans found " + scanned[0] + " records and " + scanned[1]
+        + " edges on every node; drifted: " + String.join(", ", drifted);
+    return new Violation(ResultKind.SAFETY, "COUNT_DRIFT", message, new long[0], scan.notes());
+  }
+
   private String describe(final long key, final NodeSnapshot[] snapshots) {
     final int writer = Ledger.writerOf(key);
     final long seq = Ledger.seqOf(key);
@@ -226,6 +277,10 @@ public final class Checkpoint {
     return false;
   }
 
+  /**
+   * @return {@code [ops, edges]} per node, or null when a node could not be read ({@link #lastCounts} then holds what
+   * was read, with zeros for the unreadable nodes, and {@link #lastReadError} the error)
+   */
   private long[] readCounts() {
     final long[] counts = new long[nodes * 2];
     boolean readable = true;

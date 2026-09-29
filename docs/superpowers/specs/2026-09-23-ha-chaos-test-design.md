@@ -115,7 +115,12 @@ Each op is attempted exactly once (no client retry):
    `ledger-diff.txt` lists the keys that differ between the readable nodes' index scans, and each node's records read
    from the buckets in RID order (`SELECT @rid, id ... ORDER BY @rid`, bypassing the index) compared with that node's
    own index: a duplicate id, a record the index has no entry for, a record without an id, an index entry without a
-   record. `count(*)` reads the buckets, so these explain a count mismatch that the index scans cannot see.
+   record. `count(*)` reads the buckets, so these explain a count mismatch that the index scans cannot see. A line
+   per node puts its `count(*)` next to what its scans found (records, index entries, edges). When every node was
+   scanned, each node's records match its index, and all nodes hold the same records and edges, yet some node's
+   `count(*)` differs from its scans, the failure is `COUNT_DRIFT` (SAFETY) instead: `count(*)` without a `WHERE`
+   reads each bucket's stored record counter, and that counter drifted from data that is identical everywhere
+   (issue #8640).
 3. **Scan and diff**: page every key of every node, then re-read the counts. If they changed (a legal late commit
    landed during the scan) go back to step 2 within the same deadline. Otherwise any key that differs between node 0
    and another node is a `SAFETY` violation (`DIVERGENCE`). A 5xx while scanning is `SAFETY` (`SCAN_ERROR`: the node is
@@ -150,7 +155,7 @@ Reported as a separate category from safety:
 The first violation stops the run (fail fast): the report is written with the result category, containers' logs are
 dumped via `dumpContainerLogs`, and the test fails with a message naming the invariant, the step, and the replay
 command. Result categories: `PASS`, `SAFETY`, `AVAILABILITY`, `HARNESS` (the harness itself broke, e.g. the Toxiproxy
-container died or Docker refused a command). Violation names within them: `I1`-`I5`, `CONVERGENCE`, `DIVERGENCE`,
+container died or Docker refused a command). Violation names within them: `I1`-`I5`, `CONVERGENCE`, `COUNT_DRIFT`, `DIVERGENCE`,
 `SCAN_ERROR` and `PAGE_COMPARE` (SAFETY); `SCAN` and runner-level availability failures (AVAILABILITY); `QUIESCE`
 (HARNESS).
 
