@@ -278,7 +278,8 @@ public class FileManager {
    * The calls are SERIALIZED: a sync claims a file's pending state before it forces it, so a concurrent caller (a clean
    * close racing the WAL rotation timer) would otherwise find the file clean and return {@code true} while the first
    * fsync is still in flight and may still fail. A failed sync gives the state back, so the next caller forces the file
-   * itself.
+   * itself. A file whose channel is already closed (dropped, or closing with the database) is skipped and keeps its
+   * state: nothing can be forced through it any more.
    * <p>
    * The directory fsync is best effort, as in {@link FileUtils#forceDirectory} (a no-op on Windows), and never fails the
    * sync: the file content is already on disk.
