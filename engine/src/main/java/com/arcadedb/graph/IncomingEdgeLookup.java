@@ -322,7 +322,8 @@ public final class IncomingEdgeLookup {
    * The scans of {@code unidirectionalTypes}, taking the ones this query has not taken yet, or took in a transaction
    * that has ended since (see {@link UnidirectionalEdgeChanges}). The common case - every scan present and current -
    * reads a concurrent map and takes no lock; the missing ones are taken under the lock, so parallel workers wait for
-   * one scan rather than repeat it.
+   * one scan rather than repeat it - a worker that needs a scan already taken also waits while another type is being
+   * scanned, which is the price of never scanning a type twice.
    */
   private Snapshot[] snapshots(final DatabaseInternal database, final String[] unidirectionalTypes,
       final CommandContext context) {
@@ -454,8 +455,8 @@ public final class IncomingEdgeLookup {
   /**
    * The edges of one unidirectional type, sorted by target: six parallel primitive arrays, the endpoints and the edge
    * as bucket/position pairs, so the scan holds no object per edge. A lightweight edge has no record, and is kept as its
-   * type's bucket with {@link #LIGHTWEIGHT_POSITION}. The arrays are the builder's own, sorted in place, so building
-   * one never holds a second copy.
+   * type's bucket with {@link #LIGHTWEIGHT_POSITION}. The arrays are the builder's own, sorted in place and kept with
+   * their growth slack (charged to the query as held), so building one never holds a second copy.
    */
   private static final class Snapshot {
     private final String                    typeName;
