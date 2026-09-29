@@ -522,10 +522,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // session. A refusal issued before the handler ran (the 503 of a node installing a snapshot) left the
         // transaction open, and a server that predates the fix keeps the session of a commit that failed inside the
         // handler. Released now rather than at the server's session timeout, and before the retry loop begins the next
-        // attempt. Best-effort: a node still installing refuses the rollback too, which leaves the timeout to do it. A
-        // commit that failed in transport is not followed by a rollback: it may still be running, on a server that may
-        // not be reachable at all.
-        rollbackQuietly();
+        // attempt. Best-effort: a node still installing refuses the rollback too, which leaves the timeout to do it.
+        //
+        // Only for the outcomes that prove the commit did not land, which are also the ones the retry loop re-runs. A
+        // commit that did or may have landed (409 committed remotely, a dispatched replication that timed out) is not
+        // retried, and a rollback sent for it would only count as one in the stats. Neither is a commit that failed in
+        // transport: it may still be running, on a server that may not be reachable at all.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          rollbackQuietly();
 
         // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry
         // reached the replicated log, so a retry runs it for the first time. An outcome that may have landed is a

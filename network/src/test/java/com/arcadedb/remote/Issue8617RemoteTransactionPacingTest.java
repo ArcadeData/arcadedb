@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -247,6 +248,29 @@ class Issue8617RemoteTransactionPacingTest {
 
     assertThat(database.isTransactionActive()).isFalse();
     assertThat(database.log).containsExactly("begin", "commit AS-1", "rollback AS-1");
+  }
+
+  /**
+   * A commit the server reports as committed (409) or possibly committed (a dispatched replication that timed out) is
+   * not retried, and not followed by a rollback either: it would roll back nothing and count as a rollback.
+   */
+  @Test
+  void aCommitThatLandedOrMayHaveLandedIsNotFollowedByARollback() {
+    final Scripted[] outcomes = {
+        scripted(409, typed(TransactionCommittedRemotelyException.class.getName(), "committed cluster-wide"), null),
+        scripted(500, typed("com.arcadedb.server.ha.raft.ReplicationDispatchedTimeoutException", "dispatched, timed out"),
+            null) };
+    for (final Scripted outcome : outcomes) {
+      final ScriptedDatabase database = open(new ContextConfiguration());
+      database.script("commit", outcome);
+
+      database.begin();
+      assertThatThrownBy(database::commit).as("commit answered %d", outcome.status())
+          .isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class);
+
+      assertThat(database.isTransactionActive()).isFalse();
+      assertThat(database.log).as("commit answered %d", outcome.status()).containsExactly("begin", "commit AS-1");
+    }
   }
 
   /**
