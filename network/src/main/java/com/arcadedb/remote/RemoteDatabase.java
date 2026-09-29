@@ -55,6 +55,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -266,6 +267,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (attempts < 1)
       attempts = 1;
 
+    boolean duplicatedKeyRetried = false;
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
       try {
@@ -303,7 +306,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // Close the server-side transaction before the next attempt: leaving it open keeps its locks until the
         // server times it out, so attempt N+1 would contend with the locks of attempt N and be MORE likely to
         // need a retry, not less (issue #7030). A failure raised by commit() has already ended the session
-        // (commit() clears the session id in its finally), so this only fires when the block itself failed.
+        // (commit() releases a session the server still holds and clears the id in its finally, issue #8618), so
+        // this only fires when the block itself failed.
         rollbackQuietly();
         setSessionId(null);
         // The tx (server-side) is gone: reset records created in it so a retry/re-save inserts cleanly (issue #4562)
@@ -330,6 +334,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           throw e;
         }
 
+        if (e instanceof DuplicatedKeyException) {
+          // #4959, ported from LocalDatabase.transaction(): a genuine duplicate is deterministic and fails identically
+          // on every attempt. Only racing a commit that landed between attempts can succeed on a retry, and one retry
+          // is enough to tell: fail fast instead of burning the remaining attempts and their pauses (issue #8617).
+          if (duplicatedKeyRetried)
+            throw e;
+          duplicatedKeyRetried = true;
+        }
+
+        if (retry + 1 < attempts)
+          pauseBeforeRetry(retry, e);
+
       } catch (final Exception e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
         // so release it now instead of holding its locks until the server-side timeout (issue #7030).
@@ -345,6 +361,44 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     }
 
     throw lastException;
+  }
+
+  /**
+   * Waits before the next attempt of {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}
+   * (issue #8617). The pause is the exponential backoff with full jitter {@code LocalDatabase.transaction()} applies
+   * ({@link RetryBackoff}: {@code arcadedb.txRetryDelayBase} doubling up to {@code arcadedb.txRetryDelay}), stretched to
+   * the {@code Retry-After} the server sent with the refusal, if any, bounded by
+   * {@code arcadedb.network.retryAfterMaxWait}. Retrying at once spent the whole budget within a few milliseconds against
+   * a node that had said when to come back, and ran transport failures (gRPC's {@code UNAVAILABLE}) back to back.
+   * <p>
+   * An interrupt ends the retries: the exception of the attempt that just failed is the answer, and the interrupt flag is
+   * restored for the caller.
+   */
+  private void pauseBeforeRetry(final int attempt, final ArcadeDBException cause) {
+    final long delayMs = Math.max(
+        RetryBackoff.delayMs(attempt, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+            configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)), boundedRetryAfterMs(cause));
+    if (delayMs <= 0)
+      return;
+
+    LogManager.instance()
+        .log(this, Level.FINE, "Waiting %d ms before retrying the transaction on remote database '%s' (attempt=%d cause=%s)",
+            null, delayMs, databaseName, attempt + 1, cause.getClass().getSimpleName());
+    try {
+      sleepBeforeRetry(delayMs);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw cause;
+    }
+  }
+
+  /**
+   * Sleeps the pause computed before the next attempt of
+   * {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}. Overridable so a test can record the
+   * pauses instead of waiting them out.
+   */
+  protected void sleepBeforeRetry(final long delayMs) throws InterruptedException {
+    Thread.sleep(delayMs);
   }
 
   public boolean isTransactionActive() {
@@ -425,6 +479,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final NeedRetryException e) {
       throw e;
+    } catch (final IOException e) {
+      // A connection that could not even be established proves the begin never reached the server, the verdict gRPC's
+      // UNAVAILABLE carries on the same call: retryable as well (issue #8617). Any other transport failure may have
+      // left a session open on the server and stays a TransactionException, as a timeout does over gRPC.
+      if (provablyNeverSent(e))
+        throw new NeedRetryException("Error on transaction begin: the server could not be reached", e);
+      throw new TransactionException("Error on transaction begin", e);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     } finally {
@@ -456,6 +517,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
+
+        // Issue #8618: the server ANSWERED, so nothing of this commit is still running on it, and it may still hold the
+        // session. A refusal issued before the handler ran (the 503 of a node installing a snapshot) left the
+        // transaction open, and a server that predates the fix keeps the session of a commit that failed inside the
+        // handler. Released now rather than at the server's session timeout, and before the retry loop begins the next
+        // attempt. Best-effort: a node still installing refuses the rollback too, which leaves the timeout to do it. A
+        // commit that failed in transport is not followed by a rollback: it may still be running, on a server that may
+        // not be reachable at all.
+        rollbackQuietly();
 
         // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry
         // reached the replicated log, so a retry runs it for the first time. An outcome that may have landed is a

@@ -46,17 +46,23 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload) throws IOException {
-    // Guard with isTransactionActive() so a retried /commit whose session was already removed by the first
-    // call is an idempotent no-op (204) instead of committing a non-existent transaction (which would 500).
-    if (database.isTransactionActive())
-      database.commit();
-
-    // End the server-side session: after /commit its transaction is gone, so the session id must no longer
-    // resolve. Leaving it registered let follow-up writes silently auto-commit and made a retried commit 500.
-    // Ownership-gated so a request carrying another principal's session id cannot evict/orphan that session.
-    removeSession(exchange, user);
-
-    exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
+    try {
+      // Guard with isTransactionActive() so a retried /commit whose session was already removed by the first
+      // call is an idempotent no-op (204) instead of committing a non-existent transaction (which would 500).
+      if (database.isTransactionActive())
+        database.commit();
+    } finally {
+      // End the server-side session: after /commit its transaction is gone, so the session id must no longer
+      // resolve. Leaving it registered let follow-up writes silently auto-commit and made a retried commit 500.
+      // Ownership-gated so a request carrying another principal's session id cannot evict/orphan that session.
+      //
+      // In a finally, because a commit that FAILS ends the transaction just the same: HttpSession.execute rolls it
+      // back on the way out. The session used to stay registered with nothing left in it until the idle timeout,
+      // one abandoned session per failed commit, and a client retrying the block left one behind per attempt
+      // (issue #8618).
+      removeSession(exchange, user);
+      exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
+    }
     Metrics.counter("http.commit").increment();
 
     return new ExecutionResponse(204, "");

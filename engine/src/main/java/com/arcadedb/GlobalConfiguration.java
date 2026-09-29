@@ -1375,6 +1375,12 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",
       Integer.class, 0),
 
+  NETWORK_RETRY_AFTER_MAX_WAIT("arcadedb.network.retryAfterMaxWait", SCOPE.SERVER, """
+      Upper bound, in milliseconds, on how long the remote client honors the Retry-After a server sends with a request it \
+      refused before running it (a 503 from a node installing a snapshot) before retrying it: the transaction retry loop \
+      and the election retry loop wait at least that long, and never longer than this, so a misbehaving server cannot \
+      park the client. 0 ignores Retry-After, leaving only the retry backoff (issue #8617)""", Long.class, 30_000L),
+
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
   NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT("arcadedb.network.remoteFetchConnectTimeout", SCOPE.SERVER, """

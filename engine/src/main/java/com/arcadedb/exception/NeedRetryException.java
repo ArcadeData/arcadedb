@@ -19,11 +19,28 @@
 package com.arcadedb.exception;
 
 public class NeedRetryException extends ArcadeDBException {
+  // Issue #8617: how long the side that refused asked the caller to wait before retrying, 0 when it did not say
+  private long retryAfterMs;
+
   public NeedRetryException(final String s) {
     super(s);
   }
 
   public NeedRetryException(final String s, final Throwable e) {
     super(s, e);
+  }
+
+  /**
+   * How long, in milliseconds, the side that refused the operation asked the caller to wait before retrying it, or 0 when
+   * it did not say - a server answering {@code 503} with a {@code Retry-After} header, such as a node installing a
+   * snapshot. A retry loop waits at least this long, bounded by its own cap, instead of retrying at once and spending its
+   * whole budget before the refusing side is ready (issue #8617).
+   */
+  public long getRetryAfterMs() {
+    return retryAfterMs;
+  }
+
+  public void setRetryAfterMs(final long retryAfterMs) {
+    this.retryAfterMs = Math.max(0L, retryAfterMs);
   }
 }

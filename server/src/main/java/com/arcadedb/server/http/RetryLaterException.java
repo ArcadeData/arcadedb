@@ -51,6 +51,8 @@ public class RetryLaterException extends NeedRetryException {
   public RetryLaterException(final String message, final long retryAfterSeconds) {
     super(message);
     this.retryAfterSeconds = Math.max(1L, retryAfterSeconds);
+    // THE SAME BACK-OFF THROUGH THE ENGINE-LEVEL HINT, WHICH A RETRY LOOP THAT KNOWS NOTHING OF THIS CLASS READS (ISSUE #8617)
+    setRetryAfterMs(this.retryAfterSeconds * 1_000L);
   }
 
   /** How long the client is told to wait before retrying, at least one second. */
