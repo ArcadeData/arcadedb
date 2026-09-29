@@ -122,4 +122,10 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
     final double upper = iValues.get(intPos).doubleValue();
     return lower + dif * (upper - lower);
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

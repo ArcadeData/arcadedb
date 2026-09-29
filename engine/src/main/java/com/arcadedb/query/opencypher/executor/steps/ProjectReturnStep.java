@@ -28,6 +28,8 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -57,6 +59,10 @@ public class ProjectReturnStep extends AbstractExecutionStep {
   // Pattern for property access: variable.property
   private static final Pattern PROPERTY_PATTERN = Pattern.compile("(\\w+)\\.(\\w+)");
 
+  // THE KEYS A DISTINCT REMEMBERS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585,
+  // #8591). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
   public ProjectReturnStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -81,6 +87,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       private int bufferIndex = 0;
       private boolean finished = false;
       private final Set<List<Object>> seenResults = distinct ? new HashSet<>() : null;
+      private final OperationHeapLimit distinctLimit = distinct ? distinctHeapLimit(context, "RETURN DISTINCT") : null;
 
       @Override
       public boolean hasNext() {
@@ -138,8 +145,10 @@ public class ProjectReturnStep extends AbstractExecutionStep {
               } else {
                 names = returnClause.getReturnItems().stream().map(ReturnClause.ReturnItem::getOutputName).toList();
               }
-              if (!seenResults.add(DistinctNumericKey.buildKey(names, projectedResult::getProperty)))
+              final List<Object> key = DistinctNumericKey.buildKey(names, projectedResult::getProperty);
+              if (!seenResults.add(key))
                 continue;
+              distinctLimit.add(seenResults.size(), key, HeapEstimator.HASH_ENTRY_BYTES);
             }
 
             buffer.add(projectedResult);
@@ -151,6 +160,11 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
         if (!prevResults.hasNext()) {
           finished = true;
+          // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
+          if (seenResults != null) {
+            seenResults.clear();
+            distinctLimit.release();
+          }
         }
       }
 
@@ -159,6 +173,19 @@ public class ProjectReturnStep extends AbstractExecutionStep {
         ProjectReturnStep.this.close();
       }
     };
+  }
+
+  /** The operation of the DISTINCT keys of the result set just handed out, which the step's close() releases. */
+  private OperationHeapLimit distinctHeapLimit(final CommandContext context, final String operation) {
+    heapLimit = OperationHeapLimit.of(context, operation);
+    return heapLimit;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   /**

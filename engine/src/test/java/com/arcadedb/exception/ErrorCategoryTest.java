@@ -103,6 +103,22 @@ class ErrorCategoryTest {
         .as("and through the wrapper the query engines put around an execution failure").isEqualTo(ErrorCategory.RETRY);
   }
 
+  /**
+   * Issue #8591: a query refused heap because the running queries hold the budget they share fits it on its own, so the
+   * same request re-issued once they complete can succeed. A query that alone needs more than the budget cannot, and
+   * keeps the plain {@link CommandExecutionException} verdict.
+   */
+  @Test
+  void aQueryRefusedItsShareOfTheHeapBudgetIsRetryableOnEveryWireProtocol() {
+    assertThat(ErrorCategory.of(new QueryHeapBudgetExceededException("the running queries hold the budget")))
+        .isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.of(
+        new CommandExecutionException("wrapped", new QueryHeapBudgetExceededException("the running queries hold the budget"))))
+        .as("and through the wrapper the query engines put around an execution failure").isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.of(new CommandExecutionException("the query alone needs more than the whole budget")))
+        .isEqualTo(ErrorCategory.SERVER);
+  }
+
   @Test
   void theRemainingClientErrorCategoriesAreRecognised() {
     assertThat(ErrorCategory.of(new DuplicatedKeyException("idx", "k", new RID(1, 1))))

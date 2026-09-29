@@ -1071,6 +1071,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return retryable(coarsened);
     }
 
+    // 503: the queries running at the same time hold the heap budget all the queries share, and this one was refused
+    // its share (issue #8591). Transient in the same sense as the arms above: the query fits the budget on its own, so
+    // the identical request re-issued once the others complete can succeed. Decided here, ahead of the generic
+    // CommandExecutionException arm below, which it extends and which would answer 500 - a server fault a client's
+    // retry policy cannot tell from a real one. A query that alone needs more than the whole budget is refused with a
+    // plain CommandExecutionException instead, since no retry can help it.
+    final QueryHeapBudgetExceededException heapBudget = firstOf(e, cause, QueryHeapBudgetExceededException.class);
+    if (heapBudget != null) {
+      return retryable(heapBudget);
+    }
+
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
     // under a handle a request had already resolved (or resolved while one was in flight). The condition is
     // transient by construction - a handle resolved a moment later sees the reinstalled database - so it must be

@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.NodeHashJoin;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.ValueHashJoin;
 
 /**
  * Physical execution plan.
@@ -136,6 +137,8 @@ public class PhysicalPlan {
     if (operator instanceof NodeHashJoin join)
       return readsAnUnavailableView(join.getLeftChild()) || readsAnUnavailableView(join.getRightChild());
     if (operator instanceof CartesianProduct product && readsAnUnavailableView(product.getRight()))
+      return true;
+    if (operator instanceof ValueHashJoin join && readsAnUnavailableView(join.getRight()))
       return true;
     return readsAnUnavailableView(operator.getChild());
   }
