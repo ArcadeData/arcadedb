@@ -95,9 +95,22 @@ class Issue8592LeaveClusterHandOffTargetTest {
   void anUnreachableFirstPeerIsNeverTried() {
     when(raft.handoffReachablePeers()).thenReturn(Set.of(C.toString()));
 
-    manager(null).leaveCluster(false);
+    manager(C).leaveCluster(false);
 
     assertThat(transferTargets).containsExactly(C.toString());
+    assertThat(leader.get()).as("the hand-off to the only reachable peer landed").isFalse();
+    assertThat(bareStepDowns.get()).isZero();
+    assertThat(removed).containsExactly(SELF.toString());
+  }
+
+  /** No peer is reachable: the screen alone leaves nothing to try, and the removal still demotes this leader. */
+  @Test
+  void noReachablePeerSkipsTheHandOffAndStillRemoves() {
+    when(raft.handoffReachablePeers()).thenReturn(Set.of());
+
+    manager(C).leaveCluster(false);
+
+    assertThat(transferTargets).isEmpty();
     assertThat(bareStepDowns.get()).isZero();
     assertThat(removed).containsExactly(SELF.toString());
   }

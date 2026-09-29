@@ -337,7 +337,8 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   /**
    * Issue #8588: a REGISTERED database the leader answers 404 for is not a failed refresh - the same leader answers the
    * same on every retry, so failing the install for it made Ratis re-drive it forever. It is reported
-   * {@code LEADER_MISSING}, kept and served, and not recorded as refreshed.
+   * {@code LEADER_MISSING} in the result's {@code leaderMissing} set (what keeps the install from recording it at the
+   * snapshot index), and kept and served unchanged.
    */
   @Test
   void theLegacyRefreshReportsARegisteredDatabaseTheLeaderDoesNotHold() throws Exception {
