@@ -547,6 +547,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
      * installed, and a later install can legitimately be served at a lower index than an earlier one (a new leader
      * that has not applied as far, accepted because this node's own floor was lower), in which case the entries
      * between the two are no longer in the copy and must be applied again.
+     * <p>
+     * Never cleared: Raft indexes only grow, so once the apply thread has passed it nothing at or below it arrives
+     * again except a replay of the log, and that replay goes to the same copy, which still carries those entries.
      */
     void recordServedCopy(final long index) {
       servedCopyIndex = index;

@@ -34,6 +34,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
@@ -171,10 +172,49 @@ class Issue8579ServedCopyBoundaryTest {
     installer.join(30_000);
     applier.join(30_000);
 
+    assertThat(installer.isAlive()).as("the resync must finish").isFalse();
+    assertThat(applier.isAlive()).as("the parked entry must be released").isFalse();
     assertThat(installFailure.get()).isNull();
     assertThat(result.get().isCompletedExceptionally())
         .as("the parked entry the installed copy carries must not be applied to it once the gate is released").isFalse();
     assertThat(sm.readAppliedIndexCounter()).isEqualTo(30L);
+  }
+
+  @Test
+  void anEntryTypeThatActsBeyondTheDatabaseFilesIsStillApplied() throws Exception {
+    serveSnapshotsAt(40L);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    sm.runUnderInstallGate(DB, this::downloadFromLeader);
+
+    // An INSTALL_DATABASE_ENTRY carries node-local bookkeeping a copy of the files does not: it must reach its apply
+    // path (which fails in this server-less harness) even below the served index.
+    assertThat(sm.applyTransaction(entry(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true), 30L, null))
+        .isCompletedExceptionally()).as("only TX and schema entries may be left out").isTrue();
+  }
+
+  @Test
+  void anEntryThisNodeOriginatedIsStillApplied() throws Exception {
+    serveSnapshotsAt(40L);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    sm.runUnderInstallGate(DB, this::downloadFromLeader);
+
+    assertThat(sm.applyTransaction(entry(sm, emptyTxPayload(), 30L, Boolean.TRUE)).isCompletedExceptionally())
+        .as("a locally originated entry publishes a commit a caller waits on: it must reach the apply path").isTrue();
+  }
+
+  @Test
+  void noEntryIsLeftOutWhileALocalCommitIsPending() throws Exception {
+    serveSnapshotsAt(40L);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    sm.runUnderInstallGate(DB, this::downloadFromLeader);
+    assertThat(sm.registerLocalCommit(new LocalCommit("other", 7L, null, null, new byte[] { 1 }))).isTrue();
+    assertThat(sm.pendingLocalCommits()).isEqualTo(1);
+
+    assertThat(sm.applyTransaction(txEntry(sm, 3L, 30L)).isCompletedExceptionally())
+        .as("with a local commit waiting to be claimed, the entry must reach the apply path").isTrue();
   }
 
   @Test
@@ -261,13 +301,30 @@ class Issue8579ServedCopyBoundaryTest {
   }
 
   private static TransactionContext txEntry(final ArcadeStateMachine sm, final long term, final long index) {
-    final ByteString payload = RaftLogEntryCodec.encodeTxEntry(DB, new byte[0], Collections.emptyMap());
     final LogEntryProto logEntry = LogEntryProto.newBuilder()
         .setTerm(term)
         .setIndex(index)
-        .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build())
+        .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(emptyTxPayload()).build())
         .build();
     return TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build();
+  }
+
+  private static ByteString emptyTxPayload() {
+    return RaftLogEntryCodec.encodeTxEntry(DB, new byte[0], Collections.emptyMap());
+  }
+
+  private static TransactionContext entry(final ArcadeStateMachine sm, final ByteString payload, final long index,
+      final Object stateMachineContext) {
+    final LogEntryProto logEntry = LogEntryProto.newBuilder()
+        .setTerm(3L)
+        .setIndex(index)
+        .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build())
+        .build();
+    // Set on the built context: a builder given a log entry does not carry a state machine context over.
+    final TransactionContext trx = TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build();
+    if (stateMachineContext != null)
+      trx.setStateMachineContext(stateMachineContext);
+    return trx;
   }
 
   private static TransactionContext schemaEntry(final ArcadeStateMachine sm, final long index) {
@@ -285,7 +342,7 @@ class Issue8579ServedCopyBoundaryTest {
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
     try (final ZipOutputStream zip = new ZipOutputStream(baos)) {
       zip.putNextEntry(new ZipEntry(name));
-      zip.write(content.getBytes());
+      zip.write(content.getBytes(StandardCharsets.UTF_8));
       zip.closeEntry();
     }
     return baos.toByteArray();
