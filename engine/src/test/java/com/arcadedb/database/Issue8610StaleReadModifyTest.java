@@ -251,6 +251,75 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
+   * The read-transaction id stays non-negative however far the begin sequence goes: a negative id means "unknown" and
+   * would switch the check off, and -2 marks a stale read.
+   */
+  @Test
+  void theReadTransactionIdIsNeverNegative() {
+    assertThat(ImmutableDocument.readTransactionId(-1)).isEqualTo(-1);
+    assertThat(ImmutableDocument.readTransactionId(0)).isZero();
+    assertThat(ImmutableDocument.readTransactionId(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(ImmutableDocument.readTransactionId(1L << 31)).isZero();
+    assertThat(ImmutableDocument.readTransactionId((1L << 32) - 2)).isNotNegative();
+    assertThat(ImmutableDocument.readTransactionId(Long.MAX_VALUE)).isNotNegative();
+  }
+
+  /**
+   * A transaction rolled back and begun again is another transaction: a record read in the first one is refreshed
+   * silently when modified in the second, like any record held across transactions.
+   */
+  @Test
+  void aRecordReadInARolledBackTransactionIsRefreshedInTheNextOne() {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Vertex read = rid.asVertex();
+    database.rollback();
+
+    commitConcurrently("n", 5);
+
+    database.transaction(() -> read.modify().set("other", 1).save());
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().getInteger("other")).isEqualTo(1);
+  }
+
+  /**
+   * SQL UPDATE MERGE and CONTENT go through the same conversion as SET, so they build on a commit landing inside the
+   * statement too.
+   */
+  @Test
+  void sqlUpdateMergeBuildsOnACommitLandingInsideTheStatement() {
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("sql", "UPDATE V MERGE {\"m\": 1}").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().getInteger("m")).isEqualTo(1);
+  }
+
+  @Test
+  void sqlUpdateContentBuildsOnACommitLandingInsideTheStatement() {
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("sql", "UPDATE V CONTENT {\"n\": 7}").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(7);
+  }
+
+  /**
+   * An openCypher REMOVE writes no value computed from the read, but it is a property write on a record that changed
+   * since the MATCH read it, so it is refused like any other; the concurrent write is never lost.
+   */
+  @Test
+  void cypherRemoveNeverLosesACommitLandingInsideTheStatement() {
+    database.transaction(() -> rid.asVertex().modify().set("tag", "x").save());
+
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("cypher", "MATCH (v:V) REMOVE v.tag").close());
+
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().has("tag")).isEqualTo(!committed);
+  }
+
+  /**
    * Creating an edge changes only the vertex edge lists, which is what the reload exists for: a concurrent change to the
    * vertex properties must not turn it into a conflict, nor be lost.
    */

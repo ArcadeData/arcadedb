@@ -54,7 +54,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // #8610: set by every call that assigns or removes a property, never by a write to a vertex edge list, so that a save
   // can tell a property write computed from an earlier read from an edge-list-only change
   protected boolean             propertiesAssigned;
-  // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it
+  // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it.
+  // Deliberately not reset by a save: an edge-list-only save leaves the read just as stale for a later property write
   private   boolean             basedOnStaleRead;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {

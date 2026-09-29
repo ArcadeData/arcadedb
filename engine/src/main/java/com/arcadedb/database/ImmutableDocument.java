@@ -55,13 +55,11 @@ public class ImmutableDocument extends BaseDocument {
    * has not changed since: same page version, same bytes.
    */
   private long contentPageVersion = -1;
-  // #8610: TransactionContext.getBeginSequence() of the transaction this record was read in, -1 when unknown, or
-  // STALE_READ once the reload modify() performs found the content changed since that read - for good: every later
-  // modify() of this instance gets the same page without reloading, so a value computed from the read before would
-  // otherwise slip through a second modify(). An int, not a long: 8 more
-  // bytes pushed a vertex into a larger allocation size and cost ~10% of a vertex scan. It wraps after 2^32
-  // transactions, so a record held across exactly that many is taken for one read in the current transaction; the worst
-  // that can do is a retryable conflict, never a lost update.
+  // #8610: the transaction this record was read in (see readTransactionId()), -1 when unknown, or STALE_READ once the
+  // reload modify() performs found the content changed since that read - for good: every later modify() of this
+  // instance gets the same page without reloading, so a value computed from the read before would otherwise slip
+  // through a second modify(). An int, not a long: 8 more bytes pushed a vertex into a larger allocation size and cost
+  // ~10% of a vertex scan.
   private int  readInTransaction  = -1;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
@@ -245,8 +243,20 @@ public class ImmutableDocument extends BaseDocument {
    * the refresh stays silent.
    */
   public void setReadInTransaction(final long transactionBeginSequence) {
-    // Narrowed to an int on purpose, see the field
-    this.readInTransaction = (int) transactionBeginSequence;
+    this.readInTransaction = readTransactionId(transactionBeginSequence);
+  }
+
+  /**
+   * The id a record keeps of the transaction it was read in: the 31 low bits of its begin sequence, never negative,
+   * because a negative id means "unknown" (-1, which switches the check off) or {@link #STALE_READ}. A plain int cast
+   * turned half of all sequences negative once 2^31 transactions had begun. The id repeats every 2^31 transactions, so a
+   * record held across exactly that many is taken for one read in the current transaction: the worst that can do is a
+   * retryable conflict, never a lost update.
+   *
+   * @param transactionBeginSequence {@link TransactionContext#getBeginSequence()}, -1 outside a transaction
+   */
+  static int readTransactionId(final long transactionBeginSequence) {
+    return transactionBeginSequence < 0 ? -1 : (int) (transactionBeginSequence & Integer.MAX_VALUE);
   }
 
   /**
@@ -259,7 +269,7 @@ public class ImmutableDocument extends BaseDocument {
     if (readImage == null || readInTransaction < 0)
       return;
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
-    if (!tx.isStaleReadCheck() || (int) tx.getBeginSequence() != readInTransaction)
+    if (!tx.isStaleReadCheck() || readTransactionId(tx.getBeginSequence()) != readInTransaction)
       return;
     final Binary reloaded = buffer;
     if (reloaded == null)
