@@ -759,6 +759,22 @@ public class AnchorSelector {
       }
     }
 
+    // prop STARTS WITH 'abc' is the range [abc, abd) on an ordered index (issue #8666). The predicate stays in the WHERE
+    // as a filter, so what the range returns beyond it (a different collation, a non-string key) is dropped there.
+    if (expression instanceof StringMatchExpression match
+        && match.getMatchType() == StringMatchExpression.MatchType.STARTS_WITH
+        && match.getExpression() instanceof PropertyAccessExpression propAccess
+        && propAccess.getVariableName().equals(variable)) {
+      final Expression pattern = match.getPattern();
+      if (pattern instanceof LiteralExpression literal) {
+        if (literal.getValue() instanceof String prefix && !prefix.isEmpty())
+          predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+              .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), prefix, false));
+      } else if (pattern instanceof ParameterExpression parameter)
+        predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+            .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), parameter.getParameterName(), true));
+    }
+
     // Handle AND expressions - both sides may contain range predicates
     if (expression instanceof LogicalExpression) {
       final LogicalExpression logicalExpr =

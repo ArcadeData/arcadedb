@@ -37,6 +37,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
@@ -128,6 +130,11 @@ public class SelectExecutionPlanner {
   private static final String            LOCAL_NODE_NAME = "local";
   private final        SelectStatement   statement;
   private              QueryPlanningInfo info;
+  /**
+   * Whether the plan was shaped by the value of an input parameter (the bounds a {@code LIKE :p} contributes to an index
+   * search are computed from it), and so must not be reused for another set of parameters.
+   */
+  private              boolean           planDependsOnInputParameters;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
@@ -246,7 +253,8 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached())
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
+        && selectExecutionPlan.canBeCached())
       // The planningStart < lastInvalidation re-check happens atomically inside put(), under the same lock as
       // invalidate(), so a DDL racing this call can never be missed the way two separately-locked calls could (#6671).
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningStart);
@@ -4532,6 +4540,8 @@ public class SelectExecutionPlanner {
       final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
           isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
           ciCollation, context);
+      if (!ciCollation && info.allowsRange() && baseFieldName.equals(indexField))
+        addLikePrefixRange(blockCopy, info, clazz);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;
@@ -4582,6 +4592,61 @@ public class SelectExecutionPlanner {
       return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
 
     return null;
+  }
+
+  /**
+   * Adds, next to {@code field LIKE 'abc%'}, the range {@code field >= 'abc' AND field < 'abd'} that holds every value
+   * the pattern can match, so that an ordered index on the field answers it instead of a scan of the type (issue #8666).
+   * <p>
+   * The {@code LIKE} itself stays in the block, and is evaluated on what the range returns: the range is only a
+   * superset, and the answer never depends on how the index orders its keys. The pattern's literal prefix is what
+   * precedes its first wildcard, so {@code 'abc%def'} and {@code 'ab?d%'} are bounded too, by {@code abc} and {@code ab}.
+   * <p>
+   * Added only where it can be used and cannot be wrong:
+   * <ul>
+   *   <li>the caller has already ruled out a case-insensitive index, whose keys are lower-cased while the {@code LIKE}
+   *   is case sensitive, and a modified key ({@code by key}, {@code by value}, {@code by item});</li>
+   *   <li>the property is a declared STRING, so every key is one;</li>
+   *   <li>no condition of the block already bounds the field (an equality or a range of the user's own is tighter);</li>
+   *   <li>the pattern is known now: a literal, or an input parameter, whose value shapes this plan, which is then not
+   *   cached for other parameters.</li>
+   * </ul>
+   */
+  private void addLikePrefixRange(final AndBlock block, final IndexSearchInfo info, final DocumentType clazz) {
+    final Property property = clazz.getPropertyIfExists(info.getField());
+    if (property == null || property.getType() != Type.STRING)
+      return;
+
+    BinaryCondition like = null;
+    for (final BooleanExpression expression : block.getSubBlocks()) {
+      if (expression.isIndexAware(info))
+        return;
+      if (like == null && expression instanceof BinaryCondition condition && condition.getOperator() instanceof LikeOperator
+          && condition.getLeft().isBaseIdentifier() && info.getField().equals(condition.getLeft().getDefaultAlias().getStringValue())
+          && condition.getRight().isLiteral(true))
+        like = condition;
+    }
+    if (like == null || !(like.getRight().execute((Result) null, info.getContext()) instanceof String pattern))
+      return;
+
+    final String prefix = QueryHelper.likeLiteralPrefix(pattern);
+    if (prefix.isEmpty())
+      return;
+    if (!like.getRight().isLiteral())
+      planDependsOnInputParameters = true;
+
+    block.getSubBlocks().add(comparison(like.getLeft(), new GeOperator(), prefix));
+    final String successor = QueryHelper.prefixSuccessor(prefix);
+    if (successor != null)
+      block.getSubBlocks().add(comparison(like.getLeft(), new LtOperator(), successor));
+  }
+
+  private static BinaryCondition comparison(final Expression field, final BinaryCompareOperator operator, final String value) {
+    final BinaryCondition condition = new BinaryCondition();
+    condition.setLeft(field.copy());
+    condition.setOperator(operator);
+    condition.setRight(new ValueExpression(value));
+    return condition;
   }
 
   private boolean createsRangeWith(final BinaryCondition left, final BooleanExpression next) {
