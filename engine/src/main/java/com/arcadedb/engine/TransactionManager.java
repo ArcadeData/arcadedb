@@ -79,6 +79,12 @@ public class TransactionManager {
   // Guarded by walMaintenanceLock: once set by close()/kill(), no housekeeping pass runs on this instance again.
   private       boolean                      housekeepingStopped;
   /**
+   * Set when an exception escaped a replay: the WAL files it left behind are the only record of transactions it did
+   * not apply, and the pool slots still name their paths, so {@link #close} preserves them even when its caller asked
+   * for a clean close. Only a drop may delete them.
+   */
+  private volatile boolean                   recoveryInputUnreplayed;
+  /**
    * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
    * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
    * ever been committed" default of -1 for a reason that says nothing about whether one actually has. That default
@@ -186,6 +192,9 @@ public class TransactionManager {
    * a flag the pass raises itself closes the window in which a tick had passed its "is the database open" check but
    * had not yet announced itself: that pass then ran concurrently with the pool retirement below, and could rotate a
    * brand-new WAL file into a slot this close had already emptied.
+   * <p>
+   * Recovery holds the same lock for the whole replay, so a close or kill from another thread (a shutdown hook, a test
+   * teardown) now waits for a running recovery to finish instead of retiring the pool under it.
    */
   private void stopHousekeeping() {
     if (task != null)
@@ -251,7 +260,7 @@ public class TransactionManager {
           pendingAcks = true;
           break;
         }
-    final boolean preserve = preserveWalFiles || (!drop && pendingAcks);
+    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed));
 
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
@@ -656,6 +665,9 @@ public class TransactionManager {
         database.getPageManager().removeAllReadPagesOfDatabase(database);
         completed = !walGapDetected;
       }
+    } catch (final RuntimeException | Error e) {
+      recoveryInputUnreplayed = true;
+      throw e;
     } finally {
       // A replay that did not reach its own drop or rename step (an exception escaped it) releases its input exactly
       // as it found it: closed, not deleted, so the next open replays it again. The files it did drop or rename are
