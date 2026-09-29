@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Record;
@@ -80,6 +81,7 @@ import java.util.logging.Level;
 public class ArcadeGraph implements Graph, Closeable {
 
   public static final  String CONFIG_DIRECTORY    = "gremlin.arcadedb.directory";
+  // TinkerPop's default, used only when neither the client setting nor the server names the Gremlin port
   private static final int    GREMLIN_SERVER_PORT = 8182;
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
@@ -230,9 +232,11 @@ public class ArcadeGraph implements Graph, Closeable {
         // slower remote implementation rather than building a cluster with no contact points.
         return Graph.super.traversal();
 
+      final int gremlinPort = resolveRemoteGremlinPort(remoteDatabase);
+
       final String[] hosts = new String[remoteAddresses.size()];
       for (int i = 0; i < remoteAddresses.size(); i++)
-        hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + GREMLIN_SERVER_PORT)[0];
+        hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + gremlinPort)[0];
 
       final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
           new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
@@ -240,7 +244,7 @@ public class ArcadeGraph implements Graph, Closeable {
       // KEEP THE CLUSTER IN A FIELD: IT OWNS A NETTY EVENT-LOOP GROUP, A SCHEDULED EXECUTOR AND A CONNECTION POOL,
       // AND DriverRemoteConnection.using(Cluster, String) DOES NOT TAKE OWNERSHIP OF IT, SO ONLY close() CAN
       // RELEASE THOSE RESOURCES (ISSUE #6822).
-      cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
+      cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(gremlinPort)
           .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
 
       // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
@@ -253,6 +257,19 @@ public class ArcadeGraph implements Graph, Closeable {
       closeCluster();
       return Graph.super.traversal();
     }
+  }
+
+  /**
+   * The port of the Gremlin Server the remote driver connects to (issue #8578): the client setting
+   * {@link GlobalConfiguration#GREMLIN_CLIENT_PORT} when it is set, because only the client knows a port mapping the
+   * server cannot see; else the port the server advertises for its Gremlin plugin; else TinkerPop's default.
+   */
+  private static int resolveRemoteGremlinPort(final RemoteDatabase remoteDatabase) {
+    final int configured = remoteDatabase.getClientConfiguration().getValueAsInteger(GlobalConfiguration.GREMLIN_CLIENT_PORT);
+    if (configured > 0)
+      return configured;
+    final int advertised = remoteDatabase.getAdvertisedPort("gremlin");
+    return advertised > 0 ? advertised : GREMLIN_SERVER_PORT;
   }
 
   public ArcadeSQL sql(final String query) {

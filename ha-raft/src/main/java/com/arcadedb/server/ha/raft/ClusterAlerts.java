@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.SecurityConvergenceStatus;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
@@ -161,13 +162,31 @@ public class ClusterAlerts {
    *                             now, unscoped and sorted (issue #8044). Sampled here for the same reason as the
    *                             halt: the {@code bootstrapInstalls} member and the {@code bootstrap-install-in-progress}
    *                             alert are rendered from this one list, so they cannot disagree
+   * @param bootstrapDeciding    the databases a first-formation bootstrap pass is still deciding on here, unscoped and
+   *                             sorted (issue #8408): the third arm of the same readiness window, sampled for the same
+   *                             reason as {@code bootstrapInstalls}
+   * @param securityConvergence  what the security-convergence readiness gate sees on this node (issue #8555): the fifth
+   *                             readiness input, sampled once so the {@code securityConvergence} member and the
+   *                             {@code security-documents-unconverged} alert cannot disagree
    */
   public record NodeStatus(ArcadeStateMachine.CriticalHalt halt, ArcadeStateMachine.RaftLogFailure logFailure,
-      boolean crashLoopEscalated, boolean detailedDiagnostics, List<String> bootstrapInstalls) {
+      boolean crashLoopEscalated, boolean detailedDiagnostics, List<String> bootstrapInstalls, List<String> bootstrapDeciding,
+      SecurityConvergenceStatus securityConvergence) {
 
     public NodeStatus {
       if (bootstrapInstalls == null)
         bootstrapInstalls = Collections.emptyList();
+      if (bootstrapDeciding == null)
+        bootstrapDeciding = Collections.emptyList();
+      if (securityConvergence == null)
+        securityConvergence = SecurityConvergenceStatus.NOT_CONVERGING;
+    }
+
+    /** The shape before issues #8408 and #8555, for callers that sample neither the passes deciding nor the gate. */
+    public NodeStatus(final ArcadeStateMachine.CriticalHalt halt, final ArcadeStateMachine.RaftLogFailure logFailure,
+        final boolean crashLoopEscalated, final boolean detailedDiagnostics, final List<String> bootstrapInstalls) {
+      this(halt, logFailure, crashLoopEscalated, detailedDiagnostics, bootstrapInstalls, Collections.emptyList(),
+          SecurityConvergenceStatus.NOT_CONVERGING);
     }
 
     /** The shape before issue #8044, for callers that have no state machine to sample installs from. */
@@ -184,7 +203,8 @@ public class ClusterAlerts {
       if (stateMachine == null)
         return new NodeStatus(null, null, false, true);
       return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true,
-          stateMachine.getBootstrapInstallsInFlight());
+          stateMachine.getBootstrapInstallsInFlight(), stateMachine.getBootstrapPassesDeciding(),
+          SecurityConvergenceStatus.NOT_CONVERGING);
     }
   }
 
@@ -225,6 +245,10 @@ public class ClusterAlerts {
       // The other half of the #7519 bootstrap window, which the readiness body pointed at this document for and
       // this document did not carry (issue #8044).
       addBootstrapInstallAlert(nodeStatus.bootstrapInstalls(), visibleDatabases, alerts);
+      // The third arm of the same window, which the readiness body counted and this document left out (issue #8408).
+      addBootstrapDecidingAlert(nodeStatus.bootstrapDeciding(), visibleDatabases, alerts);
+      // The fifth readiness input, the one #7136/#7872/#8044 left unpublished (issue #8555).
+      addSecurityDocumentsUnconvergedAlert(nodeStatus.securityConvergence(), alerts);
       // A leader replacing one of its own databases (issue #8491): Raft reports it healthy, and it rejects every write
       // to that database until leadership moves.
       final RaftHAServer raftHA = stateMachine.getRaftHAServer();
@@ -855,6 +879,83 @@ public class ClusterAlerts {
         .put("details", new JSONObject()
             .put("databases", namesArray(visible(installs, visibleDatabases)))
             .put("count", installs.size())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the bootstrap-deciding alert iff a first-formation
+   * bootstrap pass is still deciding on databases held by this node (issue #8408).
+   * <p>
+   * The start of the window {@link #addBootstrapInstallAlert} covers the middle of: the pass reaches a follower with
+   * its probe long before the committed baseline reaches its apply thread, and the copy on disk may be the one the pass
+   * decides against, so the readiness probe answers 503 and points at this document. It normally lasts well under a
+   * second, which is why it is {@code info}: an operator polling in that window should read why, and nothing here
+   * needs their action.
+   * <p>
+   * Node-scoped like the install alert: it fires on the raw count and only the NAMES are reduced to
+   * {@code visibleDatabases}.
+   */
+  static void addBootstrapDecidingAlert(final List<String> deciding, final Set<String> visibleDatabases, final JSONArray alerts) {
+    if (deciding == null || deciding.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "bootstrap-deciding-databases")
+        .put("severity", SEVERITY_INFO)
+        .put("title", "The cluster's first-formation bootstrap is deciding which copy of database(s) on this node it keeps")
+        .put("message", "A first-formation bootstrap pass is deciding which copy of " + deciding.size() + " database(s) "
+            + "on this node the cluster keeps. Until its committed baseline reaches this node, what is on disk may be "
+            + "the copy the pass decides against, so /api/v1/ready answers 503 and a Kubernetes Service keeps the node "
+            + "out of rotation. This is not a resync, so localResync here does not report it.")
+        .put("recommendation", "Nothing to do: the window normally lasts well under a second and ends when the pass "
+            + "settles. If it does not clear, the pass has not concluded: check the leader's log for the bootstrap "
+            + "election outcome.")
+        .put("details", new JSONObject()
+            .put("databases", namesArray(visible(deciding, visibleDatabases)))
+            .put("count", deciding.size())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the security-documents-unconverged alert iff the
+   * security-convergence readiness gate is holding this node, or has given up waiting (issue #8555).
+   * <p>
+   * {@code warning} while held: the node is out of the Service until the leader confirms its copies of the security
+   * documents, and the bound (arcadedb.ha.securityConvergenceReadinessTimeout) ends it. {@code critical} once the gate
+   * gave up: the node is READY and serving traffic while enforcing its own copies, which may hold a user dropped, a
+   * group narrowed or a token revoked while it was away - and until this alert only one SEVERE log line, emitted once,
+   * said so. The document names are fixed, non-tenant ones, so no scoping applies.
+   */
+  static void addSecurityDocumentsUnconvergedAlert(final SecurityConvergenceStatus status, final JSONArray alerts) {
+    if (status == null || !(status.held() || status.gaveUp()))
+      return;
+
+    final String documents = String.join(", ", status.unconvergedDocuments());
+    final JSONObject alert = new JSONObject().put("id", "security-documents-unconverged");
+    if (status.gaveUp())
+      alert.put("severity", SEVERITY_CRITICAL)
+          .put("title", "This node is serving traffic while enforcing security documents the cluster has not confirmed")
+          .put("message", "The security-convergence window expired without the leader confirming this node's copy of: "
+              + documents + ". The node reports READY and is enforcing its own copies, so a user dropped, a group narrowed "
+              + "or a token revoked while it was away may still be good here.")
+          .put("recommendation", (status.armed()
+              ? "Re-run 'connect cluster' or re-POST /api/v1/cluster/peer for this node to reissue the seed, "
+              : "Restart this node or re-POST it to /api/v1/cluster/peer on any member to ask the leader again, ")
+              + "or reissue the change. Raise arcadedb.ha.securityConvergenceReadinessTimeout to hold readiness longer.");
+    else
+      alert.put("severity", SEVERITY_WARNING)
+          .put("title", "This node is held out of the Service until the cluster's security documents reach it")
+          .put("message", "The cluster has not confirmed this node's copy of: " + documents + ". /api/v1/ready answers 503 "
+              + "until it does, or until arcadedb.ha.securityConvergenceReadinessTimeout expires and the node reports "
+              + "READY while enforcing its own copies.")
+          .put("recommendation", "Nothing to do while it converges. If it does not, the leader has not seeded this node: "
+              + (status.armed() ? "re-POST it to /api/v1/cluster/peer on any member." :
+              "restart it, or re-POST it to /api/v1/cluster/peer on any member, to ask the leader again."));
+    alert.put("details", new JSONObject()
+        .put("unconvergedDocuments", namesArray(status.unconvergedDocuments()))
+        .put("armed", status.armed())
+        .put("sinceIndex", status.sinceIndex())
+        .put("windowOpenedAt", status.windowOpenedAt())
+        .put("gaveUp", status.gaveUp()));
+    alerts.put(alert);
   }
 
   /**

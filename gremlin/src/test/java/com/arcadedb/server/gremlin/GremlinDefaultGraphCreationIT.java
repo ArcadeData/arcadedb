@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.gremlin;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.server.ArcadeDBServer;
@@ -44,6 +45,13 @@ import static org.assertj.core.api.Assertions.fail;
  * starts and the database does not yet exist (e.g. a fresh Docker container).
  */
 class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
+  private int gremlinPort;
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    gremlinPort = GremlinTestPorts.assign(config);
+  }
 
   @Override
   public void setTestConfiguration() {
@@ -112,7 +120,7 @@ class GremlinDefaultGraphCreationIT extends BaseGraphServerTest {
     final Cluster cluster = Cluster.build()
         .enableSsl(false)
         .addContactPoint("localhost")
-        .port(8182)
+        .port(gremlinPort)
         .credentials("root", DEFAULT_PASSWORD_FOR_TESTS)
         .serializer(serializer)
         .create();

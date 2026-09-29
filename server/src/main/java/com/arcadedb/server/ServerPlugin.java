@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
+import java.util.Map;
+
 import static com.arcadedb.server.ServerPlugin.PluginInstallationPriority.BEFORE_HTTP_ON;
 
 public interface ServerPlugin {
@@ -51,6 +53,18 @@ public interface ServerPlugin {
 
   default boolean isActive() {
     return true;
+  }
+
+  /**
+   * The network ports this plugin listens on for clients, by service name (e.g. {@code gremlin}), once it is started.
+   * Published by {@code GET /api/v1/server?mode=cluster}, so a remote client that must reach the plugin's own listener
+   * learns the port from the server instead of assuming the protocol's well-known default (issue #8578). Only ports a
+   * client is expected to connect to belong here.
+   *
+   * @return the service name to bound port map, empty by default and while the plugin is not listening
+   */
+  default Map<String, Integer> getAdvertisedPorts() {
+    return Map.of();
   }
 
   /**

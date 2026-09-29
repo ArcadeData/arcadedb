@@ -160,6 +160,52 @@ class Issue8136RemoteCommandReplayTest {
   }
 
   /**
+   * Issue #8570: {@code RemoteServer.databases()} is a POST to {@code /server} like {@code create database}, but it
+   * changes nothing, so the route name alone wrongly put it in the may-have-been-applied bucket. It states that it is
+   * replayable, and the retry budget the application configured applies to it.
+   */
+  @Test
+  void readOnlyServerCommandIsStillRetriedWhenItsResponseWasLost() throws Exception {
+    try (final DroppingServer server = new DroppingServer()) {
+      final ContextConfiguration cfg = sameServerRetries(3);
+      final RemoteServer remoteServer = new RemoteServer("127.0.0.1", server.port(), "root", "test", cfg);
+      try {
+        remoteServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+        // the constructor already asked the server for the cluster configuration
+        final int beforeCall = server.received();
+        assertThatThrownBy(remoteServer::databases)
+            .isInstanceOf(RemoteException.class)
+            .hasMessageNotContaining("may already have applied it");
+
+        assertThat(server.received() - beforeCall).isEqualTo(3);
+      } finally {
+        remoteServer.close();
+      }
+    }
+  }
+
+  /**
+   * A write on the same route keeps being refused after the first attempt: the classification is per command.
+   */
+  @Test
+  void createDatabaseOnTheSameRouteIsNotResent() throws Exception {
+    try (final DroppingServer server = new DroppingServer()) {
+      final RemoteServer remoteServer = new RemoteServer("127.0.0.1", server.port(), "root", "test", sameServerRetries(3));
+      try {
+        remoteServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+        final int beforeCall = server.received();
+        assertThatThrownBy(() -> remoteServer.create("accounts"))
+            .isInstanceOf(RemoteException.class)
+            .hasMessageContaining("may already have applied it");
+
+        assertThat(server.received() - beforeCall).isEqualTo(1);
+      } finally {
+        remoteServer.close();
+      }
+    }
+  }
+
+  /**
    * A command that never reached a server - connection refused - is still failed over: nothing ran, so sending it
    * to the next server runs it for the first time.
    */

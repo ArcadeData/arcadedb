@@ -56,6 +56,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -88,6 +89,7 @@ public class RemoteHttpComponent extends RWLockContext {
   private final   String                      userName;
   private final   String                      userPassword;
   private volatile List<Pair<String, Integer>> replicaServerList        = new ArrayList<>();
+  private volatile Map<String, Integer>         advertisedPorts         = Map.of();
   protected final HttpClient                  httpClient;
   protected final DatabaseStats               stats                     = new DatabaseStats();
   protected final ContextConfiguration        configuration;
@@ -361,6 +363,27 @@ public class RemoteHttpComponent extends RWLockContext {
       final boolean autoReconnect,
       final Callback callback,
       final String errorOperation) {
+    return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
+        callback, errorOperation, isReplayable(method, operation));
+  }
+
+  /**
+   * As above, with the caller stating whether the request may be sent again after a transport failure that leaves
+   * its outcome unknown (issue #8570). {@link #isReplayable(String, String)} classifies by route name, which cannot
+   * tell a read-only server command such as {@code list databases} from {@code create database}: both are POSTs to
+   * {@code /server}. Only the caller knows what the command does, so it says so.
+   */
+  Object httpCommand(final String method,
+      final String extendedURL,
+      final String operation,
+      final String language,
+      final String payloadCommand,
+      final Map<String, Object> params,
+      final boolean leaderIsPreferable,
+      final boolean autoReconnect,
+      final Callback callback,
+      final String errorOperation,
+      final boolean replayable) {
 
     Exception lastException = null;
 
@@ -492,7 +515,7 @@ public class RemoteHttpComponent extends RWLockContext {
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
-          refuseToReplayAPossiblyAppliedRequest(e, method, operation, connectToServer);
+          refuseToReplayAPossiblyAppliedRequest(e, replayable, operation, connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
@@ -503,7 +526,7 @@ public class RemoteHttpComponent extends RWLockContext {
           }
 
           // Failing over hands the same write to the next server, which runs it again if the first one applied it.
-          refuseToReplayAPossiblyAppliedRequest(e, method, operation, connectToServer);
+          refuseToReplayAPossiblyAppliedRequest(e, replayable, operation, connectToServer);
 
           if (!reloadClusterConfiguration())
             throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
@@ -571,9 +594,9 @@ public class RemoteHttpComponent extends RWLockContext {
    * other transport failure on a request that is not {@link #isReplayable replayable} propagates, because the
    * statement may have run and only its response been lost - a replay would run it twice and report success.
    */
-  private static void refuseToReplayAPossiblyAppliedRequest(final Exception e, final String method, final String operation,
+  private static void refuseToReplayAPossiblyAppliedRequest(final Exception e, final boolean replayable, final String operation,
       final Pair<String, Integer> server) {
-    if (e instanceof IOException ioe && !isReplayable(method, operation) && !provablyNeverSent(ioe))
+    if (e instanceof IOException ioe && !replayable && !provablyNeverSent(ioe))
       throw new RemoteException("Error on executing remote operation '" + operation + "' on server " + server.getFirst() + ":"
           + server.getSecond() + ": the connection failed after the request was sent (" + e.getMessage()
           + "), so the server may already have applied it. It is not sent again, because a replay could apply it twice",
@@ -721,6 +744,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
       LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);
 
+      publishAdvertisedPorts(response);
+
     } catch (final SecurityException e) {
       throw e;
     } catch (final Exception e) {
@@ -789,6 +814,36 @@ public class RemoteHttpComponent extends RWLockContext {
       leaderServer = new Pair<>(originalServer, originalPort);
       publishReplicaServerList(new ArrayList<>());
     }
+  }
+
+  /**
+   * The client-side settings this component was built with, for the layers on top of it (such as the remote
+   * {@code ArcadeGraph}) that resolve their own client settings from the same place.
+   */
+  public ContextConfiguration getClientConfiguration() {
+    return configuration;
+  }
+
+  /**
+   * The port the server advertised for {@code service} (issue #8578), or 0 when it advertised none - an older server,
+   * a plugin that is not running, or a cluster configuration that could not be fetched. The plugins' listeners are not
+   * the HTTP port this client was pointed at, so a client that needs one asks here instead of assuming a default.
+   */
+  public int getAdvertisedPort(final String service) {
+    final Integer port = advertisedPorts.get(service);
+    return port != null ? port : 0;
+  }
+
+  private void publishAdvertisedPorts(final JSONObject response) {
+    final Map<String, Integer> ports = new HashMap<>();
+    final JSONObject json = response.getJSONObject("ports", null);
+    if (json != null)
+      for (final String service : json.keySet()) {
+        final int port = json.getInt(service, 0);
+        if (port > 0)
+          ports.put(service, port);
+      }
+    this.advertisedPorts = ports.isEmpty() ? Map.of() : Map.copyOf(ports);
   }
 
   /**

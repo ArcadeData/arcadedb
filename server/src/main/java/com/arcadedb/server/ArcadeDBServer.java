@@ -204,6 +204,7 @@ public class ArcadeDBServer {
   private final       ObservationRegistry                   observationRegistry                  = ObservationRegistry.create();
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
+  private final       SecurityConvergenceGate               securityConvergenceGate = new SecurityConvergenceGate();
   private             String                                serverRootPath;
   // Issue #7415: resolved once, in the constructor, from arcadedb.server.configDirectory. Every server-side reader
   // and writer of a configuration file goes through getConfigPath() rather than appending "/config" to the root.
@@ -1490,6 +1491,14 @@ public class ArcadeDBServer {
 
   public String getHostAddress() {
     return hostAddress;
+  }
+
+  /**
+   * The one security-convergence window of this server, shared by every {@link ServerControlPlane} built on it (issue
+   * #8555).
+   */
+  SecurityConvergenceGate getSecurityConvergenceGate() {
+    return securityConvergenceGate;
   }
 
   public HAServerPlugin getHA() {

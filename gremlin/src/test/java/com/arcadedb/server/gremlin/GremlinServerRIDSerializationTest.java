@@ -102,7 +102,7 @@ class GremlinServerRIDSerializationTest extends AbstractGremlinServerIT {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182)
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(getGremlinPort())
         .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer).create();
   }
 

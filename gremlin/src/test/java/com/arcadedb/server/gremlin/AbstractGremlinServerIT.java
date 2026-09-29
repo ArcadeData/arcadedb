@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.gremlin;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -31,6 +32,20 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
+  private int gremlinPort;
+
+  /**
+   * The port the Gremlin Server of this test listens on: drawn per test, never the fixed 8182 (issue #8578).
+   */
+  protected int getGremlinPort() {
+    return gremlinPort;
+  }
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    gremlinPort = GremlinTestPorts.assign(config);
+  }
 
   @Override
   public void setTestConfiguration() {

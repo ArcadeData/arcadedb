@@ -5064,6 +5064,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * The databases a first-formation bootstrap pass is still deciding on here, sorted (issue #8408): the arm of
+   * {@link #bootstrapWindowReason()} that starts the window, before the baseline reaches this node. A database whose
+   * install is already in flight is not listed - {@link #getBootstrapInstallsInFlight()} has taken over from the pass
+   * for it - and neither is one this node does not hold, since there is nothing served in its place to hold back.
+   * <p>
+   * Package-private, and read by {@code ClusterAlerts.NodeStatus} so {@code GET /api/v1/cluster} publishes it as the
+   * {@code bootstrap-deciding-databases} alert and the {@code bootstrapDeciding} member: the readiness body counted
+   * these databases and pointed at that document for the other two arms, and left them out for this one.
+   */
+  List<String> getBootstrapPassesDeciding() {
+    ensureBootstrapBaselinesLoaded();
+    // The overwhelmingly common answer, and this is on the readiness-probe path: allocate nothing for it.
+    if (bootstrapPassesPending.isEmpty())
+      return Collections.emptyList();
+    List<String> names = null;
+    for (final String dbName : bootstrapPassesPending.keySet())
+      if (!bootstrapInstallsInFlight.containsKey(dbName) && isBootstrapPassPending(dbName) && isDatabasePresentLocally(dbName)) {
+        if (names == null)
+          names = new ArrayList<>();
+        names.add(dbName);
+      }
+    if (names == null)
+      return Collections.emptyList();
+    Collections.sort(names);
+    return names;
+  }
+
+  /**
    * A first-formation bootstrap pass {@code passId} is deciding which copy of {@code dbNames} the cluster keeps
    * (issue #8368): hold each of them until the pass settles it here, for at most {@code holdMs}.
    * <p>
@@ -5175,7 +5203,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * </ul>
    * A third condition covers the start of the same window (issue #8368): <b>a pass is still deciding.</b> The pass
    * reaches this node with its probe long before the baseline reaches its apply thread, and a copy it is about to
-   * reject is served in between. See {@link #bootstrapPassesPending} for what opens and closes it.
+   * reject is served in between. See {@link #bootstrapPassesPending} for what opens and closes it. It is published
+   * by name like the other two, as the {@code bootstrap-deciding-databases} alert and the {@code bootstrapDeciding}
+   * member (issue #8408).
    * <p>
    * <b>A database this node does not hold is none of them</b> (issue #8045). The #7298 replay-skip marks a database it
    * found gone and could not pull back in the same unreconciled set, and reinstalls it through the same install
@@ -5197,7 +5227,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * The authenticated {@code GET /api/v1/cluster} publishes both by name, filtered to the databases the caller may
    * see: the kept copies as the {@code bootstrap-diverged-databases} alert, and the installs as the
    * {@code bootstrap-install-in-progress} alert and the {@code bootstrapInstalls} member (issue #8044 - until then
-   * the install half was published nowhere, and this sentence was not true of it). The sibling gates make the
+   * the install half was published nowhere, and this sentence was not true of it), and the databases a pass is still
+   * deciding on as the {@code bootstrap-deciding-databases} alert and the {@code bootstrapDeciding} member (issue
+   * #8408). The sibling gates make the
    * same distinction without stating it: the log failure reports a log index and the security-convergence gate
    * reports document kinds.
    */
@@ -5212,12 +5244,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final int kept = countPresentLocally(bootstrapUnreconciledDatabases);
     // Issue #8368: the start of the window, before the baseline reaches this node. A database already counted as
     // being replaced is not counted again - the install holder has taken over from the pass for it.
-    int deciding = 0;
-    if (!bootstrapPassesPending.isEmpty())
-      for (final String dbName : bootstrapPassesPending.keySet())
-        if (!bootstrapInstallsInFlight.containsKey(dbName) && isBootstrapPassPending(dbName)
-            && isDatabasePresentLocally(dbName))
-          ++deciding;
+    final int deciding = getBootstrapPassesDeciding().size();
     if (replacing == 0 && kept == 0 && deciding == 0)
       return null;
 
@@ -5246,11 +5273,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "POST /api/v1/cluster/resync/<database> on this node discards the local copy and adopts the "
               + "leader's.");
     }
-    // Said once, whichever of the last two arms fired: the authenticated route is where the names are, and it is
-    // the answer to "which databases" for both conditions alike. The deciding arm is short-lived - it ends when the
-    // pass does - and GET /api/v1/cluster does not publish it, so the sentence is not appended for it alone.
-    if (replacing == 0 && kept == 0)
-      return reason.toString();
+    // Said once, whichever arm fired: the authenticated route is where the names are, and it is the answer to "which
+    // databases" for every condition alike - the deciding arm too since issue #8408, as the bootstrap-deciding-databases
+    // alert and the bootstrapDeciding member.
     return reason.append(" GET /api/v1/cluster names them.").toString();
   }
 

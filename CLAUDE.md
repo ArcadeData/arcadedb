@@ -109,8 +109,9 @@ green or spuriously red* run rather than an error that tells you what you did wr
   Surefire's default include patterns, which drags `*IT` classes into the `test` phase, where they run without the
   Failsafe setup their fixtures need and fail by the hundred
 - **Server tests bind the default range 2480-2489** and read back the port they got (see "Test server ports"
-  above). A test that still reaches a fixed port - the Gremlin plugin's 8182, which the remote `ArcadeGraph` client
-  hardcodes - is answered by whatever already listens there, and the failures read as authentication errors
+  above). The Gremlin fixtures draw their Gremlin port too (`gremlin.port`, advertised by the server and read by the
+  remote `ArcadeGraph`; a test that builds its own driver uses `getGremlinPort()`). A test that still reaches a fixed
+  port is answered by whatever already listens there, and the failures read as authentication errors
   (`403`, "Too many failed authentication attempts") rather than as a port conflict. Check with
   `lsof -nP -iTCP:2480-2489 -sTCP:LISTEN` before believing a wall of red in the `server` module
 
