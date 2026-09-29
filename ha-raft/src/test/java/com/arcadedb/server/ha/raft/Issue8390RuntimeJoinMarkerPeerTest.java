@@ -90,6 +90,7 @@ class Issue8390RuntimeJoinMarkerPeerTest {
     assertThat(peerLine(marker)).isEqualTo("peer=" + SELF);
   }
 
+  /** A guard around the fix rather than a regression test: it passes before the fix too. */
   @Test
   void aRestartReadsBackThePeerTheArmWrote() throws IOException {
     final File marker = new File(tempDir, "raft-storage-arcadedb-3.joined-at-runtime");
@@ -127,6 +128,8 @@ class Issue8390RuntimeJoinMarkerPeerTest {
     }
 
     private void park(final Object iRequester, final String message) {
+      // Matches the INFO line RuntimeJoinDetector.onConfiguration logs on the first arm. If that text is reworded,
+      // update it here too: otherwise the test fails on the armLogged await instead of reaching the race.
       if (iRequester != requester || message == null || !message.contains("was added to the Raft configuration while running"))
         return;
       reached.countDown();
