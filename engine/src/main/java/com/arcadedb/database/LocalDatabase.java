@@ -739,7 +739,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } finally {
         current.popIfNotLastTransaction();
         // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
-        saveSchemaAtTransactionEnd();
+        schema.saveConfigurationAtTransactionEnd();
       }
 
       return null;
@@ -762,7 +762,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // ALREADY ROLLED BACK
       }
 
-      saveSchemaAtTransactionEnd();
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -793,26 +793,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      saveSchemaAtTransactionEnd();
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
-  }
-
-  /**
-   * Writes the schema a DDL run inside the ending transaction postponed to its end (issue #8635), whether it committed,
-   * failed to or rolled back: a schema change is not transactional, it stands and its files exist either way.
-   * <p>
-   * A failure is logged, never thrown, and the schema stays dirty for the next save or the close to write. Thrown from
-   * a commit it would report a transaction whose records ARE committed as failed, inviting a retry that applies them
-   * twice; thrown from a rollback or a failed commit it would replace the exception the caller has to see.
-   */
-  private void saveSchemaAtTransactionEnd() {
-    try {
-      schema.saveConfigurationAtTransactionEnd();
-    } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on saving the schema at the end of a transaction on database '%s'",
-          e, name);
-    }
   }
 
   @Override

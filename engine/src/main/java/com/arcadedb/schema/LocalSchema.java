@@ -4240,7 +4240,9 @@ public class LocalSchema implements Schema {
         } finally {
           if (outermost) {
             recordingThread = null;
-            if (!executed[0] && recordingSavePending)
+            final boolean pending = recordingSavePending;
+            recordingSavePending = false;
+            if (!executed[0] && pending)
               keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
           }
           --recordingDepth;
@@ -4312,6 +4314,18 @@ public class LocalSchema implements Schema {
     if (!isDirty())
       return;
 
+    try {
+      saveAtTransactionEnd();
+    } catch (final RuntimeException e) {
+      // NEVER THROWN: AFTER A SUCCESSFUL COMMIT IT WOULD REPORT COMMITTED RECORDS AS FAILED AND INVITE A RETRY THAT
+      // APPLIES THEM TWICE, AND ON A ROLLBACK OR A FAILED COMMIT IT WOULD REPLACE THE EXCEPTION THE CALLER HAS TO SEE.
+      // THE SCHEMA STAYS DIRTY FOR THE NEXT SAVE OR THE CLOSE
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving the schema at the end of a transaction on database '%s'", e,
+          database.getName());
+    }
+  }
+
+  private void saveAtTransactionEnd() {
     // A FRAME OPEN ON ANOTHER THREAD NEEDS NO CHECK: IT HOLDS THE DATABASE WRITE LOCK, AND A COMMIT OR A ROLLBACK TAKES
     // THE READ LOCK, SO NO TRANSACTION CAN END INSIDE SOMEBODY ELSE'S DDL AND WRITE ITS HALF-APPLIED SCHEMA
     if (recordingThread == Thread.currentThread()) {
@@ -4324,7 +4338,7 @@ public class LocalSchema implements Schema {
     // TOP IS. EITHER WAY AN ENCLOSING TRANSACTION IS STILL OPEN, AND ITS END WRITES THE FILE. WITH ONE LEFT,
     // saveConfiguration() POSTPONES ON ITS OWN IF THAT ONE IS STILL ACTIVE
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    if (context != null && context.transactions.size() > 1)
+    if (context != null && context.getTransactionDepth() > 1)
       return;
 
     saveConfiguration();

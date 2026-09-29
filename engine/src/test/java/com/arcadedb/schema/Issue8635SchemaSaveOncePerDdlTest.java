@@ -266,6 +266,42 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
   }
 
   /**
+   * The schema is saved by LocalDatabase.commit(), not by the TransactionContext it commits: a caller that commits the
+   * context directly leaves the schema dirty, and close() is the backstop that still writes it.
+   */
+  @Test
+  void committingTheContextDirectlyLeavesTheSchemaToClose() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("Direct");
+    ((DatabaseInternal) database).getTransaction().commit();
+    assertThat(schema.isDirty()).isTrue();
+    assertThat(schema.getVersion()).isEqualTo(before);
+    database.rollback();
+
+    // THE ROLLBACK ABOVE HAD NOTHING LEFT TO END, BUT THE SCHEMA WAS STILL DIRTY: CLOSE WRITES IT
+    reopenDatabase();
+    assertThat(database.getSchema().existsType("Direct")).isTrue();
+  }
+
+  /** The write count is the schema version; the file itself has to agree that the write happened. */
+  @Test
+  void theSchemaFileNamesTheTypeAsSoonAsTheDdlReturns() throws Exception {
+    final Path schemaFile = ((LocalSchema) database.getSchema().getEmbedded()).getConfigurationFile().toPath();
+    database.getSchema().createDocumentType("OnDisk").createProperty("k", Type.LONG);
+    final String content = Files.readString(schemaFile);
+    assertThat(content).contains("\"OnDisk\"").contains("\"k\"");
+
+    database.begin();
+    database.getSchema().createDocumentType("Pending");
+    assertThat(Files.readString(schemaFile)).as("postponed to the end of the transaction").doesNotContain("Pending");
+    database.commit();
+    assertThat(Files.readString(schemaFile)).contains("Pending");
+  }
+
+  /**
    * A commit that fails after the transaction ran DDL still writes it: the schema change stands whatever happened to
    * the records, and a caller that just propagates the failure never calls rollback().
    */

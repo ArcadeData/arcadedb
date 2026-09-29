@@ -48,7 +48,7 @@ public class ExecutionPlanCache {
    * millisecond as the invalidation before it - routine right after a schema change - was refused by the
    * millisecond-granular comparison this replaces, although it was planned against the new schema.
    */
-  protected     long                               invalidationEpoch = 0;
+  private       long                               invalidationEpoch = 0;
 
   /**
    * @param size the size of the cache
