@@ -83,6 +83,10 @@ public class GraphQLSchema {
 
     final List<Definition> definitions = ast.getDefinitions();
     if (!definitions.isEmpty()) {
+      // COLLECTED FROM THE WHOLE DOCUMENT UP FRONT: THE OPERATION BELOW IS EXECUTED AS SOON AS IT IS MET, AND A FRAGMENT
+      // IT SPREADS MAY BE DECLARED AFTER IT. SEE ISSUE #7770
+      final GraphQLFragments fragments = GraphQLFragments.of(definitions);
+
       for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition typeSystemDefinition) {
 
@@ -98,7 +102,7 @@ public class GraphQLSchema {
         } else if (definition instanceof OperationDefinition operationDefinition) {
           final OperationDefinition op = operationDefinition;
           if (op.isQuery()) {
-            return executeQuery(op, parameters);
+            return executeQuery(op, parameters, fragments);
           } else
             throw new UnsupportedOperationException("GraphQL mutations not supported yet");
         }
@@ -108,7 +112,8 @@ public class GraphQLSchema {
     return new InternalResultSet();
   }
 
-  private ResultSet executeQuery(final OperationDefinition op, final Map<String, Object> parameters) {
+  private ResultSet executeQuery(final OperationDefinition op, final Map<String, Object> parameters,
+      final GraphQLFragments fragments) {
     String from = null;
 
     SelectionSet projection = null;
@@ -116,22 +121,30 @@ public class GraphQLSchema {
     FieldDefinition typeDefinition = null;
     final Set<String> typeArgumentNames = new HashSet<>();
 
-    if (op.getSelectionSet().getSelections().size() > 1)
+    // UNKNOWN AND CYCLIC FRAGMENTS ARE REJECTED HERE, BEFORE ANY RECORD IS READ: THE RESULT SET EXPANDS THE FRAGMENTS
+    // LAZILY, WHILE IT IS ITERATED, WHERE AN ERROR WOULD NO LONGER BE CLASSIFIED AS A PARSING ONE
+    fragments.validate(op.getSelectionSet());
+
+    // THE OPERATION'S OWN SELECTIONS ARE FIELDS OF THE Query TYPE, WHICH A TOP-LEVEL FRAGMENT CAN BE WRITTEN ON
+    final List<Selection> operationSelections = fragments.expand(op.getSelectionSet().getSelections(), "Query"::equals);
+    if (operationSelections.size() > 1)
       throw new CommandParsingException("Error on executing multiple queries");
+    if (operationSelections.isEmpty())
+      throw new CommandParsingException("GraphQL query selects no field");
 
     String queryName = null;
 
     try {
       final Map<String, Object> variables = resolveVariables(op, parameters);
 
-      final Selection selection = op.getSelectionSet().getSelections().getFirst();
+      final Selection selection = operationSelections.getFirst();
       queryName = selection.getFieldName();
 
       // HANDLE INTROSPECTION QUERIES
       if ("__schema".equals(queryName))
-        return executeIntrospectionSchema(selection);
+        return executeIntrospectionSchema(selection, fragments);
       else if ("__type".equals(queryName))
-        return executeIntrospectionType(selection, variables);
+        return executeIntrospectionType(selection, variables, fragments);
       else if ("__typename".equals(queryName))
         return executeIntrospectionTypename();
       if (queryDefinition != null) {
@@ -163,7 +176,7 @@ public class GraphQLSchema {
             if ("sql".equals(directiveName) ||
                 "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
-              return parseNativeQueryDirective(directiveName, directive, selection, returnType, variables);
+              return parseNativeQueryDirective(directiveName, directive, selection, returnType, variables, fragments);
           }
         }
       }
@@ -182,7 +195,7 @@ public class GraphQLSchema {
           boundParameters.isEmpty() ? database.query("sql", query) : database.query("sql", query, boundParameters);
 
       return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType,
-          variables);
+          variables, fragments);
 
     } catch (final CommandParsingException | CommandExecutionException e) {
       // An execution failure raised by the statement this query delegates to keeps the classification the engine
@@ -393,7 +406,7 @@ public class GraphQLSchema {
   }
 
   private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection,
-      final ObjectTypeDefinition returnType, final Map<String, Object> variables) {
+      final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
     if (directive.getArguments() == null)
       throw new CommandParsingException(language.toUpperCase(Locale.ENGLISH) + " directive has no `statement` argument");
 
@@ -417,7 +430,8 @@ public class GraphQLSchema {
 
     final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
 
-    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType, variables);
+    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType, variables,
+        fragments);
   }
 
   private static Map<String, Object> getArguments(final Arguments queryArguments, final Map<String, Object> variables) {
@@ -438,7 +452,7 @@ public class GraphQLSchema {
     return arguments;
   }
 
-  private ResultSet executeIntrospectionSchema(final Selection selection) {
+  private ResultSet executeIntrospectionSchema(final Selection selection, final GraphQLFragments fragments) {
     final InternalResultSet resultSet = new InternalResultSet();
     final ResultInternal schemaResult = new ResultInternal();
 
@@ -448,11 +462,11 @@ public class GraphQLSchema {
     final SelectionSet selectionSet = selection.getSelectionSet();
 
     if (selectionSet != null) {
-      for (final Selection sub : selectionSet.getSelections()) {
+      for (final Selection sub : fragments.expand(selectionSet.getSelections(), "__Schema"::equals)) {
         final String fieldName = sub.getFieldName();
         final String responseKey = sub.getName();
         if ("types".equals(fieldName))
-          schemaResult.setProperty(responseKey, buildTypeList(sub));
+          schemaResult.setProperty(responseKey, buildTypeList(sub, fragments));
         else if ("queryType".equals(fieldName))
           schemaResult.setProperty(responseKey, buildNameResult("Query"));
         else if ("mutationType".equals(fieldName))
@@ -468,7 +482,8 @@ public class GraphQLSchema {
     return resultSet;
   }
 
-  private ResultSet executeIntrospectionType(final Selection selection, final Map<String, Object> variables) {
+  private ResultSet executeIntrospectionType(final Selection selection, final Map<String, Object> variables,
+      final GraphQLFragments fragments) {
     final Arguments arguments = selection.getArguments();
     String typeName = null;
 
@@ -482,7 +497,7 @@ public class GraphQLSchema {
     if (typeName == null)
       throw new CommandParsingException("__type query requires a 'name' argument");
 
-    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet());
+    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet(), fragments);
 
     if (typeResult == null)
       throw new CommandParsingException("Type '" + typeName + "' not found");
@@ -500,7 +515,7 @@ public class GraphQLSchema {
     return resultSet;
   }
 
-  private List<ResultInternal> buildTypeList(final Selection selection) {
+  private List<ResultInternal> buildTypeList(final Selection selection, final GraphQLFragments fragments) {
     final List<ResultInternal> types = new ArrayList<>();
     final Set<String> addedTypes = new HashSet<>();
 
@@ -508,14 +523,14 @@ public class GraphQLSchema {
 
     // Add GraphQL-defined types
     for (final Map.Entry<String, ObjectTypeDefinition> entry : objectTypeDefinitionMap.entrySet()) {
-      types.add(buildTypeResult(entry.getKey(), selectionSet));
+      types.add(buildTypeResult(entry.getKey(), selectionSet, fragments));
       addedTypes.add(entry.getKey());
     }
 
     // Add database types not already covered by GraphQL definitions
     for (final DocumentType dbType : database.getSchema().getTypes()) {
       if (!addedTypes.contains(dbType.getName())) {
-        types.add(buildDatabaseTypeResult(dbType, selectionSet));
+        types.add(buildDatabaseTypeResult(dbType, selectionSet, fragments));
         addedTypes.add(dbType.getName());
       }
     }
@@ -533,14 +548,14 @@ public class GraphQLSchema {
     return types;
   }
 
-  private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet) {
+  private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet, final GraphQLFragments fragments) {
     final ObjectTypeDefinition objType = objectTypeDefinitionMap.get(typeName);
     if (objType != null)
-      return buildGraphQLTypeResult(objType, selectionSet);
+      return buildGraphQLTypeResult(objType, selectionSet, fragments);
 
     // Check database types
     if (database.getSchema().existsType(typeName))
-      return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet);
+      return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments);
 
     // Check scalars
     if (Set.of("String", "Int", "Float", "Boolean", "ID").contains(typeName)) {
@@ -553,22 +568,25 @@ public class GraphQLSchema {
     return null;
   }
 
-  private ResultInternal buildGraphQLTypeResult(final ObjectTypeDefinition objType, final SelectionSet selectionSet) {
+  private ResultInternal buildGraphQLTypeResult(final ObjectTypeDefinition objType, final SelectionSet selectionSet,
+      final GraphQLFragments fragments) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("name", objType.getName());
     result.setProperty("kind", "OBJECT");
 
     if (selectionSet != null) {
-      for (final Selection sub : selectionSet.getSelections()) {
+      for (final Selection sub : fragments.expand(selectionSet.getSelections(), "__Type"::equals)) {
         if ("fields".equals(sub.getFieldName())) {
           final List<ResultInternal> fields = new ArrayList<>();
+          final SelectionSet fieldSelectionSet = sub.getSelectionSet();
+          final List<Selection> fieldSelections =
+              fieldSelectionSet != null ? fragments.expand(fieldSelectionSet.getSelections(), "__Field"::equals) : null;
           for (final FieldDefinition fd : objType.getFieldDefinitions()) {
             final ResultInternal fieldResult = new ResultInternal();
             fieldResult.setProperty("name", fd.getName());
 
-            final SelectionSet fieldSelectionSet = sub.getSelectionSet();
-            if (fieldSelectionSet != null) {
-              for (final Selection fieldSub : fieldSelectionSet.getSelections()) {
+            if (fieldSelections != null) {
+              for (final Selection fieldSub : fieldSelections) {
                 if ("type".equals(fieldSub.getFieldName()))
                   fieldResult.setProperty(fieldSub.getName(), buildFieldTypeInfo(fd));
               }
@@ -584,22 +602,25 @@ public class GraphQLSchema {
     return result;
   }
 
-  private ResultInternal buildDatabaseTypeResult(final DocumentType dbType, final SelectionSet selectionSet) {
+  private ResultInternal buildDatabaseTypeResult(final DocumentType dbType, final SelectionSet selectionSet,
+      final GraphQLFragments fragments) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("name", dbType.getName());
     result.setProperty("kind", "OBJECT");
 
     if (selectionSet != null) {
-      for (final Selection sub : selectionSet.getSelections()) {
+      for (final Selection sub : fragments.expand(selectionSet.getSelections(), "__Type"::equals)) {
         if ("fields".equals(sub.getFieldName())) {
           final List<ResultInternal> fields = new ArrayList<>();
+          final SelectionSet fieldSelectionSet = sub.getSelectionSet();
+          final List<Selection> fieldSelections =
+              fieldSelectionSet != null ? fragments.expand(fieldSelectionSet.getSelections(), "__Field"::equals) : null;
           for (final Property prop : dbType.getProperties()) {
             final ResultInternal fieldResult = new ResultInternal();
             fieldResult.setProperty("name", prop.getName());
 
-            final SelectionSet fieldSelectionSet = sub.getSelectionSet();
-            if (fieldSelectionSet != null) {
-              for (final Selection fieldSub : fieldSelectionSet.getSelections()) {
+            if (fieldSelections != null) {
+              for (final Selection fieldSub : fieldSelections) {
                 if ("type".equals(fieldSub.getFieldName())) {
                   final ResultInternal typeInfo = new ResultInternal();
                   typeInfo.setProperty("name", mapDatabaseTypeToGraphQL(prop.getType()));
@@ -672,6 +693,21 @@ public class GraphQLSchema {
       case BOOLEAN -> "Boolean";
       default -> "String";
     };
+  }
+
+  /**
+   * Whether the SDL registered so far declares an object type with this name. Interfaces, unions and input types are
+   * not modeled, so they are never reported.
+   */
+  public boolean isObjectType(final String name) {
+    return objectTypeDefinitionMap.containsKey(name);
+  }
+
+  /**
+   * Whether the database schema has a type with this name.
+   */
+  public boolean isDatabaseType(final String name) {
+    return database.getSchema().existsType(name);
   }
 
   public ObjectTypeDefinition getTypeFromField(final FieldDefinition fieldDefinition) {

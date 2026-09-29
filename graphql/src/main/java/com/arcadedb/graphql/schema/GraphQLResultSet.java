@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -58,6 +59,24 @@ public class GraphQLResultSet implements ResultSet {
   private final Map<String, Object> variables;
 
   /**
+   * The fragments of the query document, which the selections of every level are expanded through before they are
+   * resolved: see {@link #mapBySelections}.
+   */
+  private final GraphQLFragments fragments;
+
+  /**
+   * The projections built for a selection list, by identity, reused for every record that list is resolved against.
+   * Only a list whose projections cannot differ from one record to the next is cached: one that no fragment type
+   * condition was evaluated for, reached through a chain of lists that were all cached too. A list merged for one
+   * record only (see {@link #mapBySelections}) is never a key, so the cache is bounded by the size of the document, not
+   * by the number of records.
+   */
+  private final IdentityHashMap<List<Selection>, CachedProjections> projectionCache = new IdentityHashMap<>();
+
+  private record CachedProjections(ObjectTypeDefinition parentType, List<Projection> projections) {
+  }
+
+  /**
    * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
    * automatic expansion against a cyclic schema (e.g. {@code Book.authors -> Author.wrote -> Book}), which would
    * otherwise recurse until the stack overflows once directives are resolved against the right type. It is only
@@ -75,13 +94,14 @@ public class GraphQLResultSet implements ResultSet {
    *                    query return type: see issue #6833
    * @param type        the object type this field returns, when the schema declares one
    * @param set         the sub-selections written in the query document, if any
+   * @param cacheable   whether {@code set} is the same list for every record, so its projections can be cached
    */
   private record Projection(String name, String fieldName, AbstractField field, FieldDefinition schemaField,
-                            ObjectTypeDefinition type, List<Selection> set) {
+                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable) {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
-      final ObjectTypeDefinition returnType, final Map<String, Object> variables) {
+      final ObjectTypeDefinition returnType, final Map<String, Object> variables, final GraphQLFragments fragments) {
     if (resultSet == null)
       throw new IllegalArgumentException("NULL resultSet");
 
@@ -90,6 +110,7 @@ public class GraphQLResultSet implements ResultSet {
     this.projections = projections;
     this.returnType = returnType;
     this.variables = variables;
+    this.fragments = fragments;
   }
 
   @Override
@@ -100,7 +121,7 @@ public class GraphQLResultSet implements ResultSet {
   @Override
   public Result next() {
     return projections != null ?
-        mapBySelections(resultSet.next(), projections, returnType) :
+        mapBySelections(resultSet.next(), projections, returnType, true) :
         mapByReturnType(resultSet.next(), returnType);
   }
 
@@ -117,7 +138,7 @@ public class GraphQLResultSet implements ResultSet {
           continue;
 
         projections.add(
-            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null));
+            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false));
       }
       return mapProjections(current, projections);
     } finally {
@@ -130,23 +151,102 @@ public class GraphQLResultSet implements ResultSet {
    *                   top-level query return type, so a schema directive declared two levels deep is found (#6833)
    */
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections,
-      final ObjectTypeDefinition parentType) {
-    final List<Projection> projections = new ArrayList<>(definedProjections.size());
-    for (final Selection selection : definedProjections) {
+      final ObjectTypeDefinition parentType, final boolean cacheable) {
+    if (cacheable) {
+      final CachedProjections cached = projectionCache.get(definedProjections);
+      if (cached != null && cached.parentType() == parentType)
+        return mapProjections(current, cached.projections());
+    }
+
+    // A FRAGMENT SPREAD OR AN INLINE FRAGMENT HAS NO FIELD NAME OF ITS OWN: IT IS REPLACED BY THE FIELDS IT SELECTS, IF
+    // ITS TYPE CONDITION APPLIES TO THIS RECORD. LEFT IN, IT DROPPED THOSE FIELDS AND TURNED INTO A NULL RESPONSE KEY
+    // THAT NO SERIALIZER CAN RENDER. SEE ISSUE #7770
+    final boolean[] typeConditionEvaluated = { false };
+    final List<Selection> selections = fragments.expand(definedProjections, typeCondition -> {
+      typeConditionEvaluated[0] = true;
+      return typeConditionApplies(typeCondition, current, parentType);
+    });
+    final boolean cache = cacheable && !typeConditionEvaluated[0];
+
+    final List<Projection> projections = new ArrayList<>(selections.size());
+    for (final Selection selection : selections) {
       // A selection written as `alias: field` parses into fieldWithAlias (name = the real field,
       // alias carried by Selection.getName()); an unaliased selection parses into field instead.
-      // Neither is set for an ellipsis selection (fragment spread / inline fragment).
       final AbstractField field = selection.getAnyField();
       final String        fieldName = selection.getFieldName();
       final SelectionSet  set = selection.getSelectionSet();
+      final String        responseKey = selection.getName();
+
+      final int existing = indexOf(projections, responseKey);
+      if (existing > -1) {
+        // THE SAME RESPONSE KEY SELECTED TWICE, WHICH A FRAGMENT MAKES ORDINARY (`{ authors { a } ...F }` WITH
+        // `F { authors { b } }`): THE SPECIFICATION MERGES THE SUB-SELECTIONS INTO ONE FIELD RATHER THAN LETTING THE
+        // LAST ONE WIN. THE MERGED LIST CAN REPEAT A KEY IN TURN, WHICH THE NEXT LEVEL MERGES THE SAME WAY
+        //
+        // TWO SELECTIONS UNDER ONE KEY THAT DO NOT RESOLVE TO THE SAME FIELD (`a: name` AND `a: id`) ARE A VALIDATION
+        // ERROR IN THE SPECIFICATION, WHICH THIS MODULE DOES NOT PERFORM: THE FIRST ONE WRITTEN IS KEPT. SO IT IS WHEN ONLY
+        // ONE OF THE TWO HAS A SUB-SELECTION, THE SAME INVALID SHAPE
+        final Projection first = projections.get(existing);
+        if (set != null && first.set() != null) {
+          final List<Selection> merged = new ArrayList<>(first.set().size() + set.getSelections().size());
+          merged.addAll(first.set());
+          merged.addAll(set.getSelections());
+          projections.set(existing, new Projection(first.name(), first.fieldName(), first.field(), first.schemaField(),
+              first.type(), merged, cache));
+        }
+        continue;
+      }
 
       final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
       final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
 
-      projections.add(new Projection(selection.getName(), fieldName, field, schemaField, subType,
-          set != null ? set.getSelections() : null));
+      projections.add(new Projection(responseKey, fieldName, field, schemaField, subType,
+          set != null ? set.getSelections() : null, cache));
     }
+
+    if (cache)
+      projectionCache.put(definedProjections, new CachedProjections(parentType, projections));
+
     return mapProjections(current, projections);
+  }
+
+  /**
+   * Whether a fragment written {@code on typeCondition} applies to {@code current}: it does when it names the schema type
+   * the selections are written against, or the database type of the record or one of its super types.
+   * <p>
+   * Otherwise it is refuted only when the condition names a concrete type this module can reason about - an object type
+   * of the SDL or a type of the database - and the type of what is being resolved is known. A condition on anything
+   * else, such as an SDL {@code interface} or {@code union}, which this module does not model and so cannot check
+   * membership of, is applied rather than silently dropping the fields it selects. So is any condition when neither the
+   * schema type nor the record type is known.
+   */
+  private boolean typeConditionApplies(final String typeCondition, final Result current,
+      final ObjectTypeDefinition parentType) {
+    boolean typeKnown = parentType != null;
+    if (typeKnown && typeCondition.equals(parentType.getName()))
+      return true;
+
+    if (current.getElement().isPresent()) {
+      final Document element = current.getElement().get();
+      final DocumentType recordType = element.getType();
+      if (recordType != null) {
+        if (recordType.instanceOf(typeCondition))
+          return true;
+        typeKnown = true;
+      }
+    }
+
+    if (!typeKnown)
+      return true;
+
+    return !schema.isObjectType(typeCondition) && !schema.isDatabaseType(typeCondition);
+  }
+
+  private static int indexOf(final List<Projection> projections, final String responseKey) {
+    for (int i = 0; i < projections.size(); i++)
+      if (Objects.equals(projections.get(i).name(), responseKey))
+        return i;
+    return -1;
   }
 
   /**
@@ -266,21 +366,22 @@ public class GraphQLResultSet implements ResultSet {
       }
 
       final List<Selection> selectionSet = entry.set();
+      final boolean cacheable = entry.cacheable();
       final ObjectTypeDefinition projectionType = entry.type();
 
       if (selectionSet != null) {
         switch (projectionValue) {
-        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType);
-        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType);
-        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType);
+        case Map m -> projectionValue = mapBySelections(new ResultInternal(m), selectionSet, projectionType, cacheable);
+        case EmbeddedDocument emb -> projectionValue = mapBySelections(new ResultInternal(emb), selectionSet, projectionType, cacheable);
+        case Result result -> projectionValue = mapBySelections(result, selectionSet, projectionType, cacheable);
         case Iterable iterable -> {
           final List<Result> subResults = new ArrayList<>();
           for (final Object o : iterable) {
             final Result item;
             if (o instanceof Document document)
-              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType);
+              item = mapBySelections(new ResultInternal(document), selectionSet, projectionType, cacheable);
             else if (o instanceof Result result)
-              item = mapBySelections(result, selectionSet, projectionType);
+              item = mapBySelections(result, selectionSet, projectionType, cacheable);
             else
               continue;
 
