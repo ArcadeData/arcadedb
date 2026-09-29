@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,7 +60,7 @@ class Issue8613NewEmbeddedDocumentOverwriteTest extends TestHelper {
     database.getSchema().createDocumentType("Holder8613b");
 
     database.transaction(() -> {
-      final MutableDocument d = database.newDocument("Holder8613b").set("items", new java.util.ArrayList<>());
+      final MutableDocument d = database.newDocument("Holder8613b").set("items", new ArrayList<>());
       d.newEmbeddedDocument("Item8613b", "items").set("n", 1);
       d.newEmbeddedDocument("Item8613b", "items").set("n", 2);
       assertThat(d.getList("items")).hasSize(2);

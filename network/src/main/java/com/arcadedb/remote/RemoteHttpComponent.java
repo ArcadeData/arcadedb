@@ -754,6 +754,8 @@ public class RemoteHttpComponent extends RWLockContext {
               null, currentServer, currentPort, e.getMessage());
       leaderServer = new Pair<>(originalServer, originalPort);
       publishReplicaServerList(new ArrayList<>());
+      // A REFRESH THAT FAILED MUST NOT LEAVE THE PORTS OF THE PREVIOUS ANSWER BEHIND
+      advertisedPorts = Map.of();
       return;
     }
 

@@ -35,7 +35,8 @@ public abstract class AbstractGremlinServerIT extends BaseGraphServerTest {
   private int gremlinPort;
 
   /**
-   * The port the Gremlin Server of this test listens on: drawn per test, never the fixed 8182 (issue #8578).
+   * The port the Gremlin Server of this test listens on: drawn per test, never the fixed 8182 (issue #8578). One port:
+   * with several servers in a fixture the last one configured wins, and every current subclass starts a single server.
    */
   protected int getGremlinPort() {
     return gremlinPort;

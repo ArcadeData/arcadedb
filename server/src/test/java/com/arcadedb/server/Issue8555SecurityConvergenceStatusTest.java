@@ -157,6 +157,29 @@ class Issue8555SecurityConvergenceStatusTest {
     assertThat(statusHandler.getSecurityConvergenceStatus().windowOpenedAt()).isEqualTo(opened);
   }
 
+  /**
+   * Review of PR #8680: the gate opens its window on first sight, and the probe only reaches it once every earlier
+   * check passed. A status poll during catch-up must not start the clock, or the window is already spent when the
+   * probe first evaluates the gate and the node goes straight to give-up.
+   */
+  @Test
+  void aStatusPollBeforeTheNodeIsConsensusReadyDoesNotOpenTheWindow() {
+    final HAServerPlugin ha = staticMemberHa("users");
+    when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.VOTING_FOR_ME);
+    final SecurityConvergenceGate gate = new SecurityConvergenceGate();
+    final ArcadeDBServer server = onlineServerWith(ha, configurationWith(LONG_WINDOW_MS));
+    when(server.getSecurityConvergenceGate()).thenReturn(gate);
+    final ServerControlPlane controlPlane = new ServerControlPlane(server);
+
+    assertThat(controlPlane.getSecurityConvergenceStatus()).isEqualTo(SecurityConvergenceStatus.NOT_CONVERGING);
+    assertThat(controlPlane.notReadyReason()).contains("Raft group");
+    assertThat(gate.windowOpenedAt).as("still catching up: the window is not opened").isZero();
+
+    when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
+    assertThat(controlPlane.getSecurityConvergenceStatus().held()).isTrue();
+    assertThat(gate.windowOpenedAt).as("opened once the probe would reach the gate").isPositive();
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   /** An unarmed, caught-up HA plugin held after a snapshot install at {@link #INSTALL_INDEX}. */
