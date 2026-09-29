@@ -248,7 +248,10 @@ public final class IncomingEdgeLookup {
    * {@code both()}, {@code bothE()}, {@code shortestPath()}) answer the incoming side of the unidirectional types.
    * Called on their own, those functions read what the vertices store, as the vertex API does - embedded, remote and
    * through Gremlin alike: a SQL {@code MATCH} or a Cypher pattern asks which edges end in a vertex, a function call
-   * asks what the vertex holds.
+   * asks what the vertex holds. Only the hops of a {@code MATCH} are pattern walks: an {@code in()} written inside a
+   * {@code where:} or {@code while:} condition is an expression, and answers as the function does anywhere else. A
+   * {@code GraphTraversalProvider} (an analytical view) answers the incoming side in both cases, its reverse index being
+   * built from the outgoing lists.
    */
   public static <T> T walkingPattern(final Supplier<T> walk) {
     final int[] depth = PATTERN_WALKS.get();
