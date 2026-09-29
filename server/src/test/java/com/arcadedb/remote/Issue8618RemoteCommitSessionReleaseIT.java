@@ -132,6 +132,8 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
 
       assertThatThrownBy(database::commit).isInstanceOf(DuplicatedKeyException.class);
       assertThat(activeSessions()).as("a failed commit must end its session on the server").isZero();
+      assertThat(database.lastCommitAnswer.headers().firstValue(RemoteDatabase.ARCADEDB_SESSION_CLOSED))
+          .as("the failed commit's answer must say the session is closed").hasValue("true");
       assertThat(database.rollbacks.get()).as("the server said the session is closed: no rollback to send").isZero();
     }
   }
@@ -163,6 +165,7 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
     private final String         route;
     private final AtomicInteger  remaining;
     boolean                      releaseSessions  = true;
+    volatile HttpResponse<String> lastCommitAnswer;
 
     DeflectingDatabase(final ArcadeDBServer server, final String host, final int port, final String databaseName,
         final String route, final int deflections) {
@@ -189,8 +192,12 @@ class Issue8618RemoteCommitSessionReleaseIT extends BaseGraphServerTest {
 
     @Override
     HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
-      if (!request.uri().getPath().contains(route) || remaining.getAndDecrement() <= 0)
-        return super.sendWithWatchdog(request);
+      if (!request.uri().getPath().contains(route) || remaining.getAndDecrement() <= 0) {
+        final HttpResponse<String> response = super.sendWithWatchdog(request);
+        if (request.uri().getPath().contains("/api/v1/commit/"))
+          lastCommitAnswer = response;
+        return response;
+      }
 
       server.setSnapshotInstallInProgress(true);
       try {
