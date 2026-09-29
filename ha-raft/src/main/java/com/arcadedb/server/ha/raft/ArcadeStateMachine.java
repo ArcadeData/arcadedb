@@ -3846,8 +3846,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
-    // An install replaces the database's files, so no reservation taken against the previous copy can still hold.
-    pageVersions.clear(databaseName);
+    // No ledger clear here: runUnderInstallGate clears it when the follower's reinstall actually replaces the files
+    // (#8022). Clearing on the arms that replace nothing dropped live reservations of later entries (#8598).
 
     if (forceSnapshot) {
       // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
@@ -4532,8 +4532,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
         SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
         // The install replaced the database's files, so no reservation taken against the previous copy can still hold
-        // (issue #8022) - the rule applyInstallDatabaseEntry and applyDropDatabaseEntry already apply, here for every
-        // install path, the targeted resync of a quarantined database included. Success only and still under the lock:
+        // (issue #8022) - the rule applyDropDatabaseEntry already applies, here for every install path: the forced
+        // reinstall of applyInstallDatabaseEntry (which clears nothing itself, issue #8598) and the targeted resync of
+        // a quarantined database included. Success only and still under the lock:
         // a failed install leaves the old copy, and the entries behind the reservations are still to be applied to it.
         // Nothing in flight is dropped: reservations are taken only by a leader, a leader cannot install from itself,
         // so this node stepped down (clearing its ledger) before the download could succeed, and a node elected
