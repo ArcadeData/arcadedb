@@ -24,24 +24,25 @@ import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8538: {@code MERGE (c:C {id: $id}) ON MATCH SET c.n = c.n + 1} lost an increment under READ_COMMITTED, with
@@ -281,15 +282,32 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void labelWriteOnAConcurrentlyDeletedVertexDoesNotResurrectIt() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    try {
-      runWithConcurrentCommitAfterRead(() -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of())
-          .close(), 1, "MATCH (c:C {id: 'c0'}) DETACH DELETE c");
-    } catch (final RuntimeException e) {
-      // Refusing the write is the expected outcome; what must never happen is the vertex coming back
-    }
+    // The rewrite copies the latest committed record, which no longer exists: the write is refused
+    assertThatThrownBy(() -> runWithConcurrentCommitAfterRead(
+        () -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of()).close(), 1,
+        "MATCH (c:C {id: 'c0'}) DETACH DELETE c")).hasCauseInstanceOf(RecordNotFoundException.class);
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM C")) {
       assertThat(((Number) rs.next().getProperty("total")).longValue()).isZero();
+    }
+  }
+
+  /**
+   * The documented price of #4474: the no-op decision is taken on the record the MERGE read, so when a concurrent commit
+   * changed the property in between, the concurrent value stays. No committed write is lost; this pins the behavior so
+   * that it is changed on purpose, not by accident.
+   */
+  @Test
+  void unchangedOnMatchSetKeepsAValueCommittedAfterTheMatch() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0, kind: 'const'})"));
+
+    final boolean committed = runWithConcurrentCommitAfterRead(
+        () -> database.command("cypher", "MERGE (c:C {id: 'c0'}) ON MATCH SET c.kind = 'const'", Map.of()).close(), 1,
+        "MATCH (c:C {id: 'c0'}) SET c.kind = 'other'");
+
+    assertThat(committed).isTrue();
+    try (final ResultSet rs = database.query("sql", "SELECT kind FROM C WHERE id = 'c0'")) {
+      assertThat(rs.next().<String>getProperty("kind")).isEqualTo("other");
     }
   }
 
@@ -407,19 +425,20 @@ class Issue8538MergeOnMatchLostUpdateTest {
    * may write the same value to the same record.
    */
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES) // a hang detector for the retry loop, not a latency bound
   void concurrentMergeIncrementsAreNeverLost() throws Exception {
     final int writers = 8;
     final int batches = 50;
     // One hot record: the one each transaction touches first, which is the record the reporter saw lose. The query
     // keeps the reporter's UNWIND shape.
-    final List<String> ids = List.of("c0");
+    final Map<String, Object> params = Map.of("ids", List.of("c0"));
 
     for (int round = 0; round < 2; round++) {
       database.transaction(() -> database.command("sql", "DELETE FROM C"));
 
       final AtomicInteger committedTx = new AtomicInteger();
       final AtomicReference<Throwable> failure = new AtomicReference<>();
-      final Map<String, List<Integer>> writtenValues = new ConcurrentHashMap<>();
+      final List<Integer> writtenValues = Collections.synchronizedList(new ArrayList<>());
       final CountDownLatch start = new CountDownLatch(1);
       final List<Thread> threads = new ArrayList<>();
 
@@ -429,20 +448,15 @@ class Issue8538MergeOnMatchLostUpdateTest {
             start.await();
             for (int b = 0; b < batches; b++) {
               for (int attempt = 0; ; attempt++) {
-                final Map<String, Integer> written = new HashMap<>();
                 try {
                   database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
-                  try (final ResultSet rs = database.command("cypher", MERGE_MANY, Map.of("ids", ids))) {
-                    while (rs.hasNext()) {
-                      final Result row = rs.next();
-                      written.put(row.getProperty("id"), ((Number) row.getProperty("n")).intValue());
-                    }
+                  final int written;
+                  try (final ResultSet rs = database.command("cypher", MERGE_MANY, params)) {
+                    written = ((Number) rs.next().getProperty("n")).intValue();
                   }
                   database.commit();
                   committedTx.incrementAndGet();
-                  for (final Map.Entry<String, Integer> e : written.entrySet())
-                    writtenValues.computeIfAbsent(e.getKey(), k -> Collections.synchronizedList(new ArrayList<>()))
-                        .add(e.getValue());
+                  writtenValues.add(written);
                   break;
                 } catch (final NeedRetryException | DuplicatedKeyException e) {
                   if (database.isTransactionActive())
@@ -468,10 +482,8 @@ class Issue8538MergeOnMatchLostUpdateTest {
 
       assertThat(failure.get()).isNull();
       assertThat(committedTx.get()).isEqualTo(writers * batches);
-      for (final String id : ids) {
-        assertThat(writtenValues.get(id)).as("values committed to %s", id).doesNotHaveDuplicates();
-        assertThat(readN(id)).as("final n of %s", id).isEqualTo(writers * batches);
-      }
+      assertThat(writtenValues).as("values committed to c0").doesNotHaveDuplicates();
+      assertThat(readN("c0")).isEqualTo(writers * batches);
     }
   }
 
