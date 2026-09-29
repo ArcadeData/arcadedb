@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -225,6 +226,52 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
     assertThat(scalar("MATCH (d:D) RETURN max(d.x) AS v", Map.of(), "v")).isEqualTo(50_000);
     assertThat(scalar("MATCH (d:D) RETURN min(d.x) AS v", Map.of(), "v")).isEqualTo(-50_000);
     assertThat(scalar("MATCH (d:DChild) RETURN max(d.x) AS v", Map.of(), "v")).isEqualTo(50_000);
+  }
+
+  @Test
+  void startsWithOnACaseInsensitiveIndexMissesNothing() {
+    // The keys of a case-insensitive index are lower-cased: 'AZ' bumped to 'A[' and lower-cased is 'a[', which sorts
+    // below 'azb', so a range built from it would drop a row the predicate accepts
+    database.command("sql", "CREATE VERTEX TYPE Ci");
+    database.command("sql", "CREATE PROPERTY Ci.s STRING");
+    database.command("sql", "CREATE INDEX ON Ci (s COLLATE ci) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String v : new String[] { "AZb", "AZ", "azc", "Az", "AY", "B", "a[" })
+        database.newVertex("Ci").set("s", v).save();
+    });
+    for (final String prefix : new String[] { "AZ", "Az", "az", "A", "a" }) {
+      long expected = 0;
+      for (final String v : new String[] { "AZb", "AZ", "azc", "Az", "AY", "B", "a[" })
+        if (v.startsWith(prefix))
+          expected++;
+      assertThat(scalar("MATCH (c:Ci) WHERE c.s STARTS WITH $p RETURN count(*) AS n", Map.of("p", prefix), "n"))
+          .as("prefix '%s'", prefix).isEqualTo(expected);
+    }
+    assertThat(scalar("MATCH (c:Ci) WHERE c.s STARTS WITH 'AZ' RETURN count(*) AS n", Map.of(), "n")).isEqualTo(2L);
+    assertThat(profile("MATCH (c:Ci) WHERE c.s STARTS WITH 'AZ' RETURN count(*) AS n", Map.of())).doesNotContain("next(");
+  }
+
+  @Test
+  void startsWithANonStringParameter() {
+    for (final Object param : new Object[] { 5, 5.5, true, List.of("0a"), Map.of("a", 1) })
+      assertThat(scalar("MATCH (d:D) WHERE d.s STARTS WITH $p RETURN count(*) AS n", Map.of("p", param), "n")).as(String.valueOf(param))
+          .isEqualTo(0L);
+    assertThat(scalar("MATCH (d:D) WHERE d.x STARTS WITH $p RETURN count(*) AS n", Map.of("p", 5), "n")).isEqualTo(0L);
+  }
+
+  @Test
+  void minAndMaxSeeADeleteInTheOpenTransaction() {
+    final int max = (Integer) scalar("MATCH (d:D) RETURN max(d.x) AS v", Map.of(), "v");
+    database.begin();
+    try {
+      database.command("sql", "DELETE FROM D WHERE x = " + max);
+      final Object afterDelete = scalar("MATCH (d:D) WHERE d.x IS NOT NULL RETURN max(d.x) AS v", Map.of(), "v");
+      assertThat(scalar("MATCH (d:D) RETURN max(d.x) AS v", Map.of(), "v")).isEqualTo(afterDelete);
+      assertThat(afterDelete).isNotEqualTo(max);
+    } finally {
+      database.rollback();
+    }
+    assertThat(scalar("MATCH (d:D) RETURN max(d.x) AS v", Map.of(), "v")).isEqualTo(max);
   }
 
   private long countWhere(final String prefix, final int above) {
