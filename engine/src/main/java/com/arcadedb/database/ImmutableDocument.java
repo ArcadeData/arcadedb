@@ -209,9 +209,8 @@ public class ImmutableDocument extends BaseDocument {
    * The page is pinned BEFORE the reload to avoid a loop with triggers (encryption).
    * <p>
    * The reload must REPLACE the buffer, never refresh it in place: the openCypher SET clause detects a reload by the
-   * buffer changing identity and re-evaluates its right-hand sides only then (issue #8538, pinned by
-   * Issue8538MergeOnMatchLostUpdateTest.modifyReplacesTheBufferOfAVertexWhosePageMovedOn). Refreshing in place would
-   * silently bring the lost update back.
+   * buffer changing identity and re-evaluates its right-hand sides only then (issue #8538, pinned by a contract test in
+   * Issue8538MergeOnMatchLostUpdateTest). Refreshing in place would silently bring the lost update back.
    */
   protected void pinPageAndReloadIfStale() throws IOException {
     final BasePage page = database.getTransaction()

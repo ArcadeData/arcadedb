@@ -23,6 +23,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -315,8 +317,8 @@ public final class LabelReplacements {
    *
    * <p>
    * The copy is taken from the latest committed record, not from the image the row read (issue #8538): a vertex deleted
-   * concurrently since that read therefore fails the write with the record-not-found error, rather than being
-   * resurrected from a stale copy.
+   * concurrently since that read therefore fails the write with a retryable {@link ConcurrentModificationException},
+   * rather than being resurrected from a stale copy.
    *
    * @return the vertex that now holds the identity of the original
    */
@@ -325,7 +327,15 @@ public final class LabelReplacements {
     // not the image the row read: a commit landing in between would otherwise vanish with the deleted original, and the
     // delete, taken on a page loaded fresh, has no older image left to refuse it against. modify() pins the page and
     // reloads a record whose page moved on, so a commit landing AFTER this point fails the commit-time version check.
-    final Vertex vertex = matched.modify();
+    final Vertex vertex;
+    try {
+      vertex = matched.modify();
+    } catch (final RecordNotFoundException e) {
+      // A retryable conflict, not a hard error: the retry re-runs the statement against the committed delete (a MERGE
+      // then takes its ON CREATE branch)
+      throw new ConcurrentModificationException(
+          "Vertex " + matched.getIdentity() + " was deleted by a concurrent transaction before its label write. Please retry the operation");
+    }
     final Database database = vertex.getDatabase();
     final RID originalRid = vertex.getIdentity();
     final String originalTypeName = vertex.getTypeName();
