@@ -249,9 +249,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private volatile       long                      timeOfLastStats                  = 0L;
   // #8660: a gather stops at MAX_PAGES_GATHER_STATS entries. When it did, the next one resumes at the page after the one it
   // stopped on instead of rescanning the same head of the file, and is not held back by the timeout. Guarded by the
-  // `freeSpaceInPages` monitor.
+  // `freeSpaceInPages` monitor (gatherTruncated is also read outside it, hence volatile).
   private                int                       gatherResumePage                 = 0;
-  private                boolean                   gatherTruncated                  = false;
+  private volatile       boolean                   gatherTruncated                  = false;
   private final          AtomicLong                changesFromLastStats             = new AtomicLong();
 
   private enum REUSE_SPACE_MODE {
@@ -6298,8 +6298,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           if (bestPageAnalysis == null && gatherTruncated) {
             // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
             gatherPageStatistics();
-            if (!freeSpaceInPages.isEmpty())
+            if (!freeSpaceInPages.isEmpty()) {
               bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded, multiPageRecord, avoidPageNumber);
+              if (bestPageAnalysis == null)
+                bestPageAnalysis = findAvailableSpaceFromStatistics(currentPageId, spaceNeeded / 2, multiPageRecord, avoidPageNumber);
+            }
           }
         }
 
@@ -6458,7 +6461,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
             final int freeSpacePerc = freeSpaceInPage * 100 / (page.getMaxContentSize() - contentHeaderSize);
 
-            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC)
+            if (freeSpacePerc > GATHER_STATS_MIN_SPACE_PERC
+                && (freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS || freeSpaceInPages.containsKey(pageId)))
               freeSpaceInPages.put(pageId, freeSpaceInPage);
 
             ++pageId;
