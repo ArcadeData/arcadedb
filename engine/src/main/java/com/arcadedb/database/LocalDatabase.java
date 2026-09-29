@@ -738,11 +738,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
+        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
+        saveSchemaAtTransactionEnd();
       }
-
-      // AFTER THE POP (#8635): A NESTED TRANSACTION HAS LEFT THE STACK, SO THE SAVE SEES THE ONE ENCLOSING IT STILL
-      // OPEN AND POSTPONES TO ITS COMMIT INSTEAD OF WRITING schema.json UNDER ITS FEET
-      schema.saveConfigurationAtTransactionEnd();
 
       return null;
     });
@@ -764,7 +762,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // ALREADY ROLLED BACK
       }
 
-      saveSchemaAfterRollback();
+      saveSchemaAtTransactionEnd();
       return null;
     });
   }
@@ -795,23 +793,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      saveSchemaAfterRollback();
+      saveSchemaAtTransactionEnd();
       return null;
     });
   }
 
   /**
-   * Writes the schema a DDL run inside the rolled back transaction postponed to its end (issue #8635). A schema change
-   * is not transactional: it stands, and its files exist, whatever happened to the records.
+   * Writes the schema a DDL run inside the ending transaction postponed to its end (issue #8635), whether it committed,
+   * failed to or rolled back: a schema change is not transactional, it stands and its files exist either way.
    * <p>
-   * A failure is logged, never thrown: a rollback often runs in the error path of something else, and the exception
-   * its caller has to see is that one.
+   * A failure is logged, never thrown, and the schema stays dirty for the next save or the close to write. Thrown from
+   * a commit it would report a transaction whose records ARE committed as failed, inviting a retry that applies them
+   * twice; thrown from a rollback or a failed commit it would replace the exception the caller has to see.
    */
-  private void saveSchemaAfterRollback() {
+  private void saveSchemaAtTransactionEnd() {
     try {
       schema.saveConfigurationAtTransactionEnd();
     } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on saving the schema at the rollback of a transaction on database '%s'",
+      LogManager.instance().log(this, Level.WARNING, "Error on saving the schema at the end of a transaction on database '%s'",
           e, name);
     }
   }

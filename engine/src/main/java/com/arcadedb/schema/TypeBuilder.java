@@ -203,7 +203,6 @@ public class TypeBuilder<T> {
         for (LocalDocumentType sup : superTypes)
           c.addSuperType(sup);
 
-      // NO SAVE HERE: THE recordFileChanges FRAME THIS RUNS IN WRITES schema.json AS SOON AS IT RETURNS (#8635)
       schema.updateSecurity();
 
       return c;

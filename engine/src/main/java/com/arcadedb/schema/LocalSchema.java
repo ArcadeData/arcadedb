@@ -4312,6 +4312,8 @@ public class LocalSchema implements Schema {
     if (!isDirty())
       return;
 
+    // A FRAME OPEN ON ANOTHER THREAD NEEDS NO CHECK: IT HOLDS THE DATABASE WRITE LOCK, AND A COMMIT OR A ROLLBACK TAKES
+    // THE READ LOCK, SO NO TRANSACTION CAN END INSIDE SOMEBODY ELSE'S DDL AND WRITE ITS HALF-APPLIED SCHEMA
     if (recordingThread == Thread.currentThread()) {
       // THE FRAME IS OPEN ON THIS THREAD, UNDER THE WRITE LOCK: THE FLAG IS ITS OWN
       recordingSavePending = true;

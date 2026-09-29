@@ -266,6 +266,76 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
   }
 
   /**
+   * A commit that fails after the transaction ran DDL still writes it: the schema change stands whatever happened to
+   * the records, and a caller that just propagates the failure never calls rollback().
+   */
+  @Test
+  void aFailedCommitStillWritesTheDdlItsTransactionRan() {
+    database.getSchema().createDocumentType("Unique").createProperty("k", Type.LONG);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Unique", "k");
+    database.transaction(() -> database.newDocument("Unique").set("k", 1).save());
+
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("CreatedInAFailedTransaction");
+    database.newDocument("Unique").set("k", 1).save();
+    assertThat(schema.getVersion()).isEqualTo(before);
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(schema.getVersion()).as("written by the failed commit, no rollback() needed").isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+
+    reopenDatabase();
+    assertThat(database.getSchema().existsType("CreatedInAFailedTransaction")).isTrue();
+  }
+
+  /**
+   * A transaction ending on another thread cannot write the schema while a DDL is half applied: the DDL holds the
+   * database write lock, and a commit needs the read lock. What the DDL left pending is written once, by the DDL.
+   */
+  @Test
+  void aCommitOnAnotherThreadCannotWriteTheSchemaInsideADdl() throws Exception {
+    database.getSchema().createDocumentType("Busy");
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final CountDownLatch insideTheDdl = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch committed = new CountDownLatch(1);
+
+    final Thread ddl = new Thread(() -> schema.recordFileChanges(() -> {
+      schema.createBucket("HalfApplied");
+      insideTheDdl.countDown();
+      release.await();
+      return null;
+    }));
+    final Thread committer = new Thread(() -> {
+      database.transaction(() -> database.newDocument("Busy").set("x", 1).save());
+      committed.countDown();
+    });
+
+    ddl.start();
+    try {
+      assertThat(insideTheDdl.await(30, TimeUnit.SECONDS)).isTrue();
+      final long duringTheDdl = schema.getVersion();
+
+      committer.start();
+      // A WAIT EXPECTED TO TIME OUT: THE COMMITTER CANNOT GET PAST THE DDL'S WRITE LOCK
+      assertThat(committed.await(300, TimeUnit.MILLISECONDS)).isFalse();
+      assertThat(schema.getVersion()).as("nothing written while the DDL is half applied").isEqualTo(duringTheDdl);
+    } finally {
+      release.countDown();
+      ddl.join(TimeUnit.SECONDS.toMillis(30));
+    }
+
+    assertThat(committed.await(30, TimeUnit.SECONDS)).isTrue();
+    committer.join(TimeUnit.SECONDS.toMillis(30));
+    assertThat(ddl.isAlive()).isFalse();
+    assertThat(schema.isDirty()).isFalse();
+    assertThat(database.countType("Busy", false)).isEqualTo(1);
+  }
+
+  /**
    * The deferral belongs to the thread running the DDL. A transaction ending on another thread while the DDL is in
    * flight is not the DDL's to write, and must not be left to it either.
    */
