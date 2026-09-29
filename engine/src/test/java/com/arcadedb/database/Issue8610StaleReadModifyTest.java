@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,6 +173,84 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
+   * The mark survives a second modify() of the same record: that one finds the page pinned and does not reload, so a
+   * value computed from the read before the first modify() must still be refused.
+   */
+  @Test
+  void aSecondModifyOfTheSameStaleReadIsRefusedToo() {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Vertex read = rid.asVertex();
+    final int n = read.getInteger("n");
+    commitConcurrently("n", 5);
+    read.modify(); // discarded
+
+    assertThatThrownBy(() -> {
+      read.modify().set("n", n + 1).save();
+      database.commit();
+    }).isInstanceOf(ConcurrentModificationException.class);
+
+    assertThat(readN()).isEqualTo(5);
+  }
+
+  /**
+   * The refusal is per record, as the #6950 check is for a document: a write to another property of a record changed
+   * concurrently is refused too, since it may be computed from the property that changed (SET b = a + 1).
+   */
+  @Test
+  void aWriteToAnotherPropertyOfAConcurrentlyChangedRecordIsRefused() {
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Vertex read = rid.asVertex();
+    final int n = read.getInteger("n");
+    commitConcurrently("n", 5);
+
+    assertThatThrownBy(() -> {
+      read.modify().set("derived", n + 1).save();
+      database.commit();
+    }).isInstanceOf(ConcurrentModificationException.class);
+
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().has("derived")).isFalse();
+  }
+
+  /**
+   * An UPDATE by RID loads the record lazily, so its first content read is the reload modify() performs after pinning
+   * the page: a commit landing there is refused by the commit-time page check, as it must be. Committed or refused, the
+   * concurrent write is never lost.
+   */
+  @Test
+  void sqlUpdateByRidNeverLosesACommitLandingInsideTheStatement() {
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("sql", "UPDATE V SET n = n + 1 WHERE @rid = ?", rid).close());
+
+    assertThat(readN()).isEqualTo(committed ? 6 : 5);
+  }
+
+  /**
+   * SQL UPDATE evaluates its SET against the record it converted with modify(), i.e. against the reloaded content: a
+   * concurrent commit landing between the scan that read the record and the write is built upon, not refused.
+   */
+  @Test
+  void sqlUpdateOverAScanBuildsOnACommitLandingInsideTheStatement() {
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("sql", "UPDATE V SET n = n + 1").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(6);
+  }
+
+  /**
+   * And for an openCypher SET (the MERGE actions are covered by Issue8538MergeOnMatchLostUpdateTest).
+   */
+  @Test
+  void cypherSetBuildsOnACommitLandingInsideTheStatement() {
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(
+        () -> database.command("cypher", "MATCH (v:V) SET v.n = v.n + 1").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(6);
+  }
+
+  /**
    * Creating an edge changes only the vertex edge lists, which is what the reload exists for: a concurrent change to the
    * vertex properties must not turn it into a conflict, nor be lost.
    */
@@ -254,6 +334,40 @@ class Issue8610StaleReadModifyTest {
       Thread.currentThread().interrupt();
     }
     assertThat(failure.get()).isNull();
+  }
+
+  /**
+   * Runs {@code body} in a READ_COMMITTED transaction; right after the first V record it reads, another transaction
+   * sets {@code n = 5} and commits.
+   *
+   * @return whether the transaction committed; {@code false} when it was refused with a retryable conflict
+   */
+  private boolean runWithConcurrentCommitAfterFirstRead(final Runnable body) {
+    final Thread bodyThread = Thread.currentThread();
+    final AtomicBoolean armed = new AtomicBoolean(true);
+    final AfterRecordReadListener interleave = record -> {
+      if (Thread.currentThread() == bodyThread && armed.compareAndSet(true, false))
+        commitConcurrently("n", 5);
+      return record;
+    };
+    database.getSchema().getType("V").getEvents().registerListener(interleave);
+    try {
+      database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+      body.run();
+      database.commit();
+      return true;
+    } catch (final RuntimeException e) {
+      // A query engine may report the conflict wrapped in its own exception
+      for (Throwable t = e; t != null; t = t.getCause())
+        if (t instanceof ConcurrentModificationException)
+          return false;
+      throw e;
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+      database.getSchema().getType("V").getEvents().unregisterListener(interleave);
+      assertThat(armed.get()).as("the concurrent commit must have been interleaved").isFalse();
+    }
   }
 
   private int readN() {
