@@ -98,4 +98,13 @@ class OrderByIndexNullScanTest extends TestHelper {
     assertThat(plan("SELECT x FROM D WHERE x >= x ORDER BY x LIMIT 3")).contains("FETCH FROM TYPE");
     assertThat(values("SELECT x FROM D WHERE x >= x ORDER BY x")).hasSize(21);
   }
+
+  /** Only one OR branch excludes nulls: the other can match a null row, so the null sub-plan must stay. */
+  @Test
+  void orBranchWithoutNullExclusionKeepsTheNullScan() {
+    load("D", false, true);
+    assertThat(plan("SELECT x FROM D WHERE x > 18 OR x < 3 ORDER BY x")).doesNotContain("FETCH FROM TYPE");
+    assertThat(plan("SELECT x FROM D WHERE x > 18 OR x IS NULL ORDER BY x")).contains("FETCH FROM TYPE");
+    assertThat(values("SELECT x FROM D WHERE x > 18 OR x IS NULL ORDER BY x")).hasSize(3);
+  }
 }

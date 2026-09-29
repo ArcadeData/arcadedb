@@ -27,7 +27,8 @@ import java.util.Map;
  * only when it is hit again, so a burst of one-off keys (for example thousands of queries that embed their values in the text)
  * evicts other one-off keys instead of the entries the application keeps coming back to. The protected segment holds up to
  * {@value #PROTECTED_PERCENT}% of the capacity; a promotion that overflows it demotes its least recently used entry back to
- * probation. A capacity of 0 caches nothing. Not thread safe: wrap access in a synchronized block.
+ * probation. An entry needs a second hit to be protected, so one hit twice within a burst of more than the probation window (about
+ * 20% of the capacity) of other new keys is still evicted. A capacity of 0 caches nothing. Not thread safe: wrap access in a synchronized block.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
