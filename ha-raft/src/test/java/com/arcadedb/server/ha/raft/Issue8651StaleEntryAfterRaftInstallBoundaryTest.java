@@ -33,6 +33,8 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -83,15 +85,17 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
         .isInstanceOf(IllegalStateException.class);
   }
 
-  @Test
-  void aStaleEntryThatNamesNoDatabaseIsSkippedAsANoOp() throws Exception {
+  @ParameterizedTest
+  @EnumSource(value = RaftLogEntryType.class, names = { "SECURITY_USERS_ENTRY", "SECURITY_GROUPS_ENTRY",
+      "SECURITY_API_TOKENS_ENTRY" })
+  void aStaleEntryThatNamesNoDatabaseIsSkippedAsANoOp(final RaftLogEntryType type) throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.recordInstalledRaftBoundary(1867073L);
     sm.notifyTermIndexUpdated(30L, 1867073L);
     final long appliedBefore = sm.readAppliedIndexCounter();
     final long persistedBefore = sm.readPersistedAppliedIndex();
 
-    final CompletableFuture<Message> result = sm.applyTransaction(securityEntry(sm, 30L, 1835784L));
+    final CompletableFuture<Message> result = sm.applyTransaction(entry(sm, securityPayload(type), 30L, 1835784L));
 
     assertThat(result.isCompletedExceptionally()).as("a stale security entry must not throw or halt").isFalse();
     assertThat(result.get().getContent().toStringUtf8()).isEqualTo("OK");
@@ -138,7 +142,7 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
       // The drop branch of the same bookkeeping evicts the database's own entry, still leaving the global one alone.
       sm.writePersistedDatabaseAppliedIndex(60L, "uncovered", true);
       assertThat(sm.readPersistedAppliedIndex()).isEqualTo(120L);
-      assertThat(sm.readPersistedAppliedIndex("uncovered")).as("evicted by the drop").isNotEqualTo(60L).isNotEqualTo(50L);
+      assertThat(sm.readPersistedAppliedIndex("uncovered")).as("evicted by the drop").isEqualTo(-1L);
     } finally {
       db.close();
     }
@@ -177,8 +181,13 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
         .isEqualTo(1);
   }
 
-  private static TransactionContext securityEntry(final ArcadeStateMachine sm, final long term, final long index) {
-    return entry(sm, RaftLogEntryCodec.encodeSecurityUsersEntry("{}"), term, index);
+  private static ByteString securityPayload(final RaftLogEntryType type) {
+    return switch (type) {
+      case SECURITY_USERS_ENTRY -> RaftLogEntryCodec.encodeSecurityUsersEntry("{}");
+      case SECURITY_GROUPS_ENTRY -> RaftLogEntryCodec.encodeSecurityGroupsEntry("{}");
+      case SECURITY_API_TOKENS_ENTRY -> RaftLogEntryCodec.encodeSecurityApiTokensEntry("{}");
+      default -> throw new IllegalArgumentException(type.name());
+    };
   }
 
   private static TransactionContext entry(final ArcadeStateMachine sm, final ByteString payload, final long term,
