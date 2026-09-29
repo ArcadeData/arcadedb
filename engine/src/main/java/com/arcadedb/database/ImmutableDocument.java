@@ -46,7 +46,8 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli
  */
 public class ImmutableDocument extends BaseDocument {
-  // #8610: a read that went stale, set in place of the transaction the record was read in (one field, not two)
+  // #8610: a read that went stale is kept as STALE_READ - id, in place of the id of the transaction it was read in (one
+  // field, not two), so the mark still names that transaction
   private static final int STALE_READ = -2;
 
   /**
@@ -55,12 +56,14 @@ public class ImmutableDocument extends BaseDocument {
    * has not changed since: same page version, same bytes.
    */
   private long contentPageVersion = -1;
-  // #8610: the transaction this record was read in (see readTransactionId()), -1 when unknown, or STALE_READ once the
-  // reload modify() performs found the content changed since that read - for good: every later modify() of this
-  // instance gets the same page without reloading, so a value computed from the read before would otherwise slip
-  // through a second modify(). An int, not a long: 8 more bytes pushed a vertex into a larger allocation size and cost
-  // ~10% of a vertex scan.
-  private int  readInTransaction  = -1;
+  // #8610: the transaction this record was read in (see readTransactionId()), -1 when unknown, or STALE_READ - that id
+  // once the reload modify() performs found the content changed since that read. The mark stays for the rest of that
+  // transaction: every later modify() of this instance gets the same page without reloading, so a value computed from
+  // the read before would otherwise slip through a second modify(). A later transaction reusing the instance holds it
+  // across transactions, and gets the silent refresh. An int, not a long: 8 more bytes pushed a vertex into a larger
+  // allocation size and cost ~10% of a vertex scan. Written without synchronization like the rest of the record state:
+  // an instance shared by threads can at worst gain or miss one retryable conflict.
+  private int readInTransaction = -1;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
@@ -247,16 +250,16 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
-   * The id a record keeps of the transaction it was read in: the 31 low bits of its begin sequence, never negative,
-   * because a negative id means "unknown" (-1, which switches the check off) or {@link #STALE_READ}. A plain int cast
-   * turned half of all sequences negative once 2^31 transactions had begun. The id repeats every 2^31 transactions, so a
-   * record held across exactly that many is taken for one read in the current transaction: the worst that can do is a
-   * retryable conflict, never a lost update.
+   * The id a record keeps of the transaction it was read in: the 30 low bits of its begin sequence, never negative,
+   * because a negative value means "unknown" (-1, which switches the check off) or a stale read ({@link #STALE_READ} - id,
+   * which the 30 bits keep inside an int). A plain int cast turned half of all sequences negative once 2^31 transactions
+   * had begun. The id repeats every 2^30 transactions, so a record held across exactly that many is taken for one read in
+   * the current transaction: the worst that can do is a retryable conflict, never a lost update.
    *
    * @param transactionBeginSequence {@link TransactionContext#getBeginSequence()}, -1 outside a transaction
    */
   static int readTransactionId(final long transactionBeginSequence) {
-    return transactionBeginSequence < 0 ? -1 : (int) (transactionBeginSequence & Integer.MAX_VALUE);
+    return transactionBeginSequence < 0 ? -1 : (int) (transactionBeginSequence & 0x3FFFFFFF);
   }
 
   /**
@@ -277,7 +280,7 @@ public class ImmutableDocument extends BaseDocument {
     final int offset = contentChangeOffset();
     final int length = readImage.size() - offset;
     if (length != reloaded.size() - offset || !readImage.isSameRegionAs(offset, reloaded, offset, length))
-      readInTransaction = STALE_READ;
+      readInTransaction = STALE_READ - readInTransaction;
   }
 
   /**
@@ -293,8 +296,13 @@ public class ImmutableDocument extends BaseDocument {
    * when the reload found the content changed since.
    */
   protected <T extends MutableDocument> T markIfReadWentStale(final T mutable) {
-    if (readInTransaction == STALE_READ)
-      mutable.markBasedOnStaleRead();
+    if (readInTransaction <= STALE_READ) {
+      if (readTransactionId(((DatabaseInternal) database).getTransaction().getBeginSequence()) == STALE_READ - readInTransaction)
+        mutable.markBasedOnStaleRead();
+      else
+        // Marked in another transaction: this one holds the instance across transactions, and modify() reloaded it
+        readInTransaction = -1;
+    }
     return mutable;
   }
 

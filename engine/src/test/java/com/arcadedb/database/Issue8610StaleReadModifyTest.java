@@ -24,6 +24,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -258,10 +259,13 @@ class Issue8610StaleReadModifyTest {
   void theReadTransactionIdIsNeverNegative() {
     assertThat(ImmutableDocument.readTransactionId(-1)).isEqualTo(-1);
     assertThat(ImmutableDocument.readTransactionId(0)).isZero();
-    assertThat(ImmutableDocument.readTransactionId(Integer.MAX_VALUE)).isEqualTo(Integer.MAX_VALUE);
+    assertThat(ImmutableDocument.readTransactionId((1L << 30) - 1)).isEqualTo((1 << 30) - 1);
+    assertThat(ImmutableDocument.readTransactionId(1L << 30)).isZero();
     assertThat(ImmutableDocument.readTransactionId(1L << 31)).isZero();
     assertThat(ImmutableDocument.readTransactionId((1L << 32) - 2)).isNotNegative();
     assertThat(ImmutableDocument.readTransactionId(Long.MAX_VALUE)).isNotNegative();
+    // The stale marker, -2 - id, stays inside an int for every id
+    assertThat(-2L - ImmutableDocument.readTransactionId(Long.MAX_VALUE)).isGreaterThanOrEqualTo(Integer.MIN_VALUE);
   }
 
   /**
@@ -361,6 +365,50 @@ class Issue8610StaleReadModifyTest {
     database.rollback();
 
     assertThat(edge.get().asEdge().getInteger("n")).isEqualTo(5);
+  }
+
+  /**
+   * A stale mark belongs to the transaction that made it: a retry loop that reuses the record it read in the refused
+   * attempt holds that record across transactions, and the next attempt refreshes it silently instead of being refused
+   * until the retries run out.
+   */
+  @Test
+  void aStaleMarkDoesNotOutliveItsTransaction() {
+    final Vertex[] held = new Vertex[1];
+    final AtomicReference<Boolean> first = new AtomicReference<>(true);
+    database.transaction(() -> {
+      if (held[0] == null)
+        held[0] = rid.asVertex();
+      final int n = held[0].getInteger("n");
+      if (first.getAndSet(false))
+        commitConcurrently("n", 5);
+      held[0].modify().set("n", n + 1).save();
+    }, false, 3);
+
+    // The retry reused the instance reloaded by the refused attempt, so it read the concurrent 5 and wrote 6
+    assertThat(readN()).isEqualTo(6);
+  }
+
+  /**
+   * The merge.relationship procedure writes constant onMatch properties too.
+   */
+  @Test
+  void mergeRelationshipProcedureCommitsOverACommitLandingInsideTheStatement() {
+    database.transaction(() -> {
+      final MutableVertex other = database.newVertex("V").set("name", "other").save();
+      rid.asVertex().modify().set("name", "me").save();
+      rid.asVertex().newEdge("E", other, "n", 0);
+    });
+
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(() -> database.command("cypher",
+        "MATCH (a:V {name: 'me'}), (b:V {name: 'other'}) "
+            + "CALL merge.relationship(a, 'E', {}, {}, b, {flag: true}) YIELD rel RETURN rel").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(5);
+    try (final ResultSet rs = database.query("sql", "SELECT flag FROM E")) {
+      assertThat(rs.next().<Boolean>getProperty("flag")).isTrue();
+    }
   }
 
   /**

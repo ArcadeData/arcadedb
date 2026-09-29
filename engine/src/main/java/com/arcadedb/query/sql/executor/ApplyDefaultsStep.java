@@ -78,6 +78,8 @@ public class ApplyDefaultsStep extends AbstractExecutionStep {
     }
 
     final MutableDocument mutableDoc = doc.modify();
+    // Default values are constants, not computed from the record read: no stale-read refusal (#8610)
+    mutableDoc.clearBasedOnStaleRead();
     final DocumentType type = mutableDoc.getType();
 
     if (type == null) {
