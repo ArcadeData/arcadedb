@@ -349,8 +349,7 @@ public final class GraphQLFragments {
       return true;
     if (!evaluateDirectives)
       return false;
-    final AbstractField field = selection.getAnyField();
-    final Directives directives = field != null ? field.getDirectives() : null;
+    final Directives directives = directivesOf(selection);
     if (directives != null)
       for (final Directive directive : directives.getDirectives())
         if (isInclusionDirective(directive))

@@ -338,6 +338,11 @@ class Issue8617RemoteTransactionPacingTest {
     assertThat(quorum).isInstanceOf(QuorumNotReachedException.class);
     assertThat(((NeedRetryException) quorum).getRetryAfterMs()).isEqualTo(2_000L);
 
+    // THE HTTP-DATE FORM, AS A PROXY IN FRONT OF THE SERVER MAY SEND IT
+    final String inAMinute = DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.now().plusSeconds(60).atZone(ZoneOffset.UTC));
+    final Exception dated = database.manageException(new ScriptedResponse(null, 503, "", headers(inAMinute)), "begin");
+    assertThat(((NeedRetryException) dated).getRetryAfterMs()).isBetween(1L, 60_000L);
+
     // THE HEADER WINS OVER THE BODY
     final Exception both = database.manageException(new ScriptedResponse(null, 503,
         typed(RETRY_LATER, "installing").put("exceptionArgs", "5").toString(), headers("8")), "begin");
