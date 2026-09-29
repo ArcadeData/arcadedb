@@ -45,7 +45,6 @@ import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
-import org.xnio.IoUtils;
 import org.xnio.Options;
 import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
@@ -727,7 +726,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final HAReplicatedDatabase haDb) throws Exception {
 
     final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange,
-        connectionWriteWatchdog(exchange, streamingWriteTimeout(), databaseName));
+        WriteBoundedOutputStream.connectionWatchdog(exchange, streamingWriteTimeout(),
+            () -> "the streamed answer of a batch load on database '" + databaseName + "'"));
     // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
     // an engine exception raised after the stream started - still has something honest to report.
     final long[] lastProgress = new long[2];
@@ -863,161 +863,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
     }
     return null;
-  }
-
-  /**
-   * The write-side budget of issue #7381 as configured on this server, in milliseconds.
-   */
-  private int streamingWriteTimeout() {
-    return httpServer.getServer().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
-  }
-
-  /**
-   * The watchdog that bounds one blocking write of a streamed response on this exchange: it closes the
-   * connection when the write has made no progress for the configured budget, which is what turns an indefinite
-   * block into an I/O failure the caller can report (issue #7381).
-   * <p>
-   * Scheduled on the connection's own XNIO thread, which is where Undertow schedules its own read and write
-   * timeouts, so this adds no pool and no thread; arming is an insertion into that thread's delay queue and
-   * disarming is its removal. It is deliberately NOT Undertow's {@code Options.WRITE_TIMEOUT}: that conduit is
-   * installed only at connection open - setting the option later does nothing at all - and it measures the
-   * interval BETWEEN two successful writes, so on this endpoint a long commit between two progress lines (the
-   * 195-second index compaction of issue #5470) would kill the connection on the next write that SUCCEEDED.
-   * This timer exists only while a write is actually in progress.
-   * <p>
-   * Arming and firing are settled by one compare-and-set, so a write that returns just as its timer fires can
-   * never have the connection closed under the request that follows it on the same keep-alive connection:
-   * whichever of the two wins the flag, the other does nothing.
-   * <p>
-   * Closing the CONNECTION is the only lever a streamed response has - a body already on the wire cannot be
-   * retracted - and it is the same lever Undertow's own write-timeout conduit pulls. On an HTTP/2 connection
-   * that also ends the sibling streams multiplexed on it; the alternative is holding a worker thread for a peer
-   * that has stopped reading, which is the defect being fixed.
-   *
-   * @return {@link WriteBoundedOutputStream.WriteWatchdog#NONE} when the budget is not positive, which is how
-   *         the setting switches the bound off
-   */
-  private WriteBoundedOutputStream.WriteWatchdog connectionWriteWatchdog(final HttpServerExchange exchange,
-      final int timeoutMs, final String databaseName) {
-    if (timeoutMs <= 0)
-      return WriteBoundedOutputStream.WriteWatchdog.NONE;
-
-    final ServerConnection connection = exchange.getConnection();
-    final XnioIoThread ioThread = exchange.getIoThread();
-    return () -> {
-      final AtomicBoolean armed = new AtomicBoolean(true);
-      final XnioExecutor.Key key = ioThread.executeAfter(() -> {
-        if (!armed.compareAndSet(true, false))
-          // The write returned between this task being dequeued and this line. Closing now would take down a
-          // connection that is already serving something else.
-          return;
-        LogManager.instance().log(this, Level.WARNING,
-            "The streamed answer of a batch load on database '%s' could not be written for %,d ms - the client "
-                + "is not reading it - so the connection is closed and the load is failed rather than holding a "
-                + "worker thread indefinitely. Raise '%s' to allow a longer block, or read the response while "
-                + "uploading",
-            null, databaseName, timeoutMs, GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT.getKey());
-        IoUtils.safeClose(connection);
-      }, timeoutMs, TimeUnit.MILLISECONDS);
-      return () -> {
-        if (armed.compareAndSet(true, false))
-          key.remove();
-      };
-    };
-  }
-
-  /**
-   * An {@link OutputStream} on which no single call can block forever: a watchdog is armed before each one and
-   * disarmed as soon as it returns (issue #7381).
-   * <p>
-   * The streamed answer of {@code POST /api/v1/batch} is written while the request body is still being read,
-   * and its size grows with the size of the LOAD - roughly one line per {@code vertexBatchSize} records - while
-   * nothing bounds it. A client that uploads everything before reading anything, which is what a plain
-   * {@code HttpURLConnection} that writes its body and then calls {@code getResponseCode()} does, stops
-   * draining the response; once the socket buffers between the two fill, the server blocks inside a response
-   * {@code write()}, and a server blocked there is not reading the request either. Nothing then ever completes,
-   * and the worker thread is held for as long as the client keeps the connection open. The read side of this
-   * same exchange has been watched since issue #5470; this is the write side.
-   * <p>
-   * The bound does NOT prevent the stall - no cap on the number or rate of progress lines can, since neither
-   * knows how large the buffers are - it converts it into a failure with a diagnosis: the connection is closed,
-   * the blocked call fails, and {@code streamRecordsAsNdJson} reports it as what it is, a response that could
-   * not be written, rather than as the truncated REQUEST body an {@link IOException} from the read side means.
-   * <p>
-   * A client that reads while it writes never arms anything that fires, so nothing about the cadence or the
-   * content of the stream changes for it.
-   * <p>
-   * Package-private, and watchdog-injected, so the bound can be tested without a socket whose buffer sizes the
-   * test does not control.
-   */
-  static final class WriteBoundedOutputStream extends OutputStream {
-    /**
-     * Arms the bound for one blocking call. The returned {@link Runnable} disarms it and is always run, so an
-     * implementation must tolerate being disarmed after it has already fired.
-     */
-    @FunctionalInterface
-    interface WriteWatchdog {
-      /** No bound at all: what a non-positive budget configures, and what every non-streamed response has. */
-      WriteWatchdog NONE = () -> () -> {
-      };
-
-      Runnable arm();
-    }
-
-    private final OutputStream  out;
-    private final WriteWatchdog watchdog;
-
-    WriteBoundedOutputStream(final OutputStream out, final WriteWatchdog watchdog) {
-      this.out = out;
-      this.watchdog = watchdog;
-    }
-
-    @Override
-    public void write(final int b) throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.write(b);
-      } finally {
-        disarm.run();
-      }
-    }
-
-    @Override
-    public void write(final byte[] b, final int off, final int len) throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.write(b, off, len);
-      } finally {
-        disarm.run();
-      }
-    }
-
-    /**
-     * The call that actually reaches the socket: {@code UndertowOutputStream} accumulates into a pooled buffer
-     * and only writes through when it fills, so on a response of ~200-byte lines this is where a client that
-     * stopped reading blocks the worker thread.
-     */
-    @Override
-    public void flush() throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.flush();
-      } finally {
-        disarm.run();
-      }
-    }
-
-    /** Bounded as well: closing the response flushes whatever is still pending, which blocks for the same reason. */
-    @Override
-    public void close() throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.close();
-      } finally {
-        disarm.run();
-      }
-    }
   }
 
   /**
@@ -2208,8 +2053,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Bounded exactly like the leader's own answer (issue #7381): a follower relaying a stream to a client that
     // stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
     try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
-        final OutputStream out = new WriteBoundedOutputStream(exchange.getOutputStream(),
-            connectionWriteWatchdog(exchange, streamingWriteTimeout(), databaseName))) {
+        final OutputStream out = WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(),
+            () -> "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
       for (String line = in.readLine(); line != null; line = in.readLine()) {
         out.write(line.getBytes(StandardCharsets.UTF_8));
         out.write('\n');
