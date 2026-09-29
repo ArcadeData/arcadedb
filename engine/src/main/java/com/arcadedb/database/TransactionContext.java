@@ -52,6 +52,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -269,6 +270,11 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
+  // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
+  private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
+  private       long                                 beginSequence         = -1;
+  private       boolean                              staleReadCheck;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -353,12 +359,14 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
     slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_PAGE_SLOT_MERGE);
+    staleReadCheck = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_STALE_READ_CHECK);
     slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES);
     slotRebaseTrackedBytes = 0;
 
@@ -866,6 +874,23 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * The identity of this transaction among every transaction begun in this JVM (issue #8610), or -1 when it is not
+   * active. A vertex read inside a transaction remembers it, which is what tells a read made in THIS transaction from a
+   * vertex held across transactions.
+   */
+  public long getBeginSequence() {
+    return isActive() ? beginSequence : -1;
+  }
+
+  /**
+   * Whether a property write on a record read in this transaction is refused when a concurrent transaction committed a
+   * change to that record since the read ({@link GlobalConfiguration#TX_STALE_READ_CHECK}, issue #8610).
+   */
+  public boolean isStaleReadCheck() {
+    return staleReadCheck;
+  }
+
   public void assureIsActive() {
     if (!isActive())
       throw new TransactionException("Transaction not begun");
@@ -930,6 +955,13 @@ public class TransactionContext implements Transaction {
     // what it was written for (#4959): a delete by a genuinely CONCURRENT transaction, which no local state shows.
     if (deletedRecordsInTx.contains(rid))
       return false;
+
+    // #8610: modify() reloaded this record because a concurrent transaction committed a change to it after this
+    // transaction read it; assigning properties now would write values computed from the older read over that change. A
+    // change to a vertex edge lists only (edge creation) assigns no property and goes through.
+    if (record instanceof MutableDocument document && document.isBasedOnStaleRead() && document.arePropertiesAssigned())
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction after it was "
+          + "read in this transaction. Please retry the operation");
 
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();

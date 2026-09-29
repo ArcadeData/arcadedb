@@ -33,8 +33,8 @@ import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
@@ -101,8 +101,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.CoarseClock;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
@@ -1079,6 +1079,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+        // #8610: recorded before the read events run, which may hand back another record
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(tx.getBeginSequence());
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1086,6 +1089,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+      if (record instanceof ImmutableDocument document)
+        document.setReadInTransaction(tx.getBeginSequence());
 
       return record;
     });
