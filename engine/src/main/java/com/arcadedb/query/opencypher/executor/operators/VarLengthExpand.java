@@ -196,6 +196,7 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
         true, false, pathMode != null ? pathMode : PathMode.TRAIL);
     final Predicate<Edge> edgePredicate = pattern.buildInlineWherePredicate(row, context);
     traverser.withEdgePredicate(edgePredicate);
+    traverser.withContext(context);
     // Relationships no one reads are followed without loading their records (issue #8537)
     traverser.withEdgesUnread((relationshipVariable == null || relationshipVariable.isEmpty())
         && (pathVariable == null || pathVariable.isEmpty()) && (properties == null || properties.isEmpty()) && edgePredicate == null);

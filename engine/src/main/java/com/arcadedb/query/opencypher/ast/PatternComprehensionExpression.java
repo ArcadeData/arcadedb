@@ -23,6 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
@@ -252,7 +253,7 @@ public class PatternComprehensionExpression implements Expression {
     if (currentHop >= maxHops)
       return;
 
-    final Iterator<Edge> edges = adjacency(currentVertex, direction, relTypeArray);
+    final Iterator<Edge> edges = adjacency(currentVertex, direction, relTypeArray, context);
 
     // Row reused across every candidate edge of this expansion: only the relationship variable
     // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
@@ -425,7 +426,7 @@ public class PatternComprehensionExpression implements Expression {
       final Vertex startVertex, final Direction direction,
       final String[] relTypeArray, final NodePattern endNodePattern,
       final RelationshipPattern relPattern) {
-    final Iterator<Edge> edges = adjacency(startVertex, direction, relTypeArray);
+    final Iterator<Edge> edges = adjacency(startVertex, direction, relTypeArray, context);
 
     // Row reused across every candidate edge of this expansion: only the relationship variable
     // changes per edge, so the enclosing bindings are copied once. Stays null when the pattern
@@ -492,13 +493,13 @@ public class PatternComprehensionExpression implements Expression {
    * Walks the adjacency of a vertex in the direction the pattern asks for. An undirected hop is a
    * single pass over the merged BOTH list, deduplicated so a self-loop - which is stored in both the
    * outgoing and the incoming list of its vertex - contributes one match per relationship rather than
-   * two (issue #5456). The same rule is applied by the MATCH executors through {@link SelfLoops}.
+   * two (issue #5456). The same rule is applied by the MATCH executors through {@link SelfLoops}. The incoming side of
+   * an edge type declared unidirectional, which no vertex stores, is answered by the query's lookup (issue #8625).
    */
-  private static Iterator<Edge> adjacency(final Vertex vertex, final Direction direction, final String[] relTypeArray) {
-    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-    final Iterator<Edge> edges = relTypeArray != null ?
-        vertex.getEdges(arcadeDirection, relTypeArray).iterator() :
-        vertex.getEdges(arcadeDirection).iterator();
+  private static Iterator<Edge> adjacency(final Vertex vertex, final Direction direction, final String[] relTypeArray,
+      final CommandContext context) {
+    // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+    final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), relTypeArray);
     return direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(edges) : edges;
   }
 

@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -145,7 +146,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return internal.newEdge(edgeType, toVertex, properties);
   }
@@ -160,7 +161,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
   @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
     if (!bidirectional && ((EdgeType) database.getSchema().getType(edgeType)).isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return internal.newLightEdge(edgeType, toVertex);
   }

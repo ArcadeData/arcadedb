@@ -36,6 +36,6 @@ public class SQLFunctionBothE extends SQLFunctionMoveFiltered {
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
       final CommandContext context) {
-    return v2e(iRecord, Vertex.DIRECTION.BOTH, iLabels);
+    return v2e(iRecord, Vertex.DIRECTION.BOTH, iLabels, context);
   }
 }

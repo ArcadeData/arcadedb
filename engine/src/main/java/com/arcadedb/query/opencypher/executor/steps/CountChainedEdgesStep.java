@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -128,9 +129,9 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
                 count += provider.countEdges(intermediateId, secondHopDirection, secondHopTypes);
               totalCount = count;
             } else
-              totalCount = countOLTP(boundVertex);
+              totalCount = countOLTP(boundVertex, context);
           } else
-            totalCount = countOLTP(boundVertex);
+            totalCount = countOLTP(boundVertex, context);
         } else {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
@@ -164,15 +165,15 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   /**
    * OLTP fallback for vertices not in the GAV mapping.
    */
-  private long countOLTP(final Vertex boundVertex) {
-    final Iterator<Vertex> intermediates = firstHopTypes == null || firstHopTypes.length == 0 ?
-        boundVertex.getVertices(firstHopDirection).iterator() :
-        boundVertex.getVertices(firstHopDirection, firstHopTypes).iterator();
+  private long countOLTP(final Vertex boundVertex, final CommandContext context) {
+    // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+    final Iterator<Vertex> intermediates = IncomingEdgeLookup.getVertices(context, boundVertex, firstHopDirection,
+        firstHopTypes == null || firstHopTypes.length == 0 ? null : firstHopTypes);
 
     long count = 0;
     while (intermediates.hasNext()) {
       final Vertex intermediate = intermediates.next();
-      count += intermediate.countEdges(secondHopDirection, secondHopTypes);
+      count += IncomingEdgeLookup.countEdges(context, intermediate, secondHopDirection, secondHopTypes);
     }
     return count;
   }

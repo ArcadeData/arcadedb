@@ -2261,6 +2261,14 @@ public class GraphEngine {
     throw new IllegalArgumentException("Invalid direction");
   }
 
+  /**
+   * The refusal of a unidirectional edge on an edge type declared bidirectional. The type is what the caller has to
+   * change or pick differently, so the message names what it is rather than what it is not (issue #8625).
+   */
+  public static String unidirectionalEdgeOnBidirectionalTypeMessage(final String edgeTypeName) {
+    return "Edge type '" + edgeTypeName + "' is bidirectional; it cannot hold a unidirectional edge";
+  }
+
   public static void setProperties(final MutableEdge edge, final Object[] properties) {
     if (properties != null)
       if (properties.length == 1 && properties[0] instanceof Map) {

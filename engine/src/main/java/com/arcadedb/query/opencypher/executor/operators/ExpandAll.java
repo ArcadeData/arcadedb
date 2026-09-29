@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -109,6 +110,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    // A hop that reaches the incoming side of a unidirectional edge type asks the query's lookup for it, since no vertex
+    // stores it (issue #8625)
+    final boolean incomingLookup = IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(),
+        edgeTypes);
 
     return new ResultSet() {
       private Result currentInputResult = null;
@@ -182,7 +187,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
             // uniqueness checks - is followed on the endpoints its edge-list entry holds, so no edge record is
             // loaded (issue #8537); a relationship the query binds is read the ordinary way
             final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
-            edgeIterator = edgeVariable == null && sourceVertex instanceof VertexInternal internal ?
+            edgeIterator = incomingLookup ?
+                IncomingEdgeLookup.getEdges(context, sourceVertex, arcadeDirection, edgeTypes) :
+                edgeVariable == null && sourceVertex instanceof VertexInternal internal ?
                 ((DatabaseInternal) context.getDatabase()).getGraphEngine()
                     .getEdgesKnowingEndpoints(internal, arcadeDirection, edgeTypes) :
                 sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
@@ -280,7 +287,8 @@ public class ExpandAll extends AbstractPhysicalOperator {
             continue; // OPTIONAL MATCH leaves the source unbound
           }
 
-          final Iterator<Vertex> neighbors =
+          final Iterator<Vertex> neighbors = incomingLookup ?
+              IncomingEdgeLookup.getVertices(context, sourceVertex, direction.toArcadeDirection(), edgeTypes) :
               sourceVertex.getVertices(direction.toArcadeDirection(), edgeTypes).iterator();
           vertexIterator = direction == Direction.BOTH ?
               SelfLoops.deduplicating(neighbors, sourceVertex.getIdentity()) : neighbors;

@@ -2169,7 +2169,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final String edgeType,
       final boolean bidirectional, final Object... properties) {
     if (!bidirectional && schema.getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
         createVertexIfNotExist, edgeType, properties);

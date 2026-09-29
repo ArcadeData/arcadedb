@@ -36,6 +36,6 @@ public class SQLFunctionOutE extends SQLFunctionMoveFiltered {
   @Override
   protected Object move(final Database graph, final Identifiable iRecord, final String[] iLabels,
       final CommandContext context) {
-    return v2e(iRecord, Vertex.DIRECTION.OUT, iLabels);
+    return v2e(iRecord, Vertex.DIRECTION.OUT, iLabels, context);
   }
 }

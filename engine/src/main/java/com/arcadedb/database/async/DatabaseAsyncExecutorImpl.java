@@ -38,6 +38,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -1831,7 +1832,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
                       final boolean bidirectional,
                       final boolean light, final NewEdgeCallback callback, final Object... properties) {
     if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     newEdge(sourceVertex, edgeType, destinationVertexRID, light, callback, properties);
   }
