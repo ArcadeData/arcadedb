@@ -4473,7 +4473,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * transaction and a schema change. Every other type that names a database also acts on this node's own state (the
    * bootstrap baselines and the readiness holders they release, the install and drop bookkeeping), which a copy of the
    * database's files does not carry. An entry this node originated is always applied: its apply publishes a commit a
-   * local caller is waiting on.
+   * local caller is waiting on. So is every entry while ANY local commit is pending, whatever database it is for: a
+   * coarse test, but one that can only fall back to applying the entry again, never skip one it should not.
+   * <p>
+   * SAFETY INVARIANT: leaving an entry out is correct only because the leader reads the applied index it reports
+   * BEFORE it captures the copy it serves, and refuses to serve a database it has quarantined (issues #8454, #8468,
+   * see {@code SnapshotHttpHandler}). A change there that let the reported index run ahead of the copy would turn this
+   * skip into a silent loss of the entries in between.
    */
   private boolean isCarriedByInstalledCopy(final RaftLogEntryType type, final boolean originatedLocally) {
     if (originatedLocally || pendingLocalCommits() > 0)

@@ -1813,8 +1813,8 @@ public final class SnapshotInstaller {
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
       // Before anything else about the body: a copy behind what this node already applied is not worth reading.
-      checkSourceAppliedIndex(databaseName, connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER),
-          requiredSourceAppliedIndex());
+      final String appliedIndexHeader = connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER);
+      checkSourceAppliedIndex(databaseName, appliedIndexHeader, requiredSourceAppliedIndex());
 
       // A leader on issue #4831 or later advertises a completeness manifest via this header; when present
       // the manifest becomes mandatory, so a truncated download (manifest dropped) fails loudly. A leader
@@ -1846,7 +1846,7 @@ public final class SnapshotInstaller {
       // copy that ends up installed (issue #8579).
       final long[] served = SERVED_SOURCE_APPLIED_INDEX.get();
       if (served != null)
-        served[0] = parseAppliedIndex(connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER));
+        served[0] = parseAppliedIndex(appliedIndexHeader);
     } finally {
       connection.disconnect();
     }
