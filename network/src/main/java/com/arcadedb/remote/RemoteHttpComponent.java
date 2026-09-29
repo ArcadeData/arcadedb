@@ -883,15 +883,21 @@ public class RemoteHttpComponent extends RWLockContext {
         final long seconds = Long.parseLong(trimmed);
         return seconds > Long.MAX_VALUE / 1_000L ? Long.MAX_VALUE : seconds * 1_000L;
       } catch (final NumberFormatException e) {
-        return 0L;
+        return unreadableRetryAfter(trimmed);
       }
     }
 
     try {
       return Math.max(0L, ZonedDateTime.parse(trimmed, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - nowMs);
     } catch (final DateTimeParseException e) {
-      return 0L;
+      return unreadableRetryAfter(trimmed);
     }
+  }
+
+  /** A hint neither form of RFC 9110 can read is ignored, and said so for whoever is diagnosing the proxy that sent it. */
+  private static long unreadableRetryAfter(final String value) {
+    LogManager.instance().log(RemoteHttpComponent.class, Level.FINE, "Ignoring unreadable Retry-After value '%s'", null, value);
+    return 0L;
   }
 
   /**

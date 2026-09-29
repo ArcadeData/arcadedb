@@ -371,6 +371,11 @@ class Issue8617RemoteTransactionPacingTest {
     }
     assertThat(pauses).as("200 draws from a 1000 ms spread").hasSizeGreaterThan(1);
     assertThat(database.retryAfterPauseMs(new NeedRetryException("no hint"))).isZero();
+
+    // THE SAME PAUSE SERVES THE ELECTION LOOP OF httpCommand: A ZERO CAP IGNORES THE HINT THERE TOO
+    final ContextConfiguration ignoring = new ContextConfiguration();
+    ignoring.setValue(GlobalConfiguration.NETWORK_RETRY_AFTER_MAX_WAIT, 0L);
+    assertThat(open(ignoring).retryAfterPauseMs(refusal)).isZero();
   }
 
   private static void assertRetryAfterPauses(final List<Long> pauses, final long retryAfterMs, final int expected) {
