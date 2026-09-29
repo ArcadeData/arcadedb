@@ -127,14 +127,13 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
     final TermIndex marker = sm.getLatestSnapshotTermIndex();
     assertThat(marker).isNotNull();
 
-    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.fetchSnapshotMarker(
-        "localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L, getServer(0));
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.fetchSnapshotMarker(raft.getLocalPeerId().toString(), "localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L, getServer(0));
 
     assertThat(state.snapshotTermIndex()).isEqualTo(marker);
     assertThat(state.databases()).as("markerOnly skips the fingerprinting").isEmpty();
 
     // The full request still lists the databases, so the flag is what made the difference.
-    assertThat(LeaderDatabaseQuery.fetch("localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L,
+    assertThat(LeaderDatabaseQuery.fetch(raft.getLocalPeerId().toString(), "localhost:" + getServerHttpPort(0), null, raft.getClusterToken(), 30_000L,
         getServer(0)).databases()).isNotEmpty();
   }
 

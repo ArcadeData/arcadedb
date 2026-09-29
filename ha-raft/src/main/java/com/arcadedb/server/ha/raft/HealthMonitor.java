@@ -136,6 +136,18 @@ public final class HealthMonitor {
     }
 
     /**
+     * Describes a Ratis {@code StateMachineUpdater} thread that has terminated on this node, or returns {@code null}
+     * while it is alive or has not been seen yet (issue #8652). The updater is the one thread that applies committed
+     * entries; when a throwable escapes it, Ratis closes the division from the dying thread, and that close can stay
+     * in {@code CLOSING} or leave the proxy reporting {@code RUNNING} while the node rejects every append. Reading the
+     * thread itself needs no help from the lifecycle state Ratis reports, which is what a zombie corrupts.
+     * Implementations must return {@code null} when the state cannot be read.
+     */
+    default String getDeadStateMachineUpdater() {
+      return null;
+    }
+
+    /**
      * Whether the Raft storage volume currently has enough free space for the log writer to resume after an
      * in-place restart. A restart on a still-full volume fails the same way at once, so the monitor defers it
      * until the periodic log compaction (or the operator) has freed room. Implementations that cannot read the
@@ -262,10 +274,20 @@ public final class HealthMonitor {
   /** Consecutive ticks a division must stay CLOSING before it is recovered like a CLOSED one (issue #8651). */
   static final int CLOSING_TICKS_BEFORE_RECOVERY = 2;
 
+  /**
+   * Consecutive ticks a dead StateMachineUpdater must be seen before the node is recovered (issue #8652). A division
+   * that is being closed on purpose ends its updater thread before this monitor learns of the close, so a single
+   * sighting is an ordinary shutdown racing the tick; the same finding on the next tick is a node that stayed up.
+   */
+  static final int DEAD_UPDATER_TICKS_BEFORE_RECOVERY = 2;
+
   private final    HealthTarget             target;
   private final    long                     intervalMs;
   // Consecutive ticks the division was seen CLOSING (issue #8651). Health-monitor thread only.
   private          int                      closingStreak;
+  // Consecutive ticks a dead StateMachineUpdater was seen on a division that reports itself healthy (issue #8652).
+  // Health-monitor thread only.
+  private          int                      deadUpdaterStreak;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
   // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
@@ -504,6 +526,23 @@ public final class HealthMonitor {
     crashRestartStreak = 0;
     crashLoopEscalated = false;
     noteCrashLoopHealthy();
+    // The thread that applies committed entries is gone while the division still reports RUNNING (issue #8652): Ratis
+    // closes the division from the dying thread, and that close can hang or be reported as RUNNING again once the node
+    // rejoined, leaving a zombie that rejects every append. Read from the thread, not from the lifecycle it corrupts.
+    final String deadUpdater = target.getDeadStateMachineUpdater();
+    if (deadUpdater != null) {
+      deadUpdaterStreak++;
+      dropFollowerObservations();
+      if (deadUpdaterStreak >= DEAD_UPDATER_TICKS_BEFORE_RECOVERY) {
+        deadUpdaterStreak = 0;
+        LogManager.instance().log(this, Level.SEVERE,
+            "Raft state machine cannot apply entries: %s while the division reports %s. Restarting Ratis in place "
+                + "(issue #8652)", deadUpdater, state);
+        handleUnhealthyState(LifeCycle.State.EXCEPTION);
+      }
+      return;
+    }
+    deadUpdaterStreak = 0;
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
     // re-arm nor a storage reformat can fix (issue #7037).

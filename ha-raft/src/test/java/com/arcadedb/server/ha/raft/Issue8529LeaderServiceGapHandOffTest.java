@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -87,7 +88,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong());
+    verify(raft).transferLeadership(anyLong(), eq(false));
   }
 
   @Test
@@ -99,7 +100,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong());
+    verify(raft).transferLeadership(anyLong(), eq(false));
   }
 
   @Test
@@ -111,7 +112,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isTrue();
     assertThat(sm.describeLeaderServiceGaps()).as("the log mirrors the predicate").hasSize(1);
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isTrue();
-    verify(raft).transferLeadership(anyLong());
+    verify(raft).transferLeadership(anyLong(), eq(false));
   }
 
   // -- what must NOT hand off --------------------------------------------------------------------------------------
@@ -132,7 +133,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isFalse();
     assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong());
+    verify(raft, never()).transferLeadership(anyLong(), eq(false));
   }
 
   @Test
@@ -143,7 +144,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     pendingBootstrapReplacements(sm).add(KEPT_DB);
 
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong());
+    verify(raft, never()).transferLeadership(anyLong(), eq(false));
   }
 
   @Test
@@ -154,7 +155,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     assertThat(sm.hasLeaderServiceGap()).isFalse();
     assertThat(sm.describeLeaderServiceGaps()).isEmpty();
     assertThat(sm.handOffLeadershipWhileReplacingDatabase()).isFalse();
-    verify(raft, never()).transferLeadership(anyLong());
+    verify(raft, never()).transferLeadership(anyLong(), eq(false));
   }
 
   /**
@@ -203,7 +204,7 @@ class Issue8529LeaderServiceGapHandOffTest {
   private void assertTheHealthTickHandsOff(final GapSetup gap) throws Exception {
     final CountDownLatch transferred = new CountDownLatch(1);
     final RaftHAServer smRaft = leader(true);
-    when(smRaft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(smRaft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       transferred.countDown();
       return true;
     });
@@ -239,7 +240,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = leader(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       return true;
     });
@@ -282,7 +283,7 @@ class Issue8529LeaderServiceGapHandOffTest {
     final AtomicLong clock = new AtomicLong(1_000_000L);
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = leader(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       return true;
     });
@@ -337,7 +338,7 @@ class Issue8529LeaderServiceGapHandOffTest {
   private static RaftHAServer leader(final boolean isLeader) {
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(isLeader);
-    when(raft.transferLeadership(anyLong())).thenReturn(true);
+    when(raft.transferLeadership(anyLong(), eq(false))).thenReturn(true);
     return raft;
   }
 

@@ -100,7 +100,7 @@ class Issue8325LeaderBodyDeadlineTest {
     try (final StallingBodyPeer leader = new StallingBodyPeer()) {
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       assertThatThrownBy(() -> leader.callWithin(
-          () -> LeaderDatabaseQuery.fetch(leader.address(), null, "test-token", 1_000L, null)))
+          () -> LeaderDatabaseQuery.fetch(null, leader.address(), null, "test-token", 1_000L, null)))
           .isInstanceOf(HttpTimeoutException.class);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "a 1s deadline from the unbounded ofString() body read");
 

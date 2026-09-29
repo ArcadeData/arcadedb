@@ -39,10 +39,16 @@ class HealthMonitorTest {
     volatile boolean                          lagging              = false;
     volatile boolean                          stuckDiverged        = false;
     volatile long                             appliedIndex         = -1;
+    volatile String                           deadUpdater          = null;
 
     @Override
     public LifeCycle.State getRaftLifeCycleState() {
       return state.get();
+    }
+
+    @Override
+    public String getDeadStateMachineUpdater() {
+      return deadUpdater;
     }
 
     @Override

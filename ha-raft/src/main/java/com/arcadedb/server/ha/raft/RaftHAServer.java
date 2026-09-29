@@ -61,6 +61,7 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLogBase;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
 import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
@@ -2006,7 +2007,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (sm == null)
       return null;
     final ArcadeStateMachine.RaftLogFailure failure = sm.getRaftLogFailure();
-    return failure != null ? failure.describe() : null;
+    if (failure != null)
+      return failure.describe();
+    return isRaftLogClosed() ? "(the Raft log is closed under a division that reports RUNNING: every append is rejected, "
+        + "issue #8652)" : null;
+  }
+
+  @Override
+  public String getDeadStateMachineUpdater() {
+    final ArcadeStateMachine sm = stateMachine;
+    return sm != null ? sm.describeDeadApplyThread() : null;
+  }
+
+  /**
+   * Whether the division's Raft log has been closed. Ratis marks a log failed ({@code notifyLogFailed}) only for an I/O
+   * error on its writer thread; a log CLOSED under a live division - what a dying {@code StateMachineUpdater} leaves
+   * behind when the close it starts from its own thread never finishes - rejects every append with
+   * {@code SegmentedRaftLog: Failed to append} and never reaches that callback, so the #7037 mark stayed empty on the
+   * zombie of issue #8652. False when the log cannot be read: a transient window while the server starts or restarts.
+   */
+  private boolean isRaftLogClosed() {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
+      return false;
+    try {
+      return server.getDivision(raftGroup.getGroupId()).getRaftLog() instanceof RaftLogBase base && !base.isOpened();
+    } catch (final Exception e) {
+      return false;
+    }
   }
 
   /**
@@ -2537,6 +2565,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public boolean transferLeadership(final long timeoutMs) {
     return clusterManager.transferLeadership(timeoutMs);
+  }
+
+  /**
+   * {@link #transferLeadership(long)} with the no-target step-down made optional (issue #8665): with
+   * {@code bareStepDownFallback} false, a leader with no eligible peer returns false instead of stepping down with no
+   * target, which Ratis answers with an election that frequently re-elects this node, or elects a peer no screen
+   * here vetted.
+   */
+  public boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
+    return clusterManager.transferLeadership(timeoutMs, bareStepDownFallback);
   }
 
   /**
@@ -4706,7 +4744,28 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * unit-tested without a running division.
    */
   Set<String> handoffReachablePeers() {
-    return handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
+    final Set<String> reachable = handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
+    return withoutServiceGapPeers(reachable, peerCapabilities.peersWithServiceGap());
+  }
+
+  /**
+   * {@code reachable} minus the peers that reported a leader service gap of their own (issue #8665). Lag is judged from
+   * the log index, and a gap does not show in it, so a peer that shares this leader's gap - a database missing on every
+   * node, or a node-global stale-snapshot gap after a cluster-wide crash - passed every other screen, took leadership
+   * and handed it on in turn. Such a peer could not serve what a leader must, and would be handed leadership only to
+   * hold the same gap. With no eligible peer left the hand-off backs off instead of rotating.
+   * <p>
+   * The answer is as fresh as the capability poll ({@link PeerCapabilityRegistry#REFRESH_PERIOD_MS}, believed for
+   * {@link PeerCapabilityRegistry#ADVERTISEMENT_TTL_MS}); a peer that developed a gap since its last answer is still
+   * eligible, and the per-node back-off of {@code ArcadeStateMachine} bounds that residual case as before. Returns
+   * {@code reachable} itself when nothing is excluded, which is every call on a healthy cluster.
+   */
+  static Set<String> withoutServiceGapPeers(final Set<String> reachable, final Set<String> gapped) {
+    if (gapped.isEmpty() || reachable.isEmpty())
+      return reachable;
+    final Set<String> eligible = new HashSet<>(reachable);
+    eligible.removeAll(gapped);
+    return eligible;
   }
 
   /**
@@ -6081,7 +6140,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
-    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version()))
+    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
+        advertisement.serviceGap()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
