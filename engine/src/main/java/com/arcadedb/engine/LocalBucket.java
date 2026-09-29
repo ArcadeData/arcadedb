@@ -6295,7 +6295,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       avoidPageNumber);
           }
 
-          if (bestPageAnalysis == null && gatherTruncated) {
+          if (bestPageAnalysis == null && gatherTruncated && freeSpaceInPages.size() < MAX_PAGES_GATHER_STATS) {
             // #8660: NOTHING THE MAP HOLDS FITS, AND THE LAST GATHER LEFT PART OF THE FILE UNVISITED: LOOK THERE BEFORE GROWING
             gatherPageStatistics();
             if (!freeSpaceInPages.isEmpty()) {
@@ -6549,11 +6549,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (hasEntry) {
           // #8660: a page under the threshold is one gatherPageStatistics() would not list, and keeping it until the map fills
           // up leaves the map full of pages that cannot take a record, which nothing then removes
-          if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || newSpace * 100 / usableSpaceInPage < GATHER_STATS_MIN_SPACE_PERC)
+          if (newSpace <= MINIMUM_SPACE_LEFT_IN_PAGE || newSpace * 100 / usableSpaceInPage <= GATHER_STATS_MIN_SPACE_PERC)
             freeSpaceInPages.remove(pageId, -1);
           else
             freeSpaceInPages.put(pageId, newSpace);
-        } else if (newSpace * 100 / usableSpaceInPage >= GATHER_STATS_MIN_SPACE_PERC) {
+        } else if (newSpace * 100 / usableSpaceInPage > GATHER_STATS_MIN_SPACE_PERC) {
           if (freeSpaceInPages.size() >= MAX_PAGES_GATHER_STATS) {
             // REMOVE THE SMALLEST PAGE
             final int[] lowestPageId = { -1 };

@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue8660BucketSpaceReuseTest extends TestHelper {
   private static final int TOTAL = 300_000;
   private static final int CHUNK = 54_000;
