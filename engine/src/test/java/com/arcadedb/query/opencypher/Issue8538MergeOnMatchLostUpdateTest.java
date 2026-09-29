@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.event.AfterRecordReadListener;
@@ -25,9 +27,12 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -54,8 +59,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8538MergeOnMatchLostUpdateTest {
-  private static final String MERGE_ONE  = "MERGE (c:C {id: $id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.n AS n";
-  private static final String MERGE_MANY = "UNWIND $ids AS id MERGE (c:C {id: id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.id AS id, c.n AS n";
+  private static final String MERGE_ONE  =
+      "MERGE (c:C {id: $id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.n AS n";
+  private static final String MERGE_MANY =
+      "UNWIND $ids AS id MERGE (c:C {id: id}) ON CREATE SET c.n = 1 ON MATCH SET c.n = c.n + 1 RETURN c.id AS id, c.n AS n";
 
   private Database database;
 
@@ -312,6 +319,37 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * The engine contract SetClauseApplier.reloadDocument() relies on to tell a stale row from a current one: when the
+   * page of a vertex moved on since it was read, modify() reloads it by REPLACING its buffer. If modify() ever refreshed
+   * the buffer in place instead, the applier would stop re-evaluating after a reload and the lost update would be back;
+   * this test fails first, and names the cause.
+   */
+  @Test
+  void modifyReplacesTheBufferOfAVertexWhosePageMovedOn() throws Exception {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    try {
+      final Vertex read;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM C WHERE id = 'c0'")) {
+        read = rs.next().getVertex().orElseThrow();
+      }
+      final Binary readImage = ((BaseRecord) read).getBuffer();
+
+      final Thread concurrent = new Thread(
+          () -> database.transaction(() -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1")));
+      concurrent.start();
+      concurrent.join();
+
+      final MutableVertex mutable = read.modify();
+      assertThat(((BaseRecord) read).getBuffer()).isNotSameAs(readImage);
+      assertThat(mutable.getInteger("n")).isEqualTo(1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
@@ -405,8 +443,11 @@ class Issue8538MergeOnMatchLostUpdateTest {
       committed = true;
     } catch (final RuntimeException e) {
       // The engine may report the conflict wrapped in the command's own exception
-      if (!isConflict(e))
+      if (!isConflict(e)) {
+        if (concurrentFailure.get() != null)
+          e.addSuppressed(concurrentFailure.get());
         throw e;
+      }
       committed = false;
     } finally {
       if (database.isTransactionActive())
@@ -425,6 +466,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
    * may write the same value to the same record.
    */
   @Test
+  @Tag("slow") // contention-bound retries on one hot record: the deterministic interleavings above cover the regression
   @Timeout(value = 5, unit = TimeUnit.MINUTES) // a hang detector for the retry loop, not a latency bound
   void concurrentMergeIncrementsAreNeverLost() throws Exception {
     final int writers = 8;
