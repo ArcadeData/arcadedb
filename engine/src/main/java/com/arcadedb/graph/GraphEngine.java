@@ -63,7 +63,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.LongConsumer;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.logging.Level;
 
 /**
@@ -98,26 +97,21 @@ public class GraphEngine {
   };
 
   private final DatabaseInternal database;
-  // Bumped whenever an edge of a unidirectional type is created or deleted: a query's IncomingEdgeLookup compares it
-  // with the value its scan was taken at, and scans again when they differ (issue #8625)
-  private final LongAdder        unidirectionalEdgeChanges = new LongAdder();
 
   public GraphEngine(final DatabaseInternal database) {
     this.database = database;
   }
 
   /**
-   * A counter that changes whenever an edge of a type declared unidirectional is created or deleted in this database,
-   * in any transaction. Its value means nothing on its own: {@link IncomingEdgeLookup} only compares two readings.
+   * Records in the transaction an edge created over a unidirectional type, for the queries of that transaction that
+   * read its incoming side through a scan they took earlier (see {@link UnidirectionalEdgeChanges}).
    */
-  public long getUnidirectionalEdgeChanges() {
-    return unidirectionalEdgeChanges.sum();
-  }
-
-  /** Records that edges of {@code type} were created or deleted, when the type is unidirectional. */
-  public void edgesChanged(final DocumentType type) {
-    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
-      unidirectionalEdgeChanges.increment();
+  private void recordCreated(final DocumentType type, final Edge edge, final RID source, final RID target) {
+    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      final TransactionContext tx = database.getTransactionIfExists();
+      if (tx != null)
+        tx.getUnidirectionalEdgeChanges().edgeCreated(type.getName(), edge, source, target);
+    }
   }
 
   public static class CreateEdgeOperation {
@@ -321,7 +315,7 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
-    edgesChanged(edge.getType());
+    recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -348,7 +342,7 @@ public class GraphEngine {
         setProperties(edge, connection.edgeProperties);
 
       edge.save();
-      edgesChanged(edgeType);
+      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
       outEdgePairs.add(new Pair<>(edge, destinationVertex));
 
@@ -775,7 +769,9 @@ public class GraphEngine {
    */
   public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
-    edgesChanged(edge.getType());
+    if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()
+        && this.database.getTransactionIfExists() instanceof TransactionContext tx)
+      tx.getUnidirectionalEdgeChanges().edgeDeleted(edge.getIdentity());
 
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);

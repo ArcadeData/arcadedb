@@ -349,6 +349,7 @@ public class CypherExecutionPlan {
     context.setProfiling(profile != null);
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -467,6 +468,16 @@ public class CypherExecutionPlan {
           outerContext.isCommandDeadlinePartial());
   }
 
+  /**
+   * Makes a nested plan read the enclosing query's scans of the unidirectional edge types instead of taking its own:
+   * a correlated {@code COUNT { }} or {@code CALL { }} body runs once per outer row, each time on a context of its own,
+   * and would otherwise scan the type once per row (issue #8625).
+   */
+  private static void inheritIncomingEdgeLookup(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      context.setIncomingEdgeLookup(outerContext.getIncomingEdgeLookup());
+  }
+
   private boolean canUseOptimizedPhysicalPlan() {
     return physicalPlan != null && physicalPlan.getRootOperator() != null
         && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
@@ -547,6 +558,7 @@ public class CypherExecutionPlan {
     }
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -655,6 +667,7 @@ public class CypherExecutionPlan {
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
     inheritCommandDeadline(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)
@@ -796,6 +809,7 @@ public class CypherExecutionPlan {
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
@@ -6308,6 +6322,17 @@ public class CypherExecutionPlan {
     return false;
   }
 
+  /** Whether every relationship of the MATCH clauses is written as an outgoing hop. */
+  private boolean allRelationshipsOutgoing() {
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasPathPatterns())
+        for (final PathPattern path : match.getPathPatterns())
+          for (int i = 0; i < path.getRelationshipCount(); i++)
+            if (path.getRelationship(i).getDirection() != Direction.OUT)
+              return false;
+    return true;
+  }
+
   /**
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
@@ -6324,17 +6349,20 @@ public class CypherExecutionPlan {
     if (hasInlineNodePropertyOrDynamicLabel())
       return null;
 
-    // The operators walk their chains in whichever direction their anchors call for, reading adjacency lists directly:
-    // over an edge type declared unidirectional that can be the incoming side, which no vertex stores. Such a pattern is
-    // left to the ordinary pipeline, whose expansions answer the incoming side through the query's lookup (issue #8625)
-    if (hasUnidirectionalRelationship(context.getDatabase()))
+    // The operators read adjacency lists directly, in whichever direction their anchors call for: over an edge type
+    // declared unidirectional that can be the incoming side, which no vertex stores. The chain operator walks an
+    // uncorrelated chain from its first node in the written directions, so a chain of outgoing hops only reads what is
+    // stored and keeps the push-down; anything else is left to the ordinary pipeline, whose expansions answer the
+    // incoming side through the query's lookup (issue #8625)
+    final boolean unidirectional = hasUnidirectionalRelationship(context.getDatabase());
+    if (unidirectional && (correlation.isCorrelated() || !allRelationshipsOutgoing()))
       return null;
 
     CountOp op = tryDetectChainCountStar(context.getDatabase(), correlation);
     // Only the chain operator can start its walk from an anchor the outer row bound. The star, triangle, pair-join
     // and anti-join ones all derive their anchor set from a label, so a correlated body is left to the ordinary
     // pipeline rather than answered over every vertex carrying that label (issue #5758).
-    if (op == null && !correlation.isCorrelated()) {
+    if (op == null && !correlation.isCorrelated() && !unidirectional) {
       op = tryDetectAntiJoinChainCountStar();
       if (op == null)
         op = tryDetectStarCountStar();

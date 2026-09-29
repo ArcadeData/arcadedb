@@ -430,6 +430,14 @@ public class BasicCommandContext implements CommandContext {
   }
 
   /**
+   * Makes this context read the scans of an enclosing query, for a nested plan run on a context of its own. Null leaves
+   * the context to create its own.
+   */
+  public void setIncomingEdgeLookup(final IncomingEdgeLookup incomingEdgeLookup) {
+    this.incomingEdgeLookup = incomingEdgeLookup;
+  }
+
+  /**
    * The lookup of the query: the parent's, or this context's own when it is the root. Same contract as
    * {@link #getQueryHeapTracker()}: a derived context has to be given its parent before its first call.
    */
