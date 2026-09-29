@@ -158,7 +158,7 @@ class Issue8555SecurityConvergenceStatusTest {
   }
 
   /**
-   * Review of PR #8680: the gate opens its window on first sight, and the probe only reaches it once every earlier
+   * The gate opens its window on first sight, and the probe only reaches it once every earlier
    * check passed. A status poll during catch-up must not start the clock, or the window is already spent when the
    * probe first evaluates the gate and the node goes straight to give-up.
    */

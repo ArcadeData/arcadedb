@@ -656,7 +656,9 @@ public class ServerControlPlane {
    * reason - the gate is only evaluated where the probe would reach it, because evaluating it opens its window.
    */
   public SecurityConvergenceStatus getSecurityConvergenceStatus() {
-    if (!isHAReadinessRequired() || notReadyReasonBeforeSecurityGate() != null)
+    // A window that already gave up has no clock left to protect, so it stays reported while the node is briefly held for
+    // another reason: the critical alert must not flap with replication lag
+    if (!isHAReadinessRequired() || (notReadyReasonBeforeSecurityGate() != null && !gate().giveUpLogged))
       return SecurityConvergenceStatus.NOT_CONVERGING;
     final HAServerPlugin ha = server.getHA();
     return ha == null ? SecurityConvergenceStatus.NOT_CONVERGING : securityConvergenceStatus(ha);
