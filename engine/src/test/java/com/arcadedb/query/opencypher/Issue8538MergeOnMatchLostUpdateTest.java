@@ -26,7 +26,6 @@ import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.graph.MutableVertex;
@@ -49,7 +48,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8538: {@code MERGE (c:C {id: $id}) ON MATCH SET c.n = c.n + 1} lost an increment under READ_COMMITTED, with
@@ -102,11 +100,11 @@ class Issue8538MergeOnMatchLostUpdateTest {
       }
     });
 
-    if (committed) {
-      assertThat(written.get()).as("the MERGE must have built on the concurrent increment").isEqualTo(2);
-      assertThat(readN("c0")).isEqualTo(2);
-    } else
-      assertThat(readN("c0")).isEqualTo(1);
+    // The reload happens before the write pins anything, so the MERGE builds on the concurrent commit and commits: a
+    // refusal here would be correct but needlessly costly for the hot MERGE path, so it is asserted against
+    assertThat(committed).isTrue();
+    assertThat(written.get()).as("the MERGE must have built on the concurrent increment").isEqualTo(2);
+    assertThat(readN("c0")).isEqualTo(2);
   }
 
   /**
@@ -293,10 +291,12 @@ class Issue8538MergeOnMatchLostUpdateTest {
   void labelWriteOnAConcurrentlyDeletedVertexDoesNotResurrectIt() {
     database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
 
-    // The rewrite copies the latest committed record, which no longer exists: the write is refused
-    assertThatThrownBy(() -> runWithConcurrentCommitAfterRead(
+    // The rewrite copies the latest committed record, which no longer exists: the write is refused as a retryable
+    // conflict, which the helper reports as not committed
+    final boolean committed = runWithConcurrentCommitAfterRead(
         () -> database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot", Map.of()).close(), 1,
-        "MATCH (c:C {id: 'c0'}) DETACH DELETE c")).hasCauseInstanceOf(RecordNotFoundException.class);
+        "MATCH (c:C {id: 'c0'}) DETACH DELETE c");
+    assertThat(committed).isFalse();
 
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM C")) {
       assertThat(((Number) rs.next().getProperty("total")).longValue()).isZero();

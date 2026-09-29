@@ -155,7 +155,8 @@ public final class SetClauseApplier {
     // because a reload can change what another item writes (SET c.k = c.k + 1, d.n = d.n + c.k) or which record an
     // expression target names (SET (CASE WHEN c.k = 0 THEN c ELSE d END).n = ...). A round counts only when it reloads
     // a record no earlier round reloaded, so the loop settles; one that keeps finding new records is refused as a
-    // retryable conflict rather than writing a value computed from a record it never reloaded.
+    // retryable conflict rather than writing a value computed from a record it never reloaded. That cap is a safety
+    // net no test reaches: a clause names finitely many records, and each can add at most one round.
     int rounds = 0;
     while (reloadWrittenTargets(items, result, writtenDocs, values, targets, keys, keyIsNull)) {
       if (++rounds > items.size() + MAX_EXTRA_RELOAD_ROUNDS)
@@ -327,7 +328,9 @@ public final class SetClauseApplier {
     if (doc instanceof MutableDocument)
       return false;
     final RID rid = doc.getIdentity();
-    final Binary readImage = doc instanceof BaseRecord record ? record.getBuffer() : null;
+    // Every record a row binds is a BaseRecord; anything else has no image to compare, so it always re-evaluates
+    final BaseRecord record = doc instanceof BaseRecord baseRecord ? baseRecord : null;
+    final Binary readImage = record != null ? record.getBuffer() : null;
     final MutableDocument mutable = doc.modify();
     if (mutable == doc)
       return false;
@@ -343,7 +346,7 @@ public final class SetClauseApplier {
     // record had no buffer to compare, and the transaction's own modified copy, answered from its record cache, can
     // differ from the committed image the row read (an UNWIND fanning out onto a record already written re-evaluates
     // once per row for that reason). Any of the three asks for a new evaluation.
-    final Binary current = ((BaseRecord) doc).getBuffer();
+    final Binary current = record != null ? record.getBuffer() : null;
     final boolean contentChanged = readImage == null || (current != readImage && !sameContent(readImage, current))
         || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
     // A record with no identity has nothing to reload, so it never asks for another round: the loop would not settle
