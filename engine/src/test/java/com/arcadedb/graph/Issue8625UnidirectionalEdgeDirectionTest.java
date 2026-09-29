@@ -1,0 +1,338 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.graph;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #8625: a pattern over an edge type whose edges carry no incoming pointers returned 0 rows, with no error,
+ * whenever a planner walked it from the target end. Every query below must answer what a loop over the OUT edges
+ * answers, whatever direction the pattern is written in and whichever end the planner prefers.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
+  private static final int QUESTIONS = 400;
+  private static final int TAGS      = 20;
+  private static final int EXPECTED  = QUESTIONS * 2;
+
+  @Test
+  void newEdgeOnAUnidirectionalTypeIsFoundFromEitherEnd() {
+    createSchema(false);
+    loadWithNewEdge();
+    assertEveryPatternFindsEveryEdge();
+  }
+
+  @Test
+  void graphBatchOnAUnidirectionalTypeIsFoundFromEitherEnd() {
+    createSchema(false);
+    loadWithGraphBatch(false);
+    assertEveryPatternFindsEveryEdge();
+  }
+
+  @Test
+  void graphBatchOnAUnidirectionalTypeFollowsTheSchemaEvenWhenLeftBidirectional() {
+    createSchema(false);
+    loadWithGraphBatch(true);
+    assertEveryPatternFindsEveryEdge();
+
+    for (final var it = database.iterateType("Tag", false); it.hasNext(); )
+      assertThat(it.next().asVertex().countEdges(Vertex.DIRECTION.IN, "TAGGED_WITH"))
+          .as("the type is unidirectional, so the batch must not write the incoming side")
+          .isZero();
+  }
+
+  @Test
+  void graphBatchRefusesAUnidirectionalEdgeOnABidirectionalType() {
+    createSchema(true);
+    final List<RID> tags = createTags();
+    final RID[] question = new RID[1];
+    database.transaction(() -> question[0] = database.newVertex("Question").set("qid", 0).save().getIdentity());
+
+    try (final GraphBatch batch = database.batch().withBidirectional(false).build()) {
+      assertThatThrownBy(() -> batch.newEdge(question[0], "TAGGED_WITH", tags.getFirst()))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Edge type 'TAGGED_WITH' is bidirectional");
+    }
+  }
+
+  @Test
+  void bidirectionalTypeWithNewEdgeIsFoundFromEitherEnd() {
+    createSchema(true);
+    loadWithNewEdge();
+    assertEveryPatternFindsEveryEdge();
+  }
+
+  @Test
+  void newEdgeMessageNamesTheRealMismatch() {
+    createSchema(true);
+    final List<RID> tags = createTags();
+    database.transaction(() -> {
+      final MutableVertex q = database.newVertex("Question").set("qid", 0).save();
+      assertThatThrownBy(() -> q.newEdge("TAGGED_WITH", tags.getFirst(), false, (Object[]) null))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Edge type 'TAGGED_WITH' is bidirectional");
+    });
+  }
+
+  @Test
+  void lightweightUnidirectionalTypeIsFoundFromEitherEnd() {
+    database.getSchema().createVertexType("Question");
+    database.getSchema().createVertexType("Tag");
+    database.getSchema().buildEdgeType().withName("TAGGED_WITH").withBidirectional(false).withLightweight(true).create();
+    loadWithNewEdge();
+    assertEveryPatternFindsEveryEdge();
+  }
+
+  @Test
+  void unidirectionalSubtypeIsFoundThroughItsSupertype() {
+    database.getSchema().createVertexType("Question");
+    database.getSchema().createVertexType("Tag");
+    database.getSchema().createEdgeType("LINKED");
+    database.getSchema().buildEdgeType().withName("TAGGED_WITH").withBidirectional(false).create().addSuperType("LINKED");
+    loadWithNewEdge();
+
+    assertThat(sum("opencypher", "MATCH (t:Tag)<-[:LINKED]-(q:Question) RETURN count(*) AS n")).isEqualTo(EXPECTED);
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:LINKED]-(q) RETURN count(q) AS n")).isEqualTo(tagDegree("t3"));
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<--(q) RETURN count(q) AS n")).isEqualTo(tagDegree("t3"));
+    assertThat(sum("sql", "SELECT in('LINKED').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(tagDegree("t3"));
+    assertThat(sum("sql", "SELECT in().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(tagDegree("t3"));
+  }
+
+  @Test
+  void everyTraversalShapeAnswersTheIncomingSide() {
+    createSchema(false);
+    loadWithNewEdge();
+    final long degree = tagDegree("t3");
+
+    // Undirected, from the target
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})-[:TAGGED_WITH]-(q) RETURN count(q) AS n")).isEqualTo(degree);
+    // Both ends bound: expand-into
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag), (q:Question) WHERE t.name = 't3' WITH t, q MATCH (t)<-[:TAGGED_WITH]-(q) RETURN count(*) AS n"))
+        .isEqualTo(degree);
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag), (q:Question) WHERE t.name = 't3' WITH t, q MATCH (t)-[:TAGGED_WITH]-(q) RETURN count(*) AS n"))
+        .isEqualTo(degree);
+    // Variable length, from the target
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH*1..2]-(q) RETURN count(q) AS n"))
+        .isEqualTo(degree);
+    // Pattern predicates
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag) WHERE t.name = 't3' AND EXISTS { (t)<-[:TAGGED_WITH]-(:Question) } RETURN count(t) AS n")).isEqualTo(1);
+    assertThat(sum("opencypher", "MATCH (t:Tag) WHERE (t)<-[:TAGGED_WITH]-(:Question) RETURN count(t) AS n"))
+        .isEqualTo(TAGS);
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question) WHERE (t)<-[:TAGGED_WITH]-(q) RETURN count(q) AS n")).isEqualTo(degree);
+    // Shortest path from the target
+    assertThat(rows("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MATCH p = shortestPath((t)<-[:TAGGED_WITH*]-(q)) RETURN p"))
+        .isEqualTo(1);
+    // SQL functions and edges
+    assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT inE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT both('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT bothE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql",
+        "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3')}-TAGGED_WITH-{as: q} RETURN q, t)"))
+        .isEqualTo(degree);
+
+    // The vertex API keeps the contract the type was declared with
+    for (final var it = database.iterateType("Tag", false); it.hasNext(); )
+      assertThat(it.next().asVertex().countEdges(Vertex.DIRECTION.IN, "TAGGED_WITH")).isZero();
+  }
+
+  @Test
+  void plannersWalkAUnidirectionalHopFromItsSource() {
+    createSchema(false);
+    loadWithNewEdge();
+
+    assertThat(explain("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN q.qid AS qid, t.name AS tag"))
+        .contains("NodeByLabelScan(q:Question)")
+        .contains("ExpandAll(q)-[:TAGGED_WITH]->(t:Tag)");
+    assertThat(explain("sql", "MATCH {type: Tag, as: t}<-TAGGED_WITH-{type: Question, as: q} RETURN q, t"))
+        .contains("FETCH FROM TYPE Question");
+  }
+
+  @Test
+  void aGraphAnalyticalViewAnswersTheIncomingSide() {
+    createSchema(false);
+    loadWithNewEdge();
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("tagged8625")
+        .withVertexTypes("Question", "Tag")
+        .withEdgeTypes("TAGGED_WITH")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      assertThat(view.awaitReady(30, TimeUnit.SECONDS)).isTrue();
+      assertEveryPatternFindsEveryEdge();
+    } finally {
+      view.drop();
+    }
+  }
+
+  @Test
+  void theLookupIsBoundedByTheHeapElementsCap() {
+    createSchema(false);
+    loadWithNewEdge();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100L);
+    try {
+      assertThatThrownBy(() -> sum("opencypher",
+          "MATCH (t:Tag) WHERE t.name = 't3' MATCH (t)<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
+          .hasMessageContaining("incoming-edge lookup over the unidirectional edge type(s) TAGGED_WITH")
+          .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
+    }
+  }
+
+  private void assertEveryPatternFindsEveryEdge() {
+    assertThat(groundTruth()).isEqualTo(EXPECTED);
+
+    assertThat(sum("opencypher", "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) RETURN count(*) AS n")).isEqualTo(EXPECTED);
+    assertThat(sum("opencypher", "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) RETURN t.name AS tag, count(q) AS n"))
+        .isEqualTo(EXPECTED);
+    assertThat(rows("opencypher", "MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag) RETURN q.qid AS qid, t.name AS tag"))
+        .isEqualTo(EXPECTED);
+    assertThat(sum("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN count(*) AS n")).isEqualTo(EXPECTED);
+    assertThat(rows("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN q.qid AS qid, t.name AS tag"))
+        .isEqualTo(EXPECTED);
+    assertThat(sum("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) RETURN t.name AS tag, count(q) AS n"))
+        .isEqualTo(EXPECTED);
+    // Anchored on the target: only one end is bound, and it is the end without pointers
+    assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH]-(q:Question) RETURN count(q) AS n"))
+        .isEqualTo(tagDegree("t3"));
+    assertThat(sum("opencypher", "MATCH (t:Tag) WHERE t.name = 't3' MATCH (t)<-[:TAGGED_WITH]-(q:Question) RETURN count(q) AS n"))
+        .isEqualTo(tagDegree("t3"));
+
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Question, as: q}-TAGGED_WITH->{type: Tag, as: t} RETURN q, t)"))
+        .isEqualTo(EXPECTED);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t}<-TAGGED_WITH-{type: Question, as: q} RETURN q, t)"))
+        .isEqualTo(EXPECTED);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3')}<-TAGGED_WITH-{type: Question, as: q} RETURN q, t)"))
+        .isEqualTo(tagDegree("t3"));
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q, t)"))
+        .isEqualTo(tagDegree("t3"));
+  }
+
+  private void createSchema(final boolean bidirectional) {
+    database.getSchema().createVertexType("Question");
+    database.getSchema().createVertexType("Tag");
+    database.getSchema().buildEdgeType().withName("TAGGED_WITH").withBidirectional(bidirectional).create();
+  }
+
+  private List<RID> createTags() {
+    final List<RID> tags = new ArrayList<>();
+    database.transaction(() -> {
+      for (int t = 0; t < TAGS; t++)
+        tags.add(database.newVertex("Tag").set("name", "t" + t).save().getIdentity());
+    });
+    return tags;
+  }
+
+  private void loadWithNewEdge() {
+    final List<RID> tags = createTags();
+    database.transaction(() -> {
+      for (int i = 0; i < QUESTIONS; i++) {
+        final MutableVertex q = database.newVertex("Question").set("qid", i).save();
+        q.newEdge("TAGGED_WITH", tags.get(i % TAGS));
+        q.newEdge("TAGGED_WITH", tags.get((i * 7 + 3) % TAGS));
+      }
+    });
+  }
+
+  private void loadWithGraphBatch(final boolean batchBidirectional) {
+    final List<RID> tags = createTags();
+    final List<RID> questions = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < QUESTIONS; i++)
+        questions.add(database.newVertex("Question").set("qid", i).save().getIdentity());
+    });
+    try (final GraphBatch batch = database.batch().withBidirectional(batchBidirectional).build()) {
+      for (int i = 0; i < QUESTIONS; i++) {
+        batch.newEdge(questions.get(i), "TAGGED_WITH", tags.get(i % TAGS));
+        batch.newEdge(questions.get(i), "TAGGED_WITH", tags.get((i * 7 + 3) % TAGS));
+      }
+    }
+  }
+
+  private long groundTruth() {
+    long n = 0;
+    for (final var it = database.iterateType("Question", false); it.hasNext(); )
+      n += it.next().asVertex().countEdges(Vertex.DIRECTION.OUT, "TAGGED_WITH");
+    return n;
+  }
+
+  private long tagDegree(final String name) {
+    long n = 0;
+    for (final var it = database.iterateType("Question", false); it.hasNext(); )
+      for (final Vertex t : it.next().asVertex().getVertices(Vertex.DIRECTION.OUT, "TAGGED_WITH"))
+        if (name.equals(t.getString("name")))
+          n++;
+    return n;
+  }
+
+  private long sum(final String language, final String query) {
+    long n = 0;
+    try (final ResultSet rs = database.query(language, query)) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        n += ((Number) r.getProperty("n")).longValue();
+      }
+    }
+    return n;
+  }
+
+  private String explain(final String language, final String query) {
+    final StringBuilder plan = new StringBuilder();
+    try (final ResultSet rs = database.query(language, "EXPLAIN " + query)) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        final Object text = r.getProperty("executionPlanAsString");
+        plan.append(text != null ? text : r.toJSON()).append('\n');
+      }
+    }
+    return plan.toString();
+  }
+
+  private long rows(final String language, final String query) {
+    long n = 0;
+    try (final ResultSet rs = database.query(language, query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+    }
+    return n;
+  }
+}

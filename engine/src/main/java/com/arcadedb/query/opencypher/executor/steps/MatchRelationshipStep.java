@@ -28,6 +28,7 @@ import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -738,6 +739,11 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         pattern.getTypes().toArray(new String[0]) :
         null;
 
+    // The incoming side of an edge type declared unidirectional is stored by no vertex: the query's lookup answers it
+    // (issue #8625)
+    if (IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(), types))
+      return IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), types);
+
     // When the far end of the hop is already pinned - the shape every "is A linked to B" guard has,
     // for instance the NOT EXISTS a loader wraps around each insert - the edge list can be filtered on
     // the neighbour pointer held in the segment. Without this the step materialises every edge of the
@@ -835,7 +841,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     }
 
     final Iterator<Vertex> it;
-    if (types == null || types.length == 0)
+    if (IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(), types))
+      it = IncomingEdgeLookup.getVertices(context, vertex, direction.toArcadeDirection(), types);
+    else if (types == null || types.length == 0)
       it = vertex.getVertices(direction.toArcadeDirection()).iterator();
     else
       it = vertex.getVertices(direction.toArcadeDirection(), types).iterator();

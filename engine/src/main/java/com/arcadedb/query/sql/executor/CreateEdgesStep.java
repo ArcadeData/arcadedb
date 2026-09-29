@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableLightEdge;
@@ -137,7 +138,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
           if (unidirectional && context.getDatabase().getSchema().getType(target) instanceof EdgeType t && t.isBidirectional())
-            throw new CommandExecutionException("Cannot create unidirectional edge on a bidirectional edge type");
+            throw new CommandExecutionException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(target));
 
           final MutableEdge edge;
           if (edgeToUpdate != null) {
