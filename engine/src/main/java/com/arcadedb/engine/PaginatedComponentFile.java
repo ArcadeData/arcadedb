@@ -191,6 +191,10 @@ public class PaginatedComponentFile extends ComponentFile {
    * Forces the file to disk unconditionally, with its metadata when {@code metaData} is true or when the file still
    * owes a metadata sync (see {@link #syncState}). The parent directory is NOT forced: a created or renamed file's
    * directory entry is made durable by {@link FileManager#syncFiles()}, which forces the directories as well.
+   * <p>
+   * It claims the pending state like {@link #forceIfModified()}, but outside the lock {@code syncFiles()} serializes its
+   * callers with: a caller that relies on a {@code syncFiles()} result must not run this concurrently with it, or the
+   * sync may find the file clean while this force is still in flight. No production code calls it today.
    */
   public void force(final boolean metaData) throws IOException {
     force(SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN), metaData);
@@ -202,8 +206,8 @@ public class PaginatedComponentFile extends ComponentFile {
    * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
    * skips are not needed by anything. A created or renamed file is forced with its metadata.
    *
-   * @return what was forced: {@link #SYNC_CLEAN} when the file owed nothing and no fsync ran, otherwise
-   * {@link #SYNC_DATA} or {@link #SYNC_METADATA}
+   * @return what was forced: {@link #SYNC_CLEAN} when no fsync ran - the file owed nothing, or its channel is closed and
+   * it keeps what it owed - otherwise {@link #SYNC_DATA} or {@link #SYNC_METADATA}
    *
    * @throws IOException when the fsync failed; the file then still owes it, so the next call retries
    */
