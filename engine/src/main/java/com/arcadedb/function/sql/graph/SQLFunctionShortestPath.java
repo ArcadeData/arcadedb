@@ -114,7 +114,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       final CommandContext context) {
 
     final ShortestPathContext shortestPathContext = new ShortestPathContext();
-    shortestPathContext.commandContext = context;
+    // THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE IS ANSWERED ONLY FOR A PATTERN (A CYPHER shortestPath()), AS FOR in()
+    shortestPathContext.commandContext = IncomingEdgeLookup.isWalkingPattern() ? context : null;
 
     Object source = params[0];
     if (MultiValue.isMultiValue(source)) {

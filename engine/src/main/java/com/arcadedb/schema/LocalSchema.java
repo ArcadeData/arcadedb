@@ -405,6 +405,8 @@ public class LocalSchema implements Schema {
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
+  private volatile    Boolean                                hasUnidirectionalEdgeTypes;
+  private volatile    long                                   typesChangeSerial;
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   /**
@@ -4377,7 +4379,29 @@ public class LocalSchema implements Schema {
   /**
    * Replaces the map to allow concurrent usage while rebuilding the map.
    */
+  /**
+   * Whether an edge type of this schema is declared unidirectional: the queries walking the incoming side of an edge
+   * type ask it per row, and on a schema without one it is all they need to know (issue #8625). Cached until the types
+   * change.
+   */
+  @Override
+  public boolean hasUnidirectionalEdgeTypes() {
+    Boolean cached = hasUnidirectionalEdgeTypes;
+    if (cached == null) {
+      cached = Schema.super.hasUnidirectionalEdgeTypes();
+      hasUnidirectionalEdgeTypes = cached;
+    }
+    return cached;
+  }
+
+  /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */
+  public long getTypesChangeSerial() {
+    return typesChangeSerial;
+  }
+
   private void rebuildBucketTypeMap() {
+    hasUnidirectionalEdgeTypes = null;
+    ++typesChangeSerial;
     final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new HashMap<>();
     for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getBuckets(false))

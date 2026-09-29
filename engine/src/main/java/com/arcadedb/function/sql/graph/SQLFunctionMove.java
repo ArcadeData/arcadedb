@@ -80,8 +80,9 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
             return new CSRVertexIterable(provider, neighborIds);
           }
         }
-        // A unidirectional type stores no incoming side: the query asks for it anyway, so answer it (issue #8625)
-        if (IncomingEdgeLookup.isNeeded(context, database, iDirection, iLabels))
+        // A unidirectional type stores no incoming side: a pattern walk (SQL MATCH) asks for it anyway, so answer it
+        // there (issue #8625). Called on its own the function reads what the vertex stores, as the vertex API does
+        if (IncomingEdgeLookup.isWalkingPattern() && IncomingEdgeLookup.isNeeded(context, database, iDirection, iLabels))
           return (Iterable<Vertex>) () -> IncomingEdgeLookup.getVertices(context, vertex, iDirection, iLabels);
         return vertex.getVertices(iDirection, iLabels);
       }
@@ -102,7 +103,8 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       return null;
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex vertex) {
-      if (IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), iDirection, iLabels))
+      if (IncomingEdgeLookup.isWalkingPattern()
+          && IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), iDirection, iLabels))
         return (Iterable<Edge>) () -> IncomingEdgeLookup.getEdges(context, vertex, iDirection, iLabels);
       return vertex.getEdges(iDirection, iLabels);
     }

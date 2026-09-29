@@ -125,8 +125,8 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     assertThat(sum("opencypher", "MATCH (t:Tag)<-[:LINKED]-(q:Question) RETURN count(*) AS n")).isEqualTo(EXPECTED);
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:LINKED]-(q) RETURN count(q) AS n")).isEqualTo(tagDegree("t3"));
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<--(q) RETURN count(q) AS n")).isEqualTo(tagDegree("t3"));
-    assertThat(sum("sql", "SELECT in('LINKED').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(tagDegree("t3"));
-    assertThat(sum("sql", "SELECT in().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(tagDegree("t3"));
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('LINKED'){as: q} RETURN q)")).isEqualTo(tagDegree("t3"));
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in(){as: q} RETURN q)")).isEqualTo(tagDegree("t3"));
   }
 
   @Test
@@ -166,17 +166,23 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
         "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MATCH p = shortestPath((t)<-[:TAGGED_WITH*]-(q)) RETURN p"))
         .isEqualTo(1);
     // SQL functions and edges
-    assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
-    assertThat(sum("sql", "SELECT inE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
-    assertThat(sum("sql", "SELECT both('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
-    assertThat(sum("sql", "SELECT bothE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.inE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.both('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.bothE('TAGGED_WITH'){as: e} RETURN e)")).isEqualTo(degree);
+    // SQL functions called on their own read what the vertex stores, as the vertex API does (embedded, remote, Gremlin)
+    assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isZero();
+    assertThat(sum("sql", "SELECT inE('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isZero();
     assertThat(sum("sql",
         "SELECT count(*) AS n FROM (MATCH {type: Tag, as: t, where: (name = 't3')}-TAGGED_WITH-{as: q} RETURN q, t)"))
         .isEqualTo(degree);
 
     // The vertex API keeps the contract the type was declared with
-    for (final var it = database.iterateType("Tag", false); it.hasNext(); )
-      assertThat(it.next().asVertex().countEdges(Vertex.DIRECTION.IN, "TAGGED_WITH")).isZero();
+    for (final var it = database.iterateType("Tag", false); it.hasNext(); ) {
+      final Vertex tag = it.next().asVertex();
+      assertThat(tag.countEdges(Vertex.DIRECTION.IN, "TAGGED_WITH")).isZero();
+      assertThat(tag.getVertices(Vertex.DIRECTION.IN, "TAGGED_WITH").iterator().hasNext()).isFalse();
+    }
   }
 
   @Test
@@ -264,8 +270,8 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     });
     final long degree = tagDegree("t3") + 1;
 
-    assertThat(sum("sql", "SELECT in().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
-    assertThat(sum("sql", "SELECT inE().size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in(){as: q} RETURN q)")).isEqualTo(degree);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.inE(){as: e} RETURN e)")).isEqualTo(degree);
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<--(q) RETURN count(q) AS n")).isEqualTo(degree);
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH|FOLLOWS]-(q) RETURN count(q) AS n"))
         .isEqualTo(degree);
@@ -319,12 +325,13 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
   void shortestPathFunctionsWalkTheIncomingSide() {
     createSchema(false);
     loadWithNewEdge();
-    assertThat(rows("sql",
-        "SELECT shortestPath((SELECT FROM Tag WHERE name = 't3'), (SELECT FROM Question WHERE qid = 3), 'IN', 'TAGGED_WITH') AS p "
-            + "FROM Tag LIMIT 1")).isEqualTo(1);
+    // The SQL function called on its own walks what the vertices store, as the vertex API does: from the source only
+    assertThat(sum("sql",
+        "SELECT shortestPath((SELECT FROM Question WHERE qid = 3), (SELECT FROM Tag WHERE name = 't3'), 'OUT', 'TAGGED_WITH').size() AS n "
+            + "FROM Tag LIMIT 1")).isEqualTo(2);
     assertThat(sum("sql",
         "SELECT shortestPath((SELECT FROM Tag WHERE name = 't3'), (SELECT FROM Question WHERE qid = 3), 'IN', 'TAGGED_WITH').size() AS n "
-            + "FROM Tag LIMIT 1")).isEqualTo(2);
+            + "FROM Tag LIMIT 1")).isZero();
     assertThat(rows("opencypher",
         "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) MATCH p = allShortestPaths((t)<-[:TAGGED_WITH*]-(q)) RETURN p"))
         .isEqualTo(1);
@@ -360,10 +367,118 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
       assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
           .isEqualTo(degree + 100);
       database.command("sql", "DELETE FROM TAGGED_WITH WHERE @out IN (SELECT FROM Question WHERE qid >= 1050)");
-      assertThat(sum("sql", "SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 't3'")).isEqualTo(degree + 50);
+      assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree + 50);
     });
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH]-(q) RETURN count(q) AS n"))
         .isEqualTo(degree + 50);
+  }
+
+  @Test
+  void aRolledBackOrDeletedEdgeIsNotAnsweredAnymore() {
+    createSchema(false);
+    loadWithNewEdge();
+    final long degree = tagDegree("t3");
+
+    // Rollback: the edges created in the rolled back transaction are gone for the next read
+    database.begin();
+    database.command("sql", "CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 0) TO (SELECT FROM Tag WHERE name = 't3')");
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree + 1);
+    database.rollback();
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
+
+    // A deleted source vertex takes its edges with it, within the same query
+    database.transaction(() -> {
+      assertThat(sumCommand("opencypher",
+          "MATCH (t:Tag {name: 't3'}) WITH t, COUNT { (t)<-[:TAGGED_WITH]-() } AS before "
+              + "MATCH (q:Question {qid: 3}) DETACH DELETE q "
+              + "WITH t, before RETURN before - COUNT { (t)<-[:TAGGED_WITH]-() } AS n")).isEqualTo(1);
+    });
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree - 1);
+  }
+
+  @Test
+  void aLightweightTypeOverlaysTheWritesOfItsTransaction() {
+    database.getSchema().createVertexType("Question");
+    database.getSchema().createVertexType("Tag");
+    database.getSchema().buildEdgeType().withName("TAGGED_WITH").withBidirectional(false).withLightweight(true).create();
+    loadWithNewEdge();
+    final long degree = tagDegree("t3");
+    database.transaction(() -> {
+      assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
+      assertThat(sumCommand("opencypher",
+          "MATCH (t:Tag {name: 't3'}) WITH t, COUNT { (t)<-[:TAGGED_WITH]-() } AS before "
+              + "CREATE (t)<-[:TAGGED_WITH]-(:Question {qid: -5}) "
+              + "WITH t, before RETURN COUNT { (t)<-[:TAGGED_WITH]-() } - before AS n")).isEqualTo(1);
+      assertThat(sumCommand("opencypher",
+          "MATCH (t:Tag {name: 't3'}) WITH t, COUNT { (t)<-[:TAGGED_WITH]-() } AS before "
+              + "MATCH (t)<-[r:TAGGED_WITH]-(:Question {qid: -5}) DELETE r "
+              + "WITH t, before RETURN before - COUNT { (t)<-[:TAGGED_WITH]-() } AS n")).isEqualTo(1);
+    });
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(degree);
+  }
+
+  @Test
+  void aTransactionThatNeverReadsTheIncomingSideRecordsNothing() {
+    createSchema(false);
+    final List<RID> tags = createTags();
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++)
+        database.newVertex("Question").set("qid", i).save().newEdge("TAGGED_WITH", tags.get(i % TAGS));
+      final UnidirectionalEdgeChanges changes = ((DatabaseInternal) database).getTransaction().getUnidirectionalEdgeChangesIfAny();
+      assertThat(changes == null || changes.size() == 0).as("a bulk write keeps no change nothing will read").isTrue();
+    });
+  }
+
+  @Test
+  void manyDistinctTargetsInAnyOrderAreAllFound() {
+    createSchema(false);
+    final int count = 5_000;
+    database.transaction(() -> {
+      final List<MutableVertex> tags = new ArrayList<>(count);
+      for (int i = 0; i < count; i++)
+        tags.add(database.newVertex("Tag").set("name", "x" + i).save());
+      final MutableVertex q = database.newVertex("Question").set("qid", 0).save();
+      // Ascending, then descending targets: the orders a naive quicksort degenerates on
+      for (int i = 0; i < count; i++)
+        q.newEdge("TAGGED_WITH", tags.get(i));
+      for (int i = count - 1; i >= 0; i--)
+        q.newEdge("TAGGED_WITH", tags.get(i));
+    });
+    assertThat(sum("opencypher", "MATCH (t:Tag)<-[:TAGGED_WITH]-(q:Question) WITH t, count(q) AS c WHERE c = 2 RETURN count(t) AS n"))
+        .isEqualTo(count);
+    assertThat(sum("sql", "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 'x4321')}.in('TAGGED_WITH'){as: q} RETURN q)")).isEqualTo(2);
+  }
+
+  @Test
+  void aScriptCommittingStatementByStatementReadsWhatItWrote() {
+    createSchema(false);
+    database.transaction(() -> {
+      database.newVertex("Tag").set("name", "s").save();
+      database.newVertex("Question").set("qid", 1).save();
+      database.newVertex("Question").set("qid", 2).save();
+    });
+    final ResultSet rs = database.command("sqlscript", """
+        BEGIN;
+        CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 1) TO (SELECT FROM Tag WHERE name = 's');
+        COMMIT;
+        LET a = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
+        BEGIN;
+        CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 2) TO (SELECT FROM Tag WHERE name = 's');
+        COMMIT;
+        LET b = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
+        LET c = SELECT count(*) AS n FROM TAGGED_WITH;
+        RETURN [$a[0].n, $b[0].n, $c[0].n];
+        """);
+    final List<Object> counts = new ArrayList<>();
+    while (rs.hasNext())
+      counts.add(rs.next().getProperty("value"));
+    // The scan the first read took was taken in a transaction that committed since: the second read takes it again
+    // and answers every edge there is. Compared with the edge count rather than a constant, because the script engine
+    // runs the first CREATE EDGE twice here (#8633), which is not what this pins
+    final List<?> values = counts;
+    assertThat(((Number) values.get(0)).longValue()).isGreaterThanOrEqualTo(1L);
+    assertThat(((Number) values.get(1)).longValue()).isEqualTo(((Number) values.get(2)).longValue());
+    assertThat(((Number) values.get(1)).longValue()).isGreaterThan(((Number) values.get(0)).longValue());
   }
 
   @Test
@@ -378,11 +493,11 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     database.transaction(() -> {
       final ResultSet rs = database.command("sqlscript", """
         CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 1) TO (SELECT FROM Tag WHERE name = 's');
-        LET a = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        LET a = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
         CREATE EDGE TAGGED_WITH FROM (SELECT FROM Question WHERE qid = 2) TO (SELECT FROM Tag WHERE name = 's');
-        LET b = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        LET b = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
         DELETE FROM TAGGED_WITH WHERE @out IN (SELECT FROM Question WHERE qid = 1);
-        LET c = SELECT in('TAGGED_WITH').size() AS n FROM Tag WHERE name = 's';
+        LET c = SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 's')}.in('TAGGED_WITH'){as: q} RETURN q);
         RETURN [$a[0].n, $b[0].n, $c[0].n];
         """);
       while (rs.hasNext())
@@ -485,6 +600,15 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
         for (final Vertex t : q.getVertices(Vertex.DIRECTION.OUT, "TAGGED_WITH"))
           if (name.equals(t.getString("name")))
             n++;
+    }
+    return n;
+  }
+
+  private long sumCommand(final String language, final String query) {
+    long n = 0;
+    try (final ResultSet rs = database.command(language, query)) {
+      while (rs.hasNext())
+        n += ((Number) rs.next().getProperty("n")).longValue();
     }
     return n;
   }
