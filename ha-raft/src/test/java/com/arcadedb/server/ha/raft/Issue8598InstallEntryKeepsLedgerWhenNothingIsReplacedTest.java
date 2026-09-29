@@ -118,6 +118,23 @@ class Issue8598InstallEntryKeepsLedgerWhenNothingIsReplacedTest {
     assertReservationsSurvive(RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, false));
   }
 
+  @Test
+  void aFollowerReinstallThatFailsKeepsTheReservations() {
+    // No persisted evidence and no Raft server to resolve a leader from: the forced reinstall is attempted and refused
+    // before anything is downloaded. The old copy stays, and the entries behind the reservations are still to be
+    // applied to it - the same "keep on failure" rule runUnderInstallGate follows (issue #8022).
+    final byte[] first = prepareIncrement();
+    stateMachine.validateBeforeAppend(db, first, new PageVersionLedger.EntryId("client", 1));
+    final int reserved = stateMachine.reservedPageVersions(DB);
+    assertThat(reserved).isGreaterThan(0);
+
+    assertThatThrownBy(() -> stateMachine.applyInstallDatabaseEntry(
+        RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeInstallDatabaseEntry(DB, true)), ENTRY_INDEX))
+        .isInstanceOf(RuntimeException.class);
+
+    assertThat(stateMachine.reservedPageVersions(DB)).as("a failed reinstall replaced nothing").isEqualTo(reserved);
+  }
+
   /**
    * Reserves an entry appended after the install entry, applies the install entry, then checks the reservation still
    * refuses a second entry validated against the same base - the splice the ledger exists to prevent.

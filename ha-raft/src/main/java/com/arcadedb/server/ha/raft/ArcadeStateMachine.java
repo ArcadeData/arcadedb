@@ -3846,14 +3846,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final String databaseName = decoded.databaseName();
     final boolean forceSnapshot = decoded.forceSnapshot();
-    // No page-version ledger clear here (issue #8598). Only the arm that actually replaces the database's files may
-    // drop the reservations taken against the previous copy, and that arm - the follower's forced reinstall below -
-    // clears through runUnderInstallGate on success (issue #8022). Every other arm replaces nothing: the leader skipping
-    // its own forced reinstall, the replay guard skipping one a previous session ran, the create arm finding the
-    // database present. Clearing there dropped the reservation of an entry appended after this one and not yet
-    // applied, and a second entry validated against the same base could then be appended - the equal-version splice
-    // #6965 guards against. The create arm that does create a database replaces no copy either, so it has no reason
-    // to clear.
+    // No ledger clear here: runUnderInstallGate clears it when the follower's reinstall actually replaces the files
+    // (#8022). Clearing on the arms that replace nothing dropped live reservations of later entries (#8598).
 
     if (forceSnapshot) {
       // Replay guard (issue #7143). Ratis re-feeds every entry between the last snapshot marker and
