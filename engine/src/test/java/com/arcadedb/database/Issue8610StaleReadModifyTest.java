@@ -305,18 +305,62 @@ class Issue8610StaleReadModifyTest {
   }
 
   /**
-   * An openCypher REMOVE writes no value computed from the read, but it is a property write on a record that changed
-   * since the MATCH read it, so it is refused like any other; the concurrent write is never lost.
+   * An openCypher REMOVE writes no value computed from what the MATCH read, so a commit landing in between leaves
+   * nothing to lose: it commits, on top of the concurrent write.
    */
   @Test
-  void cypherRemoveNeverLosesACommitLandingInsideTheStatement() {
+  void cypherRemoveCommitsOverACommitLandingInsideTheStatement() {
     database.transaction(() -> rid.asVertex().modify().set("tag", "x").save());
 
     final boolean committed = runWithConcurrentCommitAfterFirstRead(
         () -> database.command("cypher", "MATCH (v:V) REMOVE v.tag").close());
 
+    assertThat(committed).isTrue();
     assertThat(readN()).isEqualTo(5);
-    assertThat(rid.asVertex().has("tag")).isEqualTo(!committed);
+    assertThat(rid.asVertex().has("tag")).isFalse();
+  }
+
+  /**
+   * The same for the merge.node procedure, whose onMatch properties are constants.
+   */
+  @Test
+  void mergeNodeProcedureCommitsOverACommitLandingInsideTheStatement() {
+    database.command("sql", "CREATE PROPERTY V.key STRING");
+    database.transaction(() -> rid.asVertex().modify().set("key", "k").save());
+
+    final boolean committed = runWithConcurrentCommitAfterFirstRead(() -> database.command("cypher",
+        "CALL merge.node(['V'], {key: 'k'}, {}, {flag: true}) YIELD node RETURN node").close());
+
+    assertThat(committed).isTrue();
+    assertThat(readN()).isEqualTo(5);
+    assertThat(rid.asVertex().getBoolean("flag")).isTrue();
+  }
+
+  /**
+   * Moving an edge endpoint through set("@in") is a property write too: computed from a stale read, it is refused.
+   */
+  @Test
+  void anEdgeEndpointMoveFromAStaleReadIsRefused() {
+    final AtomicReference<RID> edge = new AtomicReference<>();
+    final AtomicReference<RID> target = new AtomicReference<>();
+    database.transaction(() -> {
+      final MutableVertex other = database.newVertex("V").save();
+      target.set(database.newVertex("V").save().getIdentity());
+      edge.set(rid.asVertex().newEdge("E", other, "n", 0).getIdentity());
+    });
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+    final Edge read = database.iterateType("E", false).next().asEdge();
+    commitConcurrently(() -> edge.get().asEdge().modify().set("n", 5).save());
+
+    assertThatThrownBy(() -> {
+      read.modify().set("@in", target.get()).save();
+      database.commit();
+    }).isInstanceOf(ConcurrentModificationException.class);
+    // The move already rewired the edge inside the transaction before the save refused it: the transaction is doomed
+    database.rollback();
+
+    assertThat(edge.get().asEdge().getInteger("n")).isEqualTo(5);
   }
 
   /**
