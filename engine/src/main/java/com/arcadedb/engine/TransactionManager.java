@@ -460,6 +460,7 @@ public class TransactionManager {
   private void recoverWALFiles() {
     LogManager.instance().log(this, Level.WARNING, "Started recovery of database '%s'", null, database);
     boolean completed = false;
+    boolean inputHandedToHousekeeping = false;
     WALFile[] recoveryFiles = null;
 
     try {
@@ -616,16 +617,36 @@ public class TransactionManager {
         }
 
         if (!walGapDetected) {
-          // REMOVE ALL WAL FILES
-          for (final WALFile file : recoveryFiles) {
-            if (file == null)
-              continue;
-            try {
-              file.drop();
-              LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
-            } catch (final IOException e) {
-              LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
+          // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
+          // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
+          // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
+          if (database.getFileManager().syncFiles()) {
+            // REMOVE ALL WAL FILES
+            for (final WALFile file : recoveryFiles) {
+              if (file == null)
+                continue;
+              try {
+                file.drop();
+                LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
+              } catch (final IOException e) {
+                LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
+              }
             }
+          } else {
+            // #4934: THE FSYNC FAILED, SO THE REPLAYED PAGES MAY NEVER REACH THE DISK. KEEP THE WAL: RETIRED INTO THE
+            // INACTIVE POOL, IT IS DROPPED BY THE WAL ROTATION ONLY AFTER A LATER FSYNC SUCCEEDS, AND A CLOSE WHOSE FSYNC
+            // FAILS TOO PRESERVES IT WITH THE LOCK FILE SO THE NEXT OPEN REPLAYS IT AGAIN
+            LogManager.instance().log(this, Level.SEVERE,
+                "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
+                null, database);
+            for (final WALFile file : recoveryFiles)
+              if (file != null) {
+                file.setActive(false);
+                inactiveWALFilePool.add(file);
+              }
+            // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
+            // succeeds: they stay open and locked like any other retired WAL file.
+            inputHandedToHousekeeping = true;
           }
         } else {
           // Close WAL files without deleting: preserve for manual inspection after gap detection.
@@ -671,8 +692,8 @@ public class TransactionManager {
     } finally {
       // A replay that did not reach its own drop or rename step (an exception escaped it) releases its input exactly
       // as it found it: closed, not deleted, so the next open replays it again. The files it did drop or rename are
-      // already closed.
-      if (recoveryFiles != null)
+      // already closed, and the ones it handed to the inactive pool are no longer its own.
+      if (recoveryFiles != null && !inputHandedToHousekeeping)
         for (final WALFile file : recoveryFiles)
           if (file != null && file.isOpen())
             try {
