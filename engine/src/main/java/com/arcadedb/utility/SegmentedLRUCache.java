@@ -27,7 +27,7 @@ import java.util.Map;
  * only when it is hit again, so a burst of one-off keys (for example thousands of queries that embed their values in the text)
  * evicts other one-off keys instead of the entries the application keeps coming back to. The protected segment holds up to
  * {@value #PROTECTED_PERCENT}% of the capacity; a promotion that overflows it demotes its least recently used entry back to
- * probation. Not thread safe: wrap access in a synchronized block.
+ * probation. A capacity of 0 caches nothing. Not thread safe: wrap access in a synchronized block.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -40,7 +40,7 @@ public class SegmentedLRUCache<K, V> {
   private final LinkedHashMap<K, V> protectedSegment;
 
   public SegmentedLRUCache(final int capacity) {
-    this.capacity = Math.max(1, capacity);
+    this.capacity = Math.max(0, capacity);
     this.protectedCapacity = this.capacity < 2 ? 0 : Math.max(1, this.capacity * PROTECTED_PERCENT / 100);
     final int initial = Math.max(16, (int) (this.capacity / 0.75) + 1);
     this.probation = new LinkedHashMap<>(initial, 0.75f, true);
@@ -71,6 +71,9 @@ public class SegmentedLRUCache<K, V> {
   }
 
   public void put(final K key, final V value) {
+    if (capacity == 0)
+      return;
+
     if (protectedSegment.containsKey(key))
       protectedSegment.put(key, value);
     else
