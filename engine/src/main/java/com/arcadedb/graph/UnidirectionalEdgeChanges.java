@@ -51,7 +51,12 @@ public final class UnidirectionalEdgeChanges {
   record Created(long sequence, Edge edge, RID source) {
   }
 
+  // PAST THIS MANY CHANGES THE LOG IS DROPPED AND THE SCANS TAKEN AGAIN: A LARGE WRITE MUST NOT DOUBLE ITS HEAP HERE
+  static final int                                MAX_CHANGES = 100_000;
+
   private long                                    sequence;
+  private long                                    overflows;
+  private int                                     changes;
   private long                                    transaction;
   private boolean                                 recording;
   // BY TYPE, THEN BY TARGET: A LOOKUP READS THE CHANGES OF ONE TYPE INTO ONE VERTEX
@@ -66,6 +71,11 @@ public final class UnidirectionalEdgeChanges {
   /** The number of the current transaction of the context: a scan taken in another one is not covered. */
   public long getTransaction() {
     return transaction;
+  }
+
+  /** How many times the log overflowed: a scan taken before the last overflow is no longer covered by it. */
+  public long getOverflows() {
+    return overflows;
   }
 
   /** Whether a query of the current transaction took a scan, so its changes have to be recorded. */
@@ -85,6 +95,7 @@ public final class UnidirectionalEdgeChanges {
       created = new HashMap<>();
     created.computeIfAbsent(typeName, k -> new HashMap<>()).computeIfAbsent(target, k -> new ArrayList<>(2))
         .add(new Created(++sequence, edge, source));
+    changeRecorded();
   }
 
   public void edgeDeleted(final RID edgeIdentity) {
@@ -93,12 +104,28 @@ public final class UnidirectionalEdgeChanges {
     if (deleted == null)
       deleted = new HashMap<>();
     deleted.put(edgeIdentity, ++sequence);
+    changeRecorded();
+  }
+
+  /**
+   * Past {@link #MAX_CHANGES} the log stops: it is dropped and the scans taken so far are taken again at their next use,
+   * which sees every change by itself. Recording resumes with the next scan.
+   */
+  private void changeRecorded() {
+    if (++changes > MAX_CHANGES) {
+      created = null;
+      deleted = null;
+      changes = 0;
+      recording = false;
+      ++overflows;
+    }
   }
 
   /** Drops the changes of the transaction that ended: committed or rolled back, they are no longer its own. */
   public void transactionEnded() {
     created = null;
     deleted = null;
+    changes = 0;
     recording = false;
     ++transaction;
   }

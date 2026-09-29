@@ -430,6 +430,24 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
   }
 
   @Test
+  void aChangeLogPastItsCapIsDroppedAndTheScanTakenAgain() {
+    createSchema(false);
+    final List<RID> tags = createTags();
+    final int writes = UnidirectionalEdgeChanges.MAX_CHANGES + 10;
+    database.transaction(() -> {
+      final String count = "SELECT count(*) AS n FROM (MATCH {type: Tag, where: (name = 't3')}.in('TAGGED_WITH'){as: q} RETURN q)";
+      assertThat(sum("sql", count)).isZero();
+      final MutableVertex source = database.newVertex("Question").set("qid", 0).save();
+      for (int i = 0; i < writes; i++)
+        source.newEdge("TAGGED_WITH", tags.get(3));
+      final UnidirectionalEdgeChanges changes = ((DatabaseInternal) database).getTransaction().getUnidirectionalEdgeChangesIfAny();
+      assertThat(changes.getOverflows()).as("the log overflowed and was dropped").isEqualTo(1);
+      assertThat(changes.size()).isLessThanOrEqualTo(UnidirectionalEdgeChanges.MAX_CHANGES);
+      assertThat(sum("sql", count)).as("the next read scans again and sees every edge").isEqualTo(writes);
+    });
+  }
+
+  @Test
   void manyDistinctTargetsInAnyOrderAreAllFound() {
     createSchema(false);
     final int count = 5_000;
