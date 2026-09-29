@@ -34,9 +34,9 @@ import java.util.concurrent.ThreadLocalRandom;
  * minimises the odds of the next collision. The cap keeps a long retry loop from turning into a multi-second
  * stall.
  * <p>
- * Shared by {@link com.arcadedb.database.LocalDatabase#transaction} (the programmatic / embedded retry loop)
- * and {@link com.arcadedb.query.sql.executor.RetryStep} (the SQL {@code COMMIT RETRY} statement) so the two
- * copies of this policy cannot drift from each other.
+ * Shared by {@link com.arcadedb.database.LocalDatabase#transaction} (the programmatic / embedded retry loop),
+ * {@link com.arcadedb.query.sql.executor.RetryStep} (the SQL {@code COMMIT RETRY} statement) and the remote
+ * drivers' {@code RemoteDatabase.transaction} (issue #8617) so the copies of this policy cannot drift from each other.
  */
 public class RetryBackoff {
   private RetryBackoff() {
@@ -83,14 +83,28 @@ public class RetryBackoff {
    * @param capMs   the window's maximum size, and the whole backoff's on/off switch
    */
   public static void sleep(final int attempt, final long baseMs, final long capMs) {
-    final long window = windowMs(attempt, baseMs, capMs);
-    if (window <= 0)
+    final long delay = delayMs(attempt, baseMs, capMs);
+    if (delay <= 0)
       return;
 
     try {
-      Thread.sleep(1 + ThreadLocalRandom.current().nextLong(window));
+      Thread.sleep(delay);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  /**
+   * Draws the random duration {@link #sleep} waits, in {@code [1, windowMs(attempt, baseMs, capMs)]} milliseconds, or
+   * {@code 0} when backoff is disabled. For a retry loop that has to combine the draw with a wait of its own before
+   * sleeping, such as the {@code Retry-After} a server sends with a refusal (issue #8617).
+   *
+   * @param attempt zero-based count of retries already performed
+   * @param baseMs  the window's starting size, before doubling
+   * @param capMs   the window's maximum size, and the whole backoff's on/off switch
+   */
+  public static long delayMs(final int attempt, final long baseMs, final long capMs) {
+    final long window = windowMs(attempt, baseMs, capMs);
+    return window <= 0 ? 0 : 1 + ThreadLocalRandom.current().nextLong(window);
   }
 }

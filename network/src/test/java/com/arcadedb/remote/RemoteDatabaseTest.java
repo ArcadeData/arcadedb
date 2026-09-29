@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
@@ -261,7 +262,8 @@ class RemoteDatabaseTest {
     try {
       failDb.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
 
-      assertThatThrownBy(failDb::begin).isInstanceOf(TransactionException.class);
+      // A refused connection proves the begin never reached the server: retryable since issue #8617
+      assertThatThrownBy(failDb::begin).isInstanceOf(NeedRetryException.class);
 
       // Pin released - URL falls back to the configured host, not a stale pinned address
       assertThat(failDb.isTransactionActive()).isFalse();
