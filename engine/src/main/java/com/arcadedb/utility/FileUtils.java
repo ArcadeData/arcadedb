@@ -520,7 +520,7 @@ public class FileUtils {
         fos.flush();
         fos.getFD().sync();
       }
-      publishAtomically(tmp, target);
+      publishAtomically(tmp, target, true);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -591,11 +591,10 @@ public class FileUtils {
    * it is not, refusing to write would leave the caller - notably the schema save, whose only error
    * handling is a logged SEVERE - permanently unable to persist anything, which is far worse than one
    * replacement that is merely non-atomic. It is logged once per JVM so the condition is visible.
+   *
+   * @param syncDirectory whether to fsync the parent directory after the rename; {@code false} only for a caller that
+   *                      fsyncs that same directory itself right after (#8635)
    */
-  private static void publishAtomically(final Path tmp, final Path target) throws IOException {
-    publishAtomically(tmp, target, true);
-  }
-
   private static void publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
     try {
       // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some

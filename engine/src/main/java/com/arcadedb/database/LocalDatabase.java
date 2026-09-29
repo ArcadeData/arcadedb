@@ -764,9 +764,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // ALREADY ROLLED BACK
       }
 
-      // A SCHEMA CHANGE IS NOT TRANSACTIONAL: A DDL RUN INSIDE THIS TRANSACTION STANDS, AND ITS FILES EXIST, WHATEVER
-      // HAPPENED TO THE RECORDS. IT POSTPONED ITS SAVE TO THE END OF THE TRANSACTION, WHICH IS NOW (#8635)
-      schema.saveConfigurationAtTransactionEnd();
+      saveSchemaAfterRollback();
       return null;
     });
   }
@@ -797,10 +795,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
-      // SEE rollback(): A DDL RUN INSIDE THE ROLLED BACK TRANSACTIONS STANDS, AND WAS WAITING FOR THEIR END (#8635)
-      schema.saveConfigurationAtTransactionEnd();
+      saveSchemaAfterRollback();
       return null;
     });
+  }
+
+  /**
+   * Writes the schema a DDL run inside the rolled back transaction postponed to its end (issue #8635). A schema change
+   * is not transactional: it stands, and its files exist, whatever happened to the records.
+   * <p>
+   * A failure is logged, never thrown: a rollback often runs in the error path of something else, and the exception
+   * its caller has to see is that one.
+   */
+  private void saveSchemaAfterRollback() {
+    try {
+      schema.saveConfigurationAtTransactionEnd();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on saving the schema at the rollback of a transaction on database '%s'",
+          e, name);
+    }
   }
 
   @Override
