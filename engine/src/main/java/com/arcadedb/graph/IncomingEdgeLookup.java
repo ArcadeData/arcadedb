@@ -464,6 +464,7 @@ public final class IncomingEdgeLookup {
     private final UnidirectionalEdgeChanges builtBy;
     private final long                      builtAt;
     private final long                      builtIn;
+    private final long                      builtOverflow;
     private final OperationHeapLimit        limit;
     private final DatabaseInternal          database;
     private final int                       size;
@@ -481,6 +482,7 @@ public final class IncomingEdgeLookup {
       this.builtBy = builtBy;
       this.builtAt = builtBy != null ? builtBy.getSequence() : 0L;
       this.builtIn = builtBy != null ? builtBy.getTransaction() : 0L;
+      this.builtOverflow = builtBy != null ? builtBy.getOverflows() : 0L;
       this.database = database;
       this.limit = builder.limit;
       this.size = builder.size;
@@ -587,7 +589,7 @@ public final class IncomingEdgeLookup {
       if (builtBy == null)
         // TAKEN WITH NO TRANSACTION ON THE THREAD: ONLY THIS THREAD STARTING ONE (TO WRITE) CAN MAKE IT MISS AN EDGE
         return tx != null;
-      return current == builtBy && builtIn != builtBy.getTransaction();
+      return current == builtBy && (builtIn != builtBy.getTransaction() || builtOverflow != builtBy.getOverflows());
     }
 
     /** The changes to overlay: the current transaction's, when it is the one the scan was taken in and changed since. */
@@ -658,16 +660,39 @@ public final class IncomingEdgeLookup {
 
     /** The scanned edges into {@code target}, less the ones the transaction deleted since, plus the ones it created. */
     private Iterator<Edge> edgesInto(final RID target, final UnidirectionalEdgeChanges changes) {
-      final List<Edge> result = new ArrayList<>();
-      // A DELETED EDGE IS TOLD BY ITS IDENTITY, WHICH THE ARRAYS HOLD: ONLY THE SURVIVING ONES ARE MATERIALIZED
+      // STREAMED: THE SCANNED EDGES FIRST, A DELETED ONE TOLD BY THE IDENTITY THE ARRAYS HOLD, THEN THE CREATED ONES
       final boolean deletions = changes.hasDeletions();
-      for (int i = firstIndex(target); i < size && isTarget(i, target); i++)
-        if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
-          result.add(edgeAt(i));
-      for (final UnidirectionalEdgeChanges.Created created : changes.createdInto(typeName, target))
-        if (isLive(created, changes))
-          result.add(created.edge());
-      return result.iterator();
+      final Iterator<UnidirectionalEdgeChanges.Created> created = changes.createdInto(typeName, target).iterator();
+      return new Iterator<>() {
+        private int  index = firstIndex(target);
+        private Edge next;
+
+        @Override
+        public boolean hasNext() {
+          while (next == null) {
+            if (index < size && isTarget(index, target)) {
+              final int i = index++;
+              if (!deletions || !changes.isDeletedAfter(edgeIdentityAt(i), builtAt))
+                next = edgeAt(i);
+            } else if (created.hasNext()) {
+              final UnidirectionalEdgeChanges.Created entry = created.next();
+              if (isLive(entry, changes))
+                next = entry.edge();
+            } else
+              return false;
+          }
+          return true;
+        }
+
+        @Override
+        public Edge next() {
+          if (!hasNext())
+            throw new NoSuchElementException();
+          final Edge edge = next;
+          next = null;
+          return edge;
+        }
+      };
     }
 
     /** Whether an edge the transaction created is still there: created after the scan and not deleted since. */
@@ -815,12 +840,18 @@ public final class IncomingEdgeLookup {
         final int mid = medianOfThree(low, (low + high) >>> 1, high);
         final int pivotBucket = targetBuckets[mid];
         final long pivotPosition = targetPositions[mid];
+        final int pivotEdgeBucket = edgeBuckets[mid];
+        final long pivotEdgePosition = edgePositions[mid];
+        final int pivotSourceBucket = sourceBuckets[mid];
+        final long pivotSourcePosition = sourcePositions[mid];
         int i = low;
         int j = high;
         while (i <= j) {
-          while (compareTo(i, pivotBucket, pivotPosition) < 0)
+          while (compareTo(i, pivotBucket, pivotPosition, pivotEdgeBucket, pivotEdgePosition, pivotSourceBucket,
+              pivotSourcePosition) < 0)
             ++i;
-          while (compareTo(j, pivotBucket, pivotPosition) > 0)
+          while (compareTo(j, pivotBucket, pivotPosition, pivotEdgeBucket, pivotEdgePosition, pivotSourceBucket,
+              pivotSourcePosition) > 0)
             --j;
           if (i <= j)
             swap(i++, j--);
@@ -834,7 +865,7 @@ public final class IncomingEdgeLookup {
         }
       }
       for (int i = low + 1; i <= high; i++)
-        for (int j = i; j > low && compareTo(j - 1, targetBuckets[j], targetPositions[j]) > 0; j--)
+        for (int j = i; j > low && compare(j - 1, j) > 0; j--)
           swap(j - 1, j);
     }
 
@@ -876,13 +907,27 @@ public final class IncomingEdgeLookup {
     }
 
     private int compare(final int a, final int b) {
-      return compareTo(a, targetBuckets[b], targetPositions[b]);
+      return compareTo(a, targetBuckets[b], targetPositions[b], edgeBuckets[b], edgePositions[b], sourceBuckets[b],
+          sourcePositions[b]);
     }
 
-    private int compareTo(final int i, final int bucket, final long position) {
+    /**
+     * By target, then by edge and source: the edges of one target come back in a reproducible order, whatever order the
+     * scan met them in (a lightweight edge has no position of its own, so its source tells it apart).
+     */
+    private int compareTo(final int i, final int bucket, final long position, final int edgeBucket, final long edgePosition,
+        final int sourceBucket, final long sourcePosition) {
       if (targetBuckets[i] != bucket)
         return Integer.compare(targetBuckets[i], bucket);
-      return Long.compare(targetPositions[i], position);
+      if (targetPositions[i] != position)
+        return Long.compare(targetPositions[i], position);
+      if (edgeBuckets[i] != edgeBucket)
+        return Integer.compare(edgeBuckets[i], edgeBucket);
+      if (edgePositions[i] != edgePosition)
+        return Long.compare(edgePositions[i], edgePosition);
+      if (sourceBuckets[i] != sourceBucket)
+        return Integer.compare(sourceBuckets[i], sourceBucket);
+      return Long.compare(sourcePositions[i], sourcePosition);
     }
 
     private void swap(final int a, final int b) {
