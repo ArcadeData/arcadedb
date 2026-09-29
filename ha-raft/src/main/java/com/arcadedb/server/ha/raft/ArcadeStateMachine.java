@@ -206,16 +206,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
+  private final    AtomicLong                electionCount    = new AtomicLong(0);
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
   // stale whatever it names, so it is the one boundary every apply path can consult, including the ones that name no
   // database (which have no install gate) and Ratis's own metadata entries (which never reach applyTransaction).
-  private final    AtomicLong                installedRaftBoundary = new AtomicLong(-1);
+  private final    AtomicLong                installedRaftBoundary  = new AtomicLong(-1);
+  // The boundary the first refusal below it was reported for at WARNING, so each boundary logs once (issue #8651).
+  private volatile long                      boundaryRefusalWarned  = -1L;
   // Serialises "is this index below the boundary?" with the move of the applied position it guards (issue #8651):
   // the install records the boundary and seeds the applied position under it, and every applied-position update
   // checks and moves under it, so the apply thread can never read the boundary before the install and then move the
   // position after it. Uncontended except during an install.
-  private final    Object                    appliedPositionLock   = new Object();
-  private final    AtomicLong                electionCount    = new AtomicLong(0);
+  private final    Object                    appliedPositionLock    = new Object();
 
   // Persisted applied-index bookkeeping. One ArcadeStateMachine multiplexes every database onto a
   // single Raft group, so a single global scalar cannot answer a per-database question: a co-located
@@ -1135,10 +1137,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // entries) never reaches applyTransaction's install skip. Left to super it trips the monotonic check on the
     // StateMachineUpdater thread, which dies and closes the division (issue #8651). STRICTLY below: the install's own
     // seed is AT the boundary, and an entry at it is an equal-position no-op that super handles.
-    if (newTI != null && newTI.getIndex() < installedRaftBoundary.get()) {
-      LogManager.instance().log(this, Level.FINE,
-          "Ignoring applied-position update %s: below the installed snapshot boundary %d (issue #8651)", newTI,
-          installedRaftBoundary.get());
+    final long boundary = installedRaftBoundary.get();
+    if (newTI != null && newTI.getIndex() < boundary) {
+      // The first refusal per boundary at WARNING: the rest of a stale replay would flood the log, but a boundary that
+      // is ever wrong must not be invisible, since its only other symptom is an applied index that stops advancing.
+      final boolean first = boundaryRefusalWarned != boundary;
+      boundaryRefusalWarned = boundary;
+      LogManager.instance().log(this, first ? Level.WARNING : Level.FINE,
+          "Ignoring applied-position update %s: below the installed snapshot boundary %d, a stale entry from this "
+              + "node's pre-install log (issue #8651)", newTI, boundary);
       return false;
     }
     final TermIndex oldTI = getLastAppliedTermIndex();
@@ -1374,8 +1381,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final boolean[] securitySuperseded = new boolean[1];
 
       // An entry that names no database (the security entries decode to an empty name) has no real install gate to
-      // consult, so the global boundary is what tells it is
-      // stale (issue #8651). Its effects (the security documents) are refreshed by the leader catch-up that follows the
+      // consult, so the global boundary is what marks it stale (issue #8651). Its effects (the security documents) are refreshed by the leader catch-up that follows the
       // install (issue #7833), and applying it now would write an older document over that state and move
       // lastAppliedIndex and the persisted applied index backward.
       if ((decoded.databaseName() == null || decoded.databaseName().isEmpty()) && isBelowInstalledRaftBoundary(index)) {

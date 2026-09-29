@@ -259,11 +259,13 @@ public final class HealthMonitor {
    */
   static final long CRASH_LOOP_RECORD_RESET_MS = 10L * 60_000L;
 
+  /** Consecutive ticks a division must stay CLOSING before it is recovered like a CLOSED one (issue #8651). */
+  static final int CLOSING_TICKS_BEFORE_RECOVERY = 2;
+
   private final    HealthTarget             target;
   private final    long                     intervalMs;
   // Consecutive ticks the division was seen CLOSING (issue #8651). Health-monitor thread only.
   private          int                      closingStreak;
-  private static final int                  CLOSING_TICKS_BEFORE_RECOVERY = 2;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
   // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
@@ -485,8 +487,11 @@ public final class HealthMonitor {
       // close never finished - the StateMachineUpdater died and closed it from its own thread (issue #8651).
       closingStreak++;
       dropFollowerObservations();
-      if (closingStreak >= CLOSING_TICKS_BEFORE_RECOVERY)
+      if (closingStreak >= CLOSING_TICKS_BEFORE_RECOVERY) {
+        // A fresh streak before the next attempt: a restart needs time to leave CLOSING.
+        closingStreak = 0;
         handleUnhealthyState(state);
+      }
       return;
     }
     closingStreak = 0;
