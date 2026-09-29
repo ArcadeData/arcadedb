@@ -153,19 +153,23 @@ public class GremlinServerPlugin implements ServerPlugin {
 
   /**
    * Copies one {@code gremlin.*} server-configuration key onto the Gremlin Server settings. A name that is not a setting
-   * is ignored, as the same keys are shared with other configuration; a value that cannot be converted to the setting's
-   * type is ignored too, but with a WARNING, because the server then starts on the default and, since issue #8578,
-   * advertises it.
+   * is ignored, as the same keys are shared with other configuration. A value that cannot be converted to the setting's
+   * type fails the start: a mistyped port or listener setting must not leave the server on the default, where it would
+   * also be advertised to clients.
    */
   static void applyServerSetting(final Settings settings, final String name, final Object value) {
+    final Field field;
     try {
-      final Field field = settings.getClass().getField(name);
-      field.set(settings, coerce(field.getType(), value));
+      field = settings.getClass().getField(name);
     } catch (final NoSuchFieldException e) {
       // NOT A GREMLIN SERVER SETTING
+      return;
+    }
+    try {
+      field.set(settings, coerce(field.getType(), value));
     } catch (final IllegalAccessException | IllegalArgumentException e) {
-      LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
-          "Ignoring the Gremlin Server setting 'gremlin.%s' with value '%s': %s", null, name, value, e.getMessage());
+      throw new ServerException("Invalid Gremlin Server setting 'gremlin." + name + "' with value '" + value + "': " + e.getMessage(),
+          e);
     }
   }
 
@@ -181,6 +185,12 @@ public class GremlinServerPlugin implements ServerPlugin {
       return Integer.valueOf(text.trim());
     if (fieldType == long.class || fieldType == Long.class)
       return Long.valueOf(text.trim());
+    if (fieldType == short.class || fieldType == Short.class)
+      return Short.valueOf(text.trim());
+    if (fieldType == double.class || fieldType == Double.class)
+      return Double.valueOf(text.trim());
+    if (fieldType == float.class || fieldType == Float.class)
+      return Float.valueOf(text.trim());
     if (fieldType == boolean.class || fieldType == Boolean.class) {
       // Boolean.valueOf() turns "yes" or "1" into false without a word: only the two spellings are a boolean
       final String trimmed = text.trim();

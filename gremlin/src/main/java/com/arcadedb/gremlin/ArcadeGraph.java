@@ -219,6 +219,9 @@ public class ArcadeGraph implements Graph, Closeable {
     if (!(database instanceof RemoteDatabase remoteDatabase))
       return Graph.super.traversal();
 
+    // OUTSIDE THE try: A MISCONFIGURED PORT IS THE CALLER'S ERROR, NOT "GREMLIN NOT AVAILABLE ON THE SERVER"
+    final int gremlinPort = resolveRemoteGremlinPort(remoteDatabase);
+
     try {
       final List<String> remoteAddresses = new ArrayList<>();
 
@@ -231,8 +234,6 @@ public class ArcadeGraph implements Graph, Closeable {
         // No leader and no replicas are known (e.g. non-HA server or mid-failover): fall back to the
         // slower remote implementation rather than building a cluster with no contact points.
         return Graph.super.traversal();
-
-      final int gremlinPort = resolveRemoteGremlinPort(remoteDatabase);
 
       final String[] hosts = new String[remoteAddresses.size()];
       for (int i = 0; i < remoteAddresses.size(); i++)
@@ -268,13 +269,16 @@ public class ArcadeGraph implements Graph, Closeable {
    */
   private static int resolveRemoteGremlinPort(final RemoteDatabase remoteDatabase) {
     final int configured = remoteDatabase.getClientConfiguration().getValueAsInteger(GlobalConfiguration.GREMLIN_CLIENT_PORT);
+    if (configured > 65535)
+      throw new IllegalArgumentException(GlobalConfiguration.GREMLIN_CLIENT_PORT.getKey() + " must be a TCP port (1-65535), found "
+          + configured);
     if (configured > 0)
       return configured;
     final int advertised = remoteDatabase.getAdvertisedPort("gremlin");
     if (advertised > 0)
       return advertised;
     // NEITHER SAID: A GREMLIN SERVER ON ANOTHER PORT IS THEN UNREACHABLE, AND THE FALLBACK TO THE EMBEDDED TRAVERSAL HIDES IT
-    LogManager.instance().log(ArcadeGraph.class, Level.FINE,
+    LogManager.instance().log(ArcadeGraph.class, Level.INFO,
         "No Gremlin port configured or advertised by the server: using the default %d", null, GREMLIN_SERVER_PORT);
     return GREMLIN_SERVER_PORT;
   }

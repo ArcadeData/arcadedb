@@ -29,7 +29,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #8578, review of PR #8680: {@code GET /api/v1/server?mode=cluster} publishes the client-facing ports of the active
+ * Issue #8578: {@code GET /api/v1/server?mode=cluster} publishes the client-facing ports of the active
  * plugins. A plugin that throws must not fail the route, a port that is null or not positive is dropped, and a service name
  * two plugins both advertise keeps its first owner.
  *

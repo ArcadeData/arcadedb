@@ -18,14 +18,16 @@
  */
 package com.arcadedb.server.gremlin;
 
+import com.arcadedb.server.ServerException;
 import org.apache.tinkerpop.gremlin.server.Settings;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #8578, review of PR #8680: a {@code gremlin.*} server setting given as text is converted to the setting's type,
- * and one that cannot be converted leaves the default in place (with a WARNING) instead of failing the start.
+ * Issue #8578: a {@code gremlin.*} server setting given as text is converted to the setting's type, and one that cannot be
+ * converted fails the start instead of leaving the default in place.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -41,19 +43,28 @@ class GremlinServerSettingsCoercionTest {
   }
 
   @Test
-  void aValueThatCannotBeConvertedKeepsTheDefault() {
+  void aValueThatCannotBeConvertedFailsTheStart() {
     final Settings settings = new Settings();
-    final int defaultPort = settings.port;
-    GremlinServerPlugin.applyServerSetting(settings, "port", "not-a-port");
-    assertThat(settings.port).isEqualTo(defaultPort);
+    assertThatThrownBy(() -> GremlinServerPlugin.applyServerSetting(settings, "port", "not-a-port"))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("gremlin.port")
+        .hasMessageContaining("not-a-port");
+  }
+
+  @Test
+  void otherNumericTypesAreConverted() {
+    final Settings settings = new Settings();
+    GremlinServerPlugin.applyServerSetting(settings, "evaluationTimeout", "1500");
+    GremlinServerPlugin.applyServerSetting(settings, "maxContentLength", "2048");
+    assertThat(settings.evaluationTimeout).isEqualTo(1500L);
+    assertThat(settings.maxContentLength).isEqualTo(2048);
   }
 
   @Test
   void aBooleanIsOnlyTrueOrFalse() {
     final Settings settings = new Settings();
-    final boolean defaultValue = settings.strictTransactionManagement;
-    GremlinServerPlugin.applyServerSetting(settings, "strictTransactionManagement", "yes");
-    assertThat(settings.strictTransactionManagement).as("'yes' is not a boolean: ignored, not turned into false").isEqualTo(defaultValue);
+    assertThatThrownBy(() -> GremlinServerPlugin.applyServerSetting(settings, "strictTransactionManagement", "yes"))
+        .as("'yes' is not a boolean: refused, not turned into false").isInstanceOf(ServerException.class);
     GremlinServerPlugin.applyServerSetting(settings, "strictTransactionManagement", "TRUE");
     assertThat(settings.strictTransactionManagement).isTrue();
   }
