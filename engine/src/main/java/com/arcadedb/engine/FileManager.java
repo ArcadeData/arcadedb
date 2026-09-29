@@ -275,16 +275,13 @@ public class FileManager {
    * directory of every created or renamed one. A file that nothing touched since then is skipped: it has nothing left
    * to persist, and the WAL about to be deleted protects nothing in it.
    * <p>
-   * The calls are SERIALIZED. A sync claims a file's pending state before it forces it, so a second caller running at
-   * the same time would find the file clean and return {@code true} while the first one's fsync is still in flight -
-   * and may still fail. The WAL rotation timer and a clean close do run at the same time (the close stops the timer
-   * only after its own sync), so without the lock the close could delete the WAL on the strength of an fsync that then
-   * failed on the timer thread. Serialized, a caller that finds a file clean knows a completed sync forced it, and a
-   * failed one has already given the pending state back, so the next caller forces the file itself.
+   * The calls are SERIALIZED: a sync claims a file's pending state before it forces it, so a concurrent caller (a clean
+   * close racing the WAL rotation timer) would otherwise find the file clean and return {@code true} while the first
+   * fsync is still in flight and may still fail. A failed sync gives the state back, so the next caller forces the file
+   * itself.
    * <p>
-   * The directory fsync is best effort, as everywhere else in the engine ({@link FileUtils#forceDirectory}): a file
-   * store that refuses it (and Windows, where no such call exists) leaves the directory entry of a new file durable
-   * against a process crash only. It does not fail the sync, because the file content is already on disk.
+   * The directory fsync is best effort, as in {@link FileUtils#forceDirectory} (a no-op on Windows), and never fails the
+   * sync: the file content is already on disk.
    *
    * @return {@code true} when every file that needed it was fsynced; {@code false} when any fsync failed (#4934). After a
    *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
