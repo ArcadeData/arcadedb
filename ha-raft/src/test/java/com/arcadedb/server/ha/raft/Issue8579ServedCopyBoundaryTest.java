@@ -194,6 +194,19 @@ class Issue8579ServedCopyBoundaryTest {
   }
 
   @Test
+  void aDropForgetsTheServedCopy() throws Exception {
+    serveSnapshotsAt(40L);
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    sm.runUnderInstallGate(DB, this::downloadFromLeader);
+    // The drop's own apply fails further on in this server-less harness; what matters is that it forgot the copy first.
+    sm.applyTransaction(entry(sm, RaftLogEntryCodec.encodeDropDatabaseEntry(DB), 35L, null)).exceptionally(t -> null);
+
+    assertThat(sm.applyTransaction(txEntry(sm, 3L, 38L)).isCompletedExceptionally())
+        .as("a database recreated under the same name must not inherit the dropped copy's boundary").isTrue();
+  }
+
+  @Test
   void anEntryThisNodeOriginatedIsStillApplied() throws Exception {
     serveSnapshotsAt(40L);
     final ArcadeStateMachine sm = new ArcadeStateMachine();

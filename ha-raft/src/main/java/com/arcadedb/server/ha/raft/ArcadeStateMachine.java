@@ -546,7 +546,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
      * (issue #8579). REPLACES the previous value rather than keeping the highest: the copy on disk is the last one
      * installed, and a later install can legitimately be served at a lower index than an earlier one (a new leader
      * that has not applied as far, accepted because this node's own floor was lower), in which case the entries
-     * between the two are no longer in the copy and must be applied again.
+     * between the two are no longer in the copy and must be applied again. An install that downloaded nothing, or
+     * whose leader did not report an index, records {@code -1}: that forgets a boundary the copy may still honour,
+     * which only costs re-applying entries, never skipping one.
      * <p>
      * Never cleared: Raft indexes only grow, so once the apply thread has passed it nothing at or below it arrives
      * again except a replay of the log, and that replay goes to the same copy, which still carries those entries.
@@ -4474,7 +4476,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * bootstrap baselines and the readiness holders they release, the install and drop bookkeeping), which a copy of the
    * database's files does not carry. An entry this node originated is always applied: its apply publishes a commit a
    * local caller is waiting on. So is every entry while ANY local commit is pending, whatever database it is for: a
-   * coarse test, but one that can only fall back to applying the entry again, never skip one it should not.
+   * coarse test, but one that can only fall back to applying the entry again, never skip one it should not. It is also
+   * why skipping a transaction's whole apply - its local-commit claim and page-version release included - leaves
+   * nothing behind: a claim needs a pending local commit, and the page-version reservations of this database were
+   * cleared by the install that recorded the boundary ({@code runUnderInstallGate}).
    * <p>
    * SAFETY INVARIANT: leaving an entry out is correct only because the leader reads the applied index it reports
    * BEFORE it captures the copy it serves, and refuses to serve a database it has quarantined (issues #8454, #8468,
@@ -5788,6 +5793,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
+    // The copy the served index described is going away with it (issue #8579): a database recreated under the same
+    // name must not inherit it.
+    final InstallApplyGate installGate = installApplyGates.get(databaseName);
+    if (installGate != null)
+      installGate.recordServedCopy(-1L);
 
     // Checked before the maintenance slot below, so replaying the entry of a database that is already gone never
     // waits on anything. "Gone" is the registry AND the disk (issue #8451): `close database` deregisters a database
