@@ -1080,6 +1080,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+        // #8610: recorded before the read events run, which may hand back another record
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(tx.getBeginSequence());
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1087,6 +1090,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+      if (record instanceof ImmutableDocument document)
+        document.setReadInTransaction(tx.getBeginSequence());
 
       return record;
     });

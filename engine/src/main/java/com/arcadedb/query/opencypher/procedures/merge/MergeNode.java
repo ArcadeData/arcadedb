@@ -134,6 +134,8 @@ public class MergeNode implements CypherProcedure {
       // Apply onMatchProps to the existing node, mirroring how createProps is applied on the create branch
       if (onMatchProps != null && !onMatchProps.isEmpty()) {
         final MutableVertex mutableNode = existingNode.modify();
+        // onMatchProps are constants, not computed from the node read above: nothing for the stale-read refusal (#8610)
+        mutableNode.clearBasedOnStaleRead();
         for (final Map.Entry<String, Object> entry : onMatchProps.entrySet()) {
           mutableNode.set(entry.getKey(), entry.getValue());
         }

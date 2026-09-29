@@ -442,6 +442,8 @@ public class SuffixIdentifier extends SimpleNode {
         internal.removeProperty(identifier.getStringValue());
       } else if (currentValue instanceof Document document) {
         final MutableDocument doc = document.modify();
+        // A REMOVE writes no value computed from the read: no stale-read refusal (#8610)
+        doc.clearBasedOnStaleRead();
         doc.remove(identifier.getStringValue());
       } else if (currentValue instanceof Map map) {
         map.remove(identifier.getStringValue());
