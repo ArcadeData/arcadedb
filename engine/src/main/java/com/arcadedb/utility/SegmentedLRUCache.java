@@ -28,7 +28,7 @@ import java.util.Map;
  * evicts other one-off keys instead of the entries the application keeps coming back to. The protected segment holds up to
  * {@value #PROTECTED_PERCENT}% of the capacity; a promotion that overflows it demotes its least recently used entry back to
  * probation. An entry needs a second hit to be protected, so one hit twice within a burst of more than the probation window (about
- * 20% of the capacity) of other new keys is still evicted. A capacity of 0 caches nothing. Not thread safe: wrap access in a synchronized block.
+ * 20% of the capacity) of other new keys is still evicted. A capacity of 0 caches nothing. Null values are not cached (a null answer means a miss). Not thread safe: wrap access in a synchronized block.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -44,9 +44,8 @@ public class SegmentedLRUCache<K, V> {
     this.capacity = Math.max(0, capacity);
     // a single slot cannot be split into two segments: it stays a plain probation slot
     this.protectedCapacity = this.capacity < 2 ? 0 : Math.max(1, this.capacity * PROTECTED_PERCENT / 100);
-    final int initial = Math.max(16, (int) (this.capacity / 0.75) + 1);
-    this.probation = new LinkedHashMap<>(initial, 0.75f, true);
-    this.protectedSegment = new LinkedHashMap<>(initial, 0.75f, true);
+    this.probation = new LinkedHashMap<>(Math.max(16, (int) ((this.capacity - protectedCapacity) / 0.75) + 1), 0.75f, true);
+    this.protectedSegment = new LinkedHashMap<>(Math.max(16, (int) (protectedCapacity / 0.75) + 1), 0.75f, true);
   }
 
   /** Returns the value for the key, or null. A hit refreshes the entry and promotes it out of probation. */

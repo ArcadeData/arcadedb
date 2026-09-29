@@ -83,4 +83,12 @@ class SegmentedLRUCacheTest {
     cache.clear();
     assertThat(cache.size()).isZero();
   }
+
+  @Test
+  void zeroCapacityCachesNothing() {
+    final SegmentedLRUCache<String, String> cache = new SegmentedLRUCache<>(0);
+    cache.put("a", "1");
+    assertThat(cache.size()).isZero();
+    assertThat(cache.get("a")).isNull();
+  }
 }
