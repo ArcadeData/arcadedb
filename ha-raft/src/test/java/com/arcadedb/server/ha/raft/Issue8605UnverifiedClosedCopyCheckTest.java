@@ -27,6 +27,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.ha.raft.UnverifiedClosedCopyCheck.CopyState;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -219,6 +220,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   @Test
   void peersThatNeverAnswerAreUnansweredAtTheRoundsDeadline() {
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    check.roundTimeoutMs = 50L;
     final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
     urls.put(PEER_1, "http://peer-1/x");
     urls.put(PEER_2, "http://peer-2/x");
@@ -317,8 +319,8 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   }
 
   @Test
-  void theHandlerRejectsAPathInTheName() {
-    assertThatThrownBy(() -> askHandler("../etc")).isInstanceOf(IllegalArgumentException.class);
+  void theHandlerRejectsAPathInTheName() throws Exception {
+    assertThat(handlerResponse("../etc").getCode()).as("a client error, not a 500").isEqualTo(400);
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -351,6 +353,12 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   }
 
   private JSONObject askHandler(final String name) throws Exception {
+    final ExecutionResponse response = handlerResponse(name);
+    assertThat(response.getCode()).isEqualTo(200);
+    return new JSONObject(response.getResponse());
+  }
+
+  private ExecutionResponse handlerResponse(final String name) throws Exception {
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
     final RaftHAPlugin plugin = mock(RaftHAPlugin.class);
@@ -358,10 +366,8 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     final ServerSecurityUser root = mock(ServerSecurityUser.class);
     when(root.getName()).thenReturn("root");
 
-    final var response = new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
+    return new PostBootstrapStateHandler(httpServer, plugin).execute(null, root,
         new JSONObject().put(UnverifiedClosedCopyCheck.COPY_OF, name));
-    assertThat(response.getCode()).isEqualTo(200);
-    return new JSONObject(response.getResponse());
   }
 
   private void createClosedCopy(final boolean marked) throws IOException {

@@ -971,7 +971,10 @@ public class ClusterAlerts {
             + "it the copy every follower installs from. No node serves these databases until this is resolved.")
         .put("recommendation", "Transfer leadership to the server holding the newer copy (POST /api/v1/cluster/leader) "
             + "and open the database there. Only if this copy is known to be the right one, remove the '"
-            + ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE + "' file from its directory on this node to accept it as it is.")
+            + ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE + "' file from its directory on this node to accept it as it is. "
+            + "A refusal because a copy 'cannot be ordered' means one of the servers has no recorded applied index for "
+            + "the database (for instance one not written to since an upgrade): no copy is known to be newer, and "
+            + "removing the file is then the way to reopen it.")
         .put("details", details));
   }
 

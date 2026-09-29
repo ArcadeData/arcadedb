@@ -138,7 +138,11 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     // or hashed, a closed copy included.
     final String copyOf = payload != null ? payload.getString(UnverifiedClosedCopyCheck.COPY_OF, null) : null;
     if (copyOf != null) {
-      server.checkDatabaseNameIsValid(copyOf);
+      try {
+        server.checkDatabaseNameIsValid(copyOf);
+      } catch (final IllegalArgumentException e) {
+        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+      }
       final JSONObject response = new JSONObject();
       response.put("peerId", raftHAServer.getLocalPeerId().toString());
       response.put(UnverifiedClosedCopyCheck.COPY,

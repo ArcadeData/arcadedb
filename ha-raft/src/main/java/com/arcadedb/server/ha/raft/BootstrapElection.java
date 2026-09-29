@@ -119,6 +119,7 @@ class BootstrapElection {
     FAILED                      // unexpected error; bootstrap will be re-attempted on next leader change
   }
 
+  /** The shared plain-HTTP client for bootstrap-state probes, reused by {@link UnverifiedClosedCopyCheck} (issue #8605). */
   static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
       .build();

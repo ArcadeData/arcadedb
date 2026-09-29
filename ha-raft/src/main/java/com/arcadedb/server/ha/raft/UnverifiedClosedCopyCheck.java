@@ -32,9 +32,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -110,7 +110,9 @@ final class UnverifiedClosedCopyCheck {
   private final Map<String, Refusal>  refusals   = new ConcurrentHashMap<>();
   private final Map<String, Long>     lastLogged = new ConcurrentHashMap<>();
   private final Map<String, Object>   rounds     = new ConcurrentHashMap<>();
+  // Instance fields so a test can shorten them; production never changes either.
   long                                refusalReuseMs = REFUSAL_REUSE_MS;
+  long                                roundTimeoutMs = ROUND_TIMEOUT_MS;
 
   UnverifiedClosedCopyCheck(final RaftHAServer raftHAServer, final ArcadeDBServer server) {
     this.raftHAServer = raftHAServer;
@@ -179,7 +181,7 @@ final class UnverifiedClosedCopyCheck {
 
     // Every peer is asked at once and the round shares ONE deadline, so the worst case is one budget rather than one
     // per peer (nanoTime: immune to wall-clock steps).
-    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ROUND_TIMEOUT_MS);
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(roundTimeoutMs);
     for (final Map.Entry<String, CompletableFuture<CopyState>> entry : pending.entrySet()) {
       final String peer = entry.getKey();
       final CompletableFuture<CopyState> answer = entry.getValue();
@@ -188,7 +190,7 @@ final class UnverifiedClosedCopyCheck {
         answered.put(peer, answer.get(remainingNanos, TimeUnit.NANOSECONDS));
       } catch (final TimeoutException e) {
         answer.cancel(true);
-        unanswered.add(peer + " (no answer within " + ROUND_TIMEOUT_MS + " ms)");
+        unanswered.add(peer + " (no answer within " + roundTimeoutMs + " ms)");
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         answer.cancel(true);
@@ -249,6 +251,11 @@ final class UnverifiedClosedCopyCheck {
    * applied index this node persisted for it. A copy this node holds quarantined is reported unordered: the entries
    * skipped while it waits for its resync still advanced the position. Never opens anything.
    */
+  // The position is trusted for a closed copy that is not quarantined. An entry for a database closed here reaches it
+  // through ArcadeStateMachine.databaseFor -> getDatabase, which reopens an unmarked copy and applies to it, and refuses
+  // a marked one on a follower, failing the apply rather than skipping it silently. A failed apply that still advanced
+  // the recorded position without quarantining the database would overstate it; that is the residual risk of the
+  // #8454 family, not something this check can see.
   static CopyState localCopyState(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final String databaseName) {
     final boolean present = server.existsDatabase(databaseName) || Files.isDirectory(
