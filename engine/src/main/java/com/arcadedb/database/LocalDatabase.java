@@ -3319,7 +3319,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure();
+      releaseResourcesOnOpenFailure(null);
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -3330,6 +3330,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
+    } catch (final Error e) {
+      // An Error (an OutOfMemoryError replaying a large WAL, a StackOverflowError, a class that failed to load) used to
+      // skip the release above: the instance stayed marked open, kept database.lck locked and its WAL timer running,
+      // and the path could not be opened again in this JVM until a restart. Rethrown as it is, never wrapped.
+      open = false;
+      try {
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+      } catch (final Throwable t) {
+        e.addSuppressed(t);
+      }
+      releaseResourcesOnOpenFailure(e);
+      throw e;
     }
   }
 
@@ -3338,8 +3350,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * In particular it releases the JVM file lock and closes the lock-file I/O channels, the {@link FileManager} and the
    * {@link TransactionManager}. The {@code database.lck} marker is intentionally left on disk so the next open still
    * performs recovery. Every step is best-effort and isolated so a failure in one does not skip the others.
+   *
+   * @param primaryError the Error that failed the open, or null when an Exception did. With one, a step's failure of
+   *                     any kind is attached to it as suppressed and the next step still runs: a second Error thrown
+   *                     from here (an OutOfMemoryError is likely to strike again right away) would otherwise replace
+   *                     the original and skip the steps after it, leaving database.lck locked.
    */
-  private void releaseResourcesOnOpenFailure() {
+  private void releaseResourcesOnOpenFailure(final Error primaryError) {
     try {
       if (lockFile != null) {
         if (lockFileLock != null) {
@@ -3355,15 +3372,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           lockFileIO = null;
         }
       }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on releasing lock file '%s' after a failed open", e, lockFile);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on releasing lock file '%s' after a failed open", lockFile);
     }
 
     try {
       if (fileManager != null)
         fileManager.close();
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on closing file manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing file manager after a failed open of database '%s'", name);
     }
 
     try {
@@ -3374,10 +3391,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // recovery-capable open needs to replay - discarding every change that had not yet reached the
         // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
         transactionManager.close(false, true);
-    } catch (final Exception e) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "Error on closing transaction manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing transaction manager after a failed open of database '%s'",
+          name);
     }
+  }
+
+  /**
+   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. Without a primary Error the behaviour is the one
+   * the Exception path always had: an Exception is logged and the next step runs, an Error propagates.
+   */
+  private void onOpenFailureReleaseError(final Error primaryError, final Throwable failure, final String message,
+      final Object argument) {
+    if (primaryError != null)
+      primaryError.addSuppressed(failure);
+    else if (failure instanceof Error error)
+      throw error;
+    else
+      LogManager.instance().log(this, Level.WARNING, message, failure, argument);
   }
 
   /**
