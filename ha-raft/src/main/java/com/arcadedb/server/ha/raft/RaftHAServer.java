@@ -429,6 +429,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
+  private final    UnverifiedClosedCopyCheck unverifiedClosedCopyCheck;
   /**
    * Outcome of the most recent {@link #runBootstrapIfEligible()} pass on this node, or {@code null} while no
    * pass has finished yet.
@@ -446,6 +447,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
+    this.unverifiedClosedCopyCheck = new UnverifiedClosedCopyCheck(this, arcadeServer);
     this.configuration = configuration;
     this.forwardHttpClient = LeaderDial.newConnectTimeoutBoundedClient(configuration);
 
@@ -2682,6 +2684,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /** The bootstrap election, or {@code null} before the Raft server has started. */
+  BootstrapElection getBootstrapElection() {
+    return bootstrapElection;
+  }
+
+  /** What the leader asks its peers before it reopens a closed copy a resync could not verify (issue #8605). */
+  UnverifiedClosedCopyCheck getUnverifiedClosedCopyCheck() {
+    return unverifiedClosedCopyCheck;
   }
 
   /** The drops this node's own {@code drop database} verb is waiting on; see {@link LocalDropVerbs}. */

@@ -1324,6 +1324,52 @@ public class ArcadeDBServer {
   }
 
   /**
+   * Whether {@code databaseDirectory} carries the {@link #UNVERIFIED_CLOSED_COPY_FILE} marker on the leader, where
+   * reopening it makes this copy the cluster's (issue #8605): only once the peers have verified it, through
+   * {@link HAServerPlugin#refuseToReopenUnverifiedClosedCopy}.
+   */
+  boolean leaderHoldsUnverifiedClosedCopy(final File databaseDirectory) {
+    final HAServerPlugin ha = haServer;
+    return ha != null && ha.isLeader() && new File(databaseDirectory, UNVERIFIED_CLOSED_COPY_FILE).exists();
+  }
+
+  /**
+   * On the leader, asks the HA plugin whether a peer holds a newer copy of {@code databaseName} than the one this node
+   * holds closed and marked unverified, before anything reopens it (issue #8605).
+   *
+   * @return {@code true} when this node is the leader, the copy is marked and the peers verified it; {@code false} when
+   * there was nothing to verify
+   * @throws DatabaseNotAvailableException when the plugin refuses: the copy stays closed and keeps its mark
+   */
+  private boolean verifyUnverifiedClosedCopyWithPeers(final String databaseName) {
+    final HAServerPlugin ha = haServer;
+    if (ha == null || !ha.isLeader())
+      return false;
+    // Already open (the slow path is also taken while STARTING): nothing is reopened, so there is nothing to ask about.
+    final ServerDatabase registered = databases.get(databaseName);
+    if (registered != null && registered.isOpen())
+      return false;
+    checkDatabaseNameIsValid(databaseName);
+    final File databaseDirectory = new File(
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName);
+    if (!new File(databaseDirectory, UNVERIFIED_CLOSED_COPY_FILE).exists())
+      return false;
+    final String refusal = ha.refuseToReopenUnverifiedClosedCopy(databaseName);
+    if (refusal != null) {
+      // The reason names peers and carries the text of a failed peer call, so it goes to the log and to the cluster
+      // alert, which filter who sees it, and not to whichever client named the database.
+      LogManager.instance().log(this, Level.FINE, "Database '%s' not reopened on the leader: %s", null, databaseName,
+          refusal);
+      throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node is the "
+          + "leader and holds a closed copy the last HA resync could not verify, and the other servers did not confirm "
+          + "that none of them holds a newer one, so it is not reopened as the cluster's copy. The reason is in the "
+          + "server log and in the cluster alerts. Transfer the leadership to the server holding the newer copy, or "
+          + "remove this node's '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker to accept this copy as it is");
+    }
+    return true;
+  }
+
+  /**
    * Deletes the {@link #UNVERIFIED_CLOSED_COPY_FILE} marker of a copy this node reopens as the leader (issue #8589), and
    * does nothing on any other node: the leader's copy is the cluster's, so the mark no longer describes anything. Best
    * effort: a marker left behind only refuses a later reopen of the same copy on this node as a follower, which is the
@@ -1673,6 +1719,18 @@ public class ArcadeDBServer {
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
 
+    // A leader about to reopen a copy a resync could not verify asks its peers first (issue #8605), and does so here,
+    // before the registry lock: the answer may take a round trip to every peer, and the lock serialises every open on
+    // this server. The lock re-checks below: a copy that became leader-held only after this point is refused rather
+    // than reopened unasked.
+    // The verdict is a point-in-time answer: a peer whose copy changes between the check and the open, or a leadership
+    // lost in that window, is not re-asked. The window is one request long, and the mark is dropped only when the
+    // check passed.
+    // The snapshot installer's own reopen is not asked about: it runs holding the registry lock, and a copy it restored
+    // with its mark stays closed, as a rolled-back install on a follower leaves it.
+    final boolean peersVerifiedCopy =
+        allowLoad && !underSnapshotRecovery && verifyUnverifiedClosedCopyWithPeers(databaseName);
+
     boolean loaded = false;
     synchronized (databasesLock) {
       db = databases.get(databaseName);
@@ -1706,6 +1764,13 @@ public class ArcadeDBServer {
               + "It may be behind the cluster, so it is not reopened on a follower. It is reinstalled by the next resync "
               + "that finds the leader holding it; open it on the leader, or remove this node's copy (or its '"
               + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
+        // On the leader the copy becomes the cluster's, so it is reopened only once its peers have said none of them
+        // holds a newer one (issue #8605) - which the check before the lock established, or this node was not the
+        // leader yet when it ran.
+        if (!peersVerifiedCopy && leaderHoldsUnverifiedClosedCopy(databaseDirectory))
+          throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node became "
+              + "the leader while opening a copy the last HA resync could not verify, and has not compared it with the "
+              + "other servers' copies yet. Retry the request");
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
@@ -1751,8 +1816,10 @@ public class ArcadeDBServer {
         loaded = true;
 
         // Only once the copy is open and registered on the leader: a mark dropped before an open that then failed
-        // would leave the copy reopenable by this node as a follower, never having been verified.
-        clearUnverifiedClosedCopyMarker(databaseDirectory, databaseName);
+        // would leave the copy reopenable by this node as a follower, never having been verified. And only when the
+        // peers verified it (issue #8605).
+        if (peersVerifiedCopy)
+          clearUnverifiedClosedCopyMarker(databaseDirectory, databaseName);
       }
     }
 
@@ -1811,10 +1878,13 @@ public class ArcadeDBServer {
             }
             // Not a failure to load: a closed copy the last resync could not verify, which a follower does not serve
             // (issue #8589). Throwing here would abort the whole boot for one database the node is not serving anyway.
-            if (refusesUnverifiedClosedCopy(f)) {
+            // Nor is it opened by a node that already leads at the second pass: that open asks every peer first (issue
+            // #8605), which is the next request's job, not the boot's.
+            if (refusesUnverifiedClosedCopy(f) || leaderHoldsUnverifiedClosedCopy(f)) {
               LogManager.instance().log(this, Level.WARNING,
                   "Database '%s' was NOT opened: the last HA resync could not verify this node's copy (the leader did "
-                      + "not hold it), so it stays closed until a resync reinstalls it or this node leads", null,
+                      + "not hold it), so it stays closed until a resync reinstalls it, or a request opens it on the leader once "
+                      + "the other servers have verified it", null,
                   f.getName());
               continue;
             }
@@ -1853,8 +1923,9 @@ public class ArcadeDBServer {
                   + "disk still holds the interrupted install", null, dbName);
           continue;
         }
-        if (refusesUnverifiedClosedCopy(
-            new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), dbName))) {
+        final File defaultDatabaseDirectory = new File(
+            configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), dbName);
+        if (refusesUnverifiedClosedCopy(defaultDatabaseDirectory) || leaderHoldsUnverifiedClosedCopy(defaultDatabaseDirectory)) {
           LogManager.instance().log(this, Level.WARNING,
               "Default database '%s' holds a copy the last HA resync could not verify: not opened, and NOT recreated "
                   + "(issue #8589)", null, dbName);
