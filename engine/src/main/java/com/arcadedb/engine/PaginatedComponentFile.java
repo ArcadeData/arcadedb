@@ -193,10 +193,11 @@ public class PaginatedComponentFile extends ComponentFile {
    * directory entry is made durable by {@link FileManager#syncFiles()}, which forces the directories as well.
    * <p>
    * It claims the pending state like {@link #forceIfModified()}, but outside the lock {@code syncFiles()} serializes its
-   * callers with: a caller that relies on a {@code syncFiles()} result must not run this concurrently with it, or the
-   * sync may find the file clean while this force is still in flight. No production code calls it today.
+   * callers with, so it must not run concurrently with a {@code syncFiles()} whose result is relied on, or the sync may
+   * find the file clean while this force is still in flight. Package-private for that reason: only tests call it, and a
+   * production caller must go through {@link FileManager#syncFiles()}.
    */
-  public void force(final boolean metaData) throws IOException {
+  void force(final boolean metaData) throws IOException {
     force(SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN), metaData);
   }
 
