@@ -730,6 +730,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
+        schema.saveConfigurationBeforeCommit();
         final Binary result = current.getLastTransaction().commit();
         if (result != null) {
           stats.writeTx.incrementAndGet();
@@ -738,6 +739,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
+        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
+        schema.saveConfigurationAtTransactionEnd();
       }
 
       return null;
@@ -759,6 +762,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final TransactionException e) {
         // ALREADY ROLLED BACK
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -788,6 +793,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // ALREADY ROLLED BACK
         }
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }

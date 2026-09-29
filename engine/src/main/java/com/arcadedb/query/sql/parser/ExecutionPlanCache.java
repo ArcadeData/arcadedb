@@ -31,7 +31,7 @@ import java.util.Map;
  * an an entry point for the SQL executor.
  * <p>
  * Every accessor synchronizes on {@code this}, deliberately trading the finer-grained locking a previous version had
- * (a separate lock for the map versus {@link #lastInvalidation}) for the atomicity {@link #put} needs to check-and-
+ * (a separate lock for the map versus {@link #invalidationEpoch}) for the atomicity {@link #put} needs to check-and-
  * insert without a race against a concurrent {@link #invalidate()} (issue #6671). {@link #get} - called on every
  * cached query execution - now contends with the much rarer {@link #put}/{@link #invalidate}, rather than with
  * nothing; deliberate, since correctness here outweighs the lock-contention cost on a path this infrequent relative
@@ -43,7 +43,12 @@ public class ExecutionPlanCache {
   private final DatabaseInternal                   db;
   private final Map<String, InternalExecutionPlan> map;
   private final int                                mapSize;
-  protected     long                               lastInvalidation = -1;
+  /**
+   * How many times this cache has been invalidated. A counter rather than a timestamp (#8635): a plan built in the same
+   * millisecond as the invalidation before it - routine right after a schema change - was refused by the
+   * millisecond-granular comparison this replaces, although it was planned against the new schema.
+   */
+  private volatile long                               invalidationEpoch = 0;
 
   /**
    * @param size the size of the cache
@@ -58,8 +63,11 @@ public class ExecutionPlanCache {
     };
   }
 
-  public synchronized long getLastInvalidation() {
-    return lastInvalidation;
+  /**
+   * The invalidation epoch a planner reads BEFORE it starts planning, and hands back to {@link #put}.
+   */
+  public long getInvalidationEpoch() {
+    return invalidationEpoch;
   }
 
   /**
@@ -91,8 +99,8 @@ public class ExecutionPlanCache {
   }
 
   /**
-   * Stores {@code plan} in the cache, unless a DDL has invalidated the cache since {@code planningStart} - the moment
-   * the caller began building this plan. Checking {@code planningStart} against {@link #lastInvalidation} and
+   * Stores {@code plan} in the cache, unless a DDL has invalidated the cache since {@code planningEpoch} - the epoch
+   * read when the caller began building this plan. Checking {@code planningEpoch} against {@link #invalidationEpoch} and
    * inserting into the map happen under the same lock this class uses for {@link #invalidate()}, so a DDL that
    * invalidates the cache concurrently with this call is guaranteed to either be observed here (the put is skipped)
    * or to run after this put returns (and clear it right back out) - it can never land in the gap between the check
@@ -100,12 +108,12 @@ public class ExecutionPlanCache {
    *
    * @param statement     the SQL statement, used as the cache key
    * @param plan          the execution plan to cache
-   * @param planningStart the timestamp (as returned by {@link System#currentTimeMillis()}) taken before planning
-   *                      began; the plan is discarded instead of cached if a concurrent DDL invalidated the cache
-   *                      at or after that moment, since the plan may have been built against stale schema/index state
+   * @param planningEpoch the {@link #getInvalidationEpoch()} read before planning began; the plan is discarded instead
+   *                      of cached if a concurrent DDL invalidated the cache since, as the plan may have been built
+   *                      against stale schema/index state
    */
-  public synchronized void put(final String statement, final ExecutionPlan plan, final long planningStart) {
-    if (lastInvalidation >= planningStart)
+  public synchronized void put(final String statement, final ExecutionPlan plan, final long planningEpoch) {
+    if (invalidationEpoch != planningEpoch)
       // a DDL invalidated the cache after planning started: the plan may reference a dropped/renamed bucket or
       // index (or be missing a new one), so it must not be cached
       return;
@@ -116,7 +124,7 @@ public class ExecutionPlanCache {
 
   public synchronized void invalidate() {
     map.clear();
-    lastInvalidation = System.currentTimeMillis();
+    ++invalidationEpoch;
   }
 
   public static ExecutionPlanCache instance(final DatabaseInternal db) {

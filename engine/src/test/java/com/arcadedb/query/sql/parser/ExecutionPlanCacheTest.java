@@ -45,16 +45,8 @@ class ExecutionPlanCacheTest {
       ExecutionPlanCache cache = ExecutionPlanCache.instance(db);
       final String stm = "SELECT FROM OUser";
 
-      /*
-       * the cache has a mechanism that guarantees that if you are doing execution planning
-       * and the cache is invalidated in the meantime, the newly generated execution plan
-       * is not cached. This mechanism relies on a System.currentTimeMillis(), so it can happen
-       * that the execution planning is done right after the cache invalidation, but still in THE SAME
-       * millisecond, this Thread.sleep() guarantees that the new execution plan is generated
-       * at least one ms after last invalidation, so it is cached.
-       */
-      Thread.sleep(2);
-
+      // NO PAUSE BETWEEN AN INVALIDATION AND THE NEXT PLANNING: THE CACHE COUNTS INVALIDATIONS INSTEAD OF TIMESTAMPING
+      // THEM, SO A PLAN BUILT IN THE SAME MILLISECOND AS THE SCHEMA CHANGE BEFORE IT IS CACHED TOO (#8635)
       // schema changes
       db.query("sql", stm).close();
       cache = ExecutionPlanCache.instance(db);
@@ -63,8 +55,6 @@ class ExecutionPlanCacheTest {
       final DocumentType clazz = db.getSchema().createDocumentType(testName);
       assertThat(cache.contains(stm)).isFalse();
 
-      Thread.sleep(2);
-
       // schema changes 2
       db.query("sql", stm).close();
       cache = ExecutionPlanCache.instance(db);
@@ -72,8 +62,6 @@ class ExecutionPlanCacheTest {
 
       final Property prop = clazz.createProperty("name", Type.STRING);
       assertThat(cache.contains(stm)).isFalse();
-
-      Thread.sleep(2);
 
       // index changes
       db.query("sql", stm).close();
