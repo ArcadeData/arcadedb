@@ -149,7 +149,8 @@ class Issue7563HaTlsPeerDialIT extends BaseRaftHASslTest {
     assertThat(BootstrapElection.chooseUrl(httpAddr, httpsAddr, true))
         .isEqualTo("https://" + httpsAddr + "/api/v1/cluster/bootstrap-state");
 
-    assertThat(BootstrapElection.fetchBootstrapState(getServer(followerIndex), httpAddr, httpsAddr,
+    assertThat(BootstrapElection.fetchBootstrapState(getServer(followerIndex),
+        getRaftPlugin(leaderIndex).getRaftHAServer().getLocalPeerId().toString(), httpAddr, httpsAddr,
         follower.getClusterToken(), Set.of(getDatabaseName()), 10_000L))
         .as("the HTTPS bootstrap-state probe must reach the leader and be understood")
         .isNotNull()

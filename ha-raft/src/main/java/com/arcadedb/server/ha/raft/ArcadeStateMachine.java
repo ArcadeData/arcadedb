@@ -1327,6 +1327,47 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return raftLogFailure;
   }
 
+  /**
+   * The Ratis {@code StateMachineUpdater} thread, recorded by {@link #applyTransaction} and
+   * {@link #notifyTermIndexUpdated}, when it has terminated; {@code null} while it is alive or has not been seen yet
+   * (issue #8652). Both callbacks run only on that thread, so a dead one is the updater that died - a node that applies
+   * nothing more and, once Ratis closes the division from the dying thread, rejects every append. Cheap enough for every
+   * health tick: one volatile read and {@link Thread#isAlive()}. A restart builds a fresh state machine that has seen no
+   * thread yet, which is what clears it.
+   */
+  String describeDeadApplyThread() {
+    final Thread thread = applyThread;
+    if (thread == null || thread.isAlive())
+      return null;
+    return "the Ratis StateMachineUpdater thread '" + thread.getName() + "' has terminated";
+  }
+
+  /**
+   * Runs on the {@code StateMachineUpdater} thread for the entries Ratis applies itself (metadata and configuration
+   * entries), so it records that thread like {@link #applyTransaction} does (issue #8652): a node whose updater died
+   * before it ever applied a transaction would otherwise never be seen dead. A throwable escaping here is what kills the
+   * updater and closes the division (issue #8651), so it is logged with its cause before it is rethrown: Ratis reports
+   * it only as "caught a Throwable" on its own logger.
+   */
+  @Override
+  public void notifyTermIndexUpdated(final long term, final long index) {
+    applyThread = Thread.currentThread();
+    try {
+      super.notifyTermIndexUpdated(term, index);
+    } catch (final Throwable t) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Updating the applied position to (t:%d, i:%d) failed on the Ratis StateMachineUpdater, which now stops and "
+              + "closes the division; the health monitor restarts it in place (issue #8652)", t, term, index);
+      throw t;
+    }
+  }
+
+  /** The thread this state machine last saw apply an entry, so a test can end the real updater (issue #8652). */
+  // @VisibleForTesting
+  Thread getApplyThreadForTesting() {
+    return applyThread;
+  }
+
   /** Whether the current thread is the Ratis apply thread this state machine last applied an entry on. */
   boolean isApplyThread() {
     return Thread.currentThread() == applyThread;
@@ -2402,7 +2443,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the leader's own latest Raft snapshot TermIndex (issue #8360), fetched over the very same bootstrap-state
       // RPC call, below.
       final DatabaseReconciler.ReconcileFromLeaderResult reconcileResult =
-          reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken, installedBoundaryIndex);
+          reconciler.reconcileDatabasesFromLeader(leaderId.toString(), leaderHttpAddr, leaderHttpsAddr, clusterToken,
+              installedBoundaryIndex);
       final Set<String> notInstalled = reconcileResult.notInstalled();
 
       // Compute the installed snapshot TermIndex: normally firstTermIndexInLog - 1, the end of what the snapshot covers,
@@ -4874,7 +4916,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "that holds the data (issues #8491, #8529)", gaps);
       attempted = true;
       try {
-        moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
+        // No bare step-down when no peer is eligible (issue #8665): every peer that reported the same gap is screened
+        // out of the candidates, and a step-down with no target would hand the leadership to whichever node the
+        // election picks, gap or not. No eligible peer is "no peer took over", which backs off.
+        moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS, false);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Leadership hand-off of a leader that cannot serve every database (%s) failed: %s. Retrying in %d ms",
@@ -5730,7 +5775,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // passes, and the probe would then dial an address identifying neither of the peers behind it and hand
     // whatever answered to reconcileBootstrapDivergence as the leader's state (issue #7563 review). The
     // resolver withholds such an endpoint, leaving the guarded plain one to fall back to.
-    final PeerDialAddress leaderDial = PeerDialAddress.resolve(raftHA, raftHA.getLeaderId(), "leader");
+    final RaftPeerId leaderId = raftHA.getLeaderId();
+    final PeerDialAddress leaderDial = PeerDialAddress.resolve(raftHA, leaderId, "leader");
     if (leaderDial.refused())
       return; // no leader to compare against yet
     final String leaderHttpAddr = leaderDial.httpAddress();
@@ -5758,7 +5804,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
-            probeServer, leaderHttpAddr, leaderHttpsAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
+            probeServer, leaderId.toString(), leaderHttpAddr, leaderHttpsAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
           // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
           // backstop spends its own on a failed attempt: the next try is the next check window, not the

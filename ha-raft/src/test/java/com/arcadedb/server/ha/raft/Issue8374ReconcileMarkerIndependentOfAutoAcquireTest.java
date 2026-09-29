@@ -58,7 +58,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     configure(reconciler, false, Set.of());
 
     final DatabaseReconciler.ReconcileFromLeaderResult result =
-        reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
+        reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
 
     assertThat(result.leaderSnapshotTermIndex())
         .as("auto-acquire off must not mean the marker is never read (issue #8374)")
@@ -73,7 +73,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     final StubReconciler reconciler = new StubReconciler(null, new IOException("leader unreachable"));
     configure(reconciler, false, Set.of("db"));
 
-    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
+    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
         .as("a guessed term is never revisited, so the install must fail and let Ratis re-drive it")
         .isInstanceOf(IOException.class)
         .hasMessageContaining("#8374");
@@ -85,7 +85,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     configure(reconciler, false, Set.of("db"));
 
     try {
-      assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
+      assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
           .isInstanceOf(IOException.class);
       assertThat(Thread.currentThread().isInterrupted()).as("the interrupt must be preserved, not swallowed").isTrue();
     } finally {
@@ -100,7 +100,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     final StubReconciler reconciler = new StubReconciler(null, marker(null));
     configure(reconciler, false, Set.of());
 
-    assertThat(reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L).leaderSnapshotTermIndex())
+    assertThat(reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L).leaderSnapshotTermIndex())
         .isNull();
   }
 
@@ -112,7 +112,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     configure(reconciler, true, Set.of());
 
     final DatabaseReconciler.ReconcileFromLeaderResult result =
-        reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
+        reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
 
     assertThat(result.leaderSnapshotTermIndex()).isEqualTo(MARKER);
     assertThat(reconciler.markerCalls).isZero();
@@ -126,7 +126,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     configure(reconciler, true, Set.of("db"));
 
     final DatabaseReconciler.ReconcileFromLeaderResult result =
-        reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
+        reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L);
 
     assertThat(result.leaderSnapshotTermIndex())
         .as("the listing failure used to register the approximate term (issue #8374)")
@@ -139,7 +139,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     final StubReconciler reconciler = new StubReconciler(new IOException("listing failed"), new IOException("marker failed"));
     configure(reconciler, true, Set.of("db"));
 
-    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
+    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("#8374");
   }
@@ -150,7 +150,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     final StubReconciler reconciler = new StubReconciler(new IOException("listing failed"), marker(MARKER));
     configure(reconciler, true, Set.of());
 
-    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
+    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("#4799");
     assertThat(reconciler.markerCalls).as("the refusal is certain, so no round trip is spent on the marker").isZero();
@@ -162,7 +162,7 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     configure(reconciler, true, Set.of("db"));
 
     try {
-      assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
+      assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", LEADER_HTTP, LEADER_HTTPS, CLUSTER_TOKEN, -1L))
           .isInstanceOf(IOException.class);
       assertThat(Thread.currentThread().isInterrupted()).isTrue();
     } finally {
@@ -205,14 +205,14 @@ class Issue8374ReconcileMarkerIndependentOfAutoAcquireTest {
     }
 
     @Override
-    LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+    LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken) throws IOException, InterruptedException {
       fullCalls++;
       return answer(full);
     }
 
     @Override
-    LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+    LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken) throws IOException, InterruptedException {
       markerCalls++;
       return answer(markerOnly);

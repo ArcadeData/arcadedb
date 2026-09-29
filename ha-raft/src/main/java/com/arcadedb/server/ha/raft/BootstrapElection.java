@@ -304,10 +304,11 @@ class BootstrapElection {
     try {
       final boolean useSSL = server != null
           && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-      final List<String> urls = new ArrayList<>();
-      for (final String url : peerProbeUrls(useSSL).values())
-        if (url != null)
-          urls.add(url);
+      final Map<String, RaftPeerId> peerByUrl = new LinkedHashMap<>();
+      for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet())
+        if (entry.getValue() != null)
+          peerByUrl.put(entry.getValue(), entry.getKey());
+      final List<String> urls = new ArrayList<>(peerByUrl.keySet());
       if (urls.isEmpty())
         return;
 
@@ -323,16 +324,20 @@ class BootstrapElection {
         }
       try (final HttpClient client = httpsClient) {
         final List<CompletableFuture<HttpResponse<String>>> sends = new ArrayList<>(urls.size());
+        final List<RaftPeerId> sentTo = new ArrayList<>(urls.size());
         for (final String url : urls) {
           final boolean https = url.startsWith("https://");
           if (https && client == null)
             continue;
           final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+          sentTo.add(peerByUrl.get(url));
         }
         try {
           CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
               .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+          for (int i = 0; i < sends.size(); i++)
+            reportStrangerAnswer(sentTo.get(i), sends.get(i).getNow(null));
         } finally {
           // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
           // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
@@ -347,6 +352,27 @@ class BootstrapElection {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: could not tell every peer the pass concluded (their hold lapses on its own): %s", e.getMessage());
+    }
+  }
+
+  /**
+   * Says so when the release for {@code peerId} was answered by another node (issue #8658). Nothing else changes: the
+   * conclusion carries no state back, so a stranger merely misses it, and {@code peerId} keeps its hold until its
+   * deadline. The line is what tells an operator why that hold lasted the whole deadline.
+   */
+  private static void reportStrangerAnswer(final RaftPeerId peerId, final HttpResponse<String> response) {
+    if (response == null || response.statusCode() != 200)
+      return;
+    try {
+      final String answeredBy = new JSONObject(response.body()).getString("peerId", "");
+      if (!answeredBy.equals(peerId.toString()))
+        LogManager.instance().log(BootstrapElection.class, Level.INFO,
+            "Bootstrap: the pass conclusion meant for peer %s was answered by %s, so that peer's hold lapses on its own; "
+                + "the address does not identify it (declare each node's 'http' port explicitly in %s)", peerId,
+            answeredBy.isEmpty() ? "a node that names no peer" : "peer '" + answeredBy + "'",
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
+    } catch (final Exception e) {
+      // best effort: an unreadable answer changes nothing about a release that was already sent
     }
   }
 
@@ -771,7 +797,7 @@ class BootstrapElection {
    * tick rather than drawing a conclusion from a failed probe.
    */
   static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final ArcadeDBServer server,
-      final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
+      final String expectedPeerId, final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
       final long timeoutMs) {
     final boolean useSSL = server != null
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
@@ -797,9 +823,16 @@ class BootstrapElection {
             "bootstrap-state probe of %s answered HTTP %d", url, response.statusCode());
         return null;
       }
-      return parseBootstrapState(response.body(), dbFilter);
+      final JSONObject json = new JSONObject(response.body());
+      // A verdict on the leader's fingerprints from another node's would clear or raise a divergence it never had
+      // (issue #8658); refused like a failed probe, so the mark stays as it was and the next window asks again.
+      LeaderDatabaseQuery.requireAnsweredBy(json, expectedPeerId, url);
+      return parseBootstrapState(json, dbFilter);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      return null;
+    } catch (final LeaderDatabaseQuery.WrongPeerAnsweredException e) {
+      LogManager.instance().log(BootstrapElection.class, Level.WARNING, "bootstrap-state probe refused: %s", e.getMessage());
       return null;
     } catch (final Exception e) {
       LogManager.instance().log(BootstrapElection.class, Level.INFO,

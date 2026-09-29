@@ -61,6 +61,12 @@ import java.util.TreeSet;
  */
 public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
 
+  /**
+   * The document's flag saying this node holds a database it cannot serve (issue #8665, see
+   * {@link ArcadeStateMachine#hasLeaderServiceGap()}). Absent means no gap.
+   */
+  static final String SERVICE_GAP = "serviceGap";
+
   private final RaftHAPlugin plugin;
 
   public PostCapabilitiesHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -77,8 +83,10 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
+    final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
     return new ExecutionResponse(200,
-        advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities()).toString());
+        advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities(),
+            stateMachine != null && stateMachine.hasLeaderServiceGap()).toString());
   }
 
   /**
@@ -87,13 +95,25 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
    */
   // @VisibleForTesting
   static JSONObject advertisement(final String peerId, final Set<String> capabilities) {
+    return advertisement(peerId, capabilities, false);
+  }
+
+  /**
+   * As {@link #advertisement(String, Set)}, also carrying {@link #SERVICE_GAP} when this node has one (issue #8665).
+   * Written only when true, so the document of a healthy node stays byte-identical to what it was before the field.
+   */
+  // @VisibleForTesting
+  static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap) {
     final JSONArray array = new JSONArray();
     for (final String capability : new TreeSet<>(capabilities))
       array.put(capability);
 
-    return new JSONObject()
+    final JSONObject json = new JSONObject()
         .put("peerId", peerId)
         .put("version", Constants.getVersion())
         .put("capabilities", array);
+    if (serviceGap)
+      json.put(SERVICE_GAP, true);
+    return json;
   }
 }

@@ -254,7 +254,7 @@ class Issue8556HandOffTargetReachabilityTest {
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       clock.addAndGet(13_000L); // an attempt on a dead peer: the transfer budget plus the confirmation grace
       return false;
@@ -293,7 +293,7 @@ class Issue8556HandOffTargetReachabilityTest {
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> attempts.incrementAndGet() == 3);
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> attempts.incrementAndGet() == 3);
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setRaftHAServer(raft);
     sm.replacingLeaderHandOffClock = clock::get;
@@ -317,7 +317,7 @@ class Issue8556HandOffTargetReachabilityTest {
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       return false;
     });
@@ -351,7 +351,7 @@ class Issue8556HandOffTargetReachabilityTest {
     final AtomicInteger attempts = new AtomicInteger();
     final RaftHAServer raft = mock(RaftHAServer.class);
     when(raft.isLeader()).thenReturn(true);
-    when(raft.transferLeadership(anyLong())).thenAnswer(invocation -> {
+    when(raft.transferLeadership(anyLong(), eq(false))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       return false;
     });
