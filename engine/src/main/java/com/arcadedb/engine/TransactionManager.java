@@ -682,17 +682,31 @@ public class TransactionManager {
       final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
-    final List<Integer> lockedBuckets = new ArrayList<>(2);
-    final List<LocalBucket> unlockedBuckets = new ArrayList<>(2);
+    // Null on the steady-state path (every counter known), which then allocates nothing
+    final BucketLocks bucketLocks = lockBucketsWithUnknownCount(bucketRecordDelta, requester);
     try {
-      lockBucketsWithUnknownCount(bucketRecordDelta, requester, lockedBuckets, unlockedBuckets);
       return applyChangesInternal(tx, bucketRecordDelta, ignoreErrors);
     } finally {
-      // After the fold: a recompute that published while the pages were being written is discarded (#8640)
-      for (final LocalBucket bucket : unlockedBuckets)
-        bucket.invalidateCachedRecordCountForUnlockedApply();
-      unlockFilesInOrder(lockedBuckets, requester);
+      if (bucketLocks != null) {
+        // After the fold: a recompute that published while the pages were being written is discarded (#8640)
+        for (int i = 0; i < bucketLocks.timedOutCount; i++)
+          bucketLocks.timedOut[i].invalidateCachedRecordCountForUnlockedApply();
+        for (int i = 0; i < bucketLocks.lockedCount; i++)
+          unlockFile(bucketLocks.locked[i], requester);
+      }
       applyLock.readLock().unlock();
+    }
+  }
+
+  private static final class BucketLocks {
+    private final int[]         locked;
+    private final LocalBucket[] timedOut;
+    private       int           lockedCount;
+    private       int           timedOutCount;
+
+    private BucketLocks(final int size) {
+      locked = new int[size];
+      timedOut = new LocalBucket[size];
     }
   }
 
@@ -712,14 +726,21 @@ public class TransactionManager {
    * <p>
    * The wait is bounded by {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} per bucket, on the apply thread and under
    * the shared side of {@link #getApplyLock()}. On a timeout the apply goes ahead anyway - dropping a committed entry is
-   * worse - and the bucket is handed back in {@code timedOut}: it is invalidated BEFORE the pages are written and again
-   * after the fold, so a recompute that overlapped the apply is never cached (see
-   * {@link LocalBucket#invalidateCachedRecordCountForUnlockedApply()}).
+   * worse - and the bucket is handed back as timed out: it is invalidated BEFORE the pages are written and again after
+   * the fold, so a recompute that overlapped the apply is never cached (see
+   * {@link LocalBucket#invalidateCachedRecordCountForUnlockedApply()}). The bucket is then marked contended, and the
+   * entries that follow only TRY its lock instead of each waiting the full timeout behind the same long scan: the
+   * catch-up pays one timeout per recompute, not one per entry. The first apply that gets the lock clears the mark.
+   * <p>
+   * The unknown-counter check and the lock are not atomic, and need not be: a counter only goes from known to unknown
+   * through this method's own timeout path on this same apply thread (or a recovery, which runs before any apply), so
+   * the race costs at most one lock that turns out unneeded.
+   *
+   * @return the buckets locked or timed out, or null when no bucket in the entry has an unknown counter
    */
-  private void lockBucketsWithUnknownCount(final Map<Integer, Integer> bucketRecordDelta, final Object requester,
-      final List<Integer> locked, final List<LocalBucket> timedOut) {
+  private BucketLocks lockBucketsWithUnknownCount(final Map<Integer, Integer> bucketRecordDelta, final Object requester) {
     if (bucketRecordDelta == null || bucketRecordDelta.isEmpty())
-      return;
+      return null;
 
     int[] fileIds = null;
     int count = 0;
@@ -731,24 +752,39 @@ public class TransactionManager {
       }
 
     if (count == 0)
-      return;
+      return null;
 
+    // Ascending order, like a commit (tryLockFiles), so the two can never wait on each other in a cycle
     Arrays.sort(fileIds, 0, count);
+    final BucketLocks result = new BucketLocks(count);
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
     for (int i = 0; i < count; i++) {
       final int fileId = fileIds[i];
-      final LockManager.LOCK_STATUS status = tryLockFile(fileId, timeout, requester);
-      if (status == LockManager.LOCK_STATUS.YES)
-        locked.add(fileId);
-      else if (status == LockManager.LOCK_STATUS.NO
-          && database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket) {
+      if (!(database.getSchema().getFileByIdIfExists(fileId) instanceof LocalBucket bucket))
+        continue;
+
+      final boolean contended = bucket.isApplyLockContended();
+      // 1ms, not 0: LockManager reads a zero timeout as "wait forever"
+      final LockManager.LOCK_STATUS status = tryLockFile(fileId, contended ? 1L : timeout, requester);
+      if (status == LockManager.LOCK_STATUS.YES) {
+        result.locked[result.lockedCount++] = fileId;
+        if (contended)
+          bucket.setApplyLockContended(false);
+      } else if (status == LockManager.LOCK_STATUS.NO) {
         bucket.invalidateCachedRecordCountForUnlockedApply();
-        timedOut.add(bucket);
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot lock bucket '%s' within %dms while applying a replicated transaction: its record counter is left"
-                + " unknown and recomputed on the next count()", null, bucket.getName(), timeout);
+        result.timedOut[result.timedOutCount++] = bucket;
+        if (!contended) {
+          bucket.setApplyLockContended(true);
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot lock bucket '%s' within %dms while applying a replicated transaction: its record counter is left"
+                  + " unknown and recomputed on a later count(); following entries do not wait for the lock until one gets it",
+              null, bucket.getName(), timeout);
+        } else
+          LogManager.instance().log(this, Level.FINE,
+              "Bucket '%s' is still locked by a record count recompute: applying without the lock", null, bucket.getName());
       }
     }
+    return result;
   }
 
   /**

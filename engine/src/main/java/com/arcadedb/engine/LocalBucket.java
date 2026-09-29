@@ -205,13 +205,15 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
+  /** Test-only seam run by a {@link #count()} recompute after it read its stamp, before its scan (#8640). */
+  static volatile        Runnable                  recountScanHookForTesting;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
-  /**
-   * Bumped, under this bucket's monitor, by every replicated apply that writes this bucket's pages WITHOUT holding its
-   * file lock while the counter is unknown (issue #8640). A {@link #count()} recompute publishes its scan only if the
-   * stamp did not move since the scan started, so a scan that may have seen part of such an apply is never cached.
-   */
-  private long                                     unlockedApplyStamp;
+  // #8640: bumped under this bucket's monitor by every replicated apply that writes its pages WITHOUT the file lock
+  // while the counter is unknown; a count() recompute publishes only if it did not move since its scan started
+  private                long                      unlockedApplyStamp;
+  // #8640: set when a replicated apply timed out on this bucket's lock, so the following ones do not wait again for the
+  // same long recompute; cleared by the first apply that gets the lock
+  private volatile       boolean                   applyLockContended;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1209,6 +1211,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
       // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
       final long stampAtScanStart = getUnlockedApplyStamp();
+
+      final Runnable scanHook = recountScanHookForTesting;
+      if (scanHook != null)
+        scanHook.run();
 
       long total = 0;
       int undecodableSlots = 0;
@@ -2401,13 +2407,21 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * published is thrown away by the call after, because its scan may hold part of the apply and the apply's delta fold
    * cannot tell which part. The counter is left unknown and the next {@code count()} recomputes it.
    */
-  public synchronized void invalidateCachedRecordCountForUnlockedApply() {
+  synchronized void invalidateCachedRecordCountForUnlockedApply() {
     ++unlockedApplyStamp;
     cachedRecordCount.set(-1);
   }
 
   synchronized long getUnlockedApplyStamp() {
     return unlockedApplyStamp;
+  }
+
+  boolean isApplyLockContended() {
+    return applyLockContended;
+  }
+
+  void setApplyLockContended(final boolean contended) {
+    applyLockContended = contended;
   }
 
   /**

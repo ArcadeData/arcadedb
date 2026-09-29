@@ -163,38 +163,104 @@ class Issue8640ApplyChangesRecountRaceTest extends TestHelper {
     final TransactionManager txManager = db.getTransactionManager();
 
     bucket.setCachedRecordCount(-1);
-    db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
+    final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
 
     // A recompute that outlasts the commit timeout: it holds the lock and has read the stamp before its scan.
     final Object recompute = new Object();
     assertThat(txManager.tryLockFile(fileId, 1000, recompute)).isEqualTo(LockManager.LOCK_STATUS.YES);
     final long stampAtScanStart = bucket.getUnlockedApplyStamp();
     try {
-      final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
-      final long version = db.getPageManager().getImmutablePage(new PageId(db, fileId, 0), file.getPageSize(), false, true)
-          .getVersion();
-
       // The apply gives up on the lock and goes ahead: a committed entry is never dropped.
-      final ExecutorService applier = Executors.newSingleThreadExecutor();
-      try {
-        final Future<Boolean> apply = applier.submit(
-            () -> txManager.applyChanges(buildWalTransaction(db, fileId, (int) version + 1, 8642), Map.of(fileId, 5), false));
-        assertThat(apply.get(30, TimeUnit.SECONDS)).isTrue();
-      } finally {
-        applier.shutdownNow();
-      }
+      applyInBackground(db, fileId, 5, 8642);
       assertThat(bucket.getCachedRecordCount()).isEqualTo(-1);
+      assertThat(bucket.isApplyLockContended()).isTrue();
 
       // The recompute's scan may hold part of that apply, so it must not be published.
       assertThat(bucket.publishRecomputedCount(12, stampAtScanStart)).isFalse();
       assertThat(bucket.getCachedRecordCount()).isEqualTo(-1);
+
+      // The next entry behind the same recompute does not wait for it again, and is still counted as unlocked.
+      final long stampBefore = bucket.getUnlockedApplyStamp();
+      applyInBackground(db, fileId, 5, 8643);
+      assertThat(bucket.getUnlockedApplyStamp()).isGreaterThan(stampBefore);
     } finally {
       txManager.unlockFile(fileId, recompute);
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
     }
+
+    // Once the recompute is gone the next apply takes the lock and clears the mark.
+    applyInBackground(db, fileId, 5, 8644);
+    assertThat(bucket.isApplyLockContended()).isFalse();
 
     // The next count() recomputes from the pages and caches the real value.
     assertThat(bucket.count()).isEqualTo(10);
     assertThat(bucket.getCachedRecordCount()).isEqualTo(10);
+  }
+
+  @Test
+  void aRealRecomputeOverlappingAnUnlockedApplyIsNotCached() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        db.newDocument("Counted").set("name", "record-" + i).save();
+    });
+
+    final LocalBucket bucket = (LocalBucket) db.getSchema().getType("Counted").getBuckets(false).getFirst();
+    final int fileId = bucket.getFileId();
+    bucket.setCachedRecordCount(-1);
+    final Object previousTimeout = db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 200L);
+
+    final CountDownLatch scanning = new CountDownLatch(1);
+    final CountDownLatch resume = new CountDownLatch(1);
+    LocalBucket.recountScanHookForTesting = () -> {
+      scanning.countDown();
+      try {
+        resume.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    final ExecutorService counter = Executors.newSingleThreadExecutor();
+    try {
+      // A real count() recompute: it takes the bucket lock, reads its stamp and parks at the start of its scan.
+      final Future<Long> count = counter.submit(bucket::count);
+      assertThat(scanning.await(30, TimeUnit.SECONDS)).isTrue();
+
+      // A replicated entry lands meanwhile: the lock is held by the scan, so it applies without it.
+      applyInBackground(db, fileId, 5, 8645);
+
+      resume.countDown();
+      assertThat(count.get(30, TimeUnit.SECONDS)).isEqualTo(10);
+      // The scan overlapped the unlocked apply, so its result is returned but NOT cached.
+      assertThat(bucket.getCachedRecordCount()).isEqualTo(-1);
+    } finally {
+      LocalBucket.recountScanHookForTesting = null;
+      resume.countDown();
+      counter.shutdownNow();
+      db.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, previousTimeout);
+    }
+
+    // With nothing overlapping, the next recompute caches.
+    assertThat(bucket.count()).isEqualTo(10);
+    assertThat(bucket.getCachedRecordCount()).isEqualTo(10);
+  }
+
+  private static void applyInBackground(final DatabaseInternal db, final int fileId, final int delta, final long txId)
+      throws Exception {
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
+    final PageId pageId = new PageId(db, fileId, 0);
+    db.getPageManager().removePageFromCache(pageId);
+    final long version = db.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true).getVersion();
+    final ExecutorService applier = Executors.newSingleThreadExecutor();
+    try {
+      final Future<Boolean> apply = applier.submit(() -> db.getTransactionManager()
+          .applyChanges(buildWalTransaction(db, fileId, (int) version + 1, txId), Map.of(fileId, delta), false));
+      assertThat(apply.get(30, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      applier.shutdownNow();
+    }
   }
 
   @Test
