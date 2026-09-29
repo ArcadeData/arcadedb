@@ -87,13 +87,18 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
   void aStaleEntryThatNamesNoDatabaseIsSkippedAsANoOp() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.recordInstalledRaftBoundary(1867073L);
+    sm.notifyTermIndexUpdated(30L, 1867073L);
     final long appliedBefore = sm.readAppliedIndexCounter();
+    final long persistedBefore = sm.readPersistedAppliedIndex();
 
     final CompletableFuture<Message> result = sm.applyTransaction(securityEntry(sm, 30L, 1835784L));
 
     assertThat(result.isCompletedExceptionally()).as("a stale security entry must not throw or halt").isFalse();
     assertThat(result.get().getContent().toStringUtf8()).isEqualTo("OK");
     assertThat(sm.readAppliedIndexCounter()).as("nothing moves the applied counter backward").isEqualTo(appliedBefore);
+    assertThat(sm.getLastAppliedTermIndex()).as("nor the Ratis applied position")
+        .isEqualTo(TermIndex.valueOf(30L, 1867073L));
+    assertThat(sm.readPersistedAppliedIndex()).as("nor the persisted global position").isEqualTo(persistedBefore);
   }
 
   /**
@@ -129,6 +134,11 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
           .isEqualTo(120L);
       assertThat(sm.readPersistedAppliedIndex("uncovered")).as("the database's own position is recorded")
           .isEqualTo(50L);
+
+      // The drop branch of the same bookkeeping evicts the database's own entry, still leaving the global one alone.
+      sm.writePersistedDatabaseAppliedIndex(60L, "uncovered", true);
+      assertThat(sm.readPersistedAppliedIndex()).isEqualTo(120L);
+      assertThat(sm.readPersistedAppliedIndex("uncovered")).as("evicted by the drop").isNotEqualTo(60L).isNotEqualTo(50L);
     } finally {
       db.close();
     }
