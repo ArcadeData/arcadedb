@@ -236,6 +236,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
    */
   private Iterator<Edge> connectingEdgesFromEachSource(final Vertex source, final Vertex target) {
     final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    if (source instanceof VertexInternal internalSource)
+      return IncomingEdgeLookup.getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
+
     if (arcadeDirection == Vertex.DIRECTION.IN)
       return outgoingEdgesTo(target, source);
 

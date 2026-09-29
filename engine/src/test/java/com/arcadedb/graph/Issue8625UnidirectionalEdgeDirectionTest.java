@@ -144,6 +144,13 @@ class Issue8625UnidirectionalEdgeDirectionTest extends TestHelper {
     assertThat(sum("opencypher",
         "MATCH (t:Tag), (q:Question) WHERE t.name = 't3' WITH t, q MATCH (t)-[:TAGGED_WITH]-(q) RETURN count(*) AS n"))
         .isEqualTo(degree);
+    // Both ends bound on the legacy path (OPTIONAL MATCH), filtered on the neighbour pointer
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) OPTIONAL MATCH (t)<-[r:TAGGED_WITH]-(q) RETURN count(r) AS n"))
+        .isEqualTo(1);
+    assertThat(sum("opencypher",
+        "MATCH (t:Tag {name: 't3'}), (q:Question {qid: 3}) OPTIONAL MATCH (t)-[r:TAGGED_WITH]-(q) RETURN count(r) AS n"))
+        .isEqualTo(1);
     // Variable length, from the target
     assertThat(sum("opencypher", "MATCH (t:Tag {name: 't3'})<-[:TAGGED_WITH*1..2]-(q) RETURN count(q) AS n"))
         .isEqualTo(degree);
