@@ -131,6 +131,12 @@ final class UnverifiedClosedCopyCheck {
     if (stateMachine == null || election == null)
       return "the HA layer of this server has not started yet";
 
+    // A retrying client inside the reuse window costs a map lookup, not URL resolution and index reads. The check with
+    // the round lock held below still decides; this only skips the preparation when a refusal is already standing.
+    final Refusal standing = refusals.get(databaseName);
+    if (standing != null && System.currentTimeMillis() - standing.atMs() < refusalReuseMs)
+      return standing.reason();
+
     final boolean useSSL = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> urls = election.peerProbeUrls(useSSL);
     if (useSSL && urls.values().stream().anyMatch(url -> url != null && url.startsWith("http://")))
@@ -194,6 +200,7 @@ final class UnverifiedClosedCopyCheck {
         final long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
         answered.put(peer, answer.get(remainingNanos, TimeUnit.NANOSECONDS));
       } catch (final TimeoutException e) {
+        // Stops waiting on this peer; the HTTP exchange behind the stage ends on its own request timeout.
         answer.cancel(true);
         unanswered.add(peer + " (no answer within " + roundTimeoutMs + " ms)");
       } catch (final InterruptedException e) {
@@ -255,12 +262,13 @@ final class UnverifiedClosedCopyCheck {
    * This node's copy of {@code databaseName}: present when it is registered or has a directory on disk, ordered by the
    * applied index this node persisted for it. A copy this node holds quarantined is reported unordered: the entries
    * skipped while it waits for its resync still advanced the position. Never opens anything.
+   * <p>
+   * The position is trusted for a closed copy that is not quarantined. An entry for a database closed here reaches it
+   * through {@code ArcadeStateMachine.databaseFor -> getDatabase}, which reopens an unmarked copy and applies to it, and
+   * refuses a marked one on a follower, failing the apply rather than skipping it silently. A failed apply that still
+   * advanced the recorded position without quarantining the database would overstate it; that is the residual risk of
+   * the #8454 family, not something this check can see.
    */
-  // The position is trusted for a closed copy that is not quarantined. An entry for a database closed here reaches it
-  // through ArcadeStateMachine.databaseFor -> getDatabase, which reopens an unmarked copy and applies to it, and refuses
-  // a marked one on a follower, failing the apply rather than skipping it silently. A failed apply that still advanced
-  // the recorded position without quarantining the database would overstate it; that is the residual risk of the
-  // #8454 family, not something this check can see.
   static CopyState localCopyState(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final String databaseName) {
     final boolean present = server.existsDatabase(databaseName) || Files.isDirectory(

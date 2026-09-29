@@ -349,6 +349,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     return CompletableFuture.completedFuture(state);
   }
 
+  // Fully qualified: the JDK's HttpServer clashes with com.arcadedb.server.http.HttpServer, imported above.
   private static com.sun.net.httpserver.HttpServer peer(final Answer answer) throws IOException {
     final com.sun.net.httpserver.HttpServer peer = com.sun.net.httpserver.HttpServer.create(
         new InetSocketAddress("localhost", 0), 0);
