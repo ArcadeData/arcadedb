@@ -90,6 +90,10 @@ final class GrpcTimeSeriesSupport {
 
       final Map<String, String> tags = new LinkedHashMap<>();
       for (final Map.Entry<String, GrpcValue> tag : point.getTagsMap().entrySet()) {
+        // An empty key names no column: the sample would be stored with the tag silently dropped, under a different
+        // series than the one the client sent. Refused as the line protocol refuses it (issue #8563).
+        if (tag.getKey().isEmpty())
+          throw new IllegalArgumentException("Missing tag key on a TimeSeriesPoint of type '" + measurement + "'");
         final Object value = GrpcTypeConverter.fromGrpcValue(tag.getValue());
         if (value != null)
           // The proto types tags as map<string, GrpcValue>, so nothing at the wire boundary stops a bytes,
@@ -102,6 +106,8 @@ final class GrpcTimeSeriesSupport {
 
       final Map<String, Object> fields = new LinkedHashMap<>();
       for (final Map.Entry<String, GrpcValue> field : point.getFieldsMap().entrySet()) {
+        if (field.getKey().isEmpty())
+          throw new IllegalArgumentException("Missing field key on a TimeSeriesPoint of type '" + measurement + "'");
         final Object value = GrpcTypeConverter.fromGrpcValue(field.getValue());
         if (value != null)
           // An absent field is how a sample says "no measurement for this column", the same thing line

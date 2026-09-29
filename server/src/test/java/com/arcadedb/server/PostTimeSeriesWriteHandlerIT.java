@@ -215,6 +215,35 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #8563: a line with an empty tag key was stored with that tag dropped - under a different series than the one
+   * the client sent - and the write answered 204. It must be reported as malformed and nothing stored for it.
+   */
+  @Test
+  void emptyTagKeyIsReportedAsMalformedNotStoredUnderAnotherSeries() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex,
+          "CREATE TIMESERIES TYPE pw_emptytag TIMESTAMP ts TAGS (city STRING, host STRING) FIELDS (value DOUBLE)");
+
+      final HttpURLConnection connection = openWriteConnection(serverIndex, "ms");
+      try (final OutputStream os = connection.getOutputStream()) {
+        os.write("pw_emptytag,=east,host=a value=1 1700000000000\n".getBytes(StandardCharsets.UTF_8));
+        os.flush();
+      }
+
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+
+      final JSONObject error = new JSONObject(readError(connection));
+      assertThat(error.getString("error")).contains("unable to parse 1 line");
+      assertThat(error.getInt("written")).isEqualTo(0);
+      assertThat(error.getInt("dropped")).isEqualTo(1);
+      assertThat(error.getJSONArray("malformedLines").getInt(0)).isEqualTo(1);
+
+      final JSONObject result = executeCommand(serverIndex, "sql", "SELECT FROM pw_emptytag");
+      assertThat(result.getJSONObject("result").getJSONArray("records").length()).isEqualTo(0);
+    });
+  }
+
   @Test
   void onlyMalformedLinesAreReportedNot204() throws Exception {
     testEachServer(serverIndex -> {
