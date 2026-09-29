@@ -80,7 +80,8 @@ public final class SetClauseApplier {
   private final ExpressionEvaluator evaluator;
   private final boolean             reloadLatestTarget;
   private final boolean             skipUnchangedPropertyWrites;
-  // The records the clause reloaded while applying the current row (#8538), reused across rows
+  // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
+  // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
@@ -341,8 +342,9 @@ public final class SetClauseApplier {
     // record cache, can differ from the committed image the row read. Any of the three asks for a new evaluation.
     final boolean contentChanged = readImage == null || ((BaseRecord) doc).getBuffer() != readImage
         || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
+    // A record with no identity has nothing to reload, so it never asks for another round: the loop would not settle
     if (!contentChanged || rid == null)
-      return contentChanged;
+      return false;
     if (reloadedRids == null)
       reloadedRids = new HashSet<>();
     return reloadedRids.add(rid);

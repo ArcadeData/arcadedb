@@ -350,6 +350,23 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * A label write on a vertex this transaction already modified: modify() answers with the transaction's own copy, so
+   * the rewrite must carry that copy's properties, not the committed ones.
+   */
+  @Test
+  void labelWriteCarriesAPropertyWrittenEarlierInTheSameTransaction() {
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0', n: 0})"));
+
+    database.transaction(() -> {
+      database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c.n = 5").close();
+      database.command("cypher", "MATCH (c:C {id: 'c0'}) SET c:Hot").close();
+    });
+
+    assertThat(readN("c0")).isEqualTo(5);
+    assertThat(countHot()).isEqualTo(1);
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
