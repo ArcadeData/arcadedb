@@ -139,10 +139,15 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
       assertThat(sm.readPersistedAppliedIndex("uncovered")).as("the database's own position is recorded")
           .isEqualTo(50L);
 
-      // The drop branch of the same bookkeeping evicts the database's own entry, still leaving the global one alone.
-      sm.writePersistedDatabaseAppliedIndex(60L, "uncovered", true);
+      // A stale DROP below the boundary, through applyTransaction: it evicts that database's own entry and still
+      // leaves the global positions alone.
+      sm.writePersistedDatabaseAppliedIndex(40L, "gone", false);
+      final CompletableFuture<Message> drop = sm.applyTransaction(
+          entry(sm, RaftLogEntryCodec.encodeDropDatabaseEntry("gone"), 30L, 60L));
+      assertThat(drop.isCompletedExceptionally()).isFalse();
+      assertThat(sm.readAppliedIndexCounter()).isEqualTo(120L);
       assertThat(sm.readPersistedAppliedIndex()).isEqualTo(120L);
-      assertThat(sm.readPersistedAppliedIndex("uncovered")).as("evicted by the drop").isEqualTo(-1L);
+      assertThat(sm.readPersistedAppliedIndex("gone")).as("evicted by the drop").isEqualTo(-1L);
     } finally {
       db.close();
     }
@@ -159,6 +164,16 @@ class Issue8651StaleEntryAfterRaftInstallBoundaryTest {
     assertThat(sm.isBelowInstalledRaftBoundary(99L)).isTrue();
     assertThat(sm.isBelowInstalledRaftBoundary(100L)).as("the boundary index itself is covered").isTrue();
     assertThat(sm.isBelowInstalledRaftBoundary(101L)).isFalse();
+  }
+
+  @Test
+  void aClosingDivisionOverridesTheRunningProxyState() {
+    assertThat(RaftHAServer.isDivisionStateReported(LifeCycle.State.CLOSING))
+        .as("a division its dying updater closed must not read as RUNNING").isTrue();
+    assertThat(RaftHAServer.isDivisionStateReported(LifeCycle.State.CLOSED)).isTrue();
+    assertThat(RaftHAServer.isDivisionStateReported(LifeCycle.State.EXCEPTION)).isTrue();
+    assertThat(RaftHAServer.isDivisionStateReported(LifeCycle.State.RUNNING)).isFalse();
+    assertThat(RaftHAServer.isDivisionStateReported(LifeCycle.State.STARTING)).isFalse();
   }
 
   @Test
