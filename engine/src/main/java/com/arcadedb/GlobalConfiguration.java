@@ -856,13 +856,15 @@ public enum GlobalConfiguration {
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
-      and DISTINCT in heap). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      and DISTINCT in heap; in OpenCypher also the rows a Cartesian product or a hash join buffers, UNION, collect(), and the eager \
+      materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
       with a big heap while small footprints stay protected. Set an explicit value to override the auto-scaling. A GROUP BY \
       aggregated in the workers of a parallel scan checks the limit per worker while it scans and on the merged groups at the \
-      end, so its peak can reach the limit times the number of workers.""",
+      end, so its peak can reach the limit times the number of workers. This cap protects against one runaway query: \
+      arcadedb.queryMaxHeapRAM bounds what all the queries running at once hold together.""",
       Long.class, 500_000L, null, value -> {
         // Auto-scale the default with the JVM max heap: roughly one element every 2KB, never below the historical 500000 floor.
         final long maxHeap = Runtime.getRuntime().maxMemory();
@@ -870,6 +872,24 @@ public enum GlobalConfiguration {
           // Heap is unbounded (no -Xmx): keep the conservative floor rather than an effectively unlimited cap.
           return 500_000L;
         return Math.max(500_000L, maxHeap / 2048);
+      }),
+
+  QUERY_MAX_HEAP_RAM("arcadedb.queryMaxHeapRAM", SCOPE.JVM, """
+      Maximum heap (in MB) the in-memory buffers of all the queries running in the JVM may hold at once, across every \
+      database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, and in \
+      OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
+      materialization ahead of a write. Every buffer reserves its estimated size from this budget as it grows and gives it \
+      back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
+      below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \
+      fails with a QueryHeapBudgetExceededException, which is transient: the same query can succeed once the others release \
+      what they hold (HTTP answers it with 503). A query that alone needs more than the whole budget fails with a \
+      CommandExecutionException instead, since no retry can help it. The first 256KB a query buffers are not reserved, so \
+      small queries never contend on the budget. When left at the default it is half of the JVM max heap. 0 or a negative \
+      value disables the budget""",
+      Long.class, 0L, null, value -> {
+        // Half of the JVM max heap. A JVM that reports no max heap has no half to take.
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        return maxHeap == Long.MAX_VALUE ? 0L : maxHeap / 2 / 1024 / 1024;
       }),
 
   QUERY_MAX_RANGE_SIZE("arcadedb.queryMaxRangeSize", SCOPE.DATABASE, """
@@ -895,16 +915,18 @@ public enum GlobalConfiguration {
       }),
 
   QUERY_INDEX_MAX_SELECTIVITY("arcadedb.queryIndexMaxSelectivity", SCOPE.DATABASE, """
-      Share of a type's records (0 to 1) above which an index search, in SQL or OpenCypher, is abandoned for a full \
-      scan of the type. \
+      Share of a type's records above which an index search, in SQL or OpenCypher, is abandoned for a full scan of \
+      the type, when the scan runs on one thread. \
       Before loading any record, the index entries are read alone: when more of them match than this share of the \
       records the type holds, the rows are served by a scan filtered by the same condition, otherwise the matching \
-      records are loaded in physical order rather than in index order. Fetching most of a type through an index costs \
-      one random page access per record, which grows much faster than a scan once the type outgrows the page cache. \
+      records are loaded in physical order rather than in index order, each page read once. \
+      A scan split across W workers of a parallel scan gives way sooner, at this share divided by (1 + W) / 2: \
+      the index entries are read by one thread whatever the parallelism, so the more the scan is split the sooner it \
+      wins. With the default, 60% of the type for a sequential scan, 24% on 4 workers, 6% on 18. \
       Applies only where the scan answers the same rows and the order the rows come in cannot show in the output: \
       an aggregation, or an ORDER BY the index does not serve. A query returning the rows as they come keeps the \
       index order. 0 disables it, so every index search is served in index order""",
-      Float.class, 0.25f),
+      Float.class, 0.6f),
 
   QUERY_PARALLEL_SCAN("arcadedb.queryParallelScan", SCOPE.DATABASE,
       """

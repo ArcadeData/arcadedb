@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with a concurrent transaction that never existed - see
  * {@link com.arcadedb.database.Issue7149UpdateAfterDeleteInSameTxTest}.
  * <p>
- * The graph is the reporter's: 128 nodes and 72 relationships, chosen so the 2-hop pattern yields 256 rows over
+ * The graph is the reporter's: 128 nodes and 72 relationships, chosen so the 2-hop pattern yields 222 rows over
  * 128 nodes and therefore binds most nodes from several rows.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -106,13 +106,16 @@ class CypherVarLengthDetachDeleteIssue7149Test {
 
   @Test
   void controlWithoutDetachDeleteReturnsEveryTwoHopPath() {
-    // The issue's control case: it must keep returning the 256 rows the reporter measured, so the reproduction
-    // below is known to be exercising a traversal that really does bind the same node from several rows.
+    // The issue's control case: the reporter measured 256 rows, but that count walked each of the graph's self-loops
+    // twice, once from each of its node's lists. An undirected pattern takes a self-loop once (the openCypher TCK's
+    // "undirected match in self-relationship graph", and what the fixed-length (n2)-[]-()-[]-() always answered), so
+    // the 2-hop paths are 222 (issue #8537). They still bind the same node from several rows, which is what the
+    // reproduction below needs.
     assertThat(countRows("""
         MERGE (:DeadlockProbe {id: 999995})
         MATCH p0 = (n2) -[*2]-()
         SET n2.marker = 'probe'
-        RETURN null AS alias0""")).isEqualTo(256);
+        RETURN null AS alias0""")).isEqualTo(222);
   }
 
   @Test
@@ -125,7 +128,7 @@ class CypherVarLengthDetachDeleteIssue7149Test {
         SET n2.marker = 'probe'
         DETACH DELETE n2
         CALL merge.node(['Person'], {name: 'ArcadeGenerated'}, {name: 'ArcadeGenerated'}) YIELD node AS alias3
-        RETURN null AS alias0""")).isEqualTo(256);
+        RETURN null AS alias0""")).isEqualTo(222);
 
     assertEveryTraversedNodeWasDeleted();
     assertThat(countNodes("Person")).as("the procedure merged one node, not one per row").isEqualTo(1);
@@ -141,7 +144,7 @@ class CypherVarLengthDetachDeleteIssue7149Test {
         SET n2.marker = 'probe'
         DETACH DELETE n2
         CALL merge.node(['Person'], {name: 'ArcadeGenerated'}, {name: 'ArcadeGenerated'}) YIELD node AS alias3
-        RETURN null AS alias0""")).isEqualTo(256));
+        RETURN null AS alias0""")).isEqualTo(222));
 
     assertEveryTraversedNodeWasDeleted();
   }

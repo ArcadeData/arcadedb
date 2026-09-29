@@ -53,4 +53,10 @@ public abstract class SQLAggregatedCollectionFunction<T> extends SQLAggregatedFu
   public T getResult() {
     return context;
   }
+
+  /** Keeps every value it aggregates until the aggregation ends (issue #8591). */
+  @Override
+  public boolean holdsEveryValue() {
+    return true;
+  }
 }

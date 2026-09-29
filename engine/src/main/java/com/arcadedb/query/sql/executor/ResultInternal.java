@@ -84,6 +84,53 @@ public class ResultInternal implements Result {
     this.value = null;
   }
 
+  /**
+   * The one rule every property getter of a row applies to a stored value, shared with {@link #copyBindings} so the
+   * two can never diverge: an {@link Identifiable} that is not a loaded {@link Record} is answered as its identity.
+   */
+  private static Object toPropertyValue(final Object value) {
+    if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      return identifiable.getIdentity();
+    return value;
+  }
+
+  /**
+   * A new row carrying every binding of {@code source}, for an operator that extends a row with further bindings - a
+   * graph expansion does it once per row it produces (issue #8537).
+   * <p>
+   * The answer is the one the idiom it replaces gives - {@code getPropertyNames()} walked with {@code getProperty()} and
+   * {@code setProperty()} - and a plain row is copied off its map directly: the idiom built a fresh name set per row
+   * and then hashed every name twice more, which on a multi-hop MATCH is a set and three look-ups per binding per path.
+   * The values still go through {@link #setProperty(String, Object)} after the conversion {@link #getProperty(String)}
+   * applies, so no value lands in the copy in a form the old copy would not have produced. A subclass, or a row whose
+   * bindings live only in its element, takes the general route.
+   *
+   * @param extraBindings how many bindings the caller is about to add, to size the copy once
+   */
+  public static ResultInternal copyBindings(final Result source, final int extraBindings) {
+    if (source.getClass() == ResultInternal.class) {
+      final ResultInternal row = (ResultInternal) source;
+      final Map<String, Object> rowContent = row.content;
+      if (rowContent != null && !rowContent.isEmpty()) {
+        final int size = rowContent.size() + extraBindings;
+        final ResultInternal copy = new ResultInternal(new LinkedHashMap<>(size + (size >> 1) + 1));
+        final Set<String> removed = row.tombstones;
+        for (final Map.Entry<String, Object> entry : rowContent.entrySet()) {
+          if (removed != null && removed.contains(entry.getKey()))
+            // A removed binding is not a property of the row: getPropertyNames() leaves it out, and so does the copy
+            continue;
+          copy.setProperty(entry.getKey(), toPropertyValue(entry.getValue()));
+        }
+        return copy;
+      }
+    }
+
+    final ResultInternal copy = new ResultInternal();
+    for (final String name : source.getPropertyNames())
+      copy.setProperty(name, source.getProperty(name));
+    return copy;
+  }
+
   public ResultInternal(final Map<String, Object> map) {
     this.content = map;
     this.database = null;
@@ -191,12 +238,7 @@ public class ResultInternal implements Result {
     else
       result = null;
 
-    if (!(result instanceof Record) &&
-            result instanceof Identifiable identifiable &&
-            identifiable.getIdentity() != null)
-      result = (T) identifiable.getIdentity();
-
-    return result;
+    return (T) toPropertyValue(result);
   }
 
   /**
@@ -217,9 +259,7 @@ public class ResultInternal implements Result {
     else
       result = (T) defaultValue;
 
-    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
-      result = (T) identifiable.getIdentity();
-    return result;
+    return (T) toPropertyValue(result);
   }
 
   /**
@@ -399,9 +439,7 @@ public class ResultInternal implements Result {
     } else
       return absentValue;
 
-    if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
-      result = identifiable.getIdentity();
-    return result;
+    return toPropertyValue(result);
   }
 
   @Override
@@ -667,6 +705,9 @@ public class ResultInternal implements Result {
 
   public ResultInternal setPropertiesFromMap(final Map<String, Object> stats) {
     content.putAll(stats);
+    // Like setProperty(): re-setting a removed property lifts its tombstone
+    if (tombstones != null)
+      tombstones.removeAll(stats.keySet());
     return this;
   }
 }

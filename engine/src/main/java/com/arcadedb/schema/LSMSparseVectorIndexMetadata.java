@@ -42,12 +42,34 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
    */
   public static final WeightQuantization DEFAULT_WEIGHT_QUANTIZATION = WeightQuantization.INT8;
 
+  /**
+   * {@link #rescoreOversample} value meaning "pick by quantization": {@link #DEFAULT_RESCORE_OVERSAMPLE} for the lossy
+   * INT8 and FP16 weights, no rescoring for FP32, whose index scores are already exact.
+   */
+  public static final int RESCORE_OVERSAMPLE_AUTO    = -1;
+  /**
+   * Candidates fetched per requested result before the exact rescoring, when the index does not say (issue #8576).
+   * Measured on the BigANN sparse track (SPLADE, 100k documents, top-10): INT8 recall 0.9948 without rescoring and
+   * 1.0000 with 2, FP16 0.9991 and 1.0000.
+   */
+  public static final int DEFAULT_RESCORE_OVERSAMPLE = 2;
+  /** Upper bound of {@link #rescoreOversample}: past it the record loads cost more than any recall left to win. */
+  public static final int MAX_RESCORE_OVERSAMPLE     = 100;
+
   /** The only keys a user may write in {@code METADATA}: anything else is a typo worth reporting (issue #5639). */
-  private static final Set<String> USER_METADATA_KEYS = Set.of("dimensions", "modifier", "weightQuantization");
+  private static final Set<String> USER_METADATA_KEYS = Set.of("dimensions", "modifier", "weightQuantization",
+      "rescoreOversample");
 
   public int                dimensions;
   public String             modifier           = MODIFIER_NONE;
   public WeightQuantization weightQuantization = DEFAULT_WEIGHT_QUANTIZATION;
+  /**
+   * Exact rescoring of the top-K (issue #8576): a search fetches {@code k * rescoreOversample} candidates from the
+   * quantized index, recomputes each one's score from the record's own full-precision weights and keeps the best
+   * {@code k}. {@code 0} turns it off, {@code 1} makes the returned scores exact without widening the candidate set,
+   * {@link #RESCORE_OVERSAMPLE_AUTO} (the default) picks by quantization - see {@link #effectiveRescoreOversample()}.
+   */
+  public int                rescoreOversample  = RESCORE_OVERSAMPLE_AUTO;
 
   public LSMSparseVectorIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
@@ -76,6 +98,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
     this.modifier = metadata.getString("modifier", MODIFIER_NONE).toUpperCase(Locale.ROOT);
     this.weightQuantization = parseWeightQuantization(
         metadata.getString("weightQuantization", DEFAULT_WEIGHT_QUANTIZATION.name()));
+    this.rescoreOversample = metadata.getInt("rescoreOversample", RESCORE_OVERSAMPLE_AUTO);
   }
 
   @Override
@@ -85,6 +108,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
     copy.dimensions = dimensions;
     copy.modifier = modifier;
     copy.weightQuantization = weightQuantization;
+    copy.rescoreOversample = rescoreOversample;
     return copy;
   }
 
@@ -106,6 +130,9 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
 
     if (json.has("weightQuantization"))
       this.weightQuantization = parseWeightQuantization(json.getString("weightQuantization"));
+
+    if (json.has("rescoreOversample"))
+      setRescoreOversample(metadataInt(json, "rescoreOversample"));
   }
 
   @Override
@@ -114,6 +141,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
       case "dimensions" -> dimensions;
       case "modifier" -> modifier;
       case "weightQuantization" -> weightQuantization;
+      case "rescoreOversample" -> rescoreOversample;
       default -> null;
     };
   }
@@ -125,6 +153,28 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
     if (dimensions < 0)
       throw new IllegalArgumentException("dimensions must be >= 0");
     this.dimensions = dimensions;
+  }
+
+  /**
+   * Sets how many candidates per requested result a search rescores exactly: {@code 0} disables the rescoring,
+   * {@link #RESCORE_OVERSAMPLE_AUTO} restores the per-quantization default. See {@link #rescoreOversample}.
+   */
+  public void setRescoreOversample(final int rescoreOversample) {
+    if (rescoreOversample != RESCORE_OVERSAMPLE_AUTO && (rescoreOversample < 0 || rescoreOversample > MAX_RESCORE_OVERSAMPLE))
+      throw new IndexException("Invalid sparse vector index rescoreOversample: " + rescoreOversample
+          + ". Supported values: 0 (off) to " + MAX_RESCORE_OVERSAMPLE + ", or " + RESCORE_OVERSAMPLE_AUTO + " (default by weightQuantization)");
+    this.rescoreOversample = rescoreOversample;
+  }
+
+  /**
+   * The oversampling a search applies: the configured {@link #rescoreOversample}, or when it is
+   * {@link #RESCORE_OVERSAMPLE_AUTO} {@link #DEFAULT_RESCORE_OVERSAMPLE} for INT8 and FP16 weights and {@code 0} (off)
+   * for FP32, whose index scores are already the exact ones.
+   */
+  public int effectiveRescoreOversample() {
+    if (rescoreOversample != RESCORE_OVERSAMPLE_AUTO)
+      return rescoreOversample;
+    return weightQuantization == WeightQuantization.FP32 ? 0 : DEFAULT_RESCORE_OVERSAMPLE;
   }
 
   /**

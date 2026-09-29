@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * This avoids the separate FilterStep overhead by evaluating the predicate inline
  * during scanning, which is significantly faster for selective queries.
  */
-public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
+public class FetchFromTypeWithFilterStep extends AbstractExecutionStep implements ParallelAggregationSource {
 
   private       String      typeName;
   private       WhereClause whereClause;
@@ -170,7 +170,8 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
   }
 
   /** Whether an execution starting now would scan in parallel: what an EXPLAIN shows. */
-  boolean wouldRunInParallel(final CommandContext context) {
+  @Override
+  public boolean wouldRunInParallel(final CommandContext context) {
     return !parallelDecided && !orderByRidAsc && !orderByRidDesc && SqlAstInspector.isParallelSafe(whereClause) && ParallelTypeScan.plan(context, typeName, subSteps) != null;
   }
 
@@ -178,7 +179,8 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
    * Plans a parallel execution of this scan, filter included, for an aggregation that consumes its rows in the scan's
    * workers (issue #8523), or returns {@code null} when this execution cannot run in parallel, or has already started.
    */
-  ParallelTypeScan planParallelAggregation(final CommandContext context) {
+  @Override
+  public ParallelTypeScan planParallelAggregation(final CommandContext context) {
     if (parallelDecided || orderByRidAsc || orderByRidDesc || !SqlAstInspector.isParallelSafe(whereClause))
       return null;
     pullPrevious(context, Integer.MAX_VALUE);

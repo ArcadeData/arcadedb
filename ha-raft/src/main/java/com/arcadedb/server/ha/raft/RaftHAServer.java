@@ -87,6 +87,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -196,6 +197,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private final    LocalDropVerbs          localDropVerbs          = new LocalDropVerbs();
   private final    ClusterMonitor          clusterMonitor;
+  /**
+   * How recently a follower must have answered this leader to be handed leadership (issue #8556); see
+   * {@link #handoffReachablePeers()}.
+   */
+  private final    long                    handoffContactWindowMs;
   private final    Quorum                  quorum;
   /**
    * The RPC timeout of this node's own Raft client: a request unanswered for this long is retried with the same call
@@ -335,8 +341,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
   // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
   // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
-  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
-  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  // exactly the outage it exists to repair. A saturated queue rejects (the default AbortPolicy: each submitter
+  // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
+  // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
@@ -358,6 +365,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // leadership around the cluster on every health tick. Node-local and kept across leadership changes for the same
   // reason as the channel-escalation cooldown above: it bounds that to one handoff per node per window.
   private static final long                  QUARANTINE_HANDOFF_COOLDOWN_MS = 10 * 60_000L;
+  // Whether a #8491 hand-off (a leader replacing a database) is queued or running on channelRecoveryExecutor, so a
+  // health tick does not queue a second one behind it (issue #8557).
+  private final    AtomicBoolean             replacingHandOffQueued = new AtomicBoolean();
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
   // Wall-clock of the last "no other peer to hand leadership to" report, throttled to the same window; 0 = none yet.
@@ -378,7 +388,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // concurrent reader (refreshRaftClient() from a leader-change callback) never sees a half-built transport
   // configuration.
   private volatile Parameters                 raftParameters        = new Parameters();
-  private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
   // condition on its own, even without an intervening notifyApplied() call. notifyApplied() has a
@@ -554,6 +563,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
         this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
         this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
+    this.handoffContactWindowMs = handoffContactWindowMs(
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN), peerUnreachableThresholdMs);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -910,7 +921,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (shutdownRequested || !isLeader())
           return;
 
-        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
+        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor,
+            handoffReachablePeers());
         if (target == null) {
           LogManager.instance().log(this, Level.SEVERE,
               "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
@@ -1024,11 +1036,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // Leadership may have moved while this sat in the queue, and a transfer sent through a follower's client is
         // routed to the real leader, which would then step down for a reason that is not its own (issue #7134).
         final boolean leader = !shutdownRequested && isLeader();
-        switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor),
+        switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor,
+            handoffReachablePeers()),
             lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
         case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
             "This leader holds %s, which it cannot resync from itself, and no peer is eligible to take over leadership "
-                + "(none other is configured, or every other one is lagging or a priority-0 replica) (issue #8483). The "
+                + "(none other is configured, or every other one is lagging, unreachable or a priority-0 replica) (issue #8483). The "
                 + "handoff is retried as soon as a peer is eligible. With no other peer, restore the database from a "
                 + "backup or add a peer so that leadership can move and this node can resync from it.", reason);
         case TRANSFER -> transferLeadershipToResync(reason);
@@ -1113,7 +1126,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Whether a peer is eligible to take leadership over, by the rules a manual step-down uses
-   * ({@link #selectStepDownTargets}: not this node, not lagging, not a priority-0 replica while real voters exist).
+   * ({@link #selectStepDownTargets}: not this node, not lagging, not a priority-0 replica while real voters exist) and,
+   * through the four-argument form production uses, proven reachable (issue #8556).
    * Asked before the handoff rather than left to {@link #transferLeadership(long)}, whose no-target fallback would
    * otherwise put a cluster with no eligible peer through a step-down that re-elects this node (code review on PR
    * #8531), exactly what {@link #escalateWedgedPeerChannel} refuses to do for the same reason. Package-private for
@@ -1121,7 +1135,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean hasHandoffTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final ClusterMonitor clusterMonitor) {
-    return !selectStepDownTargets(livePeers, localPeerId, clusterMonitor).isEmpty();
+    return hasHandoffTarget(livePeers, localPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #hasHandoffTarget(Collection, RaftPeerId, ClusterMonitor)} restricted to the peers in {@code reachable}
+   * ({@link #handoffReachablePeers()}), so a peer that is down does not count as eligible and suppress the report
+   * that no peer can take over (issue #8556).
+   */
+  static boolean hasHandoffTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor, final Set<String> reachable) {
+    return !selectStepDownTargets(livePeers, localPeerId, clusterMonitor, reachable).isEmpty();
   }
 
   /**
@@ -1139,7 +1163,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final String wedgedPeerId, final ClusterMonitor clusterMonitor) {
-    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor))
+    return selectChannelEscalationTarget(livePeers, localPeerId, wedgedPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #selectChannelEscalationTarget(Collection, RaftPeerId, String, ClusterMonitor)} restricted to the peers in
+   * {@code reachable} ({@link #handoffReachablePeers()}, issue #8556).
+   */
+  static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final String wedgedPeerId, final ClusterMonitor clusterMonitor, final Set<String> reachable) {
+    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor, reachable))
       if (!candidate.getId().toString().equals(wedgedPeerId))
         return candidate;
     return null;
@@ -1737,7 +1770,51 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return;
     final ArcadeStateMachine sm = stateMachine;
     if (sm != null)
-      sm.handOffLeadershipWhileReplacingDatabase();
+      queueReplacingDatabaseHandOff(sm);
+  }
+
+  /**
+   * Runs the #8491 hand-off ({@link ArcadeStateMachine#handOffLeadershipWhileReplacingDatabase()}) on
+   * {@link #channelRecoveryExecutor}, the single worker the #8483 and #5346 hand-offs already run on, rather than inline
+   * on the health-monitor thread (issue #8557).
+   * <p>
+   * Inline, it raced them: a leader that quarantines a database arms #8483 and, once the resync install it triggers
+   * is running, #8491 too, both in the same health tick. Ratis keeps one pending transfer per leader and refuses a
+   * second one naming another peer. On one worker the automatic hand-offs cannot overlap, and the health tick no longer
+   * blocks for the length of a transfer. The state machine's own throttle still decides whether a queued run
+   * transfers; this only keeps a tick from queueing a second run while one is waiting or running.
+   * <p>
+   * Package-private for unit tests.
+   */
+  void queueReplacingDatabaseHandOff(final ArcadeStateMachine sm) {
+    // The common case, every tick on a healthy node: nothing is being replaced, so nothing is queued. The episode is
+    // over, though, so its failures in a row are forgotten here, where the state machine's own reset is never reached
+    // (issue #8556): one volatile read when there is nothing to forget.
+    if (sm.getDatabasesBeingReplaced().isEmpty() || !isLeader()) {
+      sm.resetReplacingLeaderHandOffBackOff();
+      return;
+    }
+    if (!replacingHandOffQueued.compareAndSet(false, true))
+      return;
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        try {
+          // The state machine re-checks leadership and the replacement itself: either may have ended in the queue.
+          // restartRatis() may also have replaced the state machine meanwhile; a stale one no longer speaks for this
+          // node, and the current one is asked on the next tick.
+          if (!shutdownRequested && stateMachine == sm)
+            sm.handOffLeadershipWhileReplacingDatabase();
+        } finally {
+          replacingHandOffQueued.set(false);
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      replacingHandOffQueued.set(false);
+      // Nothing was attempted, so the next health tick simply asks again.
+      LogManager.instance().log(this, Level.WARNING,
+          "Recovery queue is saturated; the leadership hand-off of a leader replacing a database is retried on the "
+              + "next health tick (issue #8491)");
+    }
   }
 
   @Override
@@ -4133,10 +4210,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return false;
   }
 
-  Object getLeaderChangeNotifier() {
-    return leaderChangeNotifier;
-  }
-
   public void addPeer(final String peerId, final String address) {
     addPeer(peerId, address, null);
   }
@@ -4424,6 +4497,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Whether the transfer another caller has pending on this leader moved leadership to another peer within a
+   * step-down's budget (issue #8557); a seam for {@link #stepDown()}.
+   */
+  boolean concurrentHandOffLanded() {
+    return clusterManager.leadershipMovedAway(STEP_DOWN_TRANSFER_TIMEOUT_MS);
+  }
+
+  /** Budget of one targeted transfer of {@link #stepDown()}, and of its bare step-down fallback. */
+  private static final long STEP_DOWN_TRANSFER_TIMEOUT_MS = 10_000L;
+
+  /**
    * Steps this leader down by transferring leadership to the best eligible peer.
    * <p>
    * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
@@ -4440,13 +4524,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (!isLeader())
       throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
 
-    final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
+    final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor,
+        handoffReachablePeers());
 
     boolean attempted = false;
     for (final RaftPeer peer : candidates) {
       try {
-        transferLeadership(peer.getId().toString(), 10_000);
+        transferLeadership(peer.getId().toString(), STEP_DOWN_TRANSFER_TIMEOUT_MS);
         return;
+      } catch (final LeadershipTransferInProgressException inProgress) {
+        // Another caller is handing this leadership over right now (issue #8557). Every other candidate would be
+        // refused the same way, and the bare step-down below would pull the leadership out from under that transfer,
+        // leaving the cluster leaderless for an election timeout. Its outcome is this step-down's outcome.
+        if (concurrentHandOffLanded())
+          return;
+        if (!isLeader())
+          throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+        throw new ReplicationException(
+            "Cannot step down: another leadership transfer is in progress on this node and did not complete ("
+                + inProgress.getMessage() + ")");
       } catch (final NotTheLeaderRefusalException notLeader) {
         // Leadership moved between the guard above and this attempt. When an earlier candidate's transfer was
         // already sent, that transfer may be what moved it - its call failed, yet the target won (#8487) - so a
@@ -4477,7 +4573,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // budget, the very candidates the loop above just tried (issue #8480).
     LogManager.instance().log(this, Level.INFO,
         "No explicit step-down target eligible; delegating leadership-transfer target selection to Ratis");
-    if (stepDownWithoutTarget(10_000L))
+    if (stepDownWithoutTarget(STEP_DOWN_TRANSFER_TIMEOUT_MS))
       return;
 
     // The no-target API also returns false if leadership was lost before the transfer (issue #4809).
@@ -4502,6 +4598,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static List<RaftPeer> selectStepDownTargets(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final ClusterMonitor clusterMonitor) {
+    return selectStepDownTargets(livePeers, localPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #selectStepDownTargets(Collection, RaftPeerId, ClusterMonitor)} that also drops every peer not in
+   * {@code reachable}: the ids {@link #handoffReachablePeers()} proved answered this leader recently (issue #8556).
+   * {@code null} applies no reachability screen, which only unit tests of the other rules pass. Every production
+   * caller passes {@link #handoffReachablePeers()}.
+   * <p>
+   * The screen is not optional. Lag alone cannot tell a peer that is down from a healthy one: a follower that died at a
+   * high water mark keeps a small lag on an idle cluster, and {@link ClusterMonitor#isReplicaLagging} answers false for
+   * a peer it has no tick for, which is every peer right after {@link ClusterMonitor#reset()} - that is, right after
+   * the election a hand-off typically reacts to. And a targeted Ratis transfer to a dead peer is not a harmless
+   * no-op: Ratis holds it pending for the caller's whole timeout, and refuses every write on this leader, on every
+   * database, while it does.
+   */
+  static List<RaftPeer> selectStepDownTargets(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor, final Set<String> reachable) {
     final String localId = localPeerId.toString();
 
     // Highest priority among the other peers. When it is 0 the cluster runs with the default,
@@ -4523,12 +4637,74 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Lagging follower: promoting it would prolong write unavailability while it catches up.
       if (clusterMonitor != null && clusterMonitor.isReplicaLagging(peerId))
         continue;
+      // STALLED follower (issue #8556): unreachable while caught up (#5291), never appended (#5295) or stuck behind an
+      // install-snapshot loop (#8457). Each of those can carry a lag under the threshold, which the test above passes.
+      if (clusterMonitor != null && clusterMonitor.getReplicaStatus(peerId) == ClusterMonitor.ReplicaStatus.STALLED)
+        continue;
+      // Not proven reachable (issue #8556): a targeted transfer to it would hold every write on this leader refused
+      // for the whole transfer budget.
+      if (reachable != null && !reachable.contains(peerId))
+        continue;
       candidates.add(peer);
     }
 
     // Strongest (highest priority) first; List.sort is stable so equal priorities keep iteration order.
     candidates.sort((a, b) -> Integer.compare(b.getPriority(), a.getPriority()));
     return candidates;
+  }
+
+  /**
+   * The followers that answered this leader recently enough to be handed leadership (issue #8556): the reachability
+   * screen of {@link #selectStepDownTargets(Collection, RaftPeerId, ClusterMonitor, Set)}. Read live from Ratis rather
+   * than from the {@link ClusterMonitor} tick, which lags by up to one tick and holds nothing at all for the first
+   * tick after an election. Empty on a follower. Package-private and overridable so the step-down loop can be
+   * unit-tested without a running division.
+   */
+  Set<String> handoffReachablePeers() {
+    return handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
+  }
+
+  /**
+   * The peers of {@code followerStates} that are proven reachable from this leader (issue #8556). A peer qualifies
+   * only when:
+   * <ul>
+   *   <li>its match index is known and not negative. Ratis creates each follower's record afresh, at match index -1,
+   *   when this node becomes leader, and moves it only when the follower acknowledges an append. So -1 means the
+   *   follower has not answered this leader once - a peer that is down right after the election is exactly this, and
+   *   so is one still waiting for a snapshot, which a targeted transfer would also leave pending. A degraded entry
+   *   with no match index (membership changing under the read, issue #4842) proves nothing and does not qualify
+   *   either;</li>
+   *   <li>its last RPC response is younger than {@code contactWindowMs}. The leader heartbeats every follower well
+   *   inside an election timeout, so a live follower answers far more often than that.</li>
+   * </ul>
+   * Package-private and static so the rule can be unit-tested without a cluster.
+   */
+  static Set<String> handoffReachablePeerIds(final List<Map<String, Object>> followerStates, final long contactWindowMs) {
+    final Set<String> reachable = new HashSet<>(followerStates.size() * 2);
+    for (final Map<String, Object> entry : followerStates) {
+      final Object peerId = entry.get("peerId");
+      if (peerId == null)
+        continue;
+      final RaftClusterStatusExporter.FollowerReplicationState state = RaftClusterStatusExporter.FollowerReplicationState.of(
+          entry);
+      if (!state.matchIndexKnown || state.matchIndex < 0)
+        continue;
+      // An absent last-RPC time reads as -1 (followerStateIndex), so it fails the first test.
+      if (state.lastRpcMs < 0 || state.lastRpcMs >= contactWindowMs)
+        continue;
+      reachable.add(peerId.toString());
+    }
+    return reachable;
+  }
+
+  /**
+   * The window of {@link #handoffReachablePeerIds}: the minimum election timeout, the interval within which a follower
+   * that stopped hearing from this leader would already have started an election, capped at the peer-unreachable
+   * threshold when that is enabled and shorter.
+   */
+  static long handoffContactWindowMs(final long electionTimeoutMinMs, final long peerUnreachableThresholdMs) {
+    final long window = electionTimeoutMinMs > 0 ? electionTimeoutMinMs : 5_000L;
+    return peerUnreachableThresholdMs > 0 ? Math.min(window, peerUnreachableThresholdMs) : window;
   }
 
   public void leaveCluster() {

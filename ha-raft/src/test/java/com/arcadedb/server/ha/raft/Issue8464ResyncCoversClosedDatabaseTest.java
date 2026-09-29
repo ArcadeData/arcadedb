@@ -51,6 +51,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -77,6 +78,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   private static final long       FLOOR          = 5L;
   private static final RaftPeerId LOCAL          = RaftPeerId.valueOf("local");
   private static final RaftPeerId LEADER         = RaftPeerId.valueOf("leader");
+  private static final TermIndex  MARKER         = TermIndex.valueOf(3L, 40L);
 
   @TempDir
   Path root;
@@ -155,7 +157,9 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   @Test
   void aClosedDatabaseTheLeaderCannotServeIsQuarantinedWithoutFailingTheOthers() throws Exception {
     createLocalDatabase(OTHER_DB);
-    leaderServes(OTHER_DB); // no context for DB_NAME: the leader answers 404 for it
+    leaderServes(OTHER_DB);
+    // A failure other than 404: a 404 says the leader does not hold it, which is not quarantined (issue #8559)
+    leaderFails(DB_NAME);
     closeLocally(DB_NAME);
     sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
     setStaleSnapshotAppliedFloor(FLOOR);
@@ -180,6 +184,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   void aQuarantineThatCannotBePersistedKeepsTheNodeWideFloor() throws Exception {
     createLocalDatabase(OTHER_DB);
     leaderServes(OTHER_DB);
+    leaderFails(DB_NAME);
     closeLocally(DB_NAME);
     sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
     setStaleSnapshotAppliedFloor(FLOOR);
@@ -244,6 +249,85 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
     assertThat(downloadsOf(DB_NAME)).isEqualTo(1);
     assertThat(liveCount(DB_NAME)).isEqualTo(SNAPSHOT_COUNT);
+  }
+
+  /**
+   * Issue #8558: the legacy refresh added the closed databases to a bare loop, so one the leader cannot serve - closed
+   * there too, answered 404 on every retry - threw out of the reconcile, the install never registered its marker and the
+   * leader re-notified it forever. A 404 is now the leader-missing verdict (issue #8559); any other failure is reported
+   * as not installed, and the registered databases are refreshed either way.
+   */
+  @Test
+  void theLegacyRefreshReportsAClosedDatabaseTheLeaderCannotServeInsteadOfFailingTheInstall() throws Exception {
+    server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    // A failure other than 404: a 404 says the leader does not hold it, which is not quarantined (issue #8559)
+    leaderFails(DB_NAME);
+    closeLocally(DB_NAME);
+
+    final DatabaseReconciler.ReconcileFromLeaderResult result = markerOnlyReconciler().reconcileDatabasesFromLeader(
+        leaderAddress, null, null, -1L);
+
+    assertThat(result.notInstalled()).as("the closed copy nobody refreshed is reported, not thrown").containsExactly(DB_NAME);
+    assertThat(result.leaderSnapshotTermIndex()).isEqualTo(MARKER);
+    assertThat(liveCount(OTHER_DB)).as("the registered database was refreshed regardless").isEqualTo(SNAPSHOT_COUNT);
+    assertThat(liveCount(DB_NAME)).as("nothing replaced the closed copy").isEqualTo(LIVE_COUNT);
+  }
+
+  /**
+   * The same through the default configuration's route to the legacy refresh: auto-acquire on, the leader's full
+   * listing failing once. The not-installed set then reaches the state machine, which quarantines the closed copy at
+   * its own applied position and records the refreshed one at the snapshot index.
+   */
+  @Test
+  void theDegradedAutoAcquireRefreshQuarantinesAClosedDatabaseTheLeaderCannotServe() throws Exception {
+    createLocalDatabase(OTHER_DB);
+    leaderServes(OTHER_DB);
+    leaderFails(DB_NAME);
+    closeLocally(DB_NAME);
+    sm.writePersistedAppliedIndex(FLOOR, DB_NAME);
+
+    final DatabaseReconciler reconciler = new DatabaseReconciler() {
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) throws IOException {
+        throw new IOException("listing timed out");
+      }
+
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) {
+        return new LeaderDatabaseQuery.BootstrapState(List.of(), MARKER);
+      }
+    };
+    reconciler.setServer(server);
+
+    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader(leaderAddress,
+        null, null, -1L);
+    assertThat(result.notInstalled()).containsExactly(DB_NAME);
+    assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
+
+    sm.completeSnapshotInstall(MARKER.getIndex(), result.notInstalled());
+
+    assertThat(sm.isDatabaseDiverged(DB_NAME)).as("the closed copy stays quarantined").isTrue();
+    assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("with a read floor at what it genuinely applied").isEqualTo(FLOOR);
+    assertThat(sm.readPersistedAppliedIndex(DB_NAME)).as("and it is not recorded at the snapshot index").isEqualTo(FLOOR);
+    assertThat(sm.readPersistedAppliedIndex(OTHER_DB)).isEqualTo(MARKER.getIndex());
+    assertThat(sm.isDatabaseDiverged(OTHER_DB)).isFalse();
+    assertThat(sm.isResyncInProgress()).as("the node stays out of the ready set while it holds that copy").isTrue();
+  }
+
+  /** Only the closed ones are isolated: a REGISTERED database the leader cannot serve still fails the install. */
+  @Test
+  void theLegacyRefreshStillFailsTheInstallForARegisteredDatabaseTheLeaderCannotServe() {
+    server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    // No context at all: the leader answers 404 for DB_NAME, which is registered here
+
+    assertThatThrownBy(() -> markerOnlyReconciler().reconcileDatabasesFromLeader(leaderAddress, null, null, -1L))
+        .as("Ratis must re-drive the install for a database this node serves")
+        .isInstanceOf(IOException.class);
+    assertThat(liveCount(DB_NAME)).isEqualTo(LIVE_COUNT);
   }
 
   /**
@@ -314,6 +398,19 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     });
   }
 
+  /** The real reconciler with the leader's snapshot marker answered locally; the downloads still go to the stub leader. */
+  private DatabaseReconciler markerOnlyReconciler() {
+    final DatabaseReconciler reconciler = new DatabaseReconciler() {
+      @Override
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+          final String clusterToken) {
+        return new LeaderDatabaseQuery.BootstrapState(List.of(), MARKER);
+      }
+    };
+    reconciler.setServer(server);
+    return reconciler;
+  }
+
   /** Reopens the database the way the next request would, and counts what it serves. */
   private long liveCount(final String name) {
     return server.getDatabase(name).countType("Node", true);
@@ -328,6 +425,14 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     final Field f = ArcadeStateMachine.class.getDeclaredField("staleSnapshotAppliedFloor");
     f.setAccessible(true);
     ((AtomicLong) f.get(sm)).set(floor);
+  }
+
+  /** Makes the leader fail to serve {@code name} with a 503, a failure that says nothing about whether it holds it. */
+  private void leaderFails(final String name) {
+    leader.createContext("/api/v1/ha/snapshot/" + name, exchange -> {
+      exchange.sendResponseHeaders(503, -1);
+      exchange.close();
+    });
   }
 
   /** Makes the leader serve a real database with a DIFFERENT record count under {@code name}. */

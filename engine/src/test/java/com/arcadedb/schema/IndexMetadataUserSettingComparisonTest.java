@@ -80,6 +80,7 @@ class IndexMetadataUserSettingComparisonTest {
     samples.put("dimensions", new Object[] { 128, 256 });
     samples.put("modifier", new Object[] { "NONE", "IDF" });
     samples.put("weightQuantization", new Object[] { "FP32", "INT8" });
+    samples.put("rescoreOversample", new Object[] { 0, 3 });
 
     assertEverySettingIsComparable(new LSMSparseVectorIndexMetadata("Doc", PROPERTIES, -1), samples,
         Schema.INDEX_TYPE.LSM_SPARSE_VECTOR);

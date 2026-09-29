@@ -2048,6 +2048,36 @@ public class GraphEngine {
   }
 
   /**
+   * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} for a caller that follows the edges without reading
+   * them: every edge returned answers its endpoints from the edge list it was read from, without loading its record
+   * (issue #8537). See {@link EdgeLinkedList#edgeIteratorKnowingEndpoints} for what that costs in ghost detection.
+   * <p>
+   * Under {@link Vertex.DIRECTION#BOTH} a self-loop is returned twice, once from each list, as
+   * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} does. The lists are read from the instance of the
+   * vertex the running transaction holds.
+   */
+  public Iterator<Edge> getEdgesKnowingEndpoints(final VertexInternal vertex, final Vertex.DIRECTION direction,
+                                                 final String... edgeTypes) {
+    if (direction == null)
+      throw new IllegalArgumentException("Direction is null");
+
+    final VertexInternal source = getMostUpdatedVertex(vertex);
+    if (direction == Vertex.DIRECTION.BOTH) {
+      final MultiIterator<Edge> result = new MultiIterator<>();
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
+      if (outEdges != null)
+        result.addIterator(outEdges.edgeIteratorKnowingEndpoints(edgeTypes));
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
+      if (inEdges != null)
+        result.addIterator(inEdges.edgeIteratorKnowingEndpoints(edgeTypes));
+      return result;
+    }
+
+    final EdgeLinkedList edges = getEdgeHeadChunk(source, direction);
+    return edges != null ? edges.edgeIteratorKnowingEndpoints(edgeTypes) : Collections.emptyIterator();
+  }
+
+  /**
    * Returns connected vertex RIDs without loading vertex records from disk.
    * This is significantly faster than {@link #getVertices} when only RIDs are needed
    * (e.g., for hash-join neighbor maps, anti-join set construction, connectivity checks).

@@ -166,7 +166,8 @@ public final class HealthMonitor {
      * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
      * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
      * write to it fails while it stays leader. No-op on a follower, when nothing is being replaced, and between
-     * throttled attempts. May block for the length of one leadership transfer.
+     * throttled attempts. Must not run the transfer on the calling thread: it is queued behind any other automatic
+     * hand-off of this node (issue #8557).
      * <p>
      * Its own hook because nothing else sees the condition: the node's log is complete and it is not lagging, which
      * is exactly why Raft elected it.
@@ -465,10 +466,10 @@ public final class HealthMonitor {
     }
     noteLogWriterHealthy();
     // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
-    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). A hand-off
-    // blocks this tick for up to one leadership transfer (ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_TIMEOUT_MS), so
-    // the checks after it wait that long too - on a node that is the leader, where the follower checks are no-ops, and
-    // at most once per REPLACING_LEADER_HAND_OFF_INTERVAL_MS.
+    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). The hand-off
+    // itself runs on the recovery executor the other automatic hand-offs share, so it cannot race them for the one
+    // transfer Ratis keeps pending, and this tick does not wait for it (issue #8557). Attempts are throttled to one per
+    // ArcadeStateMachine.replacingLeaderHandOffIntervalMs after the previous attempt ended (#8556).
     target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.

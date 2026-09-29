@@ -19,8 +19,11 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.function.DistinctNumericKey;
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -31,12 +34,23 @@ import java.util.Set;
  * Wrapper that applies DISTINCT semantics to an aggregation function.
  * Tracks seen argument values and only delegates to the wrapped function for unique values.
  */
-public class DistinctAggregationWrapper implements StatelessFunction {
-  private final StatelessFunction delegate;
-  private final Set<List<Object>> seenValues = new HashSet<>();
+public class DistinctAggregationWrapper implements StatelessFunction, HeapBufferingFunction {
+  private final StatelessFunction  delegate;
+  private final Set<List<Object>>  seenValues = new HashSet<>();
+  // THE VALUES SEEN ARE HELD UNTIL THE AGGREGATION ENDS: CHARGED TO THE HEAP BUDGET OF ALL THE QUERIES (ISSUE #8591)
+  private       OperationHeapLimit limit;
+  // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
+  private       boolean            ownLimit;
 
   public DistinctAggregationWrapper(final StatelessFunction delegate) {
     this.delegate = delegate;
+  }
+
+  @Override
+  public void setHeapLimit(final OperationHeapLimit owner) {
+    limit = owner.child(delegate.getName() + "(DISTINCT)");
+    ownLimit = false;
+    HeapBufferingFunction.adopt(delegate, owner);
   }
 
   @Override
@@ -67,6 +81,12 @@ public class DistinctAggregationWrapper implements StatelessFunction {
       key[i] = DistinctNumericKey.canonicalize(args[i]);
     if (!seenValues.add(Arrays.asList(key)))
       return null;
+    if (limit == null) {
+      limit = OperationHeapLimit.of(context, delegate.getName() + "(DISTINCT)");
+      ownLimit = true;
+    }
+    // THE KEY, THE LIST THAT WRAPS IT AND ITS ENTRY IN THE SET
+    limit.chargeElement(key, HeapEstimator.HASH_ENTRY_BYTES + HeapEstimator.OBJECT_BYTES);
     return delegate.execute(args, context);
   }
 
@@ -77,6 +97,8 @@ public class DistinctAggregationWrapper implements StatelessFunction {
 
   @Override
   public Object getAggregatedResult() {
+    if (ownLimit)
+      limit.release();
     return delegate.getAggregatedResult();
   }
 }

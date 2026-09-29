@@ -183,6 +183,50 @@ class PatternPredicateGhostEdgeTest {
   }
 
   /**
+   * Issue #8537: an unread relationship is answered from the adjacency list, whose entries carry both endpoints, so
+   * following it never loads the edge record and a ghost entry is followed like any other. That is what an anonymous
+   * single hop has always done (it walks {@code getVertices()}, as SQL {@code out()} does); multi-hop and
+   * variable-length patterns now answer the same way instead of skipping the ghost as a side effect of loading the
+   * record for relationship uniqueness. Whatever reads the relationship - a named variable, a property map, a WHERE on
+   * it - still loads it and still skips the ghost. A ghost is corruption for CHECK DATABASE to repair; the contract
+   * pinned here is that no shape of the query throws, and which shapes follow the ghost and which skip it.
+   */
+  @Test
+  void anonymousHopsFollowTheAdjacencyWhileReadRelationshipsSkipTheGhost() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:Account {number: 'ACC-G'})-[:INITIATED {transaction_id: 'TX-G'}]->(t:Transaction {id: 'TX-G'})"
+            + "-[:SETTLED]->(s:Settlement {id: 'S-G'})"));
+
+    final RID edgeRID;
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Account {number: 'ACC-G'})-[r:INITIATED]->(t:Transaction) RETURN r")) {
+      edgeRID = ((Edge) rs.next().getProperty("r")).getIdentity();
+    }
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edgeRID));
+
+    // Anonymous fixed-length hops follow the adjacency entry
+    assertThat(count("MATCH (a:Account {number: 'ACC-G'})-[:INITIATED]->(t) RETURN t")).isEqualTo(1);
+    assertThat(count("MATCH (a:Account {number: 'ACC-G'})-[:INITIATED]->()-[:SETTLED]->(s) RETURN s")).isEqualTo(1);
+    // An untyped variable-length expansion still materialises its relationships, so it skips the ghost
+    assertThat(count("MATCH (a:Account {number: 'ACC-G'})-[*2]->(s) RETURN s")).isZero();
+    // Read: the relationship is loaded, the ghost is skipped
+    assertThat(count("MATCH (a:Account {number: 'ACC-G'})-[r:INITIATED]->()-[:SETTLED]->(s) RETURN r, s")).isZero();
+    assertThat(count("MATCH (a:Account {number: 'ACC-G'})-[:INITIATED {transaction_id: 'TX-G'}]->()-[:SETTLED]->(s) RETURN s"))
+        .isZero();
+  }
+
+  private long count(final String query) {
+    long n = 0;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /**
    * Pattern comprehension - [(a)-[:INITIATED]->(t) | t] and its variable-length form - routes through
    * PatternComprehensionExpression (a different path from the WHERE predicate above). A ghost edge in
    * the comprehension must be skipped, not throw, and contribute no element to the produced list.

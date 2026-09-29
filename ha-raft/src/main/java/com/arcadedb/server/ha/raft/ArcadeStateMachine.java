@@ -112,6 +112,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -462,17 +463,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * or targeted resync leaves the log complete). A leader cannot install from itself, and every client request on
    * that database is refused while its copy is being replaced (issue #8363), so the cluster rejects every write to it
    * with a healthy majority. {@link #handOffLeadershipWhileReplacingDatabase()} reads this set to hand leadership to
-   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition.
+   * a peer that holds the data, and {@code ClusterAlerts} reads it to report the condition. {@link #startTransaction}
+   * reads it too, to refuse reserving page versions against a copy being replaced (issue #8022).
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
-  // Wall-clock of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 = none yet.
-  // Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an election
-  // on every health tick.
-  private final AtomicLong lastReplacingLeaderHandOffMs = new AtomicLong();
+  // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
+  // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
+  // election on every health tick. Measured from the end, not the start (issue #8556): an attempt can outlast the
+  // interval, and stamping its start let the next one begin as soon as it returned.
+  private volatile long          lastReplacingLeaderHandOffEndMs;
+  // Hand-offs that failed in a row since the last one that moved leadership; widens the interval (issue #8556).
+  private volatile int           replacingLeaderHandOffFailures;
+  // Claimed by the caller running a hand-off, so a concurrent caller does not start a second one meanwhile.
+  private final    AtomicBoolean replacingLeaderHandOffRunning = new AtomicBoolean();
+  // Clock of the hand-off throttle. Package-private and mutable only so tests can drive the interval without sleeping.
+  LongSupplier replacingLeaderHandOffClock = System::currentTimeMillis;
 
   /** Minimum interval between two leadership hand-offs of a leader replacing a database (issue #8491). */
   static final long REPLACING_LEADER_HAND_OFF_INTERVAL_MS = 10_000L;
+
+  /** Longest interval the back-off of failed hand-offs of a leader replacing a database reaches (issue #8556). */
+  static final long REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS = 120_000L;
+
+  /**
+   * Where the count of failed hand-offs in a row stops growing (issue #8556). Any count past the one that reaches
+   * {@link #REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS} gives the same interval; the cap only keeps the counter bounded.
+   */
+  static final int REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED = 30;
 
   /** Budget of one leadership hand-off of a leader replacing a database (issue #8491). */
   static final long REPLACING_LEADER_HAND_OFF_TIMEOUT_MS = 10_000L;
@@ -1158,6 +1176,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Refuse rather than append an entry no node will be able to read; not a fault of this leader.
       return context.build().setException(e);
     }
+
+    // Not validated against a copy this node is replacing (issue #8022): a node elected in the middle of an install
+    // (issue #8491) would otherwise reserve versions read from the pages it is about to discard, and the install then
+    // clears those reservations while their entries still wait behind the install lock. Refused like any other entry
+    // the leader cannot validate right now; the originator retries against the next leader.
+    final String databaseName = decoded.databaseName();
+    if (databaseName != null && databasesBeingReplaced.containsKey(databaseName))
+      return context.build().setException(new NeedRetryException(
+          "Database '" + databaseName + "' is being replaced with a copy from another node, so the leader cannot "
+              + "validate the transaction against it right now. Please retry"));
 
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
@@ -1999,12 +2027,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Leader change detected, triggering pending snapshot download from leader %s", leaderName);
       lifecycleExecutor.submit(this::triggerSnapshotDownload);
     }
-
-    // Wake up any threads waiting for leadership change (e.g. leaveCluster)
-    final Object notifier = raftHA.getLeaderChangeNotifier();
-    synchronized (notifier) {
-      notifier.notifyAll();
-    }
   }
 
   /**
@@ -2305,7 +2327,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // The applied positions, the healed diverged marks and read floors of every database the install refreshed, and
       // the re-armed ones of those it did not reinstall, all in ONE durable write (issues #6760, #8137): a crash between
       // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
-      completeSnapshotInstall(snapshotIndex, notInstalled);
+      // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
+      // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
+      completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
@@ -4507,6 +4531,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), lastAppliedIndex.get());
         SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
+        // The install replaced the database's files, so no reservation taken against the previous copy can still hold
+        // (issue #8022) - the rule applyInstallDatabaseEntry and applyDropDatabaseEntry already apply, here for every
+        // install path, the targeted resync of a quarantined database included. Success only and still under the lock:
+        // a failed install leaves the old copy, and the entries behind the reservations are still to be applied to it.
+        // Nothing in flight is dropped: reservations are taken only by a leader, a leader cannot install from itself,
+        // so this node stepped down (clearing its ledger) before the download could succeed, and a node elected
+        // mid-install takes no reservation on this database until the replacement ends (see startTransaction).
+        pageVersions.clear(dbName);
         // Recorded on success only, and still under the lock (issue #8577): a failed install leaves the old copy in
         // place, so the waiting entries must still be applied to it, not skipped. Recording here - before the
         // unlock below - is what makes the boundary visible to every entry that re-acquires this gate afterward,
@@ -4545,7 +4577,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
-   * copy (issue #8491). Driven by the {@link HealthMonitor} tick.
+   * copy (issue #8491). Driven by the {@link HealthMonitor} tick, through {@link RaftHAServer}, which runs it on the
+   * executor the other automatic hand-offs share so that none of them races it (issue #8557).
    * <p>
    * A node can be elected in the middle of such an install: an operator resync ({@link #resyncDatabaseFromLeader})
    * or a targeted resync of a quarantined database leaves its Raft log complete, and Raft elects on the log alone.
@@ -4555,58 +4588,124 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Handing leadership to a peer fixes both at once: the peer holds the data and serves the writes, and the
    * install's next download attempt resolves that peer as its source and completes. It is the targeted transfer
-   * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging.
+   * {@link RaftHAServer#transferLeadership(long)} runs, which only picks a peer that is not lagging and that answered
+   * this leader recently (issue #8556).
    * <p>
-   * No-op when nothing is being replaced (one map read), on a follower, and within
-   * {@link #REPLACING_LEADER_HAND_OFF_INTERVAL_MS} of the previous attempt, so a cluster where no peer can take over
-   * is not put through an election on every tick. Blocks the caller for up to
+   * No-op when nothing is being replaced (one map read), on a follower, and until
+   * {@link #replacingLeaderHandOffIntervalMs} has passed since the previous attempt ENDED - an interval that doubles
+   * with each failure in a row (issue #8556) - so a cluster where no peer can take over is not put through an election
+   * on every tick. Blocks the caller for up to
    * {@link #REPLACING_LEADER_HAND_OFF_TIMEOUT_MS} while a hand-off runs.
    *
    * @return whether leadership moved to another node
    */
   public boolean handOffLeadershipWhileReplacingDatabase() {
-    if (databasesBeingReplaced.isEmpty())
+    if (databasesBeingReplaced.isEmpty()) {
+      resetReplacingLeaderHandOffBackOff();
       return false;
+    }
     final RaftHAServer raftHA = this.raftHAServer;
-    if (raftHA == null || !raftHA.isLeader())
+    if (raftHA == null || !raftHA.isLeader()) {
+      resetReplacingLeaderHandOffBackOff();
       return false;
+    }
 
     // Read before the throttle slot is claimed: an install that finished since the first read must not spend the slot,
     // or a replacement starting right after it would wait out a whole interval for a hand-off that never ran.
     final List<String> replacing = getDatabasesBeingReplaced();
-    if (replacing.isEmpty())
-      return false;
-
-    final long now = System.currentTimeMillis();
-    final long previous = lastReplacingLeaderHandOffMs.get();
-    if (previous != 0 && now - previous < REPLACING_LEADER_HAND_OFF_INTERVAL_MS)
-      return false;
-    // Single attempt, no retry loop: a lost CAS means a concurrent caller (the health tick, or a direct call) has just
-    // claimed the slot and is running the hand-off itself.
-    if (!lastReplacingLeaderHandOffMs.compareAndSet(previous, now))
-      return false;
-
-    LogManager.instance().log(this, Level.WARNING,
-        "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
-            + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
-            + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
-    final boolean moved;
-    try {
-      moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
-    } catch (final RuntimeException e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Leadership hand-off while replacing database(s) %s failed: %s. Retrying on a later health check", replacing,
-          e.getMessage());
+    if (replacing.isEmpty()) {
+      // The last replacement finished between the two reads: the episode is over, as on the empty fast path above.
+      resetReplacingLeaderHandOffBackOff();
       return false;
     }
-    if (moved)
-      LogManager.instance().log(this, Level.INFO,
-          "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
-    else
+
+    if (!replacingLeaderHandOffDue())
+      return false;
+    // Single attempt, no retry loop: a lost claim means a concurrent caller (the health tick, or a direct call) is
+    // running the hand-off itself.
+    if (!replacingLeaderHandOffRunning.compareAndSet(false, true))
+      return false;
+    boolean attempted = false;
+    boolean moved = false;
+    try {
+      // Re-checked under the claim: a caller that finished between the check above and the claim has just stamped it.
+      if (!replacingLeaderHandOffDue())
+        return false;
+
       LogManager.instance().log(this, Level.WARNING,
-          "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying on a later "
-              + "health check; to move it by hand, run POST /api/v1/cluster/leader", replacing);
-    return moved;
+          "This node is the leader while it is replacing database(s) %s with the leader's copy: it cannot download the "
+              + "copy from itself and cannot serve those databases until it has one, so every write to them fails. "
+              + "Handing leadership to a peer that holds the data (issue #8491)", replacing);
+      attempted = true;
+      try {
+        moved = raftHA.transferLeadership(REPLACING_LEADER_HAND_OFF_TIMEOUT_MS);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Leadership hand-off while replacing database(s) %s failed: %s. Retrying in %d ms", replacing, e.getMessage(),
+            replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
+        return false;
+      }
+      if (moved)
+        LogManager.instance().log(this, Level.INFO,
+            "Leadership handed off while replacing database(s) %s; the install continues from the new leader", replacing);
+      else
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not hand off leadership while replacing database(s) %s: no peer took over. Retrying in %d ms; to move "
+                + "it by hand, run POST /api/v1/cluster/leader", replacing,
+            replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures + 1));
+      return moved;
+    } finally {
+      // Stamped when the attempt ENDS (issue #8556), whatever it returned or threw, so the interval is a real pause
+      // between attempts rather than a period that a slow attempt can fill end to end.
+      if (attempted) {
+        lastReplacingLeaderHandOffEndMs = Math.max(1L, replacingLeaderHandOffClock.getAsLong());
+        replacingLeaderHandOffFailures = moved ? 0 : Math.min(replacingLeaderHandOffFailures + 1,
+            REPLACING_LEADER_HAND_OFF_MAX_FAILURES_COUNTED);
+      }
+      replacingLeaderHandOffRunning.set(false);
+    }
+  }
+
+  /**
+   * Forgets the failures in a row once the condition they were counted for is over - nothing is being replaced, or this
+   * node is no longer the leader - so the next episode starts from the base interval (issue #8556). The pause after
+   * the last attempt still applies. One volatile read when there is nothing to reset.
+   * <p>
+   * Takes the same claim an attempt takes, so it can never zero the count under an attempt in flight, whose own
+   * failure would then restart the streak (code review on PR #8597). Losing the claim to an attempt skips the reset,
+   * which that attempt's outcome supersedes anyway.
+   * <p>
+   * Package-private: {@link RaftHAServer#queueReplacingDatabaseHandOff} calls it on the ticks that queue nothing.
+   */
+  void resetReplacingLeaderHandOffBackOff() {
+    if (replacingLeaderHandOffFailures == 0 || !replacingLeaderHandOffRunning.compareAndSet(false, true))
+      return;
+    try {
+      replacingLeaderHandOffFailures = 0;
+    } finally {
+      replacingLeaderHandOffRunning.set(false);
+    }
+  }
+
+  /** Whether the throttle of {@link #handOffLeadershipWhileReplacingDatabase()} admits an attempt now. */
+  private boolean replacingLeaderHandOffDue() {
+    final long lastEnd = lastReplacingLeaderHandOffEndMs;
+    return lastEnd == 0
+        || replacingLeaderHandOffClock.getAsLong() - lastEnd >= replacingLeaderHandOffIntervalMs(replacingLeaderHandOffFailures);
+  }
+
+  /**
+   * The pause after a hand-off of a leader replacing a database before the next one (issue #8556):
+   * {@link #REPLACING_LEADER_HAND_OFF_INTERVAL_MS} after one that moved leadership or after the first failure, then
+   * doubling with each further failure in a row, up to {@link #REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS}. A hand-off
+   * that cannot succeed - no peer can take over - must not run at a steady duty cycle: every attempt that aims a
+   * targeted transfer at a peer that cannot win refuses every write on this leader while it is pending.
+   */
+  static long replacingLeaderHandOffIntervalMs(final int consecutiveFailures) {
+    if (consecutiveFailures <= 1)
+      return REPLACING_LEADER_HAND_OFF_INTERVAL_MS;
+    final int doublings = Math.min(consecutiveFailures - 1, 16);
+    return Math.min(REPLACING_LEADER_HAND_OFF_INTERVAL_MS << doublings, REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS);
   }
 
   /**
@@ -6675,20 +6774,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * A closed database that cannot be installed does NOT fail the resync of the others, unlike a registered one. The
    * leader answers only for the databases IT has open, so a database closed on the leader too - an ordinary
    * maintenance close, run on every node - would otherwise fail every full resync of this node for good, with every
-   * other database left behind with it. It is quarantined instead, with a read floor at its own applied position,
-   * which is what a leader-driven install does with a database it gave up on (issue #6760): the node stays out of the
-   * ready set while it holds a copy it knows nothing about, and {@link #retryUnfilledSnapshotGap()} re-drives a
-   * targeted resync of it.
+   * other database left behind with it. When the leader answers that it does not hold the database (a 404), the copy
+   * is reported {@link DatabaseReconciler.AcquireState#LEADER_MISSING} and kept, neither installed nor quarantined
+   * (issue #8559): no resync from that leader can ever replace it, so a quarantine - which holds the WHOLE node out of
+   * the ready set - would last until an operator intervened. Any other failure is quarantined, with a read floor at its
+   * own applied position, which is what a leader-driven install does with a database it gave up on (issue #6760): the
+   * node stays out of the ready set while it holds a copy it knows nothing about, and
+   * {@link #retryUnfilledSnapshotGap()} re-drives a targeted resync of it.
+   * <p>
+   * A REGISTERED database the leader answers 404 for gets the same {@code LEADER_MISSING} verdict (issue #8588) - the
+   * one the auto-acquire reconcile of a leader-driven install already gives it - rather than failing the resync of
+   * every other database with it. Its copy is kept, still registered and served; any other failure of a registered
+   * database still fails the whole resync, which keeps the node-wide floor and re-arms it.
    */
   private void downloadAllDatabasesFrom(final PeerDialAddress source, final String clusterToken) throws IOException {
     final String leaderHttpAddr = source.httpAddress();
     final String leaderHttpsAddr = source.httpsAddress();
     int resynced = 0;
+    // Copies the leader does not hold: neither installed nor quarantined, so they are in neither set below, and nothing
+    // replaced them either - so their bootstrap-divergence marks are theirs to keep (issues #8559, #8588).
+    final Set<String> leaderMissing = new HashSet<>();
     for (final String dbName : server.getDatabaseNames()) {
       // install() keeps the database open during the download and rolls back on failure, so a
       // watchdog-triggered resync never leaves it closed.
       if (server.existsDatabase(dbName)) {
-        installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+        try {
+          installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+        } catch (final LeaderDoesNotHoldDatabaseException e) {
+          // The same leader answers the same 404 on every retry, so failing the whole resync for it kept the node-wide
+          // floor for good (issue #8588). Reported as the auto-acquire reconcile reports it, the copy kept and served.
+          reportDatabaseTheLeaderDoesNotHold(dbName, false, e);
+          leaderMissing.add(dbName);
+          continue;
+        }
+        reconciler.clearLeaderMissing(dbName);
         // Per database, right after its own install, rather than once at the end: a later database failing must
         // not leave this one reported as still carrying the copy the bootstrap baseline rejected (issue #8367).
         settleBootstrapReplacement(dbName);
@@ -6700,18 +6819,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final String dbName : SnapshotInstaller.closedDatabaseNames(server)) {
       try {
         installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      } catch (final LeaderDoesNotHoldDatabaseException e) {
+        // Not a failed install (issue #8559): the leader does not hold it, and a quarantine - node-wide in its readiness
+        // effect - would wait for an install that the same leader refuses on every retry. Reported the way the
+        // auto-acquire reconcile reports the same input, the copy kept and nothing downloaded or dropped - but marked
+        // unverified, so nothing reopens it on this follower (issue #8589).
+        try {
+          reportDatabaseTheLeaderDoesNotHold(dbName, true, e);
+        } catch (final IOException markFailure) {
+          // Without the mark the copy is reopenable and unverified: fall back to the quarantine, which fails closed.
+          LogManager.instance().log(this, Level.SEVERE,
+              "Snapshot resync could not mark database '%s' as an unverified closed copy: keeping it quarantined "
+                  + "instead (issue #8589)", markFailure, dbName);
+          notInstalled.add(dbName);
+          continue;
+        }
+        leaderMissing.add(dbName);
+        continue;
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE,
             "Snapshot resync could not reinstall database '%s', which is closed on this node but still on disk and "
                 + "would be reopened by the next request that names it: keeping it quarantined until a targeted "
-                + "resync succeeds. If the leader does not hold '%s' open, open it there or remove this node's copy "
-                + "(issue #8464)", e, dbName, dbName);
+                + "resync succeeds (issue #8464)", e, dbName);
         notInstalled.add(dbName);
         continue;
       }
       LogManager.instance().log(this, Level.INFO,
           "Snapshot resync reinstalled database '%s', which was closed on this node: it is open again (issue #8464)",
           dbName);
+      reconciler.clearLeaderMissing(dbName);
       settleBootstrapReplacement(dbName);
       resynced++;
     }
@@ -6721,8 +6857,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (notInstalled.isEmpty()) {
       clearDivergedState();
       // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
-      // had kept (issue #6124).
-      clearAllBootstrapUnreconciled();
+      // had kept (issue #6124) - except one the leader does not hold, whose copy nothing replaced.
+      if (leaderMissing.isEmpty())
+        clearAllBootstrapUnreconciled();
+      else
+        for (final String dbName : getBootstrapUnreconciledDatabases())
+          if (!leaderMissing.contains(dbName))
+            clearBootstrapUnreconciled(dbName);
     } else {
       // Every database but these carries the leader's copy now: clear the rest, and quarantine these with their own
       // honest floors in the same durable write (issues #6760, #8137).
@@ -6730,7 +6871,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final boolean durable = settleDivergedStateAfterInstall(notInstalled,
           snapshotInfo != null ? snapshotInfo.getIndex() : -1L, false);
       for (final String dbName : getBootstrapUnreconciledDatabases())
-        if (!notInstalled.contains(dbName))
+        if (!notInstalled.contains(dbName) && !leaderMissing.contains(dbName))
           clearBootstrapUnreconciled(dbName);
       // Fail closed. The node-wide floor below is the only other thing protecting these copies across a restart, and a
       // quarantine that lives in memory alone is gone after one: the directory would be reopened by the next request
@@ -6744,16 +6885,58 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // reinitialize() is satisfied. Record the marker index as the persisted applied position too:
     // without it the very same gap is re-detected on the next restart and the node re-downloads
     // forever. Then wake the waiters this resync unblocked (issue #6111).
-    resolveStaleSnapshotFloorAfterResync(resynced, notInstalled);
+    // A copy the leader does not hold was not brought to the marker either: recording it there would launder it into
+    // "applied" as the leader's state (issue #8588), so it keeps the position it genuinely reached, like notInstalled.
+    final Set<String> notAtMarker;
+    if (leaderMissing.isEmpty())
+      notAtMarker = notInstalled;
+    else {
+      notAtMarker = new HashSet<>(notInstalled);
+      notAtMarker.addAll(leaderMissing);
+    }
+    resolveStaleSnapshotFloorAfterResync(resynced, notAtMarker);
+  }
+
+  /**
+   * The verdict of a resync on a database the leader answered 404 for (issues #8559, #8588): the cluster's leader does
+   * not hold it - closed there too, dropped by the cluster while this node was away, or never created - so there is no
+   * committed state to hold this copy to and no install that will ever succeed. It is reported
+   * {@link DatabaseReconciler.AcquireState#LEADER_MISSING}, as the auto-acquire reconcile reports it, and any
+   * quarantine on it is lifted, as the leader-driven install lifts it for a database its reconcile reports so: a
+   * quarantine holds the WHOLE node out of the ready set and would wait for an install the same leader refuses on every
+   * retry. A registered copy stays registered and served, which is what the auto-acquire path does with it too.
+   * <p>
+   * A copy closed on this node is marked first with the durable {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE}
+   * (issue #8589): the leader may have closed a database the cluster still has, and this copy may be behind the
+   * committed log, so a follower must not reopen it for the next request that names it. The mark is per database, so it
+   * does not touch the node's readiness, and it goes with the install that replaces the copy or the drop that removes
+   * it. A registered copy is never marked: it is being served, and nothing reopens it.
+   *
+   * @throws IOException when the mark of a closed copy cannot be written: nothing else has been changed, and the caller
+   *                     keeps the copy quarantined rather than leave it reopenable
+   */
+  private void reportDatabaseTheLeaderDoesNotHold(final String dbName, final boolean closedLocally,
+      final LeaderDoesNotHoldDatabaseException e) throws IOException {
+    if (closedLocally)
+      SnapshotInstaller.markUnverifiedClosedCopy(server, dbName);
+    LogManager.instance().log(this, Level.WARNING,
+        "Snapshot resync did not reinstall database '%s'%s: the leader does not hold it (%s). Keeping this node's copy "
+            + "and not quarantining it, since no resync from this leader can replace it%s. Open it on the leader if the "
+            + "cluster should still have it, or remove this node's copy (issues #8559, #8588, #8589)",
+        dbName, closedLocally ? ", which is closed on this node" : "", e.getMessage(),
+        closedLocally ? ", but it is not reopened while this node is a follower: it may be behind the cluster" : "");
+    reconciler.markLeaderMissing(dbName);
+    clearDivergedDatabase(dbName);
   }
 
   /**
    * Completes a successful full resync with respect to the stale-snapshot read floor (issue #6111):
    * persists the marker index as the applied position of every present database except {@code notInstalled} - the
    * resync brought the others to it, and leaving the persisted value behind makes {@link #reinitialize()} re-detect
-   * the same gap on the next restart - then clears the floor and wakes the waiters it was holding back. Each database
-   * in {@code notInstalled} is already quarantined with its own read floor (issue #8464), so the node-wide floor is
-   * no longer what protects it. No-op when no floor was outstanding.
+   * the same gap on the next restart - then clears the floor and wakes the waiters it was holding back. A database
+   * in {@code notInstalled} is either quarantined with its own read floor (issue #8464), so the node-wide floor is
+   * no longer what protects it, or one the leader does not hold (issue #8588), which no resync can bring to the
+   * marker. No-op when no floor was outstanding.
    * <p>
    * {@code resynced} is logged rather than gated on: zero is legitimate for a node with no databases
    * on disk (nothing can be stale). It is worth seeing in the log, because a
@@ -6933,7 +7116,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled) {
-    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true);
+    completeSnapshotInstall(snapshotIndex, notInstalled, Set.of());
+  }
+
+  /**
+   * Same, except that the databases in {@code notRefreshed} - kept by the install without being refreshed, the ones the
+   * leader does not hold (issue #8588) - keep their own applied position too. Unlike {@code notInstalled} they are not
+   * quarantined and get no read floor: the leader has no committed state for them to be behind.
+   */
+  void completeSnapshotInstall(final long snapshotIndex, final Set<String> notInstalled, final Set<String> notRefreshed) {
+    settleDivergedStateAfterInstall(notInstalled, snapshotIndex, true, notRefreshed);
   }
 
   /**
@@ -6942,6 +7134,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
       final boolean recordAppliedPositions) {
+    return settleDivergedStateAfterInstall(notInstalled, snapshotIndex, recordAppliedPositions, Set.of());
+  }
+
+  private boolean settleDivergedStateAfterInstall(final Set<String> notInstalled, final long snapshotIndex,
+      final boolean recordAppliedPositions, final Set<String> notRefreshed) {
     final Map<String, Long> published = new LinkedHashMap<>();
     final boolean durable;
     // The final state - every database the install refreshed healed, every one it gave up on quarantined with its floor -
@@ -6955,7 +7152,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         globalAppliedIndex = snapshotIndex;
         if (server != null)
           for (final String dbName : server.getDatabaseNames())
-            if (!notInstalled.contains(dbName))
+            if (!notInstalled.contains(dbName) && !notRefreshed.contains(dbName))
               appliedIndexByDb.put(dbName, snapshotIndex);
       }
       for (final String dbName : notInstalled) {
@@ -7097,9 +7294,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
             // quarantine standing over a copy nothing would ever repair. A database with no copy at all is left
             // alone, as before - there is nothing on this node to serve stale.
             if (isDatabasePresentLocally(dbName)) {
-              installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+              try {
+                installLeaderCopy(dbName, leaderHttpAddr, leaderHttpsAddr, clusterToken);
+              } catch (final LeaderDoesNotHoldDatabaseException e) {
+                // A quarantined copy the leader does not hold would otherwise be retried against the same 404 on every
+                // health tick, holding the node out of the ready set for good - which is also how a quarantine raised
+                // before this fix, and restored from disk, gets lifted. Closed (issue #8559) or registered (issue
+                // #8588) alike: the leader-driven auto-acquire install lifts the quarantine of a registered one too.
+                try {
+                  reportDatabaseTheLeaderDoesNotHold(dbName, !server.existsDatabase(dbName), e);
+                } catch (final IOException markFailure) {
+                  // The quarantine stays standing: without the mark it is what keeps the closed copy from being
+                  // reopened (issue #8589).
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Targeted snapshot resync could not mark database '%s' as an unverified closed copy: keeping it "
+                          + "quarantined instead (issue #8589)", markFailure, dbName);
+                }
+                return;
+              }
               LogManager.instance().log(this, Level.INFO,
                   "Targeted snapshot resync of quarantined database '%s' completed", dbName);
+              reconciler.clearLeaderMissing(dbName);
               clearDivergedDatabase(dbName);
               clearBootstrapUnreconciled(dbName);
               settleBootstrapReplacement(dbName);
