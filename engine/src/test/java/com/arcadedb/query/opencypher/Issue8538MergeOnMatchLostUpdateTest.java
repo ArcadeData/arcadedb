@@ -367,6 +367,24 @@ class Issue8538MergeOnMatchLostUpdateTest {
   }
 
   /**
+   * A relationship MERGE: an edge does not pin its page on modify() nor reload there, so a stale edge is caught by the
+   * save-time #6950 record-image check instead. The increment must survive either way.
+   */
+  @Test
+  void relationshipOnMatchSetNeverLosesTheConcurrentIncrement() {
+    database.command("sql", "CREATE EDGE TYPE R");
+    database.transaction(() -> database.command("cypher", "CREATE (:C {id: 'c0'})-[:R {n: 0}]->(:C {id: 'c1'})"));
+
+    final boolean committed = runWithConcurrentCommitAfterRead(() -> database.command("cypher",
+            "MATCH (a:C {id: 'c0'}), (b:C {id: 'c1'}) MERGE (a)-[r:R]->(b) ON MATCH SET r.n = r.n + 1", Map.of()).close(),
+        "R", 1, "MATCH (:C {id: 'c0'})-[r:R]->() SET r.n = r.n + 1");
+
+    try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:R]->() RETURN r.n AS n")) {
+      assertThat(((Number) rs.next().getProperty("n")).intValue()).isEqualTo(committed ? 2 : 1);
+    }
+  }
+
+  /**
    * A label write rewrites the vertex under a new type, copying its properties: the copy must be taken from the latest
    * committed record, or the concurrent increment vanishes with the deleted original.
    */
@@ -416,7 +434,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
    * Runs {@code body} while, right after its first record read, another transaction increments {@code c0.n} and commits.
    */
   private boolean runWithConcurrentIncrementAfterFirstRead(final Runnable body) {
-    return runWithConcurrentCommitAfterRead(body, 1, "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1");
+    return runWithConcurrentCommitAfterRead(body, "C", 1, "MATCH (c:C {id: 'c0'}) SET c.n = c.n + 1");
   }
 
   /**
@@ -426,6 +444,14 @@ class Issue8538MergeOnMatchLostUpdateTest {
    * @return whether the transaction committed; {@code false} when it was refused with a retryable conflict
    */
   private boolean runWithConcurrentCommitAfterRead(final Runnable body, final int readNumber,
+      final String concurrentCommand) {
+    return runWithConcurrentCommitAfterRead(body, "C", readNumber, concurrentCommand);
+  }
+
+  /**
+   * As {@link #runWithConcurrentCommitAfterRead(Runnable, int, String)}, counting the reads of {@code typeName} records.
+   */
+  private boolean runWithConcurrentCommitAfterRead(final Runnable body, final String typeName, final int readNumber,
       final String concurrentCommand) {
     final Thread bodyThread = Thread.currentThread();
     final AtomicBoolean armed = new AtomicBoolean(true);
@@ -450,7 +476,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
       }
       return record;
     };
-    database.getSchema().getType("C").getEvents().registerListener(interleave);
+    database.getSchema().getType(typeName).getEvents().registerListener(interleave);
 
     boolean committed;
     try {
@@ -469,7 +495,7 @@ class Issue8538MergeOnMatchLostUpdateTest {
     } finally {
       if (database.isTransactionActive())
         database.rollback();
-      database.getSchema().getType("C").getEvents().unregisterListener(interleave);
+      database.getSchema().getType(typeName).getEvents().unregisterListener(interleave);
     }
 
     assertThat(armed.get()).as("the concurrent increment must have been interleaved").isFalse();
