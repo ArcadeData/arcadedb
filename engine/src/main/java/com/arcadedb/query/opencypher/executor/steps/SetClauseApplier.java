@@ -158,8 +158,8 @@ public final class SetClauseApplier {
     int rounds = 0;
     while (reloadWrittenTargets(items, result, writtenDocs, values, targets, keys, keyIsNull)) {
       if (++rounds > items.size() + MAX_EXTRA_RELOAD_ROUNDS)
-        throw new ConcurrentModificationException(
-            "The SET clause did not settle on its write targets after " + rounds + " reloads. Please retry the operation");
+        throw new ConcurrentModificationException("The SET clause did not settle on its write targets after " + rounds
+            + " reloads. Please retry the operation");
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
     }
 
@@ -256,15 +256,16 @@ public final class SetClauseApplier {
    * <p>
    * The caller evaluates every right-hand side again after a reload, and only the last result is written: the data is
    * always right, but a non-idempotent expression ({@code rand()}, a custom function with side effects) runs more than
-   * once. Every pass validates exactly like the first.
+   * once, and an expensive one (a pattern comprehension, a COLLECT subquery) costs more than once in a MERGE action
+   * that writes. Every pass validates exactly like the first.
    * <p>
    * A target a MERGE action leaves untouched (an unchanged value, issue #4474) is not pinned, so a read-only match
    * stays conflict-free. That decision is taken on the record the row read: when a concurrent commit changed the
    * property to another value in between, the MERGE action keeps that value instead of writing its own, which a serial
    * execution after that commit would have done. This is the price of #4474 and deliberate, not a lost update: no
-   * committed write disappears. The decision is taken on the values of the previous pass, so a reload can turn an item judged a
-   * no-op into a write: the caller then calls this method again, which reloads that item's target too. A map item
-   * always counts as a write, as it already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call
+   * committed write disappears. The decision is taken on the values of the previous pass, so a reload can turn an item
+   * judged a no-op into a write: the caller then calls this method again, which reloads that item's target too. A map
+   * item always counts as a write, as it already did: {@link #applyMergeMap} and {@link #applyReplaceMap} always call
    * {@code modify()}. A label write is not a reload trigger here: its right-hand side never reads the record's
    * properties, and the rewrite reloads the vertex it copies itself ({@link LabelReplacements#replace}).
    *
