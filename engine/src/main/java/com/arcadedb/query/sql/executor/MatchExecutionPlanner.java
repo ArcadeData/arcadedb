@@ -580,6 +580,8 @@ public class MatchExecutionPlanner {
     if (!outward && !"in".equals(methodName) && !"ine".equals(methodName))
       return null;
 
+    // A label written as a parameter or an expression is not resolved here: its text names no type, so the hop is not
+    // seen as unidirectional and the roots keep their size order. Only the preference is lost, never an edge
     final List<Expression> params = edge.item.getMethod().params;
     final String[] labels = new String[params == null ? 0 : params.size()];
     for (int i = 0; i < labels.length; i++)

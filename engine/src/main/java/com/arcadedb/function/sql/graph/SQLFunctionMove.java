@@ -22,12 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
-import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -36,8 +36,6 @@ import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
 
 /**
  * Created by luigidellaquila on 03/01/17.
@@ -84,7 +82,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
         }
         // A unidirectional type stores no incoming side: the query asks for it anyway, so answer it (issue #8625)
         if (IncomingEdgeLookup.isNeeded(context, database, iDirection, iLabels))
-          return toList(IncomingEdgeLookup.getVertices(context, vertex, iDirection, iLabels));
+          return (Iterable<Vertex>) () -> IncomingEdgeLookup.getVertices(context, vertex, iDirection, iLabels);
         return vertex.getVertices(iDirection, iLabels);
       }
     }
@@ -105,17 +103,10 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Vertex vertex) {
       if (IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), iDirection, iLabels))
-        return toList(IncomingEdgeLookup.getEdges(context, vertex, iDirection, iLabels));
+        return (Iterable<Edge>) () -> IncomingEdgeLookup.getEdges(context, vertex, iDirection, iLabels);
       return vertex.getEdges(iDirection, iLabels);
     }
     return null;
-  }
-
-  private static <T> List<T> toList(final Iterator<T> iterator) {
-    final List<T> list = new ArrayList<>();
-    while (iterator.hasNext())
-      list.add(iterator.next());
-    return list;
   }
 
   protected Object e2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
