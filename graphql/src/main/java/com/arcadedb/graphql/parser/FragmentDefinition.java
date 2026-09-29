@@ -40,5 +40,12 @@ public class FragmentDefinition extends Definition {
   public SelectionSet getSelectionSet() {
     return selectionSet;
   }
+
+  /**
+   * The directives written on the definition ({@code fragment F on T @d { }}), or null when it carries none.
+   */
+  public Directives getDirectives() {
+    return directives;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=588294b34a10e410fa87ff81f52b5be4 (do not edit this line) */
