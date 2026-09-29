@@ -843,7 +843,7 @@ public class RemoteHttpComponent extends RWLockContext {
       for (final String service : json.keySet()) {
         // A MALFORMED ENTRY IS SKIPPED: IT MUST NOT FAIL THE TOPOLOGY THE SAME ANSWER CARRIES
         final Object value = json.get(service);
-        if (value instanceof Number number && number.intValue() > 0)
+        if (value instanceof Number number && number.longValue() > 0 && number.longValue() <= 65535)
           ports.put(service, number.intValue());
       }
     this.advertisedPorts = ports.isEmpty() ? Map.of() : Map.copyOf(ports);
