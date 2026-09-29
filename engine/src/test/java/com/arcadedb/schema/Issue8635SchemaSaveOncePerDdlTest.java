@@ -19,14 +19,18 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -186,6 +190,120 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
     reopenDatabase();
     assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).hasSize(indexesInMemory);
     assertThat(database.countType("Doc", false)).isEqualTo(2);
+  }
+
+  @Test
+  void rollbackAllNestedWritesThePostponedSchemaToo() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    database.getSchema().createDocumentType("Doc");
+    database.begin();
+    assertThat(schema.getVersion()).isEqualTo(before);
+
+    // THE LOOP ROLLS BACK THE LAST TRANSACTION TOO, AND LEAVES IT INACTIVE: THE POSTPONED SAVE HAPPENS THERE
+    ((DatabaseInternal) database).rollbackAllNested();
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+  }
+
+  /**
+   * A DDL that fails inside an open transaction, after a nested step created a bucket: the save it would have made on
+   * the way out is postponed by the transaction, so the schema has to stay dirty for the transaction end to write it.
+   * (A duplicate key while building a unique index is no way to test this: it rolls the caller's transaction back.)
+   */
+  @Test
+  void aFailedDdlInsideATransactionLeavesItsNestedWorkToTheTransactionEnd() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+
+    database.begin();
+    final long before = schema.getVersion();
+    assertThatThrownBy(() -> schema.recordFileChanges(() -> {
+      schema.createBucket("LeftBehind");
+      throw new IllegalStateException("the DDL fails after its nested step");
+    })).hasMessageContaining("the DDL fails after its nested step");
+
+    assertThat(database.isTransactionActive()).isTrue();
+    assertThat(schema.getVersion()).isEqualTo(before);
+    assertThat(schema.isDirty()).as("the nested step's work is still waiting to be written").isTrue();
+
+    database.commit();
+    assertThat(schema.getVersion()).isEqualTo(before + 1);
+    assertThat(schema.isDirty()).isFalse();
+    assertThat(schema.existsBucket("LeftBehind")).isTrue();
+  }
+
+  /**
+   * The deferral belongs to the thread running the DDL. A transaction ending on another thread while the DDL is in
+   * flight is not the DDL's to write, and must not be left to it either.
+   */
+  @Test
+  void aTransactionEndingOnAnotherThreadIsNotDeferredToThisThreadsDdl() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final CountDownLatch insideTheDdl = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    final Thread ddl = new Thread(() -> schema.recordFileChanges(() -> {
+      insideTheDdl.countDown();
+      release.await();
+      return null;
+    }));
+    ddl.start();
+    try {
+      assertThat(insideTheDdl.await(30, TimeUnit.SECONDS)).isTrue();
+      // THE FRAME MARKED THE SCHEMA DIRTY ON ENTRY
+      assertThat(schema.isDirty()).isTrue();
+
+      final long before = schema.getVersion();
+      schema.saveConfigurationAtTransactionEnd();
+      assertThat(schema.getVersion()).as("written by this thread, not left to the other thread's DDL").isEqualTo(before + 1);
+    } finally {
+      release.countDown();
+      ddl.join(TimeUnit.SECONDS.toMillis(30));
+    }
+    assertThat(ddl.isAlive()).isFalse();
+    assertThat(schema.isDirty()).isFalse();
+  }
+
+  /**
+   * A DDL inside a transaction writes the schema at the end of it, so a crash before then leaves bucket and index
+   * files on disk that {@code schema.json} does not name. The database has to open anyway, and the same DDL has to
+   * succeed again.
+   */
+  @Test
+  void filesOfADdlThatNeverReachedTheSchemaFileAreToleratedOnReopen() throws Exception {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final Path schemaFile = schema.getConfigurationFile().toPath();
+    final Path previousFile = schemaFile.resolveSibling(LocalSchema.SCHEMA_PREV_FILE_NAME);
+    final byte[] schemaBefore = Files.readAllBytes(schemaFile);
+    final byte[] previousBefore = Files.exists(previousFile) ? Files.readAllBytes(previousFile) : null;
+
+    database.begin();
+    database.getSchema().createDocumentType("Doc").createProperty("k", Type.LONG);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "k");
+    ((DatabaseInternal) database).kill();
+    database.close();
+
+    // kill() STILL SAVES THE DIRTY SCHEMA ON ITS WAY OUT: PUT BACK WHAT A CRASH BEFORE THE WRITE LEAVES
+    Files.write(schemaFile, schemaBefore);
+    if (previousBefore != null)
+      Files.write(previousFile, previousBefore);
+    else
+      Files.deleteIfExists(previousFile);
+
+    database = factory.open();
+    assertThat(database.getSchema().existsType("Doc")).isFalse();
+
+    database.getSchema().createDocumentType("Doc").createProperty("k", Type.LONG);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "k");
+    database.transaction(() -> database.newDocument("Doc").set("k", 1).save());
+    assertThat(database.query("sql", "select from Doc where k = 1").stream().count()).isEqualTo(1);
+
+    reopenDatabase();
+    assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).hasSize(1);
+    assertThat(database.query("sql", "select from Doc where k = 1").stream().count()).isEqualTo(1);
   }
 
   @Test
