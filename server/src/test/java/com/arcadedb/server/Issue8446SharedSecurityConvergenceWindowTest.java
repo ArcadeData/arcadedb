@@ -28,6 +28,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -110,6 +115,46 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
       http.notReadyReason();
       assertThat(giveUpLines.get()).as("the gRPC surface reports no second give-up for the same window").isEqualTo(1);
     } finally {
+      LogManager.instance().setLogger(original);
+    }
+  }
+
+  /**
+   * The two surfaces are served by different threads, so they can pass the expiry at the same instant: the give-up
+   * decision is claimed with a compare-and-set, and exactly one of them logs it. Repeated over many fresh windows,
+   * because a single race is not guaranteed to interleave.
+   */
+  @Test
+  void surfacesRacingPastTheExpiryLogTheGiveUpOnce() throws Exception {
+    final int rounds = 200;
+    final AtomicInteger giveUpLines = new AtomicInteger();
+    final Logger original = installGiveUpCountingLogger(giveUpLines);
+    final ExecutorService probes = Executors.newFixedThreadPool(2);
+    try {
+      for (int round = 0; round < rounds; round++) {
+        final ArcadeDBServer server = heldServer(1L);
+        final ServerControlPlane http = new ServerControlPlane(server);
+        final ServerControlPlane grpc = new ServerControlPlane(server);
+
+        assertThat(http.notReadyReason()).isNotNull();  // opens the window
+        await(2L);
+
+        final CountDownLatch start = new CountDownLatch(1);
+        final Future<String> fromHttp = probes.submit(() -> {
+          start.await();
+          return http.notReadyReason();
+        });
+        final Future<String> fromGrpc = probes.submit(() -> {
+          start.await();
+          return grpc.notReadyReason();
+        });
+        start.countDown();
+        assertThat(fromHttp.get(10, TimeUnit.SECONDS)).isNull();
+        assertThat(fromGrpc.get(10, TimeUnit.SECONDS)).isNull();
+      }
+      assertThat(giveUpLines.get()).as("one give-up per window, however the two surfaces interleave").isEqualTo(rounds);
+    } finally {
+      probes.shutdownNow();
       LogManager.instance().setLogger(original);
     }
   }

@@ -123,7 +123,10 @@ public class ServerControlPlane {
     this.convergence = shared != null ? shared : new SecurityConvergenceWindow();
   }
 
-  /** The security-convergence window this control plane reads and advances (issue #8446): the server's, when it has one. */
+  /**
+   * The security-convergence window this control plane reads and advances (issue #8446): the server's, when it has one.
+   * Package-private for the tests that assert two control planes of one server share it.
+   */
   SecurityConvergenceWindow securityConvergenceWindow() {
     return convergence;
   }
@@ -566,11 +569,17 @@ public class ServerControlPlane {
     // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
     // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
     // counts, so a reading that reports none cannot restart the bound.
-    if (joinIndex > convergence.joinIndex) {
-      convergence.joinIndex = joinIndex;
-      convergence.openedAt = 0L;
-      convergence.giveUpLogged.set(false);
-    }
+    // Shared by the HTTP and gRPC surfaces (issue #8446), so the transition is made once, under the holder's monitor
+    // (double-checked: the lock is taken only when the join moves), and the new index is published LAST: a probe that
+    // reads it is guaranteed to see the cleared window, so no window it then opens is zeroed behind its back.
+    if (joinIndex > convergence.joinIndex)
+      synchronized (convergence) {
+        if (joinIndex > convergence.joinIndex) {
+          convergence.openedAt = 0L;
+          convergence.giveUpLogged.set(false);
+          convergence.joinIndex = joinIndex;
+        }
+      }
 
     if (unconverged.isEmpty()) {
       // Converged on an armed reading, or on an unarmed one that reports an install (issue #8432): forget the
