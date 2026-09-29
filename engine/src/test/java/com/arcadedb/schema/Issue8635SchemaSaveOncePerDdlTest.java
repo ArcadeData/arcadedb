@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
@@ -263,6 +264,22 @@ class Issue8635SchemaSaveOncePerDdlTest extends TestHelper {
     assertThat(schema.getVersion()).isEqualTo(before + 1);
     assertThat(schema.isDirty()).isFalse();
     assertThat(schema.existsBucket("LeftBehind")).isTrue();
+  }
+
+  /** A nested frame no longer saves, but a bucket it attached still resolves to its type before the outer frame ends. */
+  @Test
+  void aBucketAttachedByANestedFrameResolvesToItsTypeBeforeTheOuterFrameEnds() {
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final DocumentType type = database.getSchema().createDocumentType("Resolved");
+
+    final DocumentType[] seen = new DocumentType[1];
+    schema.recordFileChanges(() -> {
+      final Bucket bucket = schema.createBucket("ResolvedExtra");
+      ((LocalDocumentType) type).addBucket(bucket);
+      seen[0] = schema.getTypeByBucketId(bucket.getFileId());
+      return null;
+    });
+    assertThat(seen[0]).isSameAs(type);
   }
 
   /**
