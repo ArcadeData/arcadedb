@@ -206,6 +206,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   protected final        int                       contentHeaderSize;
   private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
+  /**
+   * Bumped, under this bucket's monitor, by every replicated apply that writes this bucket's pages WITHOUT holding its
+   * file lock while the counter is unknown (issue #8640). A {@link #count()} recompute publishes its scan only if the
+   * stamp did not move since the scan started, so a scan that may have seen part of such an apply is never cached.
+   */
+  private long                                     unlockedApplyStamp;
 
   /**
    * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
@@ -1201,6 +1207,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       if (recomputed > -1)
         return recomputed + (transaction != null ? transaction.getBucketRecordDelta(fileId) : 0);
 
+      // #8640: read before the scan, so an apply that wrote pages without the lock while the scan ran is detected
+      final long stampAtScanStart = getUnlockedApplyStamp();
+
       long total = 0;
       int undecodableSlots = 0;
 
@@ -1249,13 +1258,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // Publish the recomputed value only when this scan ran under the lock (acquired now, or already held by
       // an enclosing transaction). On a lock-acquisition timeout (NO) the scan ran lock-free and may be drifted,
       // so leave the counter at -1 and return a best-effort value: a later call recomputes cleanly.
-      if (lockStatus != LockManager.LOCK_STATUS.NO)
+      if (lockStatus != LockManager.LOCK_STATUS.NO) {
         // The scan reads the transaction's view (getPage returns its uncommitted pages first), so `total`
         // already includes this transaction's pending delta. Cache the COMMITTED base (total - pending) so the
         // commit-time fold adds the delta exactly once instead of double-counting it; the caller still gets the
         // transaction-visible `total` below.
-        cachedRecordCount.set(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total);
-      else
+        if (!publishRecomputedCount(transaction != null ? total - transaction.getBucketRecordDelta(fileId) : total, stampAtScanStart))
+          LogManager.instance().log(this, Level.FINE,
+              "count() recompute on bucket '%s' overlapped a replicated apply that could not take the bucket lock; result not cached",
+              componentName);
+      } else
         LogManager.instance().log(this, Level.FINE,
                 "count() recompute on bucket '%s' ran lock-free after a %dms lock-acquisition timeout; result not cached", componentName,
                 lockTimeout);
@@ -2381,6 +2393,32 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   public void setCachedRecordCount(final long count) {
     cachedRecordCount.set(count);
+  }
+
+  /**
+   * Called before and after a replicated apply writes this bucket's pages without holding its file lock (issue #8640):
+   * a {@link #count()} recompute that started before either call does not publish its scan, and one that already
+   * published is thrown away by the call after, because its scan may hold part of the apply and the apply's delta fold
+   * cannot tell which part. The counter is left unknown and the next {@code count()} recomputes it.
+   */
+  public synchronized void invalidateCachedRecordCountForUnlockedApply() {
+    ++unlockedApplyStamp;
+    cachedRecordCount.set(-1);
+  }
+
+  synchronized long getUnlockedApplyStamp() {
+    return unlockedApplyStamp;
+  }
+
+  /**
+   * Publishes a recomputed counter unless an unlocked apply ran since {@code stampAtScanStart} was read (issue #8640).
+   * Synchronized with {@link #invalidateCachedRecordCountForUnlockedApply()} so the check and the publish are one step.
+   */
+  synchronized boolean publishRecomputedCount(final long count, final long stampAtScanStart) {
+    if (unlockedApplyStamp != stampAtScanStart)
+      return false;
+    cachedRecordCount.set(count);
+    return true;
   }
 
   private RID createRecordInternal(final Record record, final boolean isPlaceHolder, final boolean discardRecordAfter) {
