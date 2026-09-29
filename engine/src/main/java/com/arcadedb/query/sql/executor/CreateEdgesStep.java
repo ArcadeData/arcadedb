@@ -129,7 +129,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
                 if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;
                   currentBatch++;
-                  return new UpdatableResult(existingEdge.modify());
+                  return new UpdatableResult(forUpsert(existingEdge.modify()));
                 }
               }
             }
@@ -280,7 +280,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (isUpsert()) {
           final Edge existingEdge = getExistingEdge(currentFrom, currentTo);
           if (existingEdge != null) {
-            edgeToUpdate = existingEdge.modify();
+            edgeToUpdate = forUpsert(existingEdge.modify());
           }
         }
 
@@ -374,5 +374,14 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         unidirectional,
         ifNotExists,
         context);
+  }
+
+  /**
+   * The upsert writes the statement's own SET/CONTENT values, not values computed from the edge it found, so a commit
+   * landing in between leaves nothing to lose: no stale-read refusal (#8610).
+   */
+  private static MutableEdge forUpsert(final MutableEdge edge) {
+    edge.clearBasedOnStaleRead();
+    return edge;
   }
 }
