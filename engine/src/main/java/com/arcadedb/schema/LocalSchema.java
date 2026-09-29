@@ -406,7 +406,7 @@ public class LocalSchema implements Schema {
   private             int                                    recordingDepth                = 0;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
   private volatile    UnidirectionalFlag                     unidirectionalFlag;
-  private volatile    long                                   typesChangeSerial;
+  private final       AtomicLong                             typesChangeSerial             = new AtomicLong();
   private final       Map<String, FunctionLibraryDefinition> functionLibraries             = new ConcurrentHashMap<>();
   private final       Map<Integer, Integer>                  migratedFileIds               = new ConcurrentHashMap<>();
   /**
@@ -4391,7 +4391,7 @@ public class LocalSchema implements Schema {
   public boolean hasUnidirectionalEdgeTypes() {
     // THE ANSWER CARRIES THE SERIAL IT WAS COMPUTED AT AND IS SERVED ONLY UNDER THAT SERIAL: ONE COMPUTED FROM A GRAPH
     // REPLACED MEANWHILE, EVEN IF STORED AFTER THE REPLACEMENT, IS NEVER ANSWERED
-    final long serial = typesChangeSerial;
+    final long serial = typesChangeSerial.get();
     final UnidirectionalFlag cached = unidirectionalFlag;
     if (cached != null && cached.serial() == serial)
       return cached.value();
@@ -4405,12 +4405,12 @@ public class LocalSchema implements Schema {
 
   /** A serial that moves whenever the types of this schema change: what a memo of a type-derived answer is keyed on. */
   public long getTypesChangeSerial() {
-    return typesChangeSerial;
+    return typesChangeSerial.get();
   }
 
   /** Moves the serial every answer derived from the types is stamped with, so none computed before is served again. */
   private void typesChanged() {
-    ++typesChangeSerial;
+    typesChangeSerial.incrementAndGet();
   }
 
   private void rebuildBucketTypeMap() {
