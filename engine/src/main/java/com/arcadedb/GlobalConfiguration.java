@@ -1379,6 +1379,15 @@ public enum GlobalConfiguration {
       "Number of automatic retries in case of IO errors with a specific server. If replica servers are configured, look also at HA_ERROR_RETRY setting. 0 (default) = no retry",
       Integer.class, 0),
 
+  NETWORK_RETRY_AFTER_MAX_WAIT("arcadedb.network.retryAfterMaxWait", SCOPE.SERVER, """
+      Upper bound, in milliseconds, on how long the remote client honors the Retry-After a server sends with a request it \
+      refused before running it (a 503 from a node installing a snapshot) before retrying it: the transaction retry loop \
+      and the election retry loop wait at least that long, and the hint is capped at this value, so a misbehaving \
+      server cannot park the client. A random spread of up to a tenth of the hint is added on top, so the clients a node \
+      refused together do not all come back at once. The most a refused request can wait is therefore 1.1 times this \
+      value per retry: txRetries - 1 pauses for a transaction, arcadedb.ha.clientElectionRetryCount for a command. 0 \
+      ignores Retry-After, leaving only the retry backoff (issue #8617)""", Long.class, 30_000L),
+
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
   NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT("arcadedb.network.remoteFetchConnectTimeout", SCOPE.SERVER, """
@@ -1719,19 +1728,22 @@ public enum GlobalConfiguration {
 
   SERVER_HTTP_STREAMING_WRITE_TIMEOUT("arcadedb.server.httpStreamingWriteTimeout", SCOPE.SERVER,
       """
-      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for \
-      (today only the newline-delimited answer of the bulk-load /api/v1/batch endpoint). That response is \
-      written while the request body is still being read, and its size grows with the size of the load, so a \
-      client that uploads everything before reading anything can fill the socket buffers between the two: the \
-      server then blocks inside a response write, and a server blocked there is not reading the upload either \
-      (issue #7381). This bounds that block instead of leaving it indefinite - the connection is closed, the \
-      load fails with a logged diagnosis and the worker thread is released. It is the write-side counterpart \
+      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for: \
+      the newline-delimited answer of the bulk-load /api/v1/batch endpoint, the newline-delimited query \
+      encoding of /query and /command (Accept: application/x-ndjson), the Server-Sent Events of the AI chat and \
+      of the long-running server commands, and a follower's relay of any of them. Their size grows with the \
+      size of a load, a result set or a conversation, so a client that stops reading fills the socket buffers \
+      and the server blocks inside a response write - on /batch, while not reading the upload either (issue \
+      #7381); everywhere else, holding a worker thread for as long as the client keeps the connection open \
+      (issue #7806). This bounds that block instead of leaving it indefinite - the connection is closed, the \
+      failure is logged with a diagnosis and the worker thread is released. It is the write-side counterpart \
       of 'arcadedb.server.httpStreamingReadTimeout' and is shorter than it on purpose: that budget covers a \
       pause nobody is at fault for (the server committing), while a write that has made no progress at all \
-      for this long means the peer stopped consuming. The timer is armed around one write and disarmed as \
-      soon as it returns, so a long server-side pause BETWEEN two writes never trips it. Set to 0, or to any \
-      negative value, to leave streamed writes unbounded (WARNING: restores the indefinite block). Default is \
-      1 minute""",
+      for this long means the peer stopped consuming. The timer is armed around each hand-off of at most \
+      64 KB to the socket and disarmed as soon as it returns, so a long server-side pause BETWEEN two writes \
+      never trips it, and a large response sent to a slow but reading client restarts it with every chunk. \
+      Set to 0, or to any negative value, to leave streamed writes unbounded (WARNING: restores the indefinite \
+      block). Default is 1 minute""",
       Integer.class, 60_000), // 1 MINUTE DEFAULT
 
   // SERVER gRPC

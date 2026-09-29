@@ -81,6 +81,23 @@ public interface HAServerPlugin extends ServerPlugin {
 
   boolean isLeader();
 
+  /**
+   * Asked by {@code ArcadeDBServer.getDatabase} on the leader before it reopens a closed copy carrying the
+   * {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE} marker (issue #8605): the copy was closed on this node while it
+   * was a follower, a resync could not verify it, and reopening it as the leader makes it the cluster's copy - the one
+   * every follower then installs from. A peer may hold a newer one, most often the previous leader that closed the
+   * database while its copy was the up-to-date one.
+   * <p>
+   * Called without the registry lock held: the answer may take a round trip to every peer.
+   *
+   * @return {@code null} when no peer holds a copy this one is behind, so the leader may reopen it; otherwise why
+   * not, in words an operator can act on. The default refuses: an implementation that cannot compare the copies with
+   * its peers' must not guess.
+   */
+  default String refuseToReopenUnverifiedClosedCopy(final String databaseName) {
+    return "this HA implementation cannot compare the copy with the other servers' copies";
+  }
+
   String getLeaderName();
 
   /**

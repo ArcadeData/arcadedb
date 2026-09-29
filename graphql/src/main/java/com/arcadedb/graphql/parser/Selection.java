@@ -73,5 +73,19 @@ public class Selection extends SimpleNode {
       return field.getSelectionSet();
     return fieldWithAlias != null ? fieldWithAlias.getSelectionSet() : null;
   }
+
+  /**
+   * The {@code ...Name} spread of this selection, or null when it is a field or an inline fragment.
+   */
+  public FragmentSpread getFragmentSpread() {
+    return fragmentSpread;
+  }
+
+  /**
+   * The {@code ... on T { }} inline fragment of this selection, or null when it is a field or a fragment spread.
+   */
+  public InlineFragment getInlineFragment() {
+    return inlineFragment;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=aac9a2d576730b830f5ef7c02bdf7951 (do not edit this line) */

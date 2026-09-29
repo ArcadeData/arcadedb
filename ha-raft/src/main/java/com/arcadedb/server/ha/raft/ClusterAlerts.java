@@ -230,6 +230,11 @@ public class ClusterAlerts {
       final RaftHAServer raftHA = stateMachine.getRaftHAServer();
       addLeaderReplacingDatabaseAlert(raftHA != null && raftHA.isLeader(), stateMachine.getDatabasesBeingReplaced(),
           visibleDatabases, alerts);
+      // A leader refusing to reopen a closed copy it cannot verify against its peers (issue #8605): the database is
+      // unavailable cluster-wide until the leadership moves or an operator accepts the copy.
+      if (raftHA != null && raftHA.getUnverifiedClosedCopyCheck() != null)
+        addUnverifiedClosedCopyRefusedAlert(raftHA.getUnverifiedClosedCopyCheck().getRefusals(), visibleDatabases,
+            nodeStatus.detailedDiagnostics(), alerts);
       // The local node's own resync state (issue #7136). Everything above describes the cluster or the
       // databases; this is the only check that answers "is THIS node serving traffic", which is exactly what
       // an operator is asking when they poll the node readiness has taken out of the Service.
@@ -929,6 +934,48 @@ public class ClusterAlerts {
         .put("recommendation", "Transfer leadership to a node that holds these databases (POST /api/v1/cluster/leader), "
             + "then resync the nodes that are missing them (POST /api/v1/cluster/resync/{database}).")
         .put("details", new JSONObject().put("databases", names)));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the unverified-closed-copy alert iff this leader is
+   * refusing to reopen at least one visible database whose closed copy it could not verify against its peers (issue
+   * #8605). {@code critical}: no node serves the database until an operator acts. The reasons name peers and carry the
+   * text of a failed peer call, so only a caller allowed the detailed diagnostics sees them.
+   */
+  static void addUnverifiedClosedCopyRefusedAlert(final Map<String, String> refusals, final Set<String> visibleDatabases,
+      final boolean detailedDiagnostics, final JSONArray alerts) {
+    if (refusals == null || refusals.isEmpty())
+      return;
+
+    final JSONArray names = new JSONArray();
+    final JSONObject reasons = new JSONObject();
+    for (final Map.Entry<String, String> entry : refusals.entrySet()) {
+      if (visibleDatabases != null && !visibleDatabases.contains(entry.getKey()))
+        continue;
+      names.put(entry.getKey());
+      if (detailedDiagnostics)
+        reasons.put(entry.getKey(), entry.getValue());
+    }
+    if (names.isEmpty())
+      return;
+
+    final JSONObject details = new JSONObject().put("databases", names);
+    if (detailedDiagnostics)
+      details.put("reasons", reasons);
+    alerts.put(new JSONObject()
+        .put("id", "unverified-closed-copy-refused")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "The leader refuses to reopen database(s) it cannot verify")
+        .put("message", "This leader holds " + names.length() + " database(s) closed, in a copy the last resync could not "
+            + "verify, and did not reopen them: another server may hold a newer copy, and reopening this one would make "
+            + "it the copy every follower installs from. No node serves these databases until this is resolved.")
+        .put("recommendation", "Transfer leadership to the server holding the newer copy (POST /api/v1/cluster/leader) "
+            + "and open the database there. Only if this copy is known to be the right one, remove the '"
+            + ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE + "' file from its directory on this node to accept it as it is. "
+            + "A refusal because a copy 'cannot be ordered' means one of the servers has no recorded applied index for "
+            + "the database (for instance one not written to since an upgrade): no copy is known to be newer, and "
+            + "removing the file is then the way to reopen it.")
+        .put("details", details));
   }
 
   static void checkSingleBucketTypes(final ArcadeDBServer server, final JSONArray alerts,

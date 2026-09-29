@@ -22,6 +22,7 @@ import com.arcadedb.engine.timeseries.LineProtocolParser.Precision;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -285,12 +286,51 @@ class LineProtocolParserTest {
       assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
   }
 
+  /**
+   * Issue #8563: an empty TAG key used to be skipped silently while the rest of the line was stored, so the sample
+   * landed under a different series identity than the one the client sent and the write was answered 204. It is now
+   * rejected like an empty field key, in every position of the tag set.
+   */
+  @Test
+  void emptyTagKeyIsRejected() {
+    for (final String line : new String[] { //
+        "cpu,=east,host=a value=1 1700000000000", //
+        "cpu,host=a,=east value=1 1700000000000", //
+        "cpu,=east value=1", //
+        "cpu,= value=1", //
+        "cpu,host=a,= value=1" })
+      assertThat(LineProtocolParser.parse(line, Precision.MILLISECONDS)).as(line).isEmpty();
+  }
+
+  @Test
+  void emptyTagKeyLineIsReportedAsMalformedAndTheOthersStillParse() {
+    final List<Integer> malformedLines = new ArrayList<>();
+    final List<Sample> samples = LineProtocolParser.parse("""
+        cpu,host=a value=1 1700000000000
+        cpu,=east,host=a value=2 1700000000001
+        cpu,host=b value=3 1700000000002
+        """, Precision.MILLISECONDS, malformedLines);
+
+    assertThat(samples).hasSize(2);
+    assertThat(samples.get(0).getTags()).containsExactlyEntriesOf(Map.of("host", "a"));
+    assertThat(samples.get(1).getTags()).containsExactlyEntriesOf(Map.of("host", "b"));
+    assertThat(malformedLines).containsExactly(2);
+  }
+
+  @Test
+  void escapedEqualsInTagKeyIsNotAnEmptyKey() {
+    final List<Sample> samples = LineProtocolParser.parse("cpu,\\=k=v value=1 1700000000000", Precision.MILLISECONDS);
+
+    assertThat(samples).hasSize(1);
+    assertThat(samples.getFirst().getTags()).containsExactlyEntriesOf(Map.of("=k", "v"));
+  }
+
   @Test
   void completeLinesStillParse() {
     final List<Sample> samples = LineProtocolParser.parse("""
         weather,city=rome temp=21.5,hum=40i 1700000000000
         weather temp=1i
-        weather,city\\ name=new\\ york,=skipped temp\\=x=2.5,label="a b" 1700000000001
+        weather,city\\ name=new\\ york temp\\=x=2.5,label="a b" 1700000000001
         """, Precision.MILLISECONDS);
 
     assertThat(samples).hasSize(3);

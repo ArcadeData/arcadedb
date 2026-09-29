@@ -40,6 +40,13 @@ public class JSONArray implements Iterable<Object> {
     this.array = new JsonArray();
   }
 
+  /**
+   * An empty array sized for {@code initialCapacity} elements, for a caller that knows how many it is about to add.
+   */
+  public JSONArray(final int initialCapacity) {
+    this.array = new JsonArray(initialCapacity);
+  }
+
   public JSONArray(final JsonArray input) {
     array = input;
   }

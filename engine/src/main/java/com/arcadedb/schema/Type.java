@@ -542,7 +542,7 @@ public enum Type {
         return value;
       } else if (value instanceof JSONArray jsonArray) {
         // JSONArray is an Iterable but not a java.util.Collection, so without this branch it would fall through to
-        // the `List.of(value)` case below and get wrapped as a single element instead of having its items copied.
+        // the singleton-List case below and get wrapped as a single element instead of having its items copied.
         // Normalize it to a real List and re-enter the conversion so the collection/array branches handle it (issue #5091).
         return convert(database, jsonArray.toList(), targetClass, property);
       } else if (targetClass.equals(float[].class) && value instanceof Collection<?> collection) {
@@ -738,34 +738,43 @@ public enum Type {
       } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
         // we will add all of the items in the collection to a set.  Otherwise
-        // we will create a singleton set with only the value in it.
+        // we will create a singleton set with only the value in it. The singleton is MUTABLE, like the collection
+        // copy: the result is stored as the property value, and callers append to it in place (issue #7777).
         if (value instanceof Collection<?> collection) {
           final Set<Object> set = new HashSet<Object>(collection);
           return set;
         } else {
-          return Set.of(value);
+          final Set<Object> set = new HashSet<>(2);
+          set.add(value);
+          return set;
         }
 
       } else if (List.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a List.  If the value is a collection
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
+        // The singleton is MUTABLE, like the collection copy: a scalar written to a declared LIST property is stored as
+        // this list, and MutableDocument.newEmbeddedDocument() appends to it in place (issue #7777).
         if (value instanceof Collection<?> collection) {
           final List<Object> list = new ArrayList<Object>(collection);
           return list;
         } else {
-          return List.of(value);
+          final List<Object> list = new ArrayList<>(1);
+          list.add(value);
+          return list;
         }
 
       } else if (targetClass.equals(Collection.class)) {
         // The caller specifically wants a Collection of any type.
         // we will return a list if the value is a collection or
-        // a singleton set if the value is not a collection.
+        // a singleton set if the value is not a collection (mutable, see issue #7777).
         if (value instanceof Collection<?> collection) {
           final List<Object> set = new ArrayList<Object>(collection);
           return set;
         } else {
-          return Set.of(value);
+          final Set<Object> set = new HashSet<>(2);
+          set.add(value);
+          return set;
         }
 
       } else if (targetClass.equals(EmbeddedDocument.class)) {

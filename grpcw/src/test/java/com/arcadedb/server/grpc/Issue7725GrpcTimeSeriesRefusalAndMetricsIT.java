@@ -189,6 +189,41 @@ public class Issue7725GrpcTimeSeriesRefusalAndMetricsIT extends BaseGrpcServerTe
         .isPositive();
   }
 
+  /**
+   * Issue #8563 at the wire: a point carrying an empty tag key names no column, so storing it would drop the tag and
+   * file the sample under another series. The write RPC refuses it as INVALID_ARGUMENT, with a description the client
+   * can read, and stores nothing.
+   */
+  @Test
+  void writingAPointWithAnEmptyTagKeyIsRefusedAsInvalidArgument() {
+    final TimeSeriesWriteRequest write = TimeSeriesWriteRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setType(TYPE_NAME)
+        .addPoints(TimeSeriesPoint.newBuilder()
+            .setTimestamp(BASE_TS + SAMPLES * 1_000L)
+            .putTags("", GrpcValue.newBuilder().setStringValue("east").build())
+            .putTags("host", GrpcValue.newBuilder().setStringValue("web1").build())
+            .putFields("value", GrpcValue.newBuilder().setDoubleValue(1.0).build()))
+        .build();
+
+    final StatusRuntimeException ex = catchThrowableOfType(StatusRuntimeException.class,
+        () -> authenticatedStub.timeSeriesWrite(write));
+
+    assertThat(ex).isNotNull();
+    assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(ex.getStatus().getDescription()).contains("Missing tag key");
+
+    final ExecuteQueryResponse count = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT count(*) AS c FROM " + TYPE_NAME)
+        .setLanguage("sql")
+        .build());
+    assertThat(count.getResults(0).getRecords(0).getPropertiesOrThrow("c").getInt64Value())
+        .as("the refused point must not be stored").isEqualTo(SAMPLES);
+  }
+
   // ---- helpers ----
 
   /** Total blocks this database's type reported under one surface tag, across every outcome. */

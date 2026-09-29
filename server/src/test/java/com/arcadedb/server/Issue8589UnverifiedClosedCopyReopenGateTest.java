@@ -107,12 +107,17 @@ class Issue8589UnverifiedClosedCopyReopenGateTest {
     assertThatThrownBy(() -> server.getDatabase(MARKED)).isInstanceOf(DatabaseNotAvailableException.class);
   }
 
-  /** The leader's copy is the cluster's: it reopens and the mark goes, so a later step-down does not refuse it. */
+  /**
+   * The leader's copy is the cluster's: it reopens and the mark goes, so a later step-down does not refuse it - once its
+   * peers have said none of them holds a newer copy (issue #8605, {@code Issue8605LeaderReopenGateTest}).
+   */
   @Test
   void theLeaderReopensAMarkedCopyAndDropsTheMark() throws IOException {
     createDatabaseOnDisk(MARKED, true);
     server = startServer(true, null);
-    server.setHA(ha(true));
+    final HAServerPlugin leader = ha(true);
+    when(leader.refuseToReopenUnverifiedClosedCopy(MARKED)).thenReturn(null);
+    server.setHA(leader);
 
     assertThat(server.getDatabase(MARKED).isOpen()).isTrue();
     assertThat(Files.exists(marker(MARKED))).isFalse();
