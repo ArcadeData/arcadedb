@@ -480,6 +480,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // gap after a cluster-wide crash - has no peer that can close it: each hand-off succeeds, and the next leader hands
   // off in turn. Without it leadership would rotate at the base interval for as long as the gap lasts. Forgotten only
   // once this node no longer has the gap (resetReplacingLeaderHandOffBackOff), not when it stops being leader.
+  // Per node, so it bounds, not stops, the rotation: once every node's count has grown, a cluster of N nodes that share
+  // the gap still sees up to N hand-offs per REPLACING_LEADER_HAND_OFF_MAX_INTERVAL_MS. Stopping it would need each
+  // node to know whether its target shares the gap, which nothing tells it today.
+
   private volatile int           leaderHandOffsMovedWhileGapPersisted;
   // Claimed by the caller running a hand-off, so a concurrent caller does not start a second one meanwhile.
   private final    AtomicBoolean replacingLeaderHandOffRunning = new AtomicBoolean();
