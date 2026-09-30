@@ -27,9 +27,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -73,7 +71,7 @@ class EveryHttpHandlerIsConstructedTest {
   void everyConcreteHandlerIsConstructedByProductionCode() throws IOException {
     assertThat(HANDLER_PACKAGE).as("the scan must start at the reactor root, or it checks nothing").isDirectory();
 
-    final Set<String> constructed = constructedHandlers(readMainSources());
+    final Set<String> constructed = constructedHandlers();
     final List<String> handlers = concreteHandlers();
     assertThat(handlers).as("the scan must find the handlers of this package").hasSizeGreaterThan(EXPECTED_MINIMUM_HANDLERS);
     // Sanity: a handler known to be routed must be seen as constructed, or the check below proves nothing.
@@ -101,23 +99,14 @@ class EveryHttpHandlerIsConstructedTest {
     return handlers;
   }
 
-  /** Every handler named by {@code new X(}, {@code X::new} or {@code extends X} in a main source other than X's own file. */
-  private static Set<String> constructedHandlers(final Map<String, String> sources) {
+  /**
+   * Every handler named by {@code new X(}, {@code X::new} or {@code extends X} in the main sources of every module, other
+   * than X's own file in this package. {@code extends X} counts because a constructed subclass runs X's constructor; an
+   * orphaned subclass is itself flagged, so an orphan chain is caught one level at a time. Files are scanned one at a
+   * time and only the matched names are kept.
+   */
+  private static Set<String> constructedHandlers() throws IOException {
     final Set<String> constructed = new HashSet<>();
-    for (final Map.Entry<String, String> entry : sources.entrySet()) {
-      // A "new FooHandler(" in a comment or a string literal constructs nothing.
-      final Matcher use = CONSTRUCTION.matcher(NOT_CODE.matcher(entry.getValue()).replaceAll(" "));
-      while (use.find()) {
-        final String handler = use.group(1) != null ? use.group(1) : use.group(2) != null ? use.group(2) : use.group(3);
-        if (!entry.getKey().endsWith("/" + handler + ".java"))
-          constructed.add(handler);
-      }
-    }
-    return constructed;
-  }
-
-  private static Map<String, String> readMainSources() throws IOException {
-    final Map<String, String> sources = new TreeMap<>();
     try (final Stream<Path> modules = Files.list(REACTOR_ROOT)) {
       for (final Path module : modules.filter(Files::isDirectory).toList()) {
         final String moduleName = module.getFileName().toString();
@@ -127,11 +116,18 @@ class EveryHttpHandlerIsConstructedTest {
         if (!Files.isDirectory(mainSources))
           continue;
         try (final Stream<Path> files = Files.walk(mainSources)) {
-          for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList())
-            sources.put(REACTOR_ROOT.relativize(file).toString().replace('\\', '/'), Files.readString(file, StandardCharsets.UTF_8));
+          for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
+            // A "new FooHandler(" in a comment or a string literal constructs nothing.
+            final Matcher use = CONSTRUCTION.matcher(NOT_CODE.matcher(Files.readString(file, StandardCharsets.UTF_8)).replaceAll(" "));
+            while (use.find()) {
+              final String handler = use.group(1) != null ? use.group(1) : use.group(2) != null ? use.group(2) : use.group(3);
+              if (!file.normalize().equals(HANDLER_PACKAGE.resolve(handler + ".java").normalize()))
+                constructed.add(handler);
+            }
+          }
         }
       }
     }
-    return sources;
+    return constructed;
   }
 }
