@@ -226,6 +226,18 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     assertThat(getServer(0).getDatabase(getDatabaseName()).isTransactionActive()).isFalse();
   }
 
+  @Test
+  void streamQueryFailureErrorTerminalThatThrowsDoesNotEscape() {
+    final ServerCallStreamObserver<QueryResult> resp = readyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    assertThatCode(() -> service.streamQuery(streamQuery().setQuery("SELECT FROM NoSuchType7887").build(), resp))
+        .doesNotThrowAnyException();
+
+    verify(resp, times(1)).onError(any());
+    verify(resp, never()).onCompleted();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // timeSeriesQuery
   // ---------------------------------------------------------------------------------------------------------------
@@ -299,6 +311,18 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     final ArgumentCaptor<Throwable> error = ArgumentCaptor.forClass(Throwable.class);
     verify(resp, times(1)).onError(error.capture());
     assertThat(error.getValue()).hasMessageContaining("DEADLINE_EXCEEDED");
+    verify(resp, never()).onCompleted();
+  }
+
+  @Test
+  void timeSeriesQueryFailureErrorTerminalThatThrowsDoesNotEscape() {
+    final ServerCallStreamObserver<TimeSeriesQueryResult> resp = readyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    assertThatCode(() -> service.timeSeriesQuery(timeSeriesQuery().setType("NoSuchSeries7887").build(), resp))
+        .doesNotThrowAnyException();
+
+    verify(resp, times(1)).onError(any());
     verify(resp, never()).onCompleted();
   }
 
