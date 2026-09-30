@@ -60,6 +60,7 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class TimeSeriesShardOrder {
+  // The order is: types by name; for each type its lifecycle lock (issue #7475) and only then its shards by index.
 
   /** One shard, with the type and index that name it, in global lock order. */
   record ShardSlot(String typeName, int shardIndex, TimeSeriesShard shard) {
@@ -69,14 +70,14 @@ final class TimeSeriesShardOrder {
   }
 
   /**
-   * Every shard of every TimeSeries type of {@code database}, ordered by type name and then by ascending shard
-   * index.
+   * Every TimeSeries type of {@code database}, ordered by name: the order both acquirers visit types in.
    * <p>
-   * A type whose engine never started (issue #6356) contributes no shard: there is none to lock. That is a
-   * documented gap rather than a safe skip where a sealed-store install is concerned - see
-   * {@link TimeSeriesSealedInstallLock#acquire} and issue #7475 - but it cannot be closed by an ordering.
+   * A type whose engine never started (issue #6356) is INCLUDED. It has no shard, but it has the lock that
+   * outlives the engine ({@link LocalTimeSeriesType#getEngineLifecycleLock()}), which is what the HA sealed-store
+   * repair holds while it creates the engine (issue #7475) - so a walk that skipped such a type would let a copy
+   * of the database run straight through the repair.
    */
-  static List<ShardSlot> of(final Database database) {
+  static List<LocalTimeSeriesType> typesOf(final Database database) {
     final List<LocalTimeSeriesType> types = new ArrayList<>();
     for (final DocumentType type : database.getSchema().getTypes())
       if (type instanceof final LocalTimeSeriesType tsType)
@@ -85,17 +86,36 @@ final class TimeSeriesShardOrder {
     // The total order the whole mechanism rests on. Sorted by NAME and not by anything derived from the schema's
     // iteration, because the latter is what could not be relied on in the first place.
     types.sort(Comparator.comparing(LocalTimeSeriesType::getName));
+    return types;
+  }
 
+  /**
+   * The shards of one type, by ascending shard index, as its engine is RIGHT NOW. Empty while the type has no
+   * engine. Call it AFTER taking the type's lifecycle lock: the engine can only appear or disappear under that
+   * lock's write half, so a read made while holding either half is the answer for as long as it is held.
+   */
+  static List<ShardSlot> shardsOf(final LocalTimeSeriesType tsType) {
+    // The unchecked accessor on purpose: this is engine-internal housekeeping on behalf of a caller already
+    // authorized for the whole database.
+    final TimeSeriesEngine engine = tsType.getEngine();
+    if (engine == null)
+      return List.of();
+    final List<ShardSlot> slots = new ArrayList<>(engine.getShardCount());
+    for (int i = 0; i < engine.getShardCount(); i++)
+      slots.add(new ShardSlot(tsType.getName(), i, engine.getShard(i)));
+    return slots;
+  }
+
+  /**
+   * Every shard of every TimeSeries type of {@code database} that has an engine right now, ordered by type name
+   * and then by ascending shard index. A snapshot for diagnostics and tests: the acquirers walk
+   * {@link #typesOf} and {@link #shardsOf} themselves, because they must take each type's lifecycle lock between
+   * the two.
+   */
+  static List<ShardSlot> of(final Database database) {
     final List<ShardSlot> slots = new ArrayList<>();
-    for (final LocalTimeSeriesType tsType : types) {
-      // The unchecked accessor on purpose: this is engine-internal housekeeping on behalf of a caller already
-      // authorized for the whole database.
-      final TimeSeriesEngine engine = tsType.getEngine();
-      if (engine == null)
-        continue;
-      for (int i = 0; i < engine.getShardCount(); i++)
-        slots.add(new ShardSlot(tsType.getName(), i, engine.getShard(i)));
-    }
+    for (final LocalTimeSeriesType tsType : typesOf(database))
+      slots.addAll(shardsOf(tsType));
     return slots;
   }
 }

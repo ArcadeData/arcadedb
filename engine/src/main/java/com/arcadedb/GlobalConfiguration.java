@@ -2251,6 +2251,20 @@ public enum GlobalConfiguration {
       Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
       Long.class, 128L * 1024 * 1024),
 
+  HA_TX_SCHEMA_CHECK("arcadedb.ha.txSchemaCheck", SCOPE.SERVER,
+      """
+      Have every transaction a node replicates state the Raft log index that node had applied when the transaction \
+      began, so the leader can refuse a transaction that was prepared before a schema change it has already applied \
+      (issue #8686). Without it a replica that has not yet applied a committed CREATE INDEX ships transactions whose \
+      WAL carries no page changes for the new index; the leader accepts them, every node applies them as they are, \
+      and the record is missing from the index on all nodes, with no error anywhere. The refusal is a retryable \
+      ConcurrentModificationException, and the retry waits for the schema change to be applied locally first. \
+      \
+      The index is written only once every peer advertises the capability to read it, so a rolling upgrade needs no \
+      sequencing. Turn it off to stop this node stating one, which is also the escape hatch if a workload that runs \
+      long transactions across frequent schema changes sees too many retries.""",
+      Boolean.class, true),
+
   HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
       """
       Ship schema changes to the followers as a DELTA against the schema they already hold, instead of a \

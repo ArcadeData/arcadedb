@@ -361,6 +361,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the TransactionException fallback, which is non-retryable too.
       Map.entry(MajorityCommittedAllFailedException.class.getName(), MajorityCommittedAllFailedException::new),
       Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
+      // #8686: the refusal of a transaction prepared before a schema change the leader has applied. Same as the page conflict
+      // above: without an entry it would fall through to the non-retryable TransactionException.
+      Map.entry(ReplicatedSchemaConflictException.class.getName(), ReplicatedSchemaConflictException::new),
       Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
       Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
@@ -746,8 +749,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     long committedLogIndex = -1;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = RaftHAServer.requireTransactionBroker(raft)
-          .replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
+      final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(raft);
+      final long preparedAt = preparedAtIndexToState(raft, payload);
+      committedLogIndex = preparedAt >= 0 ?
+          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), preparedAt) :
+          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
       // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide and this leader's state
       // machine has applied it (the MAJORITY acknowledgement follows the local apply), so the local commit is completed
@@ -778,7 +784,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // issue #6965). The entry never reached the log, unless the apply thread proves otherwise by holding a claim.
       if (local == null || stateMachine.withdrawLocalCommit(local)) {
         rollback();
-        if (e instanceof ReplicatedPageConflictException conflict)
+        if (e instanceof ReplicatedSchemaConflictException schemaConflict)
+          // Prepared under a schema the cluster has moved past: the retry is prepared under the same one, and refused again,
+          // until the schema change has been applied here.
+          awaitSchemaChange(schemaConflict);
+        else if (e instanceof ReplicatedPageConflictException conflict)
           // The page this node validated against is behind the log: the retry only stands a chance once the entry
           // that moved it on is applied here. On a replica the apply trails the leader by a couple of entries and a
           // retry that does not wait is refused every time; on the leader the entry that took the page over is still
@@ -865,6 +875,29 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final int PUBLICATION_WAIT_WARN_EVERY_CYCLES = 6;
 
   /** Best effort: waits for the page the leader refused this replica on to reach, locally, the version the cluster is at. */
+  /**
+   * The index to state on the entry (issue #8686): the position the transaction began at, or {@code -1} to state none when
+   * there is none to state or a peer could not read the section. Every peer is asked, this node's own build being covered
+   * by the same answer, because an older build halts on the trailing bytes of a section it does not know.
+   */
+  private long preparedAtIndexToState(final RaftHAServer raft, final ReplicationPayload payload) {
+    final long preparedAt = payload.tx().getReplicationBasePosition();
+    return preparedAt >= 0 && raft.allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX) ? preparedAt : -1L;
+  }
+
+  /** Waits for the schema change the leader refused a transaction over to be applied locally, so the retry sees it. */
+  private void awaitSchemaChange(final ReplicatedSchemaConflictException conflict) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || conflict.getSchemaIndex() < 0)
+      return;
+    try {
+      raft.awaitApplied(() -> raft.getTrustedAppliedIndex(getName()) >= conflict.getSchemaIndex(),
+          Math.min(raft.getQuorumTimeout(), CONFLICT_CATCH_UP_TIMEOUT_MS));
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   private void awaitPageVersion(final ReplicatedPageConflictException conflict) {
     final RaftHAServer raft = raftHAServer;
     if (raft == null || conflict.getClusterVersion() < 0)
@@ -1618,13 +1651,38 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void begin() {
     refuseClientWhileDirectoryIsReplaced();
+    final long applied = appliedPositionAtBegin();
     proxied.begin();
+    stampReplicationBase(applied);
   }
 
   @Override
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     refuseClientWhileDirectoryIsReplaced();
+    final long applied = appliedPositionAtBegin();
     proxied.begin(isolationLevel);
+    stampReplicationBase(applied);
+  }
+
+  /**
+   * The Raft log index this node has applied, read BEFORE the transaction begins (issue #8686): a transaction stages its
+   * index changes as its records are saved, against the schema this node holds at that moment, so a position sampled
+   * before the first save can only be older than the schema the transaction was prepared under, never newer. Older is
+   * the safe direction - at worst the leader refuses a transaction that would have been fine and it is retried.
+   * <p>
+   * {@code -1} when there is no Raft server, when the check is switched off ({@code arcadedb.ha.txSchemaCheck}), or when
+   * the node has applied nothing yet, all of which read as "unknown" on the leader and are never refused.
+   */
+  private long appliedPositionAtBegin() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || !raft.isTxSchemaCheckEnabled())
+      return -1L;
+    return raft.getTrustedAppliedIndex(getName());
+  }
+
+  private void stampReplicationBase(final long applied) {
+    if (applied >= 0)
+      DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath()).getLastTransaction().setReplicationBasePosition(applied);
   }
 
   @Override

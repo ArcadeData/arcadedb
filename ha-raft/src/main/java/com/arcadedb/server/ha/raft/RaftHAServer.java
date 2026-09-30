@@ -6255,6 +6255,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return missing;
   }
 
+  /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
+  public boolean isTxSchemaCheckEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_TX_SCHEMA_CHECK);
+  }
+
   /** What this node tells its peers it can decode. */
   public Set<String> getAdvertisedCapabilities() {
     return advertisedCapabilities;
