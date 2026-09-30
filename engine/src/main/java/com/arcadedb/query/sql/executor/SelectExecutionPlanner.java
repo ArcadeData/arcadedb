@@ -690,8 +690,9 @@ public class SelectExecutionPlanner {
       // Must be a single-property index on the exact property
       final List<String> propNames = index.getPropertyNames();
       if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
-        // Must support ordered iterations (RangeIndex like LSM_TREE)
-        if (index.supportsOrderedIterations())
+        // Must support ordered iterations (RangeIndex like LSM_TREE). A case-insensitive index holds its keys folded, so
+        // its ends are not the ends of the values and its key is not a value any record holds (issue #8698)
+        if (index.supportsOrderedIterations() && !holdsFoldedKeys(index))
           return index;
       }
     }
@@ -3648,6 +3649,9 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
 
     for (final Index idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).toList()) {
+      // A case-insensitive index iterates its folded keys, which is not the order of the values (issue #8700)
+      if (holdsFoldedKeys(idx))
+        continue;
       final List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -3986,7 +3990,7 @@ public class SelectExecutionPlanner {
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
-    if (!idx.supportsOrderedIterations())
+    if (!idx.supportsOrderedIterations() || holdsFoldedKeys(idx))
       return false;
 
     final List<String> orderItems = new ArrayList<>();
@@ -4746,6 +4750,14 @@ public class SelectExecutionPlanner {
         return true;
     }
     return false;
+  }
+
+  /**
+   * Whether any key of the index is stored case-folded: its iteration order is that of the folded keys, so it can neither
+   * stand in for a sort nor answer min() / max() with a key.
+   */
+  private static boolean holdsFoldedKeys(final Index index) {
+    return index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive();
   }
 
   private static boolean isIndexCaseInsensitive(final Index index, final int propertyIndex) {
