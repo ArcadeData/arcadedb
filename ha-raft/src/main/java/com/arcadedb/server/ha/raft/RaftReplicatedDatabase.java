@@ -763,7 +763,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; completing the local commit to prevent leader divergence: db=%s",
           getName());
-      concludeAfterMajorityCommit(local, stateMachine, payload);
+      concludeAfterMajorityCommit(local, stateMachine, payload, e.getLogIndex());
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait timed out before we
@@ -815,59 +815,90 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       postReplicationHook.accept(getName());
 
     if (!leader) {
-      // #5503: this replica never runs phase 2 - the state machine writes the pages asynchronously - so
-      // the local page cache still holds the pre-commit version of every page this transaction touched.
-      // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
-      // would read that stale version, pass its own version check and ship a delta stamped with the same
-      // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
-      // the replica's own commit index still trails the leader here, so waiting for it would not cover
-      // the entry just written.
-      //
-      // The field is read directly instead of through requireRaftServer(): the cluster has already
-      // committed this transaction, so a server that disappeared under a concurrent shutdown must not
-      // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
-      final RaftHAServer raft = raftHAServer;
-      if (raft != null && committedLogIndex > 0) {
-        raft.waitForAppliedIndex(getName(), committedLogIndex);
-
-        // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
-        // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
-        // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
-        // plainly here what is being risked and what to look at.
-        // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
-        // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
-        // the wait above will simply have run its full deadline, which is inherent to the restart window.
-        final long applied = raft.getLastAppliedIndex();
-        if (applied >= 0 && applied < committedLogIndex)
-          LogManager.instance().log(this, Level.WARNING,
-              "Replica commit on database '%s' is releasing its commit locks before entry %d was applied locally "
-                  + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
-                  + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
-              getName(), committedLogIndex, applied);
-      }
-      payload.tx().reset();
-      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-      ctx.popIfNotLastTransaction();
+      awaitLocalApplyAndRelease(payload, committedLogIndex);
       return;
     }
 
     // Ratis acknowledges an entry only after the state machine applied it, so by now the apply thread has claimed the
-    // transaction and published its pages. A registration still unclaimed here means no apply thread ran for this
-    // entry - a Raft server torn down or stubbed out between dispatch and acknowledgement - and waiting would hang
-    // the caller for good: withdraw it and publish on this thread instead, the way every leader commit did before
-    // issue #6965. A withdrawal that fails is the normal case (the claim happened) and the outcome is awaited.
+    // transaction and published its pages. A registration still unclaimed here means this node's apply thread did not
+    // publish it: either it is behind (a leader deposed mid-commit, #8781: it applies the entry from its WAL bytes once
+    // the registration is withdrawn) or it is gone - a Raft server torn down between dispatch and acknowledgement -
+    // and waiting for a claim would hang the caller for good. Withdraw it, then leave the pages to a live state
+    // machine, or publish on this thread when there is none, the way every leader commit did before issue #6965. A
+    // withdrawal that fails is the normal case (the claim happened) and the outcome is awaited.
     if (local != null && !stateMachine.withdrawLocalCommit(local)) {
       concludeLocalCommit(local, payload);
       return;
     }
-    if (local != null)
+    if (local != null) {
+      // Issue #8781: "acknowledged" does not prove this node's apply thread is gone. A leader deposed mid-commit has its
+      // entry re-sent to the new leader and acknowledged after THAT leader's apply, while this node's apply thread is
+      // alive and entries behind: with the registration withdrawn it applies the entry from its WAL bytes, and a second
+      // publication here would fold the record delta into the bucket counters twice. While the state machine lives,
+      // this thread never publishes, however long the apply takes: it waits like a replica does, then releases.
+      if (isLive(stateMachine)) {
+        awaitLocalApplyAndRelease(payload, committedLogIndex);
+        return;
+      }
       LogManager.instance().log(this, Level.WARNING,
-          "Entry of tx %d on database '%s' was acknowledged without the state machine applying it; publishing its pages "
+          "Entry of tx %d on database '%s' was acknowledged while the state machine is shut down; publishing its pages "
               + "on the committing thread", local.walTxId(), getName());
+    }
 
     // No state machine wired (the Raft server is still starting), or none applied the entry: nobody publishes the
     // pages at the log position, so this thread does.
     commitLocallyWithoutStateMachine(payload);
+  }
+
+  /**
+   * Waits for the state machine to apply the entry this transaction was replicated at, then releases the transaction
+   * without publishing anything: the replica's commit tail (#5503), and since issue #8781 also the tail of a leader
+   * whose unclaimed entry a live state machine applies from its WAL bytes.
+   */
+  private void awaitLocalApplyAndRelease(final ReplicationPayload payload, final long committedLogIndex) {
+    // #5503: this replica never runs phase 2 - the state machine writes the pages asynchronously - so
+    // the local page cache still holds the pre-commit version of every page this transaction touched.
+    // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
+    // would read that stale version, pass its own version check and ship a delta stamped with the same
+    // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
+    // the replica's own commit index still trails the leader here, so waiting for it would not cover
+    // the entry just written.
+    //
+    // The field is read directly instead of through requireRaftServer(): the cluster has already
+    // committed this transaction, so a server that disappeared under a concurrent shutdown must not
+    // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null && committedLogIndex > 0) {
+      raft.waitForAppliedIndex(getName(), committedLogIndex);
+
+      // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
+      // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
+      // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
+      // plainly here what is being risked and what to look at.
+      // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
+      // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
+      // the wait above will simply have run its full deadline, which is inherent to the restart window.
+      final long applied = raft.getLastAppliedIndex();
+      if (applied >= 0 && applied < committedLogIndex)
+        LogManager.instance().log(this, Level.WARNING,
+            "Commit on database '%s' is releasing its commit locks before entry %d was applied locally "
+                + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
+                + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
+            getName(), committedLogIndex, applied);
+    }
+    payload.tx().reset();
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+    ctx.popIfNotLastTransaction();
+  }
+
+  /**
+   * Whether {@code stateMachine} still applies entries on this node: not closed, not replaced by a Ratis restart, and
+   * no shutdown requested. Only when it does not can the committing thread publish an acknowledged entry itself
+   * without racing an apply of the same entry (issue #8781).
+   */
+  private boolean isLive(final ArcadeStateMachine stateMachine) {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null && !raft.isShutdownRequested() && raft.getStateMachine() == stateMachine && !stateMachine.isClosed();
   }
 
   /** Upper bound on the wait for a refused page to catch up locally: a committed entry is a heartbeat away, not more. */
@@ -1022,12 +1053,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * failure itself, so a local failure here is logged and recovered from (reconcile, step down) rather than surfaced.
    */
   private void concludeAfterMajorityCommit(final LocalCommit local, final ArcadeStateMachine stateMachine,
-      final ReplicationPayload payload) {
+      final ReplicationPayload payload, final long committedLogIndex) {
     try {
-      // Same rule as the acknowledged path: a registration the apply thread never claimed means no apply ran for the
-      // entry here, so this thread publishes rather than waiting for a claim that cannot come.
+      // Same rule as the acknowledged path: a registration the apply thread never claimed is applied from its WAL bytes
+      // by a live state machine (issue #8781), so this thread only waits and releases; it publishes only when no state
+      // machine is left to do it.
       if (local != null && !stateMachine.withdrawLocalCommit(local))
         concludeLocalCommit(local, payload);
+      else if (local != null && isLive(stateMachine))
+        awaitLocalApplyAndRelease(payload, committedLogIndex);
       else
         commitLocallyWithoutStateMachine(payload);
     } catch (final TransactionCommittedRemotelyException e) {

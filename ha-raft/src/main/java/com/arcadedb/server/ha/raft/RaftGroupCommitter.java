@@ -551,12 +551,12 @@ class RaftGroupCommitter {
                 .get(remainingWatchNanos, TimeUnit.NANOSECONDS);
             if (!watchReply.isSuccess()) {
               batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                  "ALL quorum not reached after MAJORITY commit at logIndex=" + reply.getLogIndex()));
+                  "ALL quorum not reached after MAJORITY commit at logIndex=" + reply.getLogIndex(), null, reply.getLogIndex()));
               continue;
             }
           } catch (final TimeoutException te) {
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex(), te));
+                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex(), te, reply.getLogIndex()));
             continue;
           } catch (final InterruptedException ie) {
             // Rethrow instead of swallowing: this must reach the outer catch (final InterruptedException)
@@ -570,7 +570,7 @@ class RaftGroupCommitter {
             if (isClientClosed(e))
               clientClosedDetected = true;
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum watch failed after MAJORITY commit: " + e.getMessage(), e));
+                "ALL quorum watch failed after MAJORITY commit: " + e.getMessage(), e, reply.getLogIndex()));
             continue;
           }
         }

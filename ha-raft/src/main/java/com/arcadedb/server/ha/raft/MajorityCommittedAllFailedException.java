@@ -40,12 +40,24 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
  * remotely failure the HTTP layer answers it 409 "do not retry" instead.
  */
 public class MajorityCommittedAllFailedException extends TransactionCommittedRemotelyException {
+  private final long logIndex;
 
   public MajorityCommittedAllFailedException(final String message) {
-    super(message);
+    this(message, null, -1L);
   }
 
   public MajorityCommittedAllFailedException(final String message, final Throwable cause) {
+    this(message, cause, -1L);
+  }
+
+  /** @param logIndex the Raft log index the entry committed at, or {@code -1} when unknown (e.g. rebuilt from a remote reply) */
+  public MajorityCommittedAllFailedException(final String message, final Throwable cause, final long logIndex) {
     super(message, cause);
+    this.logIndex = logIndex;
+  }
+
+  /** The Raft log index the entry committed at, or {@code -1} when unknown. */
+  public long getLogIndex() {
+    return logIndex;
   }
 }
