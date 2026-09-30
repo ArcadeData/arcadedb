@@ -68,7 +68,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -92,7 +92,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Database database = startNode.getDatabase();
-    final Map<String, Object> config = extractConfig(args[1]);
+    final Map<String, Object> config = extractConfig(args.length > 1 ? args[1] : null);
 
     final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
     final String[] labelFilter = extractLabels(config.get("labelFilter"));

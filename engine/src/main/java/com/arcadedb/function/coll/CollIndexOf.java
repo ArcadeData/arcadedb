@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.coll;
 
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -54,6 +55,13 @@ public class CollIndexOf extends AbstractCollFunction {
     final List<Object> list = asList(args[0]);
     if (list == null || args[1] == null)
       return null;
-    return (long) list.indexOf(args[1]);
+    // Elements are compared the way Cypher's = does, so 1 and 1.0 are the same element (issue #8561)
+    final Object wanted = DistinctNumericKey.canonicalize(args[1]);
+    if (asRange(list) != null)
+      return wanted instanceof Long ? (long) list.indexOf(wanted) : -1L;
+    for (int i = 0; i < list.size(); i++)
+      if (wanted.equals(DistinctNumericKey.canonicalize(list.get(i))))
+        return (long) i;
+    return -1L;
   }
 }

@@ -245,10 +245,10 @@ public class EdgeLinkedList {
     EdgeSegment current = lastSegment;
     while (current != null) {
       final JSONObject j = current.toJSON(false);
-      if (j.has("array")) {
-        final JSONArray a = j.getJSONArray("array");
+      if (j.has("entries")) {
+        final JSONArray a = j.getJSONArray("entries");
         for (int i = 0; i < a.length(); ++i)
-          array.put(a.getString(i));
+          array.put(a.getJSONObject(i));
       }
       current = previousOf(current);
     }

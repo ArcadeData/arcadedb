@@ -618,9 +618,7 @@ public class PostgresNetworkExecutor extends Thread {
         else {
           // A catalog query whose filters are bound parameters is answered at Execute, but the columns are those of
           // the emulated catalog relation whatever the filter values are, so they can be named now (issue #8379)
-          final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query);
-          if (catalogAnswer != null)
-            portal.columns = catalogAnswer.columns();
+          portal.columns = describeCatalogColumns(portal.query);
         }
       }
 
@@ -1609,6 +1607,13 @@ public class PostgresNetworkExecutor extends Thread {
     if (isRowlessWrite(parsed))
       return null;
 
+    // A write WITH a RETURN returns rows, and its RETURN names them. Never the textual FROM fallback below: a write has
+    // no FROM target of its own to read the columns from, and a " FROM " inside a sub-select it carries would name the
+    // columns of that sub-select's type (issue #8562)
+    if (parsed instanceof InsertStatement || parsed instanceof UpdateStatement || parsed instanceof DeleteStatement
+        || parsed instanceof CreateVertexStatement)
+      return getColumnsFromWriteReturn(parsed);
+
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
     final String upperQuery = query.toUpperCase(Locale.ROOT);
@@ -1635,6 +1640,62 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return getColumnsFromType(typeName);
+  }
+
+  /**
+   * Columns announced by a write that has a RETURN clause: a projection names its own, {@code RETURN BEFORE} and
+   * {@code RETURN AFTER} return the record itself, so they are those of the target type. Null when they cannot be named
+   * before the statement runs (issue #8562).
+   */
+  private Map<String, PostgresType> getColumnsFromWriteReturn(final Statement statement) {
+    switch (statement) {
+    case InsertStatement insert:
+      return getColumnsFromProjection(insert.getReturnStatement());
+    case CreateVertexStatement createVertex:
+      return getColumnsFromProjection(createVertex.getReturnStatement());
+    case UpdateStatement update: {
+      if (update.getReturnProjection() != null)
+        return getColumnsFromProjection(update.getReturnProjection());
+      if (update.isReturnBefore() || update.isReturnAfter())
+        return getColumnsFromTarget(update.getTarget());
+      return null;
+    }
+    case DeleteStatement delete:
+      return delete.isReturnBefore() ? getColumnsFromTarget(delete.getFromClause()) : null;
+    default:
+      return null;
+    }
+  }
+
+  private Map<String, PostgresType> getColumnsFromTarget(final FromClause target) {
+    final FromItem item = target != null ? target.getItem() : null;
+    return item != null && item.getIdentifier() != null ? getColumnsFromType(item.getIdentifier().getStringValue()) : null;
+  }
+
+  /**
+   * The columns a {@code Describe('S')} announces for a catalog query whose filters are bound parameters, or null when
+   * they cannot be named. They are those of the emulated catalog relation whatever the filter values are (issue #8379),
+   * but a shape whose resolver needs a value to recognise it declines the query while the parameters are unbound, so it is
+   * asked again with a placeholder for each of them: only the columns are kept, never the rows of that probe (issue #8562).
+   */
+  private Map<String, PostgresType> describeCatalogColumns(final String query) {
+    CatalogAnswer answer = handleCatalogQuery(query);
+    if (answer != null && !answer.columns().isEmpty())
+      return answer.columns();
+
+    final int placeholders = PostgresCatalog.countPlaceholders(query);
+    if (placeholders > 0) {
+      final Object[] probe = new Object[placeholders];
+      Arrays.fill(probe, "");
+      try {
+        answer = handleCatalogQuery(query, probe);
+      } catch (final RuntimeException e) {
+        return null;
+      }
+      if (answer != null && !answer.columns().isEmpty())
+        return answer.columns();
+    }
+    return null;
   }
 
   /**
