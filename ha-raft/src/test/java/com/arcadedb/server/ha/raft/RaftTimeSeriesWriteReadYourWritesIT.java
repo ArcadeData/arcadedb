@@ -229,9 +229,7 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
    * nonexistent-database request into a 500 instead of its pre-#5866 status, since
    * {@code AbstractServerHttpHandler.handleRequest}'s catch chain has no arm for that exception. The final
    * fix backs off the "isEmpty() 204 also gets a bookmark" attempt entirely and resolves {@code database}
-   * only once there is an actual write to make - matching the ordering PostPrometheusWriteHandler had before
-   * this PR - so a nonexistent database never reaches {@code getDatabase()} on either the truly-empty-body
-   * path or the well-formed-but-zero-series path.
+   * only once there is an actual write to make.
    * <p>
    * Issue #7831: since #7681 reparented {@code AbstractBinaryHttpHandler} onto {@code DatabaseAbstractHandler},
    * the database is resolved before {@code PostPrometheusWriteHandler.execute} runs, and a missing one raises

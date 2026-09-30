@@ -22,6 +22,7 @@ import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.xerial.snappy.Snappy;
 
@@ -101,22 +102,26 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
     final byte[] lineProtocol = "cpu,host=h1 value=1.0 1000".getBytes(StandardCharsets.UTF_8);
     final byte[] json = "{\"type\":\"cpu\"}".getBytes(StandardCharsets.UTF_8);
 
-    assertNotFound(post("/prom/read", promRead, "application/x-protobuf"), "POST prom/read");
-    assertNotFound(post("/write", lineProtocol, "text/plain"), "POST write");
-    assertNotFound(post("/query", json, "application/json"), "POST query");
-    assertNotFound(post("/grafana/query", json, "application/json"), "POST grafana/query");
-    assertNotFound(get("/latest?type=cpu"), "GET latest");
-    assertNotFound(get("/grafana/health"), "GET grafana/health");
-    assertNotFound(get("/grafana/metadata"), "GET grafana/metadata");
-    assertNotFound(get("/prom/api/v1/query?query=cpu"), "GET prom query");
-    assertNotFound(get("/prom/api/v1/query_range?query=cpu&start=0&end=10&step=1"), "GET prom query_range");
-    assertNotFound(get("/prom/api/v1/labels"), "GET prom labels");
-    assertNotFound(get("/prom/api/v1/label/host/values"), "GET prom label values");
-    assertNotFound(get("/prom/api/v1/series?match[]=cpu"), "GET prom series");
+    // Soft: one regressed route must not hide the state of the others.
+    final SoftAssertions soft = new SoftAssertions();
+    assertNotFound(soft, post("/prom/read", promRead, "application/x-protobuf"), "POST prom/read");
+    assertNotFound(soft, post("/write", lineProtocol, "text/plain"), "POST write");
+    assertNotFound(soft, post("/query", json, "application/json"), "POST query");
+    assertNotFound(soft, post("/grafana/query", json, "application/json"), "POST grafana/query");
+    assertNotFound(soft, get("/latest?type=cpu"), "GET latest");
+    assertNotFound(soft, get("/grafana/health"), "GET grafana/health");
+    assertNotFound(soft, get("/grafana/metadata"), "GET grafana/metadata");
+    assertNotFound(soft, get("/prom/api/v1/query?query=cpu"), "GET prom query");
+    assertNotFound(soft, get("/prom/api/v1/query_range?query=cpu&start=0&end=10&step=1"), "GET prom query_range");
+    assertNotFound(soft, get("/prom/api/v1/labels"), "GET prom labels");
+    assertNotFound(soft, get("/prom/api/v1/label/host/values"), "GET prom label values");
+    assertNotFound(soft, get("/prom/api/v1/series?match%5B%5D=cpu"), "GET prom series");
+
+    soft.assertAll();
   }
 
-  private static void assertNotFound(final HttpResponse<String> response, final String route) {
-    assertThat(response.statusCode()).as(route + " on a nonexistent database: " + response.body()).isEqualTo(404);
+  private static void assertNotFound(final SoftAssertions soft, final HttpResponse<String> response, final String route) {
+    soft.assertThat(response.statusCode()).as(route + " on a nonexistent database: " + response.body()).isEqualTo(404);
   }
 
   private HttpResponse<String> post(final String suffix, final byte[] body, final String contentType) throws Exception {
@@ -128,8 +133,7 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
   }
 
   private HttpResponse<String> get(final String suffix) throws Exception {
-    return client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/ts/" + BOGUS_DB + suffix)
-            .replace("[", "%5B").replace("]", "%5D")))
+    return client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/ts/" + BOGUS_DB + suffix)))
         .header("Authorization", basicAuth())
         .GET()
         .build(), HttpResponse.BodyHandlers.ofString());
