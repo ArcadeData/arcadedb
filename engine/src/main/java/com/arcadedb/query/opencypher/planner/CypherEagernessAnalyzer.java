@@ -19,16 +19,23 @@
 package com.arcadedb.query.opencypher.planner;
 
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
+import com.arcadedb.query.opencypher.ast.SetClause;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -73,6 +80,9 @@ public final class CypherEagernessAnalyzer {
   private       boolean     anyRead                = false;
   private       boolean     readsAnyNodeLabel      = false;
   private       boolean     readsAnyRelationshipType = false;
+  // The mirror image, for a read that comes AFTER a write: the property keys written so far that no barrier has drained.
+  private final Set<String> writtenPropertyKeys    = new HashSet<>();
+  private       boolean     writesAnyPropertyKey   = false;
 
   /**
    * Folds one MATCH (or OPTIONAL MATCH) clause into the read footprint. A node pattern with no static and
@@ -126,6 +136,8 @@ public final class CypherEagernessAnalyzer {
     anyRead = false;
     readsAnyNodeLabel = false;
     readsAnyRelationshipType = false;
+    writtenPropertyKeys.clear();
+    writesAnyPropertyKey = false;
   }
 
   /** True when at least one graph read is still potentially in flight ahead of the current clause. */
@@ -192,6 +204,142 @@ public final class CypherEagernessAnalyzer {
    */
   public boolean needsBarrierForWriteProcedure() {
     return anyRead;
+  }
+
+  /**
+   * True when a REMOVE needs the barrier, i.e. when it writes a label. ArcadeDB derives a vertex's labels from its
+   * type, so a label write rewrites the record under another type and deletes the original: a record that a
+   * pattern still enumerating, or re-enumerating once per input row, reads from one type reappears in another, or is
+   * gone before the scan reaches it (issue #8734: {@code OPTIONAL MATCH (), (n {..}) ... REMOVE n:l9:l8} lost one
+   * row per relabelled node). Which record moves where depends on the row, so any read in flight conflicts.
+   * A property-only REMOVE rewrites the record in place and needs nothing.
+   */
+  public boolean needsBarrier(final RemoveClause removeClause) {
+    if (!anyRead || removeClause == null)
+      return false;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems())
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
+        return true;
+    return false;
+  }
+
+  /** True when a SET needs the barrier, i.e. when it writes a label: see {@link #needsBarrier(RemoveClause)}. */
+  public boolean needsBarrier(final SetClause setClause) {
+    if (!anyRead || setClause == null || setClause.isEmpty())
+      return false;
+    for (final SetClause.SetItem item : setClause.getItems())
+      if (item.getType() == SetClause.SetType.LABELS)
+        return true;
+    return false;
+  }
+
+  /**
+   * Folds the property writes of a SET into the write footprint. A {@code SET n = {..}} / {@code SET n += {..}} or a
+   * key computed per row writes keys the planner cannot name, so it raises the "writes anything" flag instead.
+   */
+  public void observeWrite(final SetClause setClause) {
+    if (setClause == null)
+      return;
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      switch (item.getType()) {
+      case PROPERTY -> observePropertyWrite(item.getProperty(), item.getKeyExpression());
+      case REPLACE_MAP, MERGE_MAP -> writesAnyPropertyKey = true;
+      default -> {
+        // a label write is weighed by needsBarrier(SetClause)
+      }
+      }
+    }
+  }
+
+  /** Folds the property removals of a REMOVE into the write footprint: removing a key changes what a later read sees. */
+  public void observeWrite(final RemoveClause removeClause) {
+    if (removeClause == null)
+      return;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems())
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
+        observePropertyWrite(item.getProperty(), item.getKeyExpression());
+  }
+
+  /** Folds the ON CREATE / ON MATCH property writes of a MERGE into the write footprint. */
+  public void observeWrite(final MergeClause mergeClause) {
+    if (mergeClause == null)
+      return;
+    observeWrite(mergeClause.getOnCreateSet());
+    observeWrite(mergeClause.getOnMatchSet());
+  }
+
+  /** A write procedure is opaque: it can write any property. */
+  public void observeWriteProcedure() {
+    writesAnyPropertyKey = true;
+  }
+
+  private void observePropertyWrite(final String property, final Expression keyExpression) {
+    if (property == null || keyExpression != null)
+      writesAnyPropertyKey = true;
+    else
+      writtenPropertyKeys.add(property);
+  }
+
+  /**
+   * True when a MATCH needs the barrier in FRONT of it: it reads a property that a clause before it writes, and the
+   * rows flow one at a time, so the read of one row runs before the write of the next one. Clause by clause, as Cypher
+   * defines it, the read sees every write of the clauses before it; streamed, it sees only the writes of the rows that
+   * happened to be pulled first, and which those are depends on how many rows the consumer above asks for at a time.
+   * Neo4j plants its {@code Eager} operator for the same pair (issue #8733: {@code MERGE .. ON MATCH SET n1.k2 = null}
+   * followed by {@code OPTIONAL MATCH (..{k2: true})} answered differently once an empty FOREACH, which is eager,
+   * was added between them).
+   * <p>
+   * The properties a MATCH reads are the keys of its inline property maps and every {@code var.key} of its WHERE and
+   * of its patterns; a bare-parameter map or a WHERE kept only as text is unknowable and counts as reading any key.
+   * A MATCH that reads no property at all cannot be affected by a property write.
+   */
+  public boolean needsBarrier(final MatchClause matchClause) {
+    if (matchClause == null || (writtenPropertyKeys.isEmpty() && !writesAnyPropertyKey))
+      return false;
+    final PropertyKeyCollector reads = new PropertyKeyCollector();
+    for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
+      for (final NodePattern node : pathPattern.getNodes())
+        reads.addInline(node.getProperties(), node.getPropertiesParameterName());
+      for (final RelationshipPattern relationship : pathPattern.getRelationships())
+        reads.addInline(relationship.getProperties(), relationship.getPropertiesParameterName());
+      CypherExpressionWalker.walk(pathPattern, reads);
+    }
+    if (matchClause.hasWhereClause()) {
+      final WhereClause where = matchClause.getWhereClause();
+      if (where.getConditionExpression() == null)
+        reads.any = true;
+      else
+        CypherExpressionWalker.walk(where.getConditionExpression(), reads);
+    }
+    if (reads.any)
+      return true;
+    if (reads.keys.isEmpty())
+      return false;
+    if (writesAnyPropertyKey)
+      return true;
+    for (final String key : reads.keys)
+      if (writtenPropertyKeys.contains(key))
+        return true;
+    return false;
+  }
+
+  /** Collects the property keys a clause reads: {@code any} when it reads keys it cannot name. */
+  private static final class PropertyKeyCollector implements CypherExpressionWalker.Visitor {
+    private final Set<String> keys = new HashSet<>();
+    private       boolean     any  = false;
+
+    void addInline(final Map<String, Object> properties, final String parameterName) {
+      if (parameterName != null)
+        any = true;
+      else if (properties != null)
+        keys.addAll(properties.keySet());
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      if (expression instanceof PropertyAccessExpression access)
+        keys.add(access.getPropertyName());
+    }
   }
 
   private boolean pathPatternsConflict(final List<PathPattern> pathPatterns, final Set<String> boundVariables) {
