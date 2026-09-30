@@ -263,7 +263,7 @@ public class GraphEngine {
     if (type.isLightweight()) {
       // The storage shape is a property of the type, not of the call: on a LIGHTWEIGHT type every edge is stored
       // inside the two vertices, so there is no record to create, save or place in a bucket.
-      if (edgeProperties != null && edgeProperties.length > 0)
+      if (describesProperties(edgeProperties))
         throw new IllegalArgumentException("Edge type '" + type.getName()
             + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
             + "needs to carry data");
@@ -2305,6 +2305,16 @@ public class GraphEngine {
    */
   public static String unidirectionalEdgeOnBidirectionalTypeMessage(final String edgeTypeName) {
     return "Edge type '" + edgeTypeName + "' is bidirectional; it cannot hold a unidirectional edge";
+  }
+
+  /**
+   * Whether the varargs describe at least one property. A single {@link Map} argument is how a caller hands over a
+   * property map, so an EMPTY map means "no properties" exactly like no arguments at all (issue #8056).
+   */
+  private static boolean describesProperties(final Object[] properties) {
+    if (properties == null || properties.length == 0)
+      return false;
+    return !(properties.length == 1 && properties[0] instanceof Map<?, ?> map && map.isEmpty());
   }
 
   public static void setProperties(final MutableEdge edge, final Object[] properties) {

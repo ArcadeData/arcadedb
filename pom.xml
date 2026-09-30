@@ -210,7 +210,11 @@
              garbage: fa-solid-900.woff2 arrived as 215,949 bytes instead of 119,488, the browser refused it
              with "Invalid font data", and every icon in Studio rendered as an empty box. Expressing the
              carve-out here, in the resource definition itself, is what makes every consumer of this POM get
-             it right. Keep the two lists identical. -->
+             it right. Keep the two lists identical.
+
+             <resources> is NOT merged between a parent and a child: a module that declares its own list REPLACES
+             this one wholesale and loses the carve-out (issue #8058). No module may redeclare <resources>;
+             a module that needs extra resource directories must copy BOTH entries into its own list. -->
         <resources>
             <resource>
                 <directory>${basedir}/src/main/resources</directory>

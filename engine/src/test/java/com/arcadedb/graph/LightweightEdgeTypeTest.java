@@ -28,6 +28,9 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -84,6 +87,28 @@ class LightweightEdgeTypeTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(
         () -> database.getSchema().getType("Follows").createProperty("since", Type.INTEGER)))
         .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("LIGHTWEIGHT");
+  }
+
+  /** Issue #8056: an empty property map means "no properties", exactly like no arguments at all. */
+  @Test
+  void anEmptyPropertyMapOnALightweightTypeCreatesTheEdge() {
+    database.transaction(
+        () -> database.getSchema().buildEdgeType().withName("Follows").withLightweight(true).create());
+
+    final RID a = newVertex(0);
+    final RID b = newVertex(1);
+
+    database.transaction(
+        () -> database.lookupByRID(a, true).asVertex().modify().newEdge("Follows", b, new HashMap<String, Object>()));
+
+    assertThat(database.lookupByRID(a, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Follows")).isEqualTo(1);
+
+    final Map<String, Object> notEmpty = new HashMap<>();
+    notEmpty.put("since", 2020);
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.lookupByRID(a, true).asVertex().modify().newEdge("Follows", b, notEmpty)))
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("LIGHTWEIGHT");
   }
 
