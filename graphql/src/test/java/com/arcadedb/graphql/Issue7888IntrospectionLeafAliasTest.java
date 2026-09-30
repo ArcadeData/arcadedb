@@ -26,6 +26,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -405,6 +406,99 @@ class Issue7888IntrospectionLeafAliasTest extends AbstractGraphQLTest {
       assertThat(queryType.<String>getProperty("n")).isEqualTo("Query");
       assertThat(queryType.<String>getProperty("k")).isEqualTo("OBJECT");
       assertThat(queryType.<Object>getProperty("f")).isNull();
+      return null;
+    });
+  }
+
+  @Test
+  void standardToolingIntrospectionQueryStaysUnderTheCap() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // the query GraphiQL and graphql-js getIntrospectionQuery() send: TypeRef nests only kind/name/ofType, never fields
+      final Result record = single(database, """
+          query IntrospectionQuery {
+            __schema {
+              queryType { name }
+              mutationType { name }
+              subscriptionType { name }
+              types { ...FullType }
+              directives { name description locations args { ...InputValue } }
+            }
+          }
+          fragment FullType on __Type {
+            kind name description
+            fields(includeDeprecated: true) {
+              name description args { ...InputValue } type { ...TypeRef } isDeprecated deprecationReason
+            }
+            inputFields { ...InputValue }
+            interfaces { ...TypeRef }
+            enumValues(includeDeprecated: true) { name description isDeprecated deprecationReason }
+            possibleTypes { ...TypeRef }
+          }
+          fragment InputValue on __InputValue { name description type { ...TypeRef } defaultValue }
+          fragment TypeRef on __Type {
+            kind name
+            ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } }
+          }""");
+      assertThat(record.<Result>getProperty("queryType").<String>getProperty("name")).isEqualTo("Query");
+      Result book = null;
+      for (final Result type : record.<List<Result>>getProperty("types"))
+        if ("Book".equals(type.getProperty("name")))
+          book = type;
+      assertThat(book).isNotNull();
+      assertThat(book.<String>getProperty("kind")).isEqualTo("OBJECT");
+      final List<Result> fields = book.getProperty("fields");
+      assertThat(fields.stream().map(f -> f.<String>getProperty("name")).toList()).contains("id", "name", "pageCount", "authors");
+      for (final Result field : fields)
+        assertThat(field.<Result>getProperty("type").<String>getProperty("kind")).isNotNull();
+      return null;
+    });
+  }
+
+  @Test
+  void variableDrivenIncludeOnIntrospectionLeaf() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final String query = "query Q($withKind: Boolean!) { __type(name: \"Book\") { n: name k: kind @include(if: $withKind) } }";
+      try (final ResultSet resultSet = database.query("graphql", query, Map.of("withKind", false))) {
+        assertThat(resultSet.next().getPropertyNames()).containsExactly("n");
+      }
+      try (final ResultSet resultSet = database.query("graphql", query, Map.of("withKind", true))) {
+        final Result record = resultSet.next();
+        assertThat(record.getPropertyNames()).containsExactlyInAnyOrder("n", "k");
+        assertThat(record.<String>getProperty("k")).isEqualTo("OBJECT");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void databaseOnlyTypeReachedThroughTypeReferenceIsAnObject() {
+    executeTest(database -> {
+      database.transaction(() -> database.getSchema().createDocumentType("Shelf").createProperty("position", Type.INTEGER));
+      database.command("graphql", """
+          type Query {
+            bookById(id: String): Book
+          }
+
+          type Book {
+            id: String
+            shelf: Shelf
+          }""");
+
+      final Result record = single(database, "{ __type(name: \"Book\") { fields { name type { name kind fields { name } } } } }");
+      Result shelf = null;
+      for (final Result field : record.<List<Result>>getProperty("fields"))
+        if ("shelf".equals(field.getProperty("name")))
+          shelf = field.getProperty("type");
+      assertThat(shelf).isNotNull();
+      // the same answer `__type(name: "Shelf")` gives
+      assertThat(shelf.<String>getProperty("name")).isEqualTo("Shelf");
+      assertThat(shelf.<String>getProperty("kind")).isEqualTo("OBJECT");
+      assertThat(shelf.<List<Result>>getProperty("fields").stream().map(f -> f.<String>getProperty("name")).toList())
+          .containsExactly("position");
       return null;
     });
   }

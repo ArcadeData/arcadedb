@@ -66,7 +66,7 @@ public class GraphQLSchema {
    * How many {@code fields} selections an introspection document may nest. A named type reached through {@code type}/{@code ofType}
    * is a full {@code __Type}, so without a cap each nested {@code fields} multiplies the work by the fan-out of the type it lists.
    */
-  static final        int    MAX_INTROSPECTION_FIELDS_DEPTH = 2;
+  static final int MAX_INTROSPECTION_FIELDS_DEPTH = 2;
 
   private final Database                          database;
   private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
@@ -633,10 +633,9 @@ public class GraphQLSchema {
     } else {
       final String name = type.getTypeName().getName();
       unwrapped = namedSelectionSet -> {
-        final ObjectTypeDefinition objType = objectTypeDefinitionMap.get(name);
-        return objType != null ?
-            buildGraphQLTypeResult(objType, namedSelectionSet, fragments, fieldsDepth) :
-            buildIntrospectionLeafType(name, "SCALAR", namedSelectionSet, fragments);
+        // SDL object, database type or built-in scalar, as `__type(name:)` would describe it; anything else is a custom scalar
+        final ResultInternal named = buildTypeResult(name, namedSelectionSet, fragments, fieldsDepth);
+        return named != null ? named : buildIntrospectionLeafType(name, "SCALAR", namedSelectionSet, fragments);
       };
       nonNull = type.isBang();
     }
