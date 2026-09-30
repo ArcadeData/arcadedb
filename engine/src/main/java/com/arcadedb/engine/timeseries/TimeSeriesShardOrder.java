@@ -19,10 +19,9 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
-
-import com.arcadedb.exception.TimeoutException;
 
 import java.util.ArrayList;
 import java.util.Comparator;

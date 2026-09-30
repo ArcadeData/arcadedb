@@ -2302,8 +2302,10 @@ public enum GlobalConfiguration {
       leader restart or a snapshot install: the leader knows no schema change until it applies the next one. \
       \
       This setting only controls whether THIS node states an index. The leader checks every entry that carries one, so \
-      turning it off on the leader alone changes nothing. Turn it off on the nodes that write if a workload running \
-      long transactions across frequent schema changes sees too many retries.""",
+      turning it off on the leader alone changes nothing. Expect retryable ConcurrentModificationExceptions on replicas \
+      during DDL and set transaction retries accordingly: a transaction begun before a schema change is refused, and \
+      callers that do not retry (the default for plain HTTP commands) see the error. Turn it off on the nodes that write \
+      if a workload running long transactions across frequent schema changes sees too many retries.""",
       Boolean.class, true),
 
   HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
