@@ -41,6 +41,7 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
       "{ __type(name: \"Doc\") { fields { name type { kind name ofType { kind name ofType { kind name } } } } } }";
 
   private void defineDatabaseOnlyType(final Database database) {
+    database.getSchema().getOrCreateDocumentType("Address");
     final DocumentType doc = database.getSchema().createDocumentType("Doc");
     doc.createProperty("tags", Type.LIST, "STRING");
     doc.createProperty("ranks", Type.LIST, "INTEGER");
@@ -48,6 +49,8 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
     doc.createProperty("untyped", Type.LIST);
     doc.createProperty("addresses", Type.LIST, "Address");
     doc.createProperty("scores", Type.ARRAY_OF_INTEGERS);
+    doc.createProperty("smallScores", Type.ARRAY_OF_SHORTS);
+    doc.createProperty("ratios", Type.ARRAY_OF_FLOATS);
     doc.createProperty("ids", Type.ARRAY_OF_LONGS);
     doc.createProperty("weights", Type.ARRAY_OF_DOUBLES);
     doc.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
@@ -86,6 +89,8 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
         final Result record = resultSet.next();
 
         assertListOf(fieldType(record, "scores"), "SCALAR", "Int");
+        assertListOf(fieldType(record, "smallScores"), "SCALAR", "Int");
+        assertListOf(fieldType(record, "ratios"), "SCALAR", "Float");
         assertListOf(fieldType(record, "ids"), "SCALAR", "Long");
         assertListOf(fieldType(record, "weights"), "SCALAR", "Float");
       }
@@ -185,6 +190,49 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
 
         assertListOf(fieldType(doc, "tags"), "SCALAR", "String");
         assertNonNullOf(fieldType(doc, "name"), "SCALAR", "String");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void longFieldDeclaredInGqlSchemaAlsoResolves() {
+    // The schema-declared arm names whatever scalar the SDL wrote; Long must resolve there too
+    executeTest(database -> {
+      database.command("graphql", """
+          type Query {
+            counterById(id: String): Counter
+          }
+
+          type Counter {
+            id: String
+            total: Long!
+          }""");
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ __type(name: \"Counter\") { fields { name type { kind name ofType { kind name } } } } }")) {
+        assertNonNullOf(fieldType(resultSet.next(), "total"), "SCALAR", "Long");
+      }
+      try (final ResultSet resultSet = database.query("graphql", "{ __type(name: \"Long\") { name kind } }")) {
+        assertThat(resultSet.next().<String>getProperty("kind")).isEqualTo("SCALAR");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void databaseTypeNamedLongShadowsTheScalar() {
+    // A user type called Long must still be served as that type, and listed once
+    executeTest(database -> {
+      database.getSchema().createDocumentType("Long").createProperty("value", Type.STRING);
+
+      try (final ResultSet resultSet = database.query("graphql", "{ __type(name: \"Long\") { name kind } }")) {
+        assertThat(resultSet.next().<String>getProperty("kind")).isEqualTo("OBJECT");
+      }
+      try (final ResultSet resultSet = database.query("graphql", "{ __schema { types { name kind } } }")) {
+        final List<Result> types = resultSet.next().getProperty("types");
+        assertThat(types).filteredOn(t -> "Long".equals(t.getProperty("name"))).hasSize(1)
+            .allSatisfy(t -> assertThat(t.<String>getProperty("kind")).isEqualTo("OBJECT"));
       }
       return null;
     });
