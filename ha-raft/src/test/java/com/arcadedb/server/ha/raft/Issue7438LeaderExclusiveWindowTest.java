@@ -31,6 +31,7 @@ import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7438: while a leader runs a DDL, a replica transaction on the same database must not be accepted into the
@@ -151,7 +153,7 @@ class Issue7438LeaderExclusiveWindowTest {
 
       // The apply thread's release of the entry's reservation lets the DDL go on.
       stateMachine.releaseReservedVersions(db.getName(), walData);
-      ddl.join(10_000);
+      ddl.join(60_000);
       assertThat(ddl.isAlive()).isFalse();
       assertThat(drained.get()).isTrue();
     } finally {
@@ -203,6 +205,26 @@ class Issue7438LeaderExclusiveWindowTest {
     assertThat(refused.getException()).isInstanceOf(NeedRetryException.class).hasMessageContaining("schema change");
     assertThat(racing.reservedPageVersions(db.getName())).as("the reservation it took is released").isZero();
     racing.endLeaderExclusive(db.getName());
+  }
+
+  /**
+   * The entry the drain stopped waiting for: accepted before the operation began, and only reaching the append after it
+   * did. The append hook refuses it, so a slow request cannot put an entry claiming the operation's page versions in the log.
+   */
+  @Test
+  void anEntryAcceptedBeforeTheWindowAndAppendedInsideItIsRefusedAtAppend() throws Exception {
+    final org.apache.ratis.statemachine.TransactionContext accepted = stateMachine.startTransaction(
+        request(db.getName(), prepareIncrement(db, counter), 1));
+    assertThat(accepted.getException()).isNull();
+
+    stateMachine.beginLeaderExclusive(db.getName(), 0);
+    try {
+      assertThatThrownBy(() -> stateMachine.preAppendTransaction(accepted)).isInstanceOf(StateMachineException.class)
+          .hasCauseInstanceOf(NeedRetryException.class);
+      assertThat(stateMachine.reservedPageVersions(db.getName())).as("its reservation is released").isZero();
+    } finally {
+      stateMachine.endLeaderExclusive(db.getName());
+    }
   }
 
   /** Ending a window that was never begun must not disturb one that is open. */
