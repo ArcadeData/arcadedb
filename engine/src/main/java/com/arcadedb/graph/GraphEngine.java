@@ -1148,7 +1148,18 @@ public class GraphEngine {
     // #8676: an edge of a unidirectional type that ENDS in this vertex is stored on its source only, so the walks
     // below never meet it. Deleted here, from the source's list, so it leaves neither a record nor a pointer to a
     // vertex that is gone. A self-loop is in the vertex's own outgoing list, which the walk below deletes.
-    for (final Edge incoming : IncomingEdgeLookup.getIncomingUnidirectionalEdges(database, vertexRID))
+    List<Edge> incomingEdges = Collections.emptyList();
+    try {
+      incomingEdges = IncomingEdgeLookup.getIncomingUnidirectionalEdges(database, vertexRID);
+    } catch (final RuntimeException e) {
+      // FORCE IS THE REPAIR PATH OF A DAMAGED VERTEX: A SCAN THAT CANNOT READ A RECORD MUST NOT STOP IT
+      if (!force)
+        throw e;
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot look for the unidirectional edges ending in vertex %s while force-deleting it: they survive, %s", e, vertexRID,
+          danglingRepairAdvice());
+    }
+    for (final Edge incoming : incomingEdges)
       if (!vertexRID.equals(incoming.getOut()))
         deleteEdgeOfDeletedVertex(incoming, mostUpdatedVertex, force);
 
