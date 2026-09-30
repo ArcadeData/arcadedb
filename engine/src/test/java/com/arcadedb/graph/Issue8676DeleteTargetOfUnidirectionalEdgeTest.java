@@ -136,6 +136,35 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   }
 
   @Test
+  void aTypeTooLargeToIndexIsNotTriedAgainByTheNextDeletesOfTheTransaction() {
+    createSchema(false);
+    final int n = 5;
+    final RID[] targets = new RID[n];
+    database.transaction(() -> {
+      a = database.newVertex("V8").set("n", "a").save().getIdentity();
+      for (int i = 0; i < n; i++) {
+        targets[i] = database.newVertex("V8").set("n", "t" + i).save().getIdentity();
+        a.asVertex().newEdge("U8", targets[i]);
+      }
+    });
+    final long cap = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    final long scansBefore = IncomingEdgeLookup.getScansTaken();
+    final long fallbacksBefore = IncomingEdgeLookup.getFallbackScans();
+    GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(1L);
+    try {
+      database.transaction(() -> {
+        for (final RID target : targets)
+          target.asVertex().delete();
+      });
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(cap);
+    }
+    assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore).as("one failed attempt to index, then none").isEqualTo(1L);
+    assertThat(IncomingEdgeLookup.getFallbackScans() - fallbacksBefore).isEqualTo(n);
+    assertThat(database.countType("U8", false)).isZero();
+  }
+
+  @Test
   void cypherDetachDeleteCountsTheIncomingEdgeOfAUnidirectionalType() {
     createSchema(false);
     createPair("U8");

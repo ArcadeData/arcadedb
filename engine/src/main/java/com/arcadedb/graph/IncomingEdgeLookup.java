@@ -265,20 +265,21 @@ public final class IncomingEdgeLookup {
 
     final String[] names = types.toArray(new String[0]);
     final TransactionContext tx = database.getTransactionIfExists();
-    if (tx != null) {
+    final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChanges() : null;
+    if (changes != null && !changes.isDeleteLookupTooLarge()) {
       try {
-        final IncomingEdgeLookup lookup = tx.getUnidirectionalEdgeChanges().getDeleteLookup();
         final List<Edge> result = new ArrayList<>();
-        for (final Snapshot snapshot : lookup.snapshots(database, names, null))
+        for (final Snapshot snapshot : changes.getDeleteLookup().snapshots(database, names, null))
           for (final Iterator<Edge> it = snapshot.edgesInto(target); it.hasNext(); )
             result.add(it.next());
         return result;
       } catch (final HeapLimitExceededException e) {
-        // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW. SAID ONCE AT WARNING, AS EVERY
-        // DELETE OF THE TRANSACTION (AND OF THE NEXT ONES) PAYS FOR A FULL SCAN OF THE TYPES
+        // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW, AND FOR THE NEXT ONES OF THE TRANSACTION
+        // WITHOUT TRYING TO INDEX AGAIN. SAID ONCE AT WARNING, AS EVERY DELETE PAYS FOR A FULL SCAN OF THE TYPES
+        changes.deleteLookupTooLarge();
         LogManager.instance().log(IncomingEdgeLookup.class, FALLBACK_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
-            "Cannot index the unidirectional edge types in heap to delete vertex %s, scanning them for it alone (every vertex "
-                + "delete pays a full scan of them; raise %s to index them): %s", target,
+            "Cannot index the unidirectional edge types in heap to delete vertex %s in database '%s', scanning them for it alone "
+                + "(every vertex delete pays a full scan of them; raise %s to index them): %s", target, database.getName(),
             GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey(), e.getMessage());
       }
     }
