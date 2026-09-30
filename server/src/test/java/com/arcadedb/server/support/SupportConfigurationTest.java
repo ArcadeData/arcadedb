@@ -307,4 +307,10 @@ class SupportConfigurationTest {
           PosixFilePermission.OWNER_EXECUTE));
     }
   }
+
+  @Test
+  void theClientKeySettingIsHiddenInEveryDump() {
+    // A later rename of the setting must not silently unmask it in the diagnostics, the settings listing and the logs
+    assertThat(GlobalConfiguration.SUPPORT_CLIENT_KEY.isHidden()).isTrue();
+  }
 }

@@ -716,6 +716,55 @@ class SupportEndpointsTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void aPortalAnswer200ThatIsNotWhoamiIsAPortalErrorNotAServerError() throws Exception {
+    register();
+    for (final String body : new String[] { "<html><body>Maintenance</body></html>", "[]", "{\"workspace\":\"not-an-object\"}", "" }) {
+      portal.handler = r -> new MockPortal.Response(200, body);
+      final Resp status = call("GET", "/api/v1/server/support?refresh=true", null);
+      assertThat(status.status()).as(body).isEqualTo(200);
+      assertThat(status.json().getBoolean("registered")).isTrue();
+      assertThat(status.json().getJSONObject("portalError").getString("error")).as(body).isEqualTo("portal_error");
+    }
+
+    // verifying answers the same instead of a 500
+    final Resp verify = call("POST", "/api/v1/server/support/register",
+        new JSONObject().put("clientId", MockPortal.CLIENT_ID).put("key", MockPortal.KEY).put("verifyOnly", true).toString());
+    assertThat(verify.status()).isEqualTo(502);
+    assertThat(verify.json().getString("error")).isEqualTo("portal_error");
+    assertKeyNeverServed();
+  }
+
+  @Test
+  void aRegistrationIsNotSavedWhenThePortalAnswersSomethingUnreadable() throws Exception {
+    portal.handler = r -> new MockPortal.Response(200, "<html>captive portal</html>");
+    final Resp resp = register();
+    assertThat(resp.status()).isEqualTo(502);
+    assertThat(resp.json().getString("error")).isEqualTo("portal_error");
+    assertThat(call("GET", "/api/v1/server/support", null).json().getBoolean("registered")).isFalse();
+  }
+
+  @Test
+  void aPortalThatIsDownIsRememberedForAFewSecondsAndRefreshAsksAgain() throws Exception {
+    // Registered through the settings, with nothing cached yet, and a portal that answers 502 (the client retries a GET once)
+    portal.handler = r -> new MockPortal.Response(502, "");
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_ID, MockPortal.CLIENT_ID);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_KEY, MockPortal.KEY);
+
+    assertThat(call("GET", "/api/v1/server/support", null).json().has("portalError")).isTrue();
+    final long afterFirst = portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count();
+    assertThat(afterFirst).isGreaterThanOrEqualTo(1);
+
+    // The next loads of the tab do not stack more attempts on the dead portal
+    for (int i = 0; i < 3; i++)
+      assertThat(call("GET", "/api/v1/server/support", null).json().has("portalError")).isTrue();
+    assertThat(portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count()).isEqualTo(afterFirst);
+
+    // ... and the Refresh button always asks again
+    assertThat(call("GET", "/api/v1/server/support?refresh=true", null).json().has("portalError")).isTrue();
+    assertThat(portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count()).isGreaterThan(afterFirst);
+  }
+
   private static Map<String, String> unzip(final byte[] bytes) throws IOException {
     final Map<String, String> result = new HashMap<>();
     try (final ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {

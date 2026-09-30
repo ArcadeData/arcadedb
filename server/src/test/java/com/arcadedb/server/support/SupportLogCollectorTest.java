@@ -406,4 +406,14 @@ class SupportLogCollectorTest {
       actual.add(line);
     assertThat(actual).isEqualTo(expected);
   }
+
+  @Test
+  void onlyLogFilesAndTheirRotationsAreDiscoveredNotOtherFilesStartingWithTheStem(@org.junit.jupiter.api.io.TempDir final Path logs)
+      throws Exception {
+    for (final String name : new String[] { "arcadedb.log", "arcadedb.log.1", "arcadedb.log.2.gz", "arcadedb0.log", "arcadedb.log.lck",
+        "arcadedb-notes.txt", "arcadedb.dump", "arcadedb-heap.hprof", "other.log" })
+      Files.writeString(logs.resolve(name), "x");
+    assertThat(SupportLogCollector.locate(logs, "arcadedb")).extracting(p -> p.getFileName().toString())
+        .containsExactlyInAnyOrder("arcadedb.log", "arcadedb.log.1", "arcadedb.log.2.gz", "arcadedb0.log");
+  }
 }
