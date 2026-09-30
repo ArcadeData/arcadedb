@@ -2232,7 +2232,10 @@ function loadSavedQuery(index) {
 function executeSavedQuery(index) {
   let queries = getSavedQueries();
   let q = queries[index];
-  if (q) executeCommand(q.l, q.c);
+  if (!q) return;
+  executeCommand(q.l, q.c);
+  // executeCommand SWITCHES THE LANGUAGE BUT NOT THE SYNTAX MODE: KEEP THE HIGHLIGHTING IN STEP WITH IT
+  editor.setOption("mode", getEditorMode());
 }
 
 function deleteSavedQuery(index) {

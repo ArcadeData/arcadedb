@@ -1032,6 +1032,14 @@ body.col-resizing * {
   opacity: 1;
 }
 
+/* NO HOVER ON TOUCH DEVICES: KEEP THE RUN AND DELETE BUTTONS VISIBLE THERE */
+@media (hover: none) {
+  .saved-query-name .saved-query-delete,
+  .saved-query-name .saved-query-run {
+    opacity: 1;
+  }
+}
+
 .saved-query-preview {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 0.72rem;

@@ -74,6 +74,8 @@ function globalActivateTab(tab) {
 }
 
 function executeCommand(language, query) {
+  // LIKE THE REAL ONE: IT SWITCHES THE LANGUAGE DROPDOWN, NOT THE EDITOR'S SYNTAX MODE
+  if (language != null) languageValue = language;
   executed.push({ language: language, query: query });
 }
 
@@ -154,6 +156,7 @@ test("loading a stale index leaves the editor untouched", () => {
 
 test("a click on a saved entry loads it, and only the explicit run button executes it", () => {
   populateSavedQueriesPanel();
+  // THESE REGEXES ARE TIED TO THE SINGLE-QUOTED ATTRIBUTE MARKUP THAT populateSavedQueriesPanel GENERATES
   const entryClick = /class='saved-query-entry'[^>]*onclick='([^']*)'/.exec(panelHtml);
   assert.ok(entryClick, "the saved entry must still be clickable");
   assert.equal(entryClick[1], "loadSavedQuery(0)");
@@ -167,4 +170,15 @@ test("a click on a saved entry loads it, and only the explicit run button execut
 test("the explicit run button still executes the saved query with its own language", () => {
   executeSavedQuery(1);
   assert.deepEqual(executed, [{ language: "cypher", query: "MATCH (a)-[:FRIEND]->(b) RETURN b" }]);
+});
+
+test("running a saved query from its play button also switches the editor's syntax mode", () => {
+  executeSavedQuery(1);
+  assert.equal(editor.mode, "mode-for-cypher", "the dropdown says cypher, so the highlighting must follow");
+});
+
+test("running a stale index executes nothing", () => {
+  executeSavedQuery(5);
+  assert.equal(executed.length, 0);
+  assert.equal(editor.mode, null);
 });
