@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.schema.DocumentType;
 
 public abstract class AbstractImporterFormat implements FormatImporter {
@@ -62,6 +63,9 @@ public abstract class AbstractImporterFormat implements FormatImporter {
   }
 
   protected String getStringContent(final String value, final char[] chars) {
+    if (value == null)
+      throw new ImportException("Cannot read a null value: the source row has an empty cell where a term was expected");
+
     if (value.length() > 1) {
       final char begin = value.charAt(0);
 

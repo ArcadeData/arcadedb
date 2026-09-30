@@ -214,19 +214,36 @@ public class RDFImporterFormat extends CSVImporterFormat {
         }
 
         try {
-          // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER FIELDS THAN THAT IS NOT A ROW THIS
+          // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER TERMS THAN THAT IS NOT A ROW THIS
           // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
-          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). WITHOUT THIS,
-          // row[0]/row[1]/row[2] BELOW THREW ArrayIndexOutOfBoundsException STRAIGHT OUT OF THE LOOP, AND
-          // -onRowError skip WAS NEVER EVEN CONSULTED.
-          if (row.length < 3)
+          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). THE TERMS ARE
+          // THE FIRST THREE NON-EMPTY CELLS, NOT POSITIONS 0, 1 AND 2: N-TRIPLES ALLOWS ANY RUN OF WHITESPACE
+          // BETWEEN TERMS AND THE SNIFFER TREATS A RUN OF THE SEPARATOR AS ONE GAP, BUT univocity RETURNS AN
+          // EMPTY CELL (null) FOR EACH EXTRA SEPARATOR (ISSUE #8159).
+          int terms = 0;
+          String term0 = null;
+          String term1 = null;
+          String term2 = null;
+          for (int i = 0; i < row.length && terms < 3; i++) {
+            final String cell = row[i];
+            if (cell == null || cell.isEmpty())
+              continue;
+            if (terms == 0)
+              term0 = cell;
+            else if (terms == 1)
+              term1 = cell;
+            else
+              term2 = cell;
+            ++terms;
+          }
+          if (terms < 3)
             throw new ImportException(
-                "Row at line " + line + " has " + row.length + " column(s), fewer than the 3 an RDF statement "
+                "Row at line " + line + " has " + terms + " term(s), fewer than the 3 an RDF statement "
                     + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-          final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
-          final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
-          final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
+          final String v1Id = getStringContent(term0, STRING_CONTENT_SKIP);
+          final String edgeLabel = getStringContent(term1, STRING_CONTENT_SKIP);
+          final String v2Id = getStringContent(term2, STRING_CONTENT_SKIP);
 
           // CREATE AN EDGE
           database.newEdgeByKeys(settings.vertexTypeName,

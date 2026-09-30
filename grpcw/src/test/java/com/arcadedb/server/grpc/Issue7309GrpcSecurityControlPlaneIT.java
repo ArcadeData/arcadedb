@@ -248,6 +248,27 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGrpcServerTest {
         .getJSONArray("access").getString(0)).isEqualTo("readRecord");
   }
 
+  /** Issue #8060: the listing carries the server-derived {@code expired} flag over gRPC, as HTTP and Studio do. */
+  @Test
+  void listApiTokensCarriesTheExpiredFlag() throws InterruptedException {
+    admin.createApiToken(CreateApiTokenRequest.newBuilder().setCredentials(root()).setName("forever").build());
+    admin.createApiToken(CreateApiTokenRequest.newBuilder().setCredentials(root()).setName("shortLived")
+        .setExpiresAt(System.currentTimeMillis() + 1_000).build());
+
+    final long deadline = System.currentTimeMillis() + 30_000;
+    ApiTokenInfo shortLived;
+    do {
+      Thread.sleep(200);
+      shortLived = admin.listApiTokens(ListApiTokensRequest.newBuilder().setCredentials(root()).build())
+          .getTokensList().stream().filter(t -> "shortLived".equals(t.getName())).findFirst().orElseThrow();
+    } while (!shortLived.getExpired() && System.currentTimeMillis() < deadline);
+
+    assertThat(shortLived.getExpired()).as("a token past its expiry is reported as expired").isTrue();
+    assertThat(admin.listApiTokens(ListApiTokensRequest.newBuilder().setCredentials(root()).build()).getTokensList()
+        .stream().filter(t -> "forever".equals(t.getName())).findFirst().orElseThrow().getExpired())
+        .as("a token with no expiry is never expired").isFalse();
+  }
+
   @Test
   void createApiTokenRefusesADuplicateNameWithAlreadyExists() {
     admin.createApiToken(CreateApiTokenRequest.newBuilder().setCredentials(root()).setName("unique").build());
