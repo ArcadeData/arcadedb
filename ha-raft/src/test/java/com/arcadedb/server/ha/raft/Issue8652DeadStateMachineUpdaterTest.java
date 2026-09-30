@@ -162,4 +162,21 @@ class Issue8652DeadStateMachineUpdaterTest {
 
     assertThat(target.recoveryCalls.get()).as("the restarts stop once the crash-loop budget is spent").isBetween(1, 3);
   }
+
+  @Test
+  void aRestartThatLooksHealthyForATickDoesNotResetTheCrashLoopStreak() {
+    final HealthMonitorTest.FakeHealthTarget target = new HealthMonitorTest.FakeHealthTarget();
+    final HealthMonitor monitor = new HealthMonitor(target, 0, 1_000L, 60_000L, false, 0, 2, 20_000L);
+
+    // A fresh state machine has seen no thread after each restart, so one tick in three reads healthy
+    for (int round = 0; round < 40; round++) {
+      target.deadUpdater = "gone";
+      monitor.tick();
+      monitor.tick();
+      target.deadUpdater = null;
+      monitor.tick();
+    }
+
+    assertThat(target.recoveryCalls.get()).as("restarts stop once the crash-loop budget is spent").isBetween(1, 3);
+  }
 }

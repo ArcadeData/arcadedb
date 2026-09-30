@@ -302,6 +302,8 @@ public final class HealthMonitor {
   private          int                      deadUpdaterStreak;
   // Consecutive ticks the Raft log was seen closed under a RUNNING division (issue #8652). Health-monitor thread only.
   private          int                      closedLogStreak;
+  // When the last dead-updater recovery ran, or -1 (issue #8652). Health-monitor thread only.
+  private          long                     lastDeadUpdaterRecoveryMs = -1;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
   // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
@@ -548,6 +550,9 @@ public final class HealthMonitor {
       dropFollowerObservations();
       if (deadUpdaterStreak >= DEAD_UPDATER_TICKS_BEFORE_RECOVERY) {
         deadUpdaterStreak = 0;
+        // A restart gives a fresh state machine that has seen no thread, so the next tick reads healthy: without this the
+        // reset below would zero the crash-loop streak after every recovery and the escalation could never be reached
+        lastDeadUpdaterRecoveryMs = clock.getAsLong();
         LogManager.instance().log(this, Level.SEVERE,
             "Raft state machine cannot apply entries: %s while the division reports %s. Restarting Ratis in place "
                 + "(issue #8652)", deadUpdater, state);
@@ -556,9 +561,14 @@ public final class HealthMonitor {
       return;
     }
     deadUpdaterStreak = 0;
-    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
-    crashRestartStreak = 0;
-    crashLoopEscalated = false;
+    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak. Not right
+    // after a dead-updater recovery, whose fresh state machine looks healthy until it applies something: the streak is
+    // forgotten only once the node has stayed healthy for CRASH_LOOP_RECORD_RESET_MS.
+    if (lastDeadUpdaterRecoveryMs < 0 || clock.getAsLong() - lastDeadUpdaterRecoveryMs >= CRASH_LOOP_RECORD_RESET_MS) {
+      lastDeadUpdaterRecoveryMs = -1;
+      crashRestartStreak = 0;
+      crashLoopEscalated = false;
+    }
     noteCrashLoopHealthy();
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
@@ -575,7 +585,8 @@ public final class HealthMonitor {
       dropFollowerObservations();
       return;
     }
-    noteLogWriterHealthy();
+    if (closedLogStreak == 0)
+      noteLogWriterHealthy();
     // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
     // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). The hand-off
     // itself runs on the recovery executor the other automatic hand-offs share, so it cannot race them for the one
