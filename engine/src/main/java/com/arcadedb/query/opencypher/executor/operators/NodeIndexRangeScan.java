@@ -363,11 +363,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
         // Resolve bounds from predicates (may involve parameter resolution)
         final boolean foldedKeys = typeIndex.getMetadata() != null && typeIndex.getMetadata().hasAnyCaseInsensitive();
+        // No bound is a range of a case-insensitive index, whose keys are case-folded (issues #8666, #8699), and the scan
+        // does not re-check what it consumes: the planner never anchors on one, so this plan predates the index
+        if (foldedKeys && !predicates.isEmpty())
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' is case-insensitive now: re-plan the query");
         for (final RangePredicate predicate : predicates) {
-          // A STARTS WITH range is not a range of a case-insensitive index, whose keys are case-folded (issue #8666)
-          if (foldedKeys && predicate.isFromPrefix())
-            continue;
-
           // Resolve the value (may be a parameter)
           Object value = predicate.getValue();
           if (predicate.isParameter() && context != null && context.getInputParameters() != null) {

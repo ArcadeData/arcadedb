@@ -281,18 +281,17 @@ public class AnchorSelector {
 
       for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet()) {
         final String propertyName = rangeEntry.getKey();
-        List<RangePredicate> predicates = rangeEntry.getValue();
+        final List<RangePredicate> predicates = rangeEntry.getValue();
 
         // Check if there's an index on this property
         final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
 
-        // A case-insensitive index holds its keys case-folded, so the range a STARTS WITH stands for is not a range of
-        // it: 'AZ' bumped to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666). Its other bounds stand
-        if (indexStats != null && indexStats.isCaseInsensitive()) {
-          predicates = predicates.stream().filter(p -> !p.isFromPrefix()).toList();
-          if (predicates.isEmpty())
-            continue;
-        }
+        // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
+        // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
+        // that holds none of the eight values the predicate accepts (issue #8699). The scan does not re-check what it
+        // consumes, so the property falls back to the label scan with its filter
+        if (indexStats != null && indexStats.isCaseInsensitive())
+          continue;
 
         if (indexStats != null) {
           // INDEX RANGE SCAN - Good performance for range queries
