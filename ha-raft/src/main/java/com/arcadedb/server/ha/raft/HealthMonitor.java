@@ -522,10 +522,9 @@ public final class HealthMonitor {
       dropFollowerObservations();
       return;
     }
-    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
-    crashRestartStreak = 0;
-    crashLoopEscalated = false;
-    noteCrashLoopHealthy();
+    // Above the healthy-lifecycle reset below, deliberately: a poisoned log that keeps killing the updater on a node that
+    // reports RUNNING again must count toward the crash-loop escalation, which that reset would otherwise zero on every
+    // recovery.
     // The thread that applies committed entries is gone while the division still reports RUNNING (issue #8652): Ratis
     // closes the division from the dying thread, and that close can hang or be reported as RUNNING again once the node
     // rejoined, leaving a zombie that rejects every append. Read from the thread, not from the lifecycle it corrupts.
@@ -543,6 +542,10 @@ public final class HealthMonitor {
       return;
     }
     deadUpdaterStreak = 0;
+    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
+    crashRestartStreak = 0;
+    crashLoopEscalated = false;
+    noteCrashLoopHealthy();
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
     // re-arm nor a storage reformat can fix (issue #7037).
