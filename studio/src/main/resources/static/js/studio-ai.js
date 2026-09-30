@@ -487,7 +487,14 @@ function aiSendMessageStreaming(db, message) {
               gotDone = true;
               aiCurrentXhr = null;
               aiSetSending(false);
-              globalNotify("Error", event.error || "Connection to AI service was interrupted", "danger");
+              $("#" + liveId).remove();
+              if (event.code === "token_invalid" || event.code === "token_expired" || event.code === "token_disabled") {
+                aiConfigured = false;
+                $("#aiActivePanel").hide();
+                $("#aiInactivePanel").show();
+                globalNotify("Subscription", event.error, "warning");
+              } else
+                globalNotify("Error", event.error || "Connection to AI service was interrupted", "danger");
             }
           } catch (e) { /* ignore malformed events */ }
         }

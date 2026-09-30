@@ -65,10 +65,10 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   private static final String SSE_HEADERS    =
       "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
 
-  private final long        savedStreamSilence = AiChatHandler.streamSilenceMs;
-  private final List<Throwable> loggedThrowables = new CopyOnWriteArrayList<>();
-  private final List<String>    loggedWarnings   = new CopyOnWriteArrayList<>();
-  private ServerSocket      gateway;
+  private final long            savedStreamSilence = AiChatHandler.streamSilenceMs;
+  private final List<Throwable> loggedThrowables   = new CopyOnWriteArrayList<>();
+  private final List<String>    loggedWarnings     = new CopyOnWriteArrayList<>();
+  private       ServerSocket    gateway;
 
   @BeforeEach
   void captureLogs() {
@@ -187,6 +187,42 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
     assertNoSecondResponseWasAttempted();
   }
 
+  /** A gateway, or a proxy in front of it, that ends the stream properly but never sent 'done'. */
+  @Test
+  void aGatewayThatClosesCleanlyWithoutDoneEndsTheStreamWithAnErrorEvent() throws Exception {
+    startGateway((in, out) -> {
+      write(out, SSE_HEADERS);
+      writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
+      writeEvent(out, new JSONObject().put("type", "text").put("n", 1));
+      write(out, "0\r\n\r\n");
+    });
+
+    final List<JSONObject> events = streamedChat();
+
+    assertThat(events).noneMatch(e -> "done".equals(e.getString("type", "")));
+    final JSONObject last = events.get(events.size() - 1);
+    assertThat(last.getString("type", "")).isEqualTo("error");
+    assertThat(last.getString("code", "")).isEqualTo("gateway_interrupted");
+
+    assertNoSecondResponseWasAttempted();
+  }
+
+  /** A complete stream carries no 'error' event. */
+  @Test
+  void aCompleteStreamEndsWithDoneAndNoErrorEvent() throws Exception {
+    startGateway((in, out) -> {
+      write(out, SSE_HEADERS);
+      writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
+      writeEvent(out, new JSONObject().put("type", "done").put("response", "all good"));
+      write(out, "0\r\n\r\n");
+    });
+
+    final List<JSONObject> events = streamedChat();
+
+    assertThat(events.get(events.size() - 1).getString("type", "")).isEqualTo("done");
+    assertThat(events).noneMatch(e -> "error".equals(e.getString("type", "")));
+  }
+
   /**
    * The rest of the issue: a CDN in front of either hop drops a connection that carries no bytes for about 100
    * seconds, and an LLM working on a long answer can be silent for longer. A heartbeat is an SSE comment line; the relay
@@ -198,14 +234,15 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
     startGateway((in, out) -> {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
-      writeChunk(out, ": keepalive\n\n");
+      writeChunk(out, ": ping from the gateway\n\n");
       writeEvent(out, new JSONObject().put("type", "done").put("response", "all good"));
       write(out, "0\r\n\r\n");
     });
 
     final String body = streamedChatBody();
 
-    assertThat(body).contains(": keepalive\n\n");
+    assertThat(body).as("a fixed heartbeat frame, not the gateway's comment text").contains(": keepalive\n\n")
+        .doesNotContain("ping from the gateway");
     assertThat(body).contains("all good");
     assertThat(body.indexOf(": keepalive")).as("relayed where it arrived, not after the answer")
         .isLessThan(body.indexOf("all good"));
@@ -283,8 +320,8 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   }
 
   private String streamedChatBody() throws Exception {
-    final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/ai/chat/stream").toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(getServerHttpUrl(0, "/api/v1/ai/chat/stream")).toURL()
+        .openConnection();
     try {
       conn.setRequestMethod("POST");
       conn.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
