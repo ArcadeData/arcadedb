@@ -4342,16 +4342,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * being refused here - {@code ensureNotSelf}'s sibling property, and what keeps a repeated
    * {@code connect cluster} working.
    * <p>
-   * <b>Advisory under concurrent adds, and cannot be more than that.</b> The configuration is read here and the
-   * {@code Mode.ADD} is issued afterwards, so two admin requests naming one address under two different ids can
-   * both pass - neither sees the other's uncommitted add - and both commit, which is the duplicate this method
-   * exists to refuse, reached by a race instead of by a single request. Serialising it here would not close the
-   * window either: neither add-peer route is leader-routed, so the two requests need not even be on the same
-   * node, and Ratis applies {@code Mode.ADD} with no address-uniqueness predicate of its own. Closing it properly
-   * means a uniqueness check on the leader at apply time, plus a decision about what a node does when it finds a
-   * configuration already in that state - tracked as issue #7802. What this catches is the reachable mistake -
-   * one operator, one request - and an operator running two adds of one address at once still has to reconcile
-   * the configuration afterwards.
+   * <b>An early refusal, not the guarantee.</b> The configuration is read here on the serving node, which may be a
+   * follower and may lag, so this call alone could not stop two concurrent adds of one address under two ids. The
+   * guarantee is the same check inside {@code RaftClusterManager.buildAddArgs}, rebuilt on every attempt of a
+   * compare-and-set membership change: the leader applies the change only if its configuration is still the one that
+   * check read, so of two racing adds one commits and the other is refused against the configuration holding the
+   * winner (issue #7802). This copy just answers the common single-request mistake before the reachability probe.
+   * A configuration that ALREADY holds a shared address, built before either check existed, is reported by the
+   * {@code peers-share-address} alert instead of being refused.
    */
   static void ensureNoDuplicateAddress(final Collection<RaftPeer> livePeers, final RaftPeer newPeer) {
     // Two passes, not one: a single loop that returns on the id match and throws on an address match answers

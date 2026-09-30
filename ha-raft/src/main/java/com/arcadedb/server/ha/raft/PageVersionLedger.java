@@ -280,6 +280,23 @@ final class PageVersionLedger {
     return true;
   }
 
+  /**
+   * Number of pages of the database that an entry of the log still holds a version for, after discarding the
+   * reservations of requests Ratis dropped ({@link #dropIfStale}). What a leader DDL waits to reach zero before it
+   * publishes its own pages (issue #7438): a reservation that will be applied is a page the DDL must not publish over.
+   */
+  int liveReservations(final String databaseName) {
+    final DatabaseLedger ledger = byDatabase.get(databaseName);
+    if (ledger == null || ledger.pages.isEmpty())
+      return 0;
+    final long now = System.currentTimeMillis();
+    int live = 0;
+    for (final Map.Entry<Long, Reservation> reserved : ledger.pages.entrySet())
+      if (!dropIfStale(ledger, reserved.getKey(), reserved.getValue(), now))
+        live++;
+    return live;
+  }
+
   /** Number of pages currently reserved for the database (diagnostics and tests). */
   int reservedPages(final String databaseName) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);

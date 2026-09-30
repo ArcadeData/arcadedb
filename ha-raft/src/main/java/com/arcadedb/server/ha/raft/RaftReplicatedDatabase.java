@@ -2100,6 +2100,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     isSchemaCommitThread.set(Boolean.TRUE);
     schemaInstalments.set(instalmentState);
 
+    // Exclusive on the cluster for the whole session (issue #7438). The session publishes its pages locally before its
+    // SCHEMA_ENTRY is appended, and the write lock keeps out this leader's own writers but not a replica's: an entry
+    // accepted in between would claim the same page versions as the DDL's embedded WAL. Ended in the finally below,
+    // after the final entry is committed and applied, which is when the log carries the DDL's versions itself.
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
+
     // Set only once the session's FINAL entry has gone out. Everything an instalment shipped before that is
     // delivery-only, so leaving this false is what tells the finally block that the followers are holding an
     // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
@@ -2238,7 +2244,25 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       schemaWalBuffer.get().clear();
       schemaBucketDeltaBuffer.get().clear();
       proxied.getFileManager().stopRecordingChanges();
+      endLeaderExclusive(exclusiveOn);
     }
+  }
+
+  /**
+   * Makes the leader exclusive on this database for a DDL, a drop or a reinstall (issue #7438), see
+   * {@link ArcadeStateMachine#beginLeaderExclusive}. Returns the state machine the registration was made on, to hand
+   * back to {@link #endLeaderExclusive}, or {@code null} when there is none (a database outside a Raft server).
+   */
+  private ArcadeStateMachine beginLeaderExclusive() {
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null)
+      stateMachine.beginLeaderExclusive(getName(), RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS);
+    return stateMachine;
+  }
+
+  private void endLeaderExclusive(final ArcadeStateMachine stateMachine) {
+    if (stateMachine != null)
+      stateMachine.endLeaderExclusive(getName());
   }
 
   /**
@@ -3632,6 +3656,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas() {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
@@ -3639,12 +3664,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' install-database entry committed via Raft", getName());
   }
 
   @Override
   public void createInReplicas(final boolean forceSnapshot) {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
@@ -3652,6 +3680,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance()
         .log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(),
@@ -3684,6 +3714,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void dropInReplicas() {
     final long committedLogIndex;
+    // Exclusive until this node has applied the drop (issue #7438): an entry of another node that wins the append race
+    // against the drop would otherwise be published on a database the drop has just closed, and surface as a
+    // transaction committed remotely that its originator never sees applied.
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       // Registered for the length of the submit and the wait (issue #8035): the caller holds this database's
@@ -3706,6 +3740,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the drop is not confirmed done on this node, and ServerControlPlane.dropDatabase's finally is about to
       // release the DROP slot regardless.
       throw new TransactionException("Error dropping database '" + getName() + "' via Raft", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry applied locally at index %d", getName(),
         committedLogIndex);
