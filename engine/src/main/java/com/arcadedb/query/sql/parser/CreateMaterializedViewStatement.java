@@ -34,6 +34,7 @@ public class CreateMaterializedViewStatement extends DDLStatement {
   public int refreshInterval; // for EVERY N SECOND/MINUTE/HOUR
   public String refreshUnit;  // SECOND, MINUTE, HOUR
   public int buckets;
+  public int pageSize;        // PAGESIZE n (issue #7688), 0 = the default
   public boolean ifNotExists = false;
 
   public CreateMaterializedViewStatement() {
@@ -61,6 +62,9 @@ public class CreateMaterializedViewStatement extends DDLStatement {
 
     if (buckets > 0)
       builder.withTotalBuckets(buckets);
+
+    if (pageSize > 0)
+      builder.withPageSize(pageSize);
 
     if (mode == MaterializedViewRefreshMode.PERIODIC && refreshInterval > 0) {
       long intervalMs = refreshInterval * 1000L; // default seconds
@@ -104,6 +108,8 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     }
     if (buckets > 0)
       builder.append(" BUCKETS ").append(buckets);
+    if (pageSize > 0)
+      builder.append(" PAGESIZE ").append(pageSize);
   }
 
   @Override
@@ -115,12 +121,13 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     result.refreshInterval = refreshInterval;
     result.refreshUnit = refreshUnit;
     result.buckets = buckets;
+    result.pageSize = pageSize;
     result.ifNotExists = ifNotExists;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, selectStatement, refreshMode, refreshInterval, refreshUnit, buckets, ifNotExists };
+    return new Object[] { name, selectStatement, refreshMode, refreshInterval, refreshUnit, buckets, pageSize, ifNotExists };
   }
 }
