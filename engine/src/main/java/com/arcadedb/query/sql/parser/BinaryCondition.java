@@ -364,6 +364,7 @@ public class BinaryCondition extends BooleanExpression {
       }
     }
   }
+
   /** True when {@code expression} is a literal string that is its own lower-case form. */
   public static boolean isLowerCaseLiteral(final Expression expression, final CommandContext context) {
     return expression.isLiteral() && expression.execute((Result) null, context) instanceof final String string
