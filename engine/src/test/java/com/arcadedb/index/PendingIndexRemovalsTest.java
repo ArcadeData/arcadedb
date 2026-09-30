@@ -118,6 +118,11 @@ class PendingIndexRemovalsTest {
     widened.removeFrom(rids);
     assertThat(rids).isEmpty();
 
+    // a REPLACE carrying an oldRid after a key-wide removal does not narrow it back either
+    final IndexKey replace = new IndexKey(false, IndexKeyOperation.REPLACE, KEY, C);
+    replace.oldRid = A;
+    assertThat(PendingIndexRemovals.accumulate(widened, replace, false).isKeyWide()).isTrue();
+
     // and a per-RID removal after a key-wide one does not narrow it back
     final PendingIndexRemovals stillWide = PendingIndexRemovals.accumulate(widened,
         new IndexKey(false, IndexKeyOperation.REMOVE, KEY, A), false);

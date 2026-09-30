@@ -574,16 +574,17 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE && unique)
-                // FOR UNIQUE INDEXES, A REMOVE MEANS THE KEY IS GONE (PendingIndexRemovals rule 2, answered here
-                // before the filter is even allocated: nothing on disk or in the overlay survives it)
-                return EMPTY_CURSOR;
-
               // #6970: the rules deciding which disk RIDs a pending entry hides (REMOVE / key-wide REMOVE /
               // REPLACE.oldRid) live in PendingIndexRemovals, shared by every index read path over the overlay.
-              removals = PendingIndexRemovals.accumulate(removals, value, unique);
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
+                if (unique)
+                  // FOR UNIQUE INDEXES, A REMOVE MEANS THE KEY IS GONE (PendingIndexRemovals rule 2, answered here
+                  // before the filter is even allocated: nothing on disk or in the overlay survives it)
+                  return EMPTY_CURSOR;
+                removals = PendingIndexRemovals.accumulate(removals, value, false);
                 continue;
+              }
+              removals = PendingIndexRemovals.accumulate(removals, value, unique);
 
               if (txChanges == null)
                 txChanges = new HashSet<>();

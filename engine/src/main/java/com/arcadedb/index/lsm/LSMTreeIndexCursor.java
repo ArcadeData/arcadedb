@@ -710,6 +710,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         // WHOLE in-tx overlay look exhausted beyond it, even though older/newer pending keys past it were still
         // live - e.g. a composite-index prefix scan whose ORDER BY DESC starts from the just-deleted top of the
         // group came back empty instead of falling through to the next surviving row (#6592 follow-up).
+        final boolean unique = index.isUnique();
         while (entry != null) {
           final Object[] tmpKeys = entry.getKey().values;
 
@@ -741,7 +742,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
               // #6970: which disk RIDs this entry hides (REMOVE / key-wide REMOVE / REPLACE.oldRid) is decided in
               // ONE place, shared with LSMTreeIndex.get() and HashIndex.get(). On a unique index every REMOVE is
               // key-wide: the key holds at most one RID.
-              txRemovals = PendingIndexRemovals.accumulate(txRemovals, value, index.isUnique());
+              txRemovals = PendingIndexRemovals.accumulate(txRemovals, value, unique);
 
               if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
                 // a key whose only pending changes are REMOVEs still contributes: it suppresses disk RIDs downstream
