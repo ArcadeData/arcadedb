@@ -35,6 +35,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
 import java.io.BufferedReader;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -95,6 +96,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * relies on the module's tests not running in parallel.
    */
   static volatile long streamSilenceMs = 5 * 60_000L;
+
+  private static final byte[] HEARTBEAT_FRAME = ": keepalive\n\n".getBytes(StandardCharsets.UTF_8);
 
   private final ArcadeDBServer server;
   private final AiConfiguration config;
@@ -299,11 +302,22 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     // the connection open, a suspended laptop - would otherwise hold this worker thread blocked in write().
     final OutputStream output = streamedResponseOutput(exchange, () -> "the streamed AI chat answer");
     String gatewaySessionId = null;
+    boolean finished = false;
 
     try (InputStream body = responseBody;
          BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
       String line;
       while ((line = reader.readLine()) != null) {
+        if (line.startsWith(":")) {
+          // An SSE comment: a heartbeat the gateway sends while the model is working. Relayed, so the client's hop
+          // carries bytes too - a proxy or CDN in front of this server drops a connection idle for ~100s, and a
+          // long answer can be silent for longer (issue #8642). The client ignores comment lines. A fixed frame, not the
+          // gateway's line: nothing it puts in a comment is forwarded. Heartbeats also reset streamSilenceMs, which
+          // bounds silence rather than total length (see ArcadeData/arcadedb-ai-gateway#161).
+          output.write(HEARTBEAT_FRAME);
+          output.flush();
+          continue;
+        }
         if (!line.startsWith("data: "))
           continue;
 
@@ -394,17 +408,71 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             }
 
             forwardEvent(output, event);
+            finished = true;
           }
-          default ->
-            // Forward any other event types unchanged (forward-compat).
+          default -> {
+            // Forward any other event types unchanged (forward-compat). An 'error' from the gateway is terminal too.
             forwardEvent(output, event);
+            if ("error".equals(type))
+              finished = true;
+          }
         }
+        // Nothing follows 'done': a drop or silence after it must not add an 'error' to a delivered answer
+        if (finished)
+          break;
       }
+      // A stream the gateway closed cleanly but without 'done' is cut short just the same
+      if (!finished)
+        endStreamWithError(output, new EOFException("the AI service closed the stream without completing the answer"),
+            chat.getString("id", null));
+    } catch (final Exception e) {
+      // The 200 and every event relayed so far are already on the wire, so this can no longer be answered with a
+      // status code: returning a 503/504 from here made the caller set one on a started response, which Undertow
+      // refuses with "UT000002: The response has already been started" - and the client saw a stream that simply
+      // stopped (issue #8642). Same rule as PostServerCommandHandler's progress stream: report it in band.
+      endStreamWithError(output, e, chat.getString("id", null));
     } finally {
       try { output.close(); } catch (final Exception ignored) {}
     }
 
     return null; // response already sent
+  }
+
+  /**
+   * Ends a stream that has already started with an {@code error} event, the only way left to tell the client the
+   * answer is lost. Best effort: when the failure is the client's own connection, the write fails too and there is
+   * nobody left to tell.
+   */
+  private void endStreamWithError(final OutputStream output, final Exception e, final String chatId) {
+    if (e instanceof InterruptedException)
+      Thread.currentThread().interrupt();
+
+    final String code;
+    final String message;
+    if (e instanceof HttpTimeoutException) {
+      code = "gateway_timeout";
+      message = "AI service stopped responding before the answer was complete. Please try again later.";
+    } else if (e instanceof IOException) {
+      code = "gateway_interrupted";
+      message = "The connection to the AI service was interrupted before the answer was complete. Please try again.";
+    } else {
+      code = "internal_error";
+      message = "An unexpected error occurred. Please try again later.";
+    }
+
+    // Neutral wording: the IOException may come from the client's side of the relay as well as from the gateway's
+    if (e instanceof IOException)
+      LogManager.instance().log(this, Level.WARNING, "AI chat stream ended before the answer was complete (chatId=%s): %s",
+          chatId, e.toString());
+    else
+      LogManager.instance().log(this, Level.WARNING, "AI chat stream ended before the answer was complete (chatId=%s)", e,
+          chatId);
+
+    try {
+      forwardEvent(output, new JSONObject().put("type", "error").put("code", code).put("error", message));
+    } catch (final Exception ignored) {
+      // The client is gone as well
+    }
   }
 
   private static void forwardEvent(final OutputStream output, final JSONObject event) throws IOException {
