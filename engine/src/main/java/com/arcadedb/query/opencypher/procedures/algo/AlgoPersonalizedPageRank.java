@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
@@ -28,23 +29,43 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.personalizedPageRank(sourceNode, relTypes?, dampingFactor?, maxIterations?, tolerance?)
+ * Procedure: algo.personalizedPageRank(sourceNodes, relTypes?, dampingFactor?, maxIterations?, tolerance?)
  * <p>
- * Computes Personalized PageRank (PPR) scores relative to a source node. Unlike standard PageRank,
- * the teleportation probability is concentrated at the source node (personalization vector = 1 at
- * source, 0 elsewhere). This measures the structural importance/proximity of all nodes relative
- * to the source.
+ * Computes Personalized PageRank (PPR) scores relative to one or more source nodes. Unlike standard PageRank,
+ * the teleportation probability is concentrated at the source nodes (personalization vector = 0 for every
+ * other node). This measures the structural importance/proximity of all nodes relative to the sources.
+ * </p>
+ * <p>
+ * The first argument is either:
+ * <ul>
+ *   <li>a single node: all the teleportation probability is on it;</li>
+ *   <li>a list of nodes: the teleportation probability is split uniformly between them (a duplicated node
+ *   counts once per occurrence);</li>
+ *   <li>a list of {@code [node, weight]} pairs: a personalization vector, where weights are non-negative numbers
+ *   normalized to sum to 1 (so only their ratios matter). Plain nodes and pairs can be mixed, a plain node
+ *   having weight 1.</li>
+ * </ul>
+ * Source nodes that are not part of the graph being analyzed are ignored; if none is, no row is returned.
  * </p>
  * <p>
  * Example:
  * <pre>
  * MATCH (s:Person {name:'Alice'})
  * CALL algo.personalizedPageRank(s, 'KNOWS', 0.85, 20, 0.000001)
+ * YIELD nodeId, score
+ * RETURN nodeId, score ORDER BY score DESC
+ *
+ * MATCH (a:Person {name:'Alice'}), (b:Person {name:'Bob'})
+ * CALL algo.personalizedPageRank([[a, 3.0], [b, 1.0]], 'KNOWS')
  * YIELD nodeId, score
  * RETURN nodeId, score ORDER BY score DESC
  * </pre>
@@ -72,7 +93,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Computes Personalized PageRank scores relative to a source node";
+    return "Computes Personalized PageRank scores relative to a source node, a list of nodes, or a weighted personalization vector";
   }
 
   @Override
@@ -84,7 +105,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
-    final Vertex sourceVertex = extractVertex(args[0], "sourceNode");
+    final Map<RID, Double> sources = extractSources(args[0]);
     final String[] relTypes = args.length > 1 ? extractRelTypes(args[1]) : null;
     final double dampingFactor = args.length > 2 && args[2] instanceof Number n ? n.doubleValue() : 0.85;
     final int maxIterations = args.length > 3 && args[3] instanceof Number n ? extractInt(n, "maxIterations", 1) : 20;
@@ -99,18 +120,80 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     // (issue #6792). wrap() is a no-op for a compact id space.
     final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, relTypes));
     if (provider != null) {
-      final int sourceIdx = provider.getNodeId(sourceVertex.getIdentity());
-      if (sourceIdx >= 0) {
+      final double[] personalization = buildPersonalization(sources, provider.getNodeCount(), rid -> provider.getNodeId(rid));
+      if (personalization != null) {
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
-        return executeWithCSR(provider, sourceIdx, relTypes, dampingFactor, maxIterations, tolerance, guard);
+        return executeWithCSR(provider, personalization, relTypes, dampingFactor, maxIterations, tolerance, guard);
       }
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, sourceVertex, relTypes, dampingFactor, maxIterations, tolerance, guard);
+    return executeWithOLTP(db, sources, relTypes, dampingFactor, maxIterations, tolerance, guard);
   }
 
-  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider, final int sourceIdx,
+  /**
+   * Parses the first argument into RID -> weight (insertion ordered, duplicated nodes accumulate their weight).
+   */
+  private Map<RID, Double> extractSources(final Object arg) {
+    final Map<RID, Double> sources = new LinkedHashMap<>();
+    if (arg instanceof Collection<?> items) {
+      if (items.isEmpty())
+        throw new IllegalArgumentException(getName() + "(): sourceNodes cannot be an empty list");
+      for (final Object item : items) {
+        if (item instanceof List<?> pair) {
+          if (pair.size() != 2)
+            throw new IllegalArgumentException(getName() + "(): each weighted source must be a [node, weight] pair");
+          if (!(pair.get(1) instanceof Number weight))
+            throw new IllegalArgumentException(getName() + "(): the weight of a [node, weight] pair must be a number");
+          addSource(sources, extractVertex(pair.get(0), "sourceNodes[*]"), weight.doubleValue());
+        } else
+          addSource(sources, extractVertex(item, "sourceNodes[*]"), 1.0);
+      }
+    } else
+      addSource(sources, extractVertex(arg, "sourceNode"), 1.0);
+
+    double total = 0.0;
+    for (final double w : sources.values())
+      total += w;
+    if (!(total > 0.0) || Double.isInfinite(total))
+      throw new IllegalArgumentException(getName() + "(): the source weights must sum to a positive finite number");
+    return sources;
+  }
+
+  private void addSource(final Map<RID, Double> sources, final Vertex vertex, final double weight) {
+    if (Double.isNaN(weight) || Double.isInfinite(weight) || weight < 0.0)
+      throw new IllegalArgumentException(getName() + "(): source weights must be finite and non-negative, got " + weight);
+    sources.merge(vertex.getIdentity(), weight, Double::sum);
+  }
+
+  /**
+   * Builds the normalized personalization vector (sums to 1) of size {@code n}. Sources missing from the graph
+   * (index &lt; 0) are dropped and the rest renormalized. Returns null if any source with a positive weight is
+   * unknown to the caller's id space, so the caller can fall back to the OLTP path, and an all-zero vector
+   * is never returned.
+   */
+  private static double[] buildPersonalization(final Map<RID, Double> sources, final int n,
+      final ToIntFunction<RID> indexOf) {
+    final double[] personal = new double[n];
+    double total = 0.0;
+    for (final Map.Entry<RID, Double> e : sources.entrySet()) {
+      final int idx = indexOf.applyAsInt(e.getKey());
+      if (idx < 0) {
+        if (e.getValue() > 0.0)
+          return null;
+        continue;
+      }
+      personal[idx] += e.getValue();
+      total += e.getValue();
+    }
+    if (!(total > 0.0))
+      return null;
+    for (int i = 0; i < n; i++)
+      personal[i] /= total;
+    return personal;
+  }
+
+  private Stream<Result> executeWithCSR(final GraphTraversalProvider provider, final double[] personal,
       final String[] relTypes, final double dampingFactor, final int maxIterations, final double tolerance,
       final WorkGuard guard) {
     final int n = provider.getNodeCount();
@@ -129,8 +212,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++)
       outDegree[i] = hasView ? outView.degree(i) : outAdjFallback[i].length;
 
-    final double[] rank = new double[n];
-    rank[sourceIdx] = 1.0;
+    final double[] rank = personal.clone();
 
     for (int iter = 0; iter < maxIterations; iter++) {
       // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
@@ -153,8 +235,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
           }
-          final double personal = i == sourceIdx ? 1.0 : 0.0;
-          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+          newRank[i] = (1.0 - dampingFactor) * personal[i] + dampingFactor * incoming + dampingFactor * dangling * personal[i];
         }
       } else {
         for (int i = 0; i < n; i++) {
@@ -164,8 +245,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           for (final int j : inAdjFallback[i])
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
-          final double personal = i == sourceIdx ? 1.0 : 0.0;
-          newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+          newRank[i] = (1.0 - dampingFactor) * personal[i] + dampingFactor * incoming + dampingFactor * dangling * personal[i];
         }
       }
 
@@ -187,7 +267,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     });
   }
 
-  private Stream<Result> executeWithOLTP(final Database db, final Vertex sourceVertex, final String[] relTypes,
+  private Stream<Result> executeWithOLTP(final Database db, final Map<RID, Double> sources, final String[] relTypes,
       final double dampingFactor, final int maxIterations, final double tolerance, final WorkGuard guard) {
 
     final GraphData graph = loadGraph(db, null, relTypes);
@@ -197,8 +277,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final int sourceIdx = graph.indexOf(sourceVertex.getIdentity());
-    if (sourceIdx < 0)
+    final double[] personal = buildPersonalizationLenient(sources, n, graph);
+    if (personal == null)
       return Stream.empty();
 
     final int[][] outAdj = graph.adjacency(Vertex.DIRECTION.OUT, relTypes);
@@ -208,8 +288,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
 
     final int[][] inAdj = graph.adjacency(Vertex.DIRECTION.IN, relTypes);
 
-    final double[] rank = new double[n];
-    rank[sourceIdx] = 1.0;
+    final double[] rank = personal.clone();
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
       // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
@@ -228,8 +307,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         for (final int j : inAdj[i])
           if (outDegree[j] > 0)
             incoming += rank[j] / outDegree[j];
-        final double personal = i == sourceIdx ? 1.0 : 0.0;
-        newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
+        newRank[i] = (1.0 - dampingFactor) * personal[i] + dampingFactor * incoming + dampingFactor * dangling * personal[i];
       }
 
       double maxChange = 0.0;
@@ -248,5 +326,16 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       r.setProperty("score", rank[i]);
       return (Result) r;
     });
+  }
+
+  /**
+   * OLTP flavour: there is no other path to fall back to, so sources missing from the graph are ignored.
+   */
+  private static double[] buildPersonalizationLenient(final Map<RID, Double> sources, final int n, final GraphData graph) {
+    final Map<RID, Double> known = new LinkedHashMap<>();
+    for (final Map.Entry<RID, Double> e : sources.entrySet())
+      if (graph.indexOf(e.getKey()) >= 0)
+        known.put(e.getKey(), e.getValue());
+    return known.isEmpty() ? null : buildPersonalization(known, n, graph::indexOf);
   }
 }
