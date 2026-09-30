@@ -603,10 +603,16 @@ public class BinaryComparator {
       return aDate.compareTo(bDate);
     else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
       return aDate.compareTo(bDate);
-    else if (DateUtils.isDate(a) || DateUtils.isDate(b))
+    else if (DateUtils.isDate(a) || DateUtils.isDate(b)) {
+      // The untyped twin of the refusal in the typed compare(): a Boolean has no timestamp meaning, and the helper
+      // below answers null for it, which NPE'd on unboxing (issue #7754). The operators already catch this
+      // IllegalArgumentException and report "not comparable".
+      if (a instanceof Boolean || b instanceof Boolean)
+        throw new IllegalArgumentException(
+            "Comparison between " + a.getClass().getSimpleName() + " and " + b.getClass().getSimpleName() + " not supported");
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
-    else if (a.getClass() == b.getClass())
+    } else if (a.getClass() == b.getClass())
       // Deliberately unguarded, unlike the class-mismatch branches below: two instances of the SAME class that
       // does not implement Comparable is exactly the case LtOperatorTest/GeOperatorTest/LeOperatorTest pin as
       // "genuinely not orderable" and expect to throw ClassCastException here (they wrap it in a try/catch and

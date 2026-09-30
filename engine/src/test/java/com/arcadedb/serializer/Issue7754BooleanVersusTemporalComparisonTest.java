@@ -18,8 +18,11 @@
  */
 package com.arcadedb.serializer;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,5 +54,12 @@ class Issue7754BooleanVersusTemporalComparisonTest {
     final Object one = numericType == BinaryTypes.TYPE_INT ? (Object) 1 : (Object) 1L;
     assertThat(comparator.compare(true, BinaryTypes.TYPE_BOOLEAN, one, numericType)).isZero();
     assertThat(comparator.compare(one, numericType, true, BinaryTypes.TYPE_BOOLEAN)).isZero();
+  }
+
+  @Test
+  void untypedComparisonOfBooleanAndTemporalObjectIsRefusedInBothDirections() {
+    final LocalDateTime when = LocalDateTime.of(2026, 1, 1, 0, 0);
+    assertThatThrownBy(() -> BinaryComparator.compareTo(true, when)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> BinaryComparator.compareTo(when, false)).isInstanceOf(IllegalArgumentException.class);
   }
 }
