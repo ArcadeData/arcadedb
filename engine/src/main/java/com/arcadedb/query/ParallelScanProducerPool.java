@@ -21,6 +21,8 @@ package com.arcadedb.query;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.DedicatedThreadPool;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * JVM-wide dedicated executor for the BLOCKING producer tasks of parallel bucket scans
  * ({@code FetchFromTypeExecutionStep.syncPullParallel}). Lazy singleton; daemon threads, so the
@@ -96,10 +98,24 @@ public final class ParallelScanProducerPool extends DedicatedThreadPool {
    * must progress whatever the pool holds (#8775): the pool cannot run it, since other result sets may hold every thread.
    */
   public static Thread newDedicatedProducerThread(final Runnable target, final String name) {
-    final Thread thread = new ProducerThread(target, name);
+    final Thread thread = new ProducerThread(() -> {
+      DEDICATED_READERS.incrementAndGet();
+      try {
+        target.run();
+      } finally {
+        DEDICATED_READERS.decrementAndGet();
+      }
+    }, name);
     thread.setDaemon(true);
     return thread;
   }
+
+  /** The dedicated reader threads running right now, which no pool statistic sees (#8775). */
+  public static int getActiveDedicatedReaders() {
+    return DEDICATED_READERS.get();
+  }
+
+  private static final AtomicInteger DEDICATED_READERS = new AtomicInteger();
 
   private ParallelScanProducerPool() {
     // 0 = auto-size to available cores (with a floor of DEFAULT_THREADS_FLOOR). An explicit positive value

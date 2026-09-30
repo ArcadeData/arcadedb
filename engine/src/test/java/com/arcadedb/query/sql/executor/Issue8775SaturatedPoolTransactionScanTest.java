@@ -75,7 +75,6 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
   @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
   void abandonedTransactionScanReleasesItsReaderThread() throws Exception {
     // a scan abandoned in a transaction (never drained, never closed) must not keep its reader thread for ever
-    database.getConfiguration().setValue(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT, 1_000L);
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
     final List<ResultSet> abandoned = new ArrayList<>();
     readersBefore = readerThreads();
@@ -86,6 +85,8 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
         rs.next();
         abandoned.add(rs);
       }
+      // the timeout is read when a scan starts: lowered only now, the holders above keep the pool for as long as the test needs
+      database.getConfiguration().setValue(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT, 1_000L);
       database.begin();
       try {
         final ResultSet rs = database.query("sql", "SELECT FROM Rating");

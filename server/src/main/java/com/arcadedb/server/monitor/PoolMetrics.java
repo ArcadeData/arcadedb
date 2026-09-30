@@ -83,6 +83,11 @@ public final class PoolMetrics implements MeterBinder {
     // and queueCapacityRemaining reports -1 (not applicable); queue_depth is the signal to watch.
     final ParallelScanProducerPool pspp = ParallelScanProducerPool.getInstance();
     bindPool(registry, "parallel_scan", "ParallelScanProducerPool bucket-scan producer pool", pspp::getPoolStats);
+    // The per-scan reader threads that run outside the pool (#8775): the pool's own numbers do not see them
+    Gauge.builder("arcadedb.executor.dedicated_readers", ParallelScanProducerPool::getActiveDedicatedReaders)
+        .description("Parallel-scan unit reader threads running right now, outside the producer pool: one per in-flight scan "
+            + "in a transaction whose pool is saturated. Not capped, so this is the number to watch under saturation.")
+        .tags(Tags.of(Tag.of("pool", "parallel_scan"))).register(registry);
 
     // The pool that runs commands dispatched with awaitResponse=false (issue #6303, item 3). Its caller-runs count is
     // the one an operator most wants to see here: a fallback means the pool was saturated and the command ran on the

@@ -138,8 +138,8 @@ final class ParallelTypeScan {
   private          BlockingQueue<Integer>  readerUnits;
   private volatile Thread                  dedicatedReader;
   private volatile boolean                 closed;
-  // WHETHER THE CONSUMER RUNS IN A TRANSACTION, DECIDED PER BATCH: A THREAD-LOCAL LOOKUP PER ROW WOULD EAT INTO THE SCAN (#8775)
-  private          boolean                 filterDeleted;
+  // THE TRANSACTION THE CONSUMER RUNS IN, RESOLVED PER BATCH (NULL WITHOUT ONE): A THREAD-LOCAL LOOKUP PER ROW WOULD EAT INTO THE SCAN
+  private          TransactionContext      filterTx;
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
     this.database = database;
@@ -481,7 +481,7 @@ final class ParallelTypeScan {
             final Result candidate = batch.get(consumerBatchIndex);
             batch.set(consumerBatchIndex++, null); // EARLY CLEANSE FOR GC
             // A ROW THE TRANSACTION HAS DELETED SINCE THE SCAN STARTED IS NOT HANDED OUT: THE SEQUENTIAL SCAN WOULD NOT HAVE (#8775)
-            if (filterDeleted && deletedByTransaction(candidate))
+            if (filterTx != null && deletedByTransaction(candidate))
               continue;
             nextItem = candidate;
             break;
@@ -499,7 +499,7 @@ final class ParallelTypeScan {
             final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
             if (fetched != null) {
               consumerBatch = fetched;
-              filterDeleted = database.isTransactionActive();
+              filterTx = database.isTransactionActive() ? database.getTransaction() : null;
               consumerBatchIndex = 0;
             } else {
               chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
@@ -549,7 +549,7 @@ final class ParallelTypeScan {
             ++consumerUnit;
           } else if (polled != null) {
             consumerBatch = polled;
-            filterDeleted = database.isTransactionActive();
+            filterTx = database.isTransactionActive() ? database.getTransaction() : null;
             consumerBatchIndex = 0;
           }
         }
@@ -656,14 +656,11 @@ final class ParallelTypeScan {
 
   /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
   private boolean deletedByTransaction(final Result row) {
-    if (!database.isTransactionActive())
-      return false;
-    final TransactionContext transaction = database.getTransaction();
     // NOTHING DELETED, THE COMMON CASE: NO LOOKUP, NO Optional
-    if (!transaction.hasDeletedRecords())
+    if (!filterTx.hasDeletedRecords())
       return false;
     final RID rid = row.getIdentity().orElse(null);
-    return rid != null && transaction.isDeletedInTransaction(rid);
+    return rid != null && filterTx.isDeletedInTransaction(rid);
   }
 
   private void stopDedicatedReader() {
