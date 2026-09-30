@@ -95,6 +95,34 @@ class JavaReferenceMethods {
   public static String join(final String... parts) {
     return String.join("+", parts);
   }
+
+  public static String widen(final long value) {
+    return "long " + value;
+  }
+
+  public static String nullable(final String value) {
+    return "value " + value;
+  }
+}
+
+/**
+ * No no-argument constructor: an instance can only be created by the engine for a non-static method, so calling the
+ * static overload proves the engine does not instantiate the class when the selected method does not need it.
+ */
+class JavaStaticAndInstanceOverloads {
+  private final String prefix;
+
+  public JavaStaticAndInstanceOverloads(final String prefix) {
+    this.prefix = prefix;
+  }
+
+  public static String render(final int value) {
+    return "static " + value;
+  }
+
+  public String render(final String value) {
+    return prefix + value;
+  }
 }
 
 interface JavaQueryTransformer<T> {
@@ -117,6 +145,7 @@ class JavaUpperCaser implements JavaQueryTransformer<String> {
 
 class JavaQueryTest extends TestHelper {
   private static final String REF = "com.arcadedb.query.java.JavaReferenceMethods";
+
   @Test
   void registeredMethod() {
     assertThat(database.getQueryEngine("java").getLanguage()).isEqualTo("java");
@@ -315,5 +344,56 @@ class JavaQueryTest extends TestHelper {
 
     final ResultSet result = database.command("java", "com.arcadedb.query.java.JavaUpperCaser::transform", "abc");
     assertThat((String) result.next().getProperty("value")).isEqualTo("ABC");
+  }
+
+  @Test
+  void boxedArgumentWidensIntoAWiderPrimitiveParameter() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    assertThat((String) database.command("java", REF + "::widen", 5).next().getProperty("value")).isEqualTo("long 5");
+  }
+
+  @Test
+  void nullArgumentForAReferenceParameterIsStillAccepted() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    assertThat((String) database.command("java", REF + "::nullable", (Object) null).next().getProperty("value")).isEqualTo("value null");
+  }
+
+  @Test
+  void varargsMethodAcceptsZeroArgumentsAndAPrePackedArray() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    assertThat((String) database.command("java", REF + "::join").next().getProperty("value")).isEqualTo("");
+    assertThat((String) database.command("java", REF + "::join", (Object) new String[] { "x", "y" }).next().getProperty("value"))
+        .isEqualTo("x+y");
+  }
+
+  /**
+   * A command without arguments reached the named-parameter overload, whose "no parameters" branch called
+   * {@code command(query, null)}: that is {@code QueryEngine}'s no-parameter default, which calls the named-parameter
+   * overload again with an empty map, until the stack overflowed.
+   */
+  @Test
+  void commandWithoutArgumentsInvokesANoArgumentMethod() {
+    database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
+
+    final ResultSet result = database.command("java", "com.arcadedb.query.java.JavaMethods::hello");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((Object) result.next().getProperty("value")).isNull();
+  }
+
+  @Test
+  void staticOverloadIsInvokedWithoutInstantiatingTheClass() {
+    final String cls = "com.arcadedb.query.java.JavaStaticAndInstanceOverloads";
+    database.getQueryEngine("java").registerFunctions(cls);
+
+    assertThat((String) database.command("java", cls + "::render", 3).next().getProperty("value")).isEqualTo("static 3");
+    // the instance overload needs a no-argument constructor this class does not have: selected, then refused on creation
+    assertThatThrownBy(() -> database.command("java", cls + "::render", "x"))
+        .isInstanceOf(CommandExecutionException.class)
+        .cause()
+        .isInstanceOf(NoSuchMethodException.class)
+        .hasMessageContaining("<init>");
   }
 }

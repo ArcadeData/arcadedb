@@ -196,14 +196,6 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     return disambiguateByArgumentType(name, candidates, args);
   }
 
-  /**
-   * The argument array {@link Method#invoke} expects for {@code method}: {@code args} unchanged for a fixed-arity
-   * method, or with the trailing flat arguments packed into the vararg array for a varargs one.
-   */
-  public static Object[] toInvokeArguments(final Method method, final Object[] args) {
-    return toInvokeArgs(method, args);
-  }
-
   private Object invoke(final Method method, final Object[] args) {
     try {
       return method.invoke(instance, toInvokeArgs(method, args));
@@ -221,9 +213,10 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * itself: it requires the args array to have exactly as many elements as the method's formal parameters, with the
    * last one already being an array of the vararg component type. This packs the flat, positionally-passed
    * arguments this class receives into that shape for a varargs method; non-varargs methods are passed through
-   * unchanged.
+   * unchanged. Public so a dispatcher that invokes the method {@link #selectOverload selected} for it passes the
+   * arguments in the same shape (issue #7880).
    */
-  private static Object[] toInvokeArgs(final Method method, final Object[] args) {
+  public static Object[] toInvokeArgs(final Method method, final Object[] args) {
     if (!method.isVarArgs() || isPrePacked(method, args))
       return args;
 

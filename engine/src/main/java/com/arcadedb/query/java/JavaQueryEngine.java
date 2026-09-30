@@ -53,6 +53,8 @@ public class JavaQueryEngine implements QueryEngine {
   /** #5418: names the user-code workers and marks them DAEMON (see the constructor). */
   private static final AtomicLong USER_CODE_THREAD_SEQ = new AtomicLong();
 
+  private static final Object[] NO_ARGUMENTS = new Object[0];
+
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
     public boolean isIdempotent() {
@@ -140,7 +142,7 @@ public class JavaQueryEngine implements QueryEngine {
 
         final Class<?> impl = Class.forName(parts[0]);
 
-        final Object[] args = parameters != null ? parameters : new Object[0];
+        final Object[] args = parameters != null ? parameters : NO_ARGUMENTS;
 
         // LOOK FOR THE RIGHT METHOD TO INVOKE
         final Method rightMethod = searchMethod(impl, parts[1], args);
@@ -148,11 +150,11 @@ public class JavaQueryEngine implements QueryEngine {
         if (rightMethod == null)
           throw new NoSuchMethodException(
               "Java function '" + query + "' not found on classpath (class '" + parts[0] + "' method '" + parts[1] + "' with parameters " + Arrays.toString(
-                  parameters) + ")");
+                  args) + ")");
 
         final Object instance = Modifier.isStatic(rightMethod.getModifiers()) ? null : impl.getConstructor().newInstance();
 
-        final Object result = rightMethod.invoke(instance, JavaMethodFunctionDefinition.toInvokeArguments(rightMethod, args));
+        final Object result = rightMethod.invoke(instance, JavaMethodFunctionDefinition.toInvokeArgs(rightMethod, args));
 
         final InternalResultSet resultSet;
         if (result instanceof ResultSet)
@@ -208,8 +210,10 @@ public class JavaQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    // Explicitly the positional overload: command(query, null) resolves to QueryEngine's no-parameter default, which
+    // comes straight back here with an empty map, so every java command without arguments overflowed the stack.
     if (parameters == null || parameters.size() == 0)
-      return command(query, null);
+      return command(query, configuration, NO_ARGUMENTS);
     throw new UnsupportedOperationException("Execution of a command with parameters referenced by name is not supported for Java engine");
   }
 
