@@ -196,6 +196,8 @@ public class PostgresPortal {
     portal.showName = template.showName;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
+    // The answer PARSE materialized (SHOW, system and catalog queries). Read-only: a slice is copied out of it
+    portal.fullResultSet = template.fullResultSet;
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
     portal.statement = template;
