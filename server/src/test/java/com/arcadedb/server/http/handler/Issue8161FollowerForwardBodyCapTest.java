@@ -40,9 +40,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -125,7 +125,8 @@ class Issue8161FollowerForwardBodyCapTest {
       assertThat(classification.exceptionArgs()).isEqualTo(String.valueOf(CAP_BYTES));
 
       assertThat(body.hasBodyFailed()).isTrue();
-      assertThat(leader.acceptedConnections()).isGreaterThanOrEqualTo(1);
+      // The kernel backlog can take the relayed bytes before accept() returns on the fixture thread: wait for it.
+      assertThat(leader.awaitFirstConnection(30, TimeUnit.SECONDS)).isTrue();
     }
   }
 
@@ -155,10 +156,10 @@ class Issue8161FollowerForwardBodyCapTest {
    * connection as soon as it has accepted it.
    */
   private static final class DrainingLeader implements AutoCloseable {
-    private final ServerSocket  serverSocket;
-    private final Thread        acceptor;
-    private final AtomicInteger accepted = new AtomicInteger();
-    private final List<Socket>  sockets  = new CopyOnWriteArrayList<>();
+    private final ServerSocket   serverSocket;
+    private final Thread         acceptor;
+    private final CountDownLatch firstAccept = new CountDownLatch(1);
+    private final List<Socket>   sockets     = new CopyOnWriteArrayList<>();
 
     DrainingLeader(final boolean dropAfterAccept) throws IOException {
       // The literal IPv4 loopback, not getLoopbackAddress(): under java.net.preferIPv6Addresses=true that one is
@@ -168,7 +169,7 @@ class Issue8161FollowerForwardBodyCapTest {
         while (!serverSocket.isClosed()) {
           try {
             final Socket socket = serverSocket.accept();
-            accepted.incrementAndGet();
+            firstAccept.countDown();
             sockets.add(socket);
             if (dropAfterAccept) {
               socket.close();
@@ -199,8 +200,8 @@ class Issue8161FollowerForwardBodyCapTest {
       return serverSocket.getInetAddress().getHostAddress() + ":" + serverSocket.getLocalPort();
     }
 
-    int acceptedConnections() {
-      return accepted.get();
+    boolean awaitFirstConnection(final long timeout, final TimeUnit unit) throws InterruptedException {
+      return firstAccept.await(timeout, unit);
     }
 
     @Override
