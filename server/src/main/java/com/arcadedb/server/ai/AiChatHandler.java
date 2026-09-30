@@ -304,6 +304,14 @@ public class AiChatHandler extends AbstractServerHttpHandler {
          BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
       String line;
       while ((line = reader.readLine()) != null) {
+        if (line.startsWith(":")) {
+          // An SSE comment: a heartbeat the gateway sends while the model is working. Relayed, so the client's hop
+          // carries bytes too - a proxy or CDN in front of this server drops a connection idle for ~100s, and a
+          // long answer can be silent for longer (issue #8642). The client ignores comment lines.
+          output.write((line + "\n\n").getBytes(StandardCharsets.UTF_8));
+          output.flush();
+          continue;
+        }
         if (!line.startsWith("data: "))
           continue;
 
@@ -400,11 +408,50 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             forwardEvent(output, event);
         }
       }
+    } catch (final Exception e) {
+      // The 200 and every event relayed so far are already on the wire, so this can no longer be answered with a
+      // status code: returning a 503/504 from here made the caller set one on a started response, which Undertow
+      // refuses with "UT000002: The response has already been started" - and the client saw a stream that simply
+      // stopped (issue #8642). Same rule as PostServerCommandHandler's progress stream: report it in band.
+      endStreamWithError(output, e, chat.getString("id", null));
     } finally {
       try { output.close(); } catch (final Exception ignored) {}
     }
 
     return null; // response already sent
+  }
+
+  /**
+   * Ends a stream that has already started with an {@code error} event, the only way left to tell the client the
+   * answer is lost. Best effort: when the failure is the client's own connection, the write fails too and there is
+   * nobody left to tell.
+   */
+  private void endStreamWithError(final OutputStream output, final Exception e, final String chatId) {
+    final String code;
+    final String message;
+    if (e instanceof HttpTimeoutException) {
+      code = "gateway_timeout";
+      message = "AI service stopped responding before the answer was complete. Please try again later.";
+    } else if (e instanceof IOException) {
+      code = "gateway_interrupted";
+      message = "The connection to the AI service was interrupted before the answer was complete. Please try again.";
+    } else {
+      code = "internal_error";
+      message = "An unexpected error occurred. Please try again later.";
+    }
+
+    if (e instanceof IOException)
+      LogManager.instance().log(this, Level.WARNING, "AI chat stream ended before the answer was complete (chatId=%s): %s",
+          chatId, e.getMessage());
+    else
+      LogManager.instance().log(this, Level.WARNING, "AI chat stream ended before the answer was complete (chatId=%s)", e,
+          chatId);
+
+    try {
+      forwardEvent(output, new JSONObject().put("type", "error").put("code", code).put("error", message));
+    } catch (final Exception ignored) {
+      // The client is gone as well
+    }
   }
 
   private static void forwardEvent(final OutputStream output, final JSONObject event) throws IOException {

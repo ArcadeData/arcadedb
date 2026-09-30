@@ -18,9 +18,15 @@
  */
 package com.arcadedb.server.http.handler;
 
+import io.undertow.server.HttpServerExchange;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for ExecutionResponse.
@@ -126,5 +132,22 @@ class ExecutionResponseTest {
     final ExecutionResponse response = new ExecutionResponse(200, data);
 
     assertThat(response.getBinary()).containsExactly((byte) 0xFF, (byte) 0x00, (byte) 0xAB, (byte) 0xCD);
+  }
+
+  /**
+   * Issue #8642: a handler that already streamed part of its answer and then returned a response anyway made this set
+   * a status code on a response already on the wire, which Undertow refuses with
+   * {@code IllegalStateException: UT000002: The response has already been started}. Nothing can be sent at that point,
+   * so nothing is attempted.
+   */
+  @Test
+  void sendWritesNothingOnAResponseThatHasAlreadyStarted() {
+    final HttpServerExchange exchange = mock(HttpServerExchange.class);
+    when(exchange.isResponseStarted()).thenReturn(true);
+
+    new ExecutionResponse(503, "{\"error\":\"too late\"}").send(exchange);
+
+    verify(exchange, never()).setStatusCode(anyInt());
+    verify(exchange, never()).getResponseSender();
   }
 }

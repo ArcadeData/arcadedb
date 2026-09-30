@@ -175,7 +175,7 @@ public class AiApiSpec implements OpenApiContributor {
         Server-Sent Events stream. Each event is one 'data: ' line carrying a JSON object, followed by a blank \
         line; the schema below is the schema of that object. A complete stream ends with a 'done' event, and \
         exactly one: a stream that ends without it was cut short, and the reply it would have carried was never \
-        persisted.""");
+        persisted. A stream the server knows it cut short ends with an 'error' event instead.""");
     ok.setContent(new Content().addMediaType("text/event-stream", sseMediaType));
 
     final ApiResponses responses = chatResponses();
@@ -452,11 +452,12 @@ public class AiApiSpec implements OpenApiContributor {
   private Schema<?> createChatStreamEventSchema() {
     final Schema<String> type = SpecBuilders.string("""
         Which event this is. 'tool_start' and 'tool_end' bracket one tool the server ran locally, and 'done' \
-        terminates a complete stream. The gateway's own 'session' and 'tool_call' events never appear: the \
+        terminates a complete stream. 'error' terminates a stream cut short after it started - the gateway's \
+        connection dropped or fell silent - and says why; no 'done' follows it. The gateway's own 'session' and 'tool_call' events never appear: the \
         server consumes both and synthesizes the pair above in their place. Any OTHER value is an event the \
         gateway added and this server relays unchanged - ignore what you do not recognise rather than failing \
         on it.""");
-    type.setEnum(List.of("tool_start", "tool_end", "done"));
+    type.setEnum(List.of("tool_start", "tool_end", "done", "error"));
 
     final Schema<Object> schema = SpecBuilders.object("""
         One event of the chat stream. 'type' says which one; the other members below belong to the kinds their \
@@ -469,9 +470,13 @@ public class AiApiSpec implements OpenApiContributor {
         Arguments the assistant passed to the tool, echoed identically on 'tool_start' and 'tool_end'. An open \
         map: the keys are the tool's own parameters."""));
     schema.addProperty("error", SpecBuilders.string("""
-        Why the tool failed, on 'tool_end' only, and only when it did. Its absence is what says the run \
+        Why the tool failed, on 'tool_end', and only when it did. Its absence is what says the run \
         succeeded - the stream does not carry the tool's result, which goes back to the gateway rather than to \
-        the caller."""));
+        the caller. On an 'error' event, a message fit to show the user saying why the stream ended early."""));
+    schema.addProperty("code", SpecBuilders.string("""
+        Machine-readable reason, on 'error' only: 'gateway_interrupted' when the gateway's connection dropped, \
+        'gateway_timeout' when it stopped sending, 'internal_error' otherwise. All three are retryable; the \
+        interrupted exchange was not persisted."""));
     schema.addProperty("response", SpecBuilders.string(
         "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
     schema.addProperty("commands", SpecBuilders.arrayOf(SpecBuilders.ref("AiCommand"),

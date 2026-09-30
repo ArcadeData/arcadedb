@@ -482,6 +482,12 @@ function aiSendMessageStreaming(db, message) {
               // Inject accumulated tool calls into the done data
               event.toolCalls = toolCalls.length > 0 ? toolCalls : undefined;
               aiHandleResponse(event);
+            } else if (event.type === "error") {
+              // The server cut the stream short after it started (issue #8642) and says why: no 'done' follows.
+              gotDone = true;
+              aiCurrentXhr = null;
+              aiSetSending(false);
+              globalNotify("Error", event.error || "Connection to AI service was interrupted", "danger");
             }
           } catch (e) { /* ignore malformed events */ }
         }
