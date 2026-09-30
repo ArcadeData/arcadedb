@@ -111,6 +111,7 @@ public class TracingPlugin implements ServerPlugin {
           resource(resourceAttributes), excludedPaths(configuration));
     } catch (final Exception e) {
       enabled = false;
+      serviceName = null;
       if (tracerProvider != null) {
         tracerProvider.close();
         tracerProvider = null;
@@ -130,6 +131,7 @@ public class TracingPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
+    serviceName = null;
     // Deactivate the handler BEFORE closing the provider: the ObservationRegistry has no
     // remove-handler API, so the handler stays registered, but once deactivated it is a no-op and
     // never touches the closed tracer provider.
@@ -281,7 +283,7 @@ public class TracingPlugin implements ServerPlugin {
 
     @Override
     public boolean test(final String name, final Observation.Context context) {
-      if (!active.get())
+      if (!active.get() || context == null)
         return true;
       final Object requestPath = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
       if (!(requestPath instanceof String))

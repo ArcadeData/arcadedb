@@ -20,6 +20,8 @@ package com.arcadedb.tracing;
 
 import com.arcadedb.server.BaseGraphServerTest;
 import io.opentelemetry.api.common.AttributeKey;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
@@ -144,6 +146,7 @@ class ServerTracingIT extends BaseGraphServerTest {
     plugin.attachForTest(registry, exporter);
 
     try {
+      final long readyRequestsBefore = readyRequestCount();
       for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
         final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
         c.setRequestMethod("GET");
@@ -171,12 +174,26 @@ class ServerTracingIT extends BaseGraphServerTest {
       }
 
       assertThat(databasesSpan).as("the non-probe request must still be traced").isNotNull();
+
+      // The exclusion turns the whole Observation into a no-op; the always-on HTTP RED timer is recorded outside it and
+      // must still count the probe. Polled: the timer is recorded in the handler's finally block, after the response.
+      long readyRequestsAfter = readyRequestCount();
+      for (int attempt = 0; attempt < 250 && readyRequestsAfter <= readyRequestsBefore; attempt++) {
+        Thread.sleep(20);
+        readyRequestsAfter = readyRequestCount();
+      }
+      assertThat(readyRequestsAfter).as("the RED timer must still record the untraced probe").isGreaterThan(readyRequestsBefore);
       assertThat(exporter.getFinishedSpanItems())
           .as("no span may carry a probe path")
           .noneMatch(s -> "/ready".equals(s.getAttributes().get(pathKey)) || "/health".equals(s.getAttributes().get(pathKey)));
     } finally {
       plugin.stopService();
     }
+  }
+
+  private static long readyRequestCount() {
+    final Timer timer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/ready").tag("method", "GET").timer();
+    return timer != null ? timer.count() : 0L;
   }
 
   private static String basicAuth() {

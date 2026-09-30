@@ -1534,8 +1534,10 @@ public enum GlobalConfiguration {
       Comma-separated HTTP request paths that never produce a trace span, matched exactly against the request path \
       (query string excluded, one trailing slash ignored, no wildcards). The default leaves out the readiness and health probes, which a container \
       orchestrator or load balancer calls every few seconds and which would otherwise flood the trace backend \
-      with noise (issue #7295). Set it to an empty string to trace every request. Read when the tracing plugin \
-      starts.""", String.class, "/api/v1/ready,/api/v1/health"),
+      with noise (issue #7295). The request's whole Micrometer Observation becomes a no-op, so any other \
+      Observation handler registered on the server loses it too; the HTTP request timer (arcadedb.http.requests) is \
+      recorded outside the Observation and still counts it. Set it to an empty string to trace every request. Read \
+      when the tracing plugin starts.""", String.class, "/api/v1/ready,/api/v1/health"),
 
   SERVER_METRICS_SERVICE_NAME("arcadedb.serverMetrics.serviceName", SCOPE.SERVER, """
       The OpenTelemetry service.name resource attribute the tracing and OTLP metrics plugins report. The standard \
