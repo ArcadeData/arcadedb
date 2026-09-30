@@ -92,7 +92,15 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
                 "TimeSeries engine for type '" + tsType.getName() + "' is not initialized");
           if (context.isProfiling())
             aggregationMetrics = new AggregationMetrics();
-          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter, aggregationMetrics);
+          // THE ROWS OF THE ANSWER ARE HELD IN HEAP LIKE THOSE OF ANY OTHER IN-HEAP OPERATION, SO THEY ARE BOUNDED BY THE SAME
+          // CAP: CARRIED INTO THE SCAN, WHICH STOPS ONCE PAST IT, RATHER THAN CHECKED ON A RESULT ALREADY BUILT (ISSUE #7476)
+          final OperationHeapLimit limit = OperationHeapLimit.of(context, "buckets", "time series aggregation");
+          // A NON-POSITIVE CAP MEANS NO LIMIT, WHICH IS ALSO WHAT A CEILING OF 0 MEANS TO THE ENGINE
+          final int ceiling = (int) Math.min(Math.max(limit.getMaxElements(), 0L), Integer.MAX_VALUE);
+          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter,
+              aggregationMetrics, ceiling);
+          // THE SCAN STOPS ONE BLOCK PAST THE CEILING AT MOST, AND WHAT COMES BACK OVER IT IS REFUSED HERE
+          limit.check(aggResult.getUsedBucketCount());
 
           // Lazy conversion: wrap the bucket timestamp iterator instead of materializing all rows
           final Iterator<Long> bucketIterator = aggResult.getBucketTimestamps().iterator();
