@@ -1460,25 +1460,12 @@ public enum GlobalConfiguration {
   // SERVER
   SERVER_NAME("arcadedb.server.name", SCOPE.SERVER, "Server name", String.class, Constants.PRODUCT + "_0"),
 
-  SUPPORT_ID("arcadedb.support.id", SCOPE.DATABASE,
-      "Identifier (UUID) assigned by ArcadeDB support / the customer portal to this instance (standalone server, HA node or "
-          + "embedded engine). It is only reported in logs, server information and support bundles so support can tell which "
-          + "instance is talking. It is NOT a credential and is never used for authentication. Empty means not configured. "
-          + "A malformed value is ignored with a warning", String.class, "", new Callable<>() {
-    @Override
-    public Object call(final Object value) {
-      if (value == null)
-        return "";
-      final String id = value.toString().trim();
-      if (id.isEmpty() || isValidSupportId(id))
-        return id;
-      if (LogManager.instance() != null)
-        LogManager.instance().log(this, Level.WARNING,
-            "Ignoring invalid value for setting 'arcadedb.support.id': '%s' is not a UUID (expected the canonical "
-                + "8-4-4-4-12 hexadecimal form, e.g. 123e4567-e89b-12d3-a456-426614174000)", id);
-      return "";
-    }
-  }),
+  INSTANCE_ID("arcadedb.instance.id", SCOPE.DATABASE,
+      "Optional instance id (format 'adb-' followed by a lowercase UUID) to use instead of the one ArcadeDB generates and "
+          + "persists in the file 'instance.id' of the server configuration directory. Set it when that directory is read-only "
+          + "or is copied between nodes. The id identifies this instance (standalone server, HA node or embedded engine) to "
+          + "ArcadeData support. It is NOT a credential and is never used for authentication. Empty means generated. "
+          + "A malformed value is ignored with a warning", String.class, ""),
 
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
@@ -3171,14 +3158,6 @@ public enum GlobalConfiguration {
     for (int i = fromInclusive; i <= toInclusive; i++)
       set.add(Integer.toString(i));
     return Set.copyOf(set);
-  }
-
-  /**
-   * Tells whether {@code value} is a UUID in the canonical 8-4-4-4-12 hexadecimal form (case-insensitive), the shape
-   * required by {@link #SUPPORT_ID}.
-   */
-  public static boolean isValidSupportId(final String value) {
-    return value != null && value.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
   }
 
   public static void dumpConfiguration(final PrintStream out) {
