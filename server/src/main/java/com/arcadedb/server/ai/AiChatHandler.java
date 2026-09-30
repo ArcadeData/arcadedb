@@ -414,6 +414,9 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             // Forward any other event types unchanged (forward-compat).
             forwardEvent(output, event);
         }
+        // Nothing follows 'done': a drop or silence after it must not add an 'error' to a delivered answer
+        if (finished)
+          break;
       }
       // A stream the gateway closed cleanly but without 'done' is cut short just the same
       if (!finished)
@@ -441,8 +444,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     if (e instanceof InterruptedException)
       Thread.currentThread().interrupt();
 
-    String code;
-    String message;
+    final String code;
+    final String message;
     if (e instanceof AiTokenException tokenException) {
       // Keeps the token_* code Studio switches to its inactive panel on, as the pre-stream answer does
       final JSONObject body = new JSONObject(tokenException.getJsonResponse());

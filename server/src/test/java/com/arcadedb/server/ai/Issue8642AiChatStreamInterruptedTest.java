@@ -207,6 +207,23 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
     assertNoSecondResponseWasAttempted();
   }
 
+  /** A drop AFTER 'done': the answer was delivered, so nothing may follow it. */
+  @Test
+  void aGatewayThatDropsAfterDoneAddsNoErrorEvent() throws Exception {
+    startGateway((in, out) -> {
+      write(out, SSE_HEADERS);
+      writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
+      writeEvent(out, new JSONObject().put("type", "done").put("response", "all good"));
+      // No terminating chunk: the connection is dropped right after the answer.
+    });
+
+    final List<JSONObject> events = streamedChat();
+
+    assertThat(events.get(events.size() - 1).getString("type", "")).isEqualTo("done");
+    assertThat(events).noneMatch(e -> "error".equals(e.getString("type", "")));
+    assertNoSecondResponseWasAttempted();
+  }
+
   /** A complete stream carries no 'error' event. */
   @Test
   void aCompleteStreamEndsWithDoneAndNoErrorEvent() throws Exception {

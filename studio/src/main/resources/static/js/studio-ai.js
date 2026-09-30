@@ -487,8 +487,7 @@ function aiSendMessageStreaming(db, message) {
               gotDone = true;
               aiCurrentXhr = null;
               aiSetSending(false);
-              $("#" + liveId).remove();
-              if (event.code === "token_invalid" || event.code === "token_expired" || event.code === "token_disabled") {
+              if (aiIsTokenError(event.code)) {
                 aiConfigured = false;
                 $("#aiActivePanel").hide();
                 $("#aiInactivePanel").show();
@@ -522,7 +521,7 @@ function aiSendMessageStreaming(db, message) {
       }
     } catch (e) { /* ignore */ }
 
-    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+    if (aiIsTokenError(errorCode)) {
       aiConfigured = false;
       $("#aiActivePanel").hide();
       $("#aiInactivePanel").show();
@@ -530,6 +529,10 @@ function aiSendMessageStreaming(db, message) {
     } else
       globalNotify("Error", errorMsg, "danger");
   });
+}
+
+function aiIsTokenError(code) {
+  return code === "token_invalid" || code === "token_expired" || code === "token_disabled";
 }
 
 function aiSendMessageLegacy(db, message) {
@@ -564,7 +567,7 @@ function aiSendMessageLegacy(db, message) {
     } catch (e) { /* ignore parse errors */ }
 
     // If token is invalid or expired, reset to inactive state
-    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+    if (aiIsTokenError(errorCode)) {
       aiConfigured = false;
       $("#aiActivePanel").hide();
       $("#aiInactivePanel").show();
