@@ -574,6 +574,7 @@ final class ParallelTypeScan {
    * go through the unit's bounded channel like a worker's. Not the producer pool, which may be held by other result
    * sets for good and is the very thing this path must not depend on. One reader serves every unit the caller claims,
    * one after the other (it claims the next only once it has consumed the previous one), and it is created on the first.
+   * With the abandonment timeout disabled (0) a leaked result set keeps its reader, as it keeps its workers.
    */
   private void startDedicatedReader(final CommandContext context, final int unitIndex) {
     if (readerUnits == null) {
@@ -633,12 +634,13 @@ final class ParallelTypeScan {
     if (!database.isTransactionActive() || readerUnits != null)
       return true;
     // THE SIDE EFFECT ON unitWaitSince IS DELIBERATE: THE FIRST CALL STARTS THE GRACE, THE LATER ONES MEASURE IT
-    final long now = System.currentTimeMillis();
+    // A MONOTONIC CLOCK: A STEP OF THE WALL CLOCK MUST NOT CUT OR STRETCH THE GRACE. 0 MEANS NOT WAITING, SO NEVER STORE 0
+    final long now = System.nanoTime() | 1L;
     if (unitWaitSince == 0) {
       unitWaitSince = now;
       return false;
     }
-    return now - unitWaitSince >= DEDICATED_READER_GRACE_MS;
+    return now - unitWaitSince >= DEDICATED_READER_GRACE_MS * 1_000_000L;
   }
 
   /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
