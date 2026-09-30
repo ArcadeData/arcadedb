@@ -36,6 +36,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -173,11 +174,8 @@ public class HashIndex implements IndexInternal {
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
-      Set<RID> removedRids = null;
-      boolean hasRemoves = false;
-      // #6927: a remove(keys) carrying no RID kills EVERY disk RID at this key. It used to allocate an EMPTY
-      // removedRids set, which then filtered nothing at all, so the disk entries survived a whole-key removal.
-      boolean keyWideRemove = false;
+      // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
+      PendingIndexRemovals removals = null;
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -187,31 +185,16 @@ public class HashIndex implements IndexInternal {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
-                if (isUnique())
-                  return EMPTY_CURSOR;
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE && isUnique())
+                // FOR UNIQUE INDEXES, A REMOVE MEANS THE KEY IS GONE (PendingIndexRemovals rule 2, answered here
+                // before the filter is even allocated: nothing on disk or in the overlay survives it)
+                return EMPTY_CURSOR;
 
-                hasRemoves = true;
-                if (value.rid == null)
-                  keyWideRemove = true;
-                else {
-                  if (removedRids == null)
-                    removedRids = new HashSet<>();
-                  removedRids.add(value.rid);
-                }
+              // #6970: the rules deciding which disk RIDs a pending entry hides (REMOVE / key-wide REMOVE /
+              // REPLACE.oldRid) live in PendingIndexRemovals, shared by every index read path over the overlay.
+              removals = PendingIndexRemovals.accumulate(removals, value, isUnique());
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
                 continue;
-              }
-
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE && value.oldRid != null) {
-                // #6927: on a unique index a same-key REMOVE + ADD is merged into ONE entry whose oldRid is the RID
-                // being replaced - the REMOVE no longer exists on its own. Commit replays that removal
-                // (TransactionIndexContext.commit), so the lookup must not hand the old RID back either; without this
-                // the caller saw BOTH RIDs under a key that is supposed to hold one.
-                hasRemoves = true;
-                if (removedRids == null)
-                  removedRids = new HashSet<>();
-                removedRids.add(value.oldRid);
-              }
 
               if (txChanges == null)
                 txChanges = new HashSet<>();
@@ -227,13 +210,13 @@ public class HashIndex implements IndexInternal {
 
       final IndexCursor result = lock.executeInReadLock(() -> getDiskResult(convertedKeys, limit));
 
-      if (txChanges != null || hasRemoves) {
+      if (txChanges != null || removals != null) {
         if (txChanges == null)
           txChanges = new HashSet<>();
 
         while (result.hasNext()) {
           final Identifiable next = result.next();
-          if (keyWideRemove || (removedRids != null && removedRids.contains(next.getIdentity())))
+          if (removals != null && removals.hides(next))
             continue;
           txChanges.add(new IndexCursorEntry(convertedKeys, next, 1));
         }
