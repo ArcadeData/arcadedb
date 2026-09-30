@@ -133,6 +133,23 @@ public final class CypherReferencedVariables {
     return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
   }
 
+  /**
+   * Collects the variable names a single {@code expression} could read, with the same allow-list rule as
+   * {@link #of(CypherStatement)}: an expression holding a shape this class does not model answers incomplete, which
+   * {@link #referencesAny} reports as "reads everything".
+   */
+  public static CypherReferencedVariables of(final Expression expression) {
+    if (expression == null)
+      return UNKNOWN;
+
+    final Collector collector = new Collector();
+    CypherExpressionWalker.walk(expression, collector);
+    if (!collector.complete)
+      return UNKNOWN;
+
+    return new CypherReferencedVariables(Collections.unmodifiableSet(collector.names), true);
+  }
+
   /** The answer to use when there is no statement to inspect. */
   public static CypherReferencedVariables unknown() {
     return UNKNOWN;

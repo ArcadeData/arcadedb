@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.CypherValues;
@@ -43,9 +44,12 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -62,6 +66,9 @@ import java.util.concurrent.atomic.AtomicReference;
 public class CreateStep extends AbstractExecutionStep {
   private final CreateClause createClause;
   private final ExpressionEvaluator evaluator;
+  // The items of the SET clause that follows this CREATE and that this step writes with the node they name, by node
+  // variable (issue #8735); null when no SET was absorbed
+  private       Map<String, List<SetClause.SetItem>> absorbedSetItems;
 
   // Detailed profiling metrics
   private long vertexCreationTime = 0;
@@ -78,6 +85,44 @@ public class CreateStep extends AbstractExecutionStep {
     super(context);
     this.createClause = createClause;
     this.evaluator = functionFactory != null ? new ExpressionEvaluator(functionFactory) : null;
+  }
+
+  /**
+   * Takes over the {@code SET} clause that directly follows this CREATE, when it can be written together with the
+   * nodes it names (issue #8735): each node is then written once, with the properties the SET gives it, instead of
+   * saved and grown by a second write. A SET that cannot be folded stays a step of its own.
+   *
+   * @return true when this step now applies the clause, and the caller must not add a step for it
+   */
+  public boolean absorbSet(final SetClause setClause) {
+    if (absorbedSetItems != null || evaluator == null || createClause.isEmpty())
+      return false;
+
+    final Set<String> created = new HashSet<>();
+    final Set<String> targets = new HashSet<>();
+    for (final PathPattern pattern : createClause.getPathPatterns()) {
+      if (pattern.getPathVariable() != null)
+        created.add(pattern.getPathVariable());
+      for (final NodePattern node : pattern.getNodes())
+        if (node != null && node.getVariable() != null) {
+          created.add(node.getVariable());
+          // A node of a longer path may name an entity the row already holds, which this step does not create
+          if (pattern.isSingleNode())
+            targets.add(node.getVariable());
+        }
+      for (int i = 0; i < pattern.getRelationshipCount(); i++)
+        if (pattern.getRelationship(i).getVariable() != null)
+          created.add(pattern.getRelationship(i).getVariable());
+    }
+
+    if (!NewNodeSetFolding.isFoldable(setClause, targets::contains, created))
+      return false;
+
+    final Map<String, List<SetClause.SetItem>> byVariable = new HashMap<>();
+    for (final SetClause.SetItem item : setClause.getItems())
+      byVariable.computeIfAbsent(item.getVariable(), k -> new ArrayList<>()).add(item);
+    absorbedSetItems = byVariable;
+    return true;
   }
 
   @Override
@@ -414,6 +459,14 @@ public class CreateStep extends AbstractExecutionStep {
         propertyEvaluationTime += System.nanoTime() - startProps;
     }
 
+    final int patternProperties = vertex.getPropertyNames().size();
+    int assignedBySet = 0;
+    if (absorbedSetItems != null && nodePattern.getVariable() != null) {
+      final List<SetClause.SetItem> folded = absorbedSetItems.get(nodePattern.getVariable());
+      if (folded != null)
+        assignedBySet = NewNodeSetFolding.apply(folded, vertex, currentResult, evaluator, context);
+    }
+
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     vertex.save();
 
@@ -424,7 +477,7 @@ public class CreateStep extends AbstractExecutionStep {
       // matching the actual number of labels added to the vertex.
       stats.addLabelsAdded((int) nodePattern.getLabels().stream().distinct().count());
     // getPropertyNames() on a freshly created record is exactly the user-set properties (labels/type are not properties).
-    stats.addPropertiesSet(vertex.getPropertyNames().size());
+    stats.addPropertiesSet(patternProperties + assignedBySet);
 
     if (context.isProfiling()) {
       saveOperationTime += System.nanoTime() - startSave;
