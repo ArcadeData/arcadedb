@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -164,13 +165,19 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
     database.begin();
     try {
       assertThat(count()).isEqualTo(expected);
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
       final Thread writer = new Thread(() -> {
-        database.begin();
-        database.newVertex("E").set("id", -2, "grp", 5).save();
-        database.commit();
+        try {
+          database.begin();
+          database.newVertex("E").set("id", -2, "grp", 5).save();
+          database.commit();
+        } catch (final Throwable e) {
+          failure.set(e);
+        }
       });
       writer.start();
       writer.join();
+      assertThat(failure.get()).isNull();
       assertThat(sqlPlan()).contains("(parallel)");
       assertThat(count()).isEqualTo(expected + 1);
     } finally {
@@ -195,13 +202,17 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   private long inRolledBackTransaction(final boolean parallel, final LongSupplier body) {
+    final boolean previous = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN);
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, parallel);
-    database.begin();
     try {
-      return body.getAsLong();
+      database.begin();
+      try {
+        return body.getAsLong();
+      } finally {
+        database.rollback();
+      }
     } finally {
-      database.rollback();
-      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, previous);
     }
   }
 
