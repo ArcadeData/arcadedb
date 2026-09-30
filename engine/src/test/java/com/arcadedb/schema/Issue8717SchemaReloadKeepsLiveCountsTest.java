@@ -71,6 +71,8 @@ class Issue8717SchemaReloadKeepsLiveCountsTest extends TestHelper {
     reopenDatabase();
     insert(INSERTED);
     assertThat(bucket().count()).isEqualTo(INITIAL + INSERTED);
+    final JSONArray live = new JSONArray().put(new JSONObject().put("id", 0).put("free", 1234));
+    bucket().setPageStatistics(live);
 
     schema().load(ComponentFile.MODE.READ_WRITE, true);
 
@@ -78,8 +80,8 @@ class Issue8717SchemaReloadKeepsLiveCountsTest extends TestHelper {
     // is not left unknown either, which would cost a rescan of every bucket on the next count(*).
     assertThat(bucket().getCachedRecordCount()).isEqualTo(INITIAL + INSERTED);
     assertThat(bucket().count()).isEqualTo(INITIAL + INSERTED);
-    // Nor are the stale page hints of the close applied to the rebuilt instance: it starts empty and regathers.
-    assertThat(bucket().getStatistics().getJSONArray("pages").length()).isZero();
+    // The live page hints are carried over too, not the stale ones of the close.
+    assertThat(bucket().getStatistics().getJSONArray("pages").toString()).isEqualTo(live.toString());
   }
 
   @Test

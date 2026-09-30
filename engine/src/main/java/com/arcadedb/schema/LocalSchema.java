@@ -379,9 +379,7 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
-  // #8717: statistics.json (record counts and page free-space hints) is written only by a graceful close, so it
-  // describes the database as of that close. It is applied by the first load of this schema instance and never
-  // again: a later reload (a replicated schema entry on a follower) would overwrite live state with older values.
+  // statistics.json reflects the last graceful close: applied once on open, never over live state on a later reload.
   private             boolean                                storedStatisticsApplied     = false;
   private             boolean                                multipleUpdate                = false;
   /**
@@ -2537,25 +2535,23 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * A reload on a live database (issue #8717). An incremental load keeps the bucket instances it did not touch, so their
-   * live counters survive as they are. A full {@link #load} builds new instances, still unpublished at this point, while
-   * the previous generation is live in {@code files}: each rebuilt bucket inherits the counter of the live instance on
-   * the same file id, so a follower's next {@code count(*)} does not rescan every bucket. A counter the live instance
-   * does not know (-1) stays unknown and is recomputed. The counter is read before the barrier publishes the rebuilt
-   * instance, which is exact because the only caller on a live database is the Raft apply thread, and it applies schema
-   * entries and record writes serially. Rebuilt buckets start without page free-space hints and regather them.
+   * A full reload builds new bucket instances before publishing them: each inherits the counter and page hints of the
+   * live instance on the same file id. Exact because schema reloads on a live database run on the Raft apply thread,
+   * serially with record writes. An unknown live counter (-1) stays unknown and is recomputed.
    */
   private void carryLiveRecordCountsIntoRebuiltBuckets() {
     for (final Component component : filesDuringLoad()) {
-      if (!(component instanceof LocalBucket rebuilt) || rebuilt.getCachedRecordCount() > -1)
+      if (!(component instanceof LocalBucket rebuilt))
         continue;
 
       final Component live;
       synchronized (files) {
         live = rebuilt.getFileId() < files.size() ? files.get(rebuilt.getFileId()) : null;
       }
-      if (live instanceof LocalBucket liveBucket && liveBucket != rebuilt && liveBucket.getName().equals(rebuilt.getName()))
+      if (live instanceof LocalBucket liveBucket && liveBucket != rebuilt && liveBucket.getName().equals(rebuilt.getName())) {
         rebuilt.setCachedRecordCount(liveBucket.getCachedRecordCount());
+        rebuilt.setPageStatistics(liveBucket.getStatistics().getJSONArray("pages"));
+      }
     }
   }
 
