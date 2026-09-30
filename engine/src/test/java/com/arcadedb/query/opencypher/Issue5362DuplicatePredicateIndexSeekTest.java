@@ -100,14 +100,14 @@ class Issue5362DuplicatePredicateIndexSeekTest extends TestHelper {
   }
 
   /**
-   * A disjunction is not anchorable: an equality under OR does not hold for every row, so it must not
-   * become an index seek (which would drop the other branch's rows).
+   * A disjunction must not become a single-value seek, which would drop the other branch's rows. Since #8723 an OR of
+   * equalities on one indexed property is the IN-list seek, which looks up both values.
    */
   @Test
   void disjunctionIsNotAnchoredOnTheIndex() {
     final String query = "MATCH (n:Bench) WHERE n.id = 1 OR n.id = 2 RETURN count(n) AS c";
     final String plan = profilePlan(query);
-    assertThat(plan).as("OR must not be turned into a single-value seek\n%s", plan).doesNotContain("NodeIndexSeek");
+    assertThat(plan).as("OR must be seeked with both values\n%s", plan).contains("NodeIndexSeek").contains("IN [1, 2]");
     assertThat(count(query)).isEqualTo(2L);
   }
 

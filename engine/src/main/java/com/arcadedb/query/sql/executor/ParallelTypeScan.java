@@ -304,6 +304,8 @@ final class ParallelTypeScan {
       return fetch.getBucketId();
     if (step instanceof ScanWithFilterStep scan)
       return scan.getBucketId();
+    if (step instanceof MappedScanStep scan)
+      return scan.getBucketId();
     return -1;
   }
 
@@ -331,6 +333,8 @@ final class ParallelTypeScan {
     if (copy instanceof FetchFromClusterExecutionStep fetch)
       fetch.setPageRange(unit.fromPage(), unit.toPage());
     else if (copy instanceof ScanWithFilterStep scan)
+      scan.setPageRange(unit.fromPage(), unit.toPage());
+    else if (copy instanceof MappedScanStep scan)
       scan.setPageRange(unit.fromPage(), unit.toPage());
     return copy;
   }
