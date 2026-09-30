@@ -2599,6 +2599,11 @@ public class GraphEngine {
       final List<Edge> inEdges = new ArrayList<>();
       for (Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
         inEdges.add(edge.asEdge(true));
+      // THE EDGES OF A UNIDIRECTIONAL TYPE THAT END IN THE VERTEX ARE NOT IN ITS IN LIST, AND DELETING THE VERTEX DELETES THEM
+      // (ISSUE #8676): RECREATED TOWARDS THE NEW RECORD LIKE THE OTHERS. A SELF-LOOP IS IN outEdges ALREADY.
+      for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) db, oldIdentity))
+        if (!oldIdentity.equals(edge.getOut()))
+          inEdges.add(edge.asEdge(true));
 
       // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
       vertex.delete();
