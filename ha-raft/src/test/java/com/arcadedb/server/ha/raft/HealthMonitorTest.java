@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class HealthMonitorTest {
 
-  static final class FakeHealthTarget implements HealthMonitor.HealthTarget {
+  static class FakeHealthTarget implements HealthMonitor.HealthTarget {
     final    AtomicReference<LifeCycle.State> state                = new AtomicReference<>(LifeCycle.State.RUNNING);
     final    AtomicInteger                    recoveryCalls        = new AtomicInteger();
     final    AtomicInteger                    persistentLagRecover = new AtomicInteger();

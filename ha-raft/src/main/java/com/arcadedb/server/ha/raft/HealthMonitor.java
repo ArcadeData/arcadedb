@@ -148,6 +148,15 @@ public final class HealthMonitor {
     }
 
     /**
+     * Whether the division's Raft log is closed under a division that reports RUNNING (issue #8652). The monitor counts
+     * consecutive sightings, so a log closed and reopened by an in-place restart or a snapshot reload is not mistaken for a
+     * zombie. Implementations must return {@code false} when it cannot be read.
+     */
+    default boolean isRaftLogClosed() {
+      return false;
+    }
+
+    /**
      * Whether the Raft storage volume currently has enough free space for the log writer to resume after an
      * in-place restart. A restart on a still-full volume fails the same way at once, so the monitor defers it
      * until the periodic log compaction (or the operator) has freed room. Implementations that cannot read the
@@ -281,6 +290,9 @@ public final class HealthMonitor {
    */
   static final int DEAD_UPDATER_TICKS_BEFORE_RECOVERY = 2;
 
+  /** Consecutive ticks a closed Raft log must be seen before the node is recovered (issue #8652). */
+  static final int CLOSED_LOG_TICKS_BEFORE_RECOVERY = 2;
+
   private final    HealthTarget             target;
   private final    long                     intervalMs;
   // Consecutive ticks the division was seen CLOSING (issue #8651). Health-monitor thread only.
@@ -288,6 +300,8 @@ public final class HealthMonitor {
   // Consecutive ticks a dead StateMachineUpdater was seen on a division that reports itself healthy (issue #8652).
   // Health-monitor thread only.
   private          int                      deadUpdaterStreak;
+  // Consecutive ticks the Raft log was seen closed under a RUNNING division (issue #8652). Health-monitor thread only.
+  private          int                      closedLogStreak;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
   // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
@@ -549,8 +563,14 @@ public final class HealthMonitor {
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
     // re-arm nor a storage reformat can fix (issue #7037).
-    final String logFailure = target.getRaftLogFailure();
+    String logFailure = target.getRaftLogFailure();
+    if (logFailure == null && target.isRaftLogClosed()) {
+      if (++closedLogStreak >= CLOSED_LOG_TICKS_BEFORE_RECOVERY)
+        logFailure = "(the Raft log is closed under a division that reports RUNNING: every append is rejected, issue #8652)";
+    } else
+      closedLogStreak = 0;
     if (logFailure != null) {
+      closedLogStreak = 0;
       handleFailedLogWriter(logFailure);
       dropFollowerObservations();
       return;

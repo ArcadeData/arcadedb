@@ -45,7 +45,7 @@ class Issue8652DeadStateMachineUpdaterTest {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     final Object release = new Object();
     final Thread updater = new Thread(() -> {
-      sm.notifyTermIndexUpdated(1L, 1L);
+      sm.recordApplyThreadForTesting();
       synchronized (release) {
         try {
           release.wait();
@@ -56,7 +56,7 @@ class Issue8652DeadStateMachineUpdaterTest {
     }, "test-updater-alive");
     updater.start();
     try {
-      while (sm.getLastAppliedTermIndex() == null)
+      while (sm.getApplyThreadForTesting() == null)
         Thread.sleep(5);
       assertThat(sm.describeDeadApplyThread()).isNull();
     } finally {
@@ -68,11 +68,43 @@ class Issue8652DeadStateMachineUpdaterTest {
   @Test
   void anUpdaterThatDiedIsReportedByName() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    final Thread updater = new Thread(() -> sm.notifyTermIndexUpdated(1L, 1L), "test-updater-dead");
+    final Thread updater = new Thread(sm::recordApplyThreadForTesting, "test-updater-dead");
     updater.start();
     updater.join();
 
     assertThat(sm.describeDeadApplyThread()).contains("test-updater-dead").contains("terminated");
+  }
+
+  @Test
+  void aShortLivedCallerOfTheTermIndexCallbackIsNeverReportedAsADeadUpdater() throws Exception {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final Thread caller = new Thread(() -> sm.notifyTermIndexUpdated(1L, 1L), "test-other-caller");
+    caller.start();
+    caller.join();
+
+    assertThat(sm.describeDeadApplyThread()).isNull();
+  }
+
+  @Test
+  void aClosedRaftLogSeenOnConsecutiveTicksRestartsRatis() {
+    final int[] closed = { 1 };
+    final HealthMonitorTest.FakeHealthTarget target = new HealthMonitorTest.FakeHealthTarget() {
+      @Override
+      public boolean isRaftLogClosed() {
+        return closed[0] == 1;
+      }
+    };
+    final HealthMonitor monitor = new HealthMonitor(target, 0);
+
+    monitor.tick();
+    assertThat(target.recoveryCalls.get()).as("one sighting is a restart reopening the log").isZero();
+    closed[0] = 0;
+    monitor.tick();
+    closed[0] = 1;
+    monitor.tick();
+    assertThat(target.recoveryCalls.get()).as("the streak restarted after a tick with the log open").isZero();
+    monitor.tick();
+    assertThat(target.recoveryCalls.get()).isEqualTo(1);
   }
 
   // -- the health monitor recovers it ----------------------------------------------------------------------------
@@ -128,6 +160,6 @@ class Issue8652DeadStateMachineUpdaterTest {
     for (int i = 0; i < 40; i++)
       monitor.tick();
 
-    assertThat(target.recoveryCalls.get()).as("the restarts stop once the crash-loop budget is spent").isLessThanOrEqualTo(3);
+    assertThat(target.recoveryCalls.get()).as("the restarts stop once the crash-loop budget is spent").isBetween(1, 3);
   }
 }
