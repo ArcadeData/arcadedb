@@ -113,6 +113,7 @@ class ConsoleGlobalSettingStrictParseTest {
 
     assertThat(GlobalConfiguration.ASYNC_TX_BATCH_SIZE.getValueAsInteger()).isEqualTo(before);
     assertThat(stderr).contains("lots").contains("ignored");
+    assertThat(System.getProperty(GlobalConfiguration.ASYNC_TX_BATCH_SIZE.getKey())).isNull();
   }
 
   @Test
@@ -120,6 +121,7 @@ class ConsoleGlobalSettingStrictParseTest {
     runCapturingStderr("-D" + GlobalConfiguration.TX_WAL.getKey() + "=false");
 
     assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).isFalse();
+    assertThat(System.getProperty(GlobalConfiguration.TX_WAL.getKey())).isEqualTo("false");
   }
 
   @Test

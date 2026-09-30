@@ -242,9 +242,8 @@ public class Console {
                 final String propertyValue = pair == null ? "" : pair[1];
                 if (key.isEmpty())
                     System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
-                else {
+                else
                     applyCommandLineSetting(key, propertyValue);
-                }
             } else if ("-b".equalsIgnoreCase(value)) {
                 batchMode = true;
             } else if ("-fae".equalsIgnoreCase(value)) {
@@ -1570,27 +1569,21 @@ public class Console {
             return;
         }
 
-        final Object coerced;
         try {
-            coerced = cfg.coerceFromAdminCommand(value);
-        } catch (final IllegalArgumentException e) {
+            cfg.setValue(cfg.coerceFromAdminCommand(value));
+        } catch (final RuntimeException e) {
             System.err.println(refusalMessage(e) + ". The setting will be ignored");
             return;
         }
-
+        // PUBLISHED ONLY ONCE STORED: A REFUSED VALUE NEVER REACHES THE SYSTEM PROPERTIES
         System.setProperty(key, value);
-        try {
-            cfg.setValue(coerced);
-        } catch (final RuntimeException e) {
-            System.err.println("Error applying global configuration '" + key + "': " + e.getMessage());
-        }
     }
 
     /**
      * The strict parse puts what it accepts ("only 'true' and 'false' are accepted") in the CAUSE: print both, so an operator
      * who typed {@code yes} learns what to type instead.
      */
-    private static String refusalMessage(final IllegalArgumentException e) {
+    private static String refusalMessage(final RuntimeException e) {
         final Throwable cause = e.getCause();
         return cause != null && cause.getMessage() != null ? e.getMessage() + " (" + cause.getMessage() + ")" : e.getMessage();
     }
