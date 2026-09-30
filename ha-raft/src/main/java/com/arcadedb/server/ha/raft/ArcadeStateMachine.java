@@ -1363,8 +1363,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     while ((live = pageVersions.liveReservations(databaseName)) > 0) {
       if (System.currentTimeMillis() >= deadline) {
         LogManager.instance().log(this, Level.WARNING,
-            "Database '%s' still has %d page version(s) reserved by entries not applied yet after %d ms; the schema change "
-                + "or database operation is refused with a retryable error", databaseName, live, drainTimeoutMs);
+            "Database '%s' still has %d page version(s) reserved by entries not applied yet after %d ms; the caller "
+                + "gives up", databaseName, live, drainTimeoutMs);
         return false;
       }
       try {
@@ -2875,7 +2875,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public TransactionContext preAppendTransaction(final TransactionContext trx) throws IOException {
-    // The last line of defence of the exclusive window (issue #7438), at the point that fixes the log order: an entry of
+    // The last line of defence of the exclusive window (issue #7438), at the point that fixes the log order. Not airtight:
+    // an operation that registers between this read and the append still lets a stalled entry through, which takes a
+    // request stalled for longer than the drain grace AND an operation starting in the same instant. Narrow, not closed: an entry of
     // another node that was accepted before the operation began, and was slow enough to reach the append after it did
     // (a long pause, a backed-up client queue) - which is also why the drain wait can afford to stop counting a
     // reservation that stayed unconfirmed past its grace - must not enter the log now. Refused like the expired

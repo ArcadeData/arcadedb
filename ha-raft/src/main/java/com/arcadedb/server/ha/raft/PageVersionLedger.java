@@ -301,8 +301,8 @@ final class PageVersionLedger {
       // A reservation the log has not confirmed yet is a request between its validation and its append, which takes
       // milliseconds; one older than the grace is a request Ratis dropped, and waiting for it would make every DDL
       // spend its whole budget until the stale sweep (three client timeouts) finally removes it. It is not removed
-      // here, only not waited for: were it to be appended after all, the entry is one the DDL's own version check
-      // refuses, as for any entry the exclusive window let through.
+      // here, only not waited for: were it to be appended after all,
+      // ArcadeStateMachine.preAppendTransaction refuses it (an entry of another node, while the database is exclusive).
       if (!reservation.appended && now - reservation.reservedAtMs > UNCONFIRMED_DRAIN_GRACE_MS)
         continue;
       live++;

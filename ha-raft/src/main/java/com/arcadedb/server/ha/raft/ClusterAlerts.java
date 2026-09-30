@@ -535,7 +535,8 @@ public class ClusterAlerts {
         .put("id", "peers-share-address")
         .put("severity", SEVERITY_WARNING)
         .put("title", "Several Raft peer ids share one address")
-        .put("message", "The committed Raft configuration holds more than one peer id on the same host and port (loopback spellings count as one): " + sharedAddresses
+        .put("message", "The committed Raft configuration holds more than one peer id on the same Raft address, compared as "
+            + "host and port with loopback spellings counted as one: " + sharedAddresses
             + ". Only one process listens there, but every id votes, so a proposal needs a majority of a membership "
             + "larger than the set of servers that can answer it, and the cluster tolerates fewer failures than its size "
             + "suggests.")
