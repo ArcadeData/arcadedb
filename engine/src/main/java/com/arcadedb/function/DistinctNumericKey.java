@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 
 /**
@@ -90,7 +91,7 @@ public final class DistinctNumericKey {
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
         final Object canonical = canonicalize(element);
-        if (key == null && canonical != element) {
+        if (key == null && !Objects.equals(canonical, element)) {
           key = new ArrayList<>(list);
         }
         if (key != null)
@@ -102,7 +103,7 @@ public final class DistinctNumericKey {
       Map<Object, Object> key = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object canonical = canonicalize(entry.getValue());
-        if (key == null && canonical != entry.getValue())
+        if (key == null && !Objects.equals(canonical, entry.getValue()))
           key = new HashMap<>(map);
         if (key != null)
           key.put(entry.getKey(), canonical);
