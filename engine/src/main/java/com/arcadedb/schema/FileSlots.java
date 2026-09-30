@@ -52,12 +52,11 @@ final class FileSlots {
   }
 
   synchronized void set(final int id, final Component component) {
-    ensureSize(id + 1).slots.set(id, component);
+    store(id, component);
   }
 
   synchronized void add(final Component component) {
-    final int id = table.size;
-    ensureSize(id + 1).slots.set(id, component);
+    store(table.size, component);
   }
 
   synchronized void clear() {
@@ -96,20 +95,22 @@ final class FileSlots {
     return null;
   }
 
-  private Table ensureSize(final int required) {
-    Table current = table;
-    if (required <= current.size)
-      return current;
+  /** The slot is filled before the size that exposes it is published, so a reader never sees a listed slot still empty. */
+  private void store(final int id, final Component component) {
+    final Table current = table;
+    if (id < current.size) {
+      current.slots.set(id, component);
+      return;
+    }
 
     AtomicReferenceArray<Component> slots = current.slots;
-    if (required > slots.length()) {
-      final AtomicReferenceArray<Component> next = new AtomicReferenceArray<>(Math.max(required, slots.length() * 2));
+    if (id >= slots.length()) {
+      final AtomicReferenceArray<Component> next = new AtomicReferenceArray<>(Math.max(id + 1, slots.length() * 2));
       for (int i = 0; i < current.size; i++)
         next.set(i, slots.get(i));
       slots = next;
     }
-    current = new Table(slots, required);
-    table = current;
-    return current;
+    slots.set(id, component);
+    table = new Table(slots, id + 1);
   }
 }
