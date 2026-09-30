@@ -24,6 +24,7 @@ import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -84,6 +85,13 @@ public class MergeStep extends AbstractExecutionStep {
   private final MergeClause        mergeClause;
   private final ExpressionEvaluator evaluator;
   private final SetClauseApplier    setApplier;
+  // The SET clause that follows this MERGE and that this step applies itself (issue #8735), and what that takes
+  private       SetClause           absorbedSet;
+  private       SetClauseApplier    absorbedSetApplier;
+  private final Map<RID, MutableDocument> absorbedWrittenDocs = new HashMap<>();
+  // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
+  private       boolean             createItemsResolved;
+  private       List<SetClause.SetItem> createItems;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -255,13 +263,20 @@ public class MergeStep extends AbstractExecutionStep {
       // Apply ON CREATE SET or ON MATCH SET to each result
       for (final Result r : results) {
         final boolean wasCreated = Boolean.TRUE.equals(r.getProperty("  wasCreated"));
-        // Remove internal flag
-        if (r instanceof ResultInternal)
+        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty("  createSetFolded"));
+        // Remove internal flags
+        if (r instanceof ResultInternal) {
           ((ResultInternal) r).removeProperty("  wasCreated");
-        if (wasCreated && mergeClause.hasOnCreateSet())
+          ((ResultInternal) r).removeProperty("  createSetFolded");
+        }
+        // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+        if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
           applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
           applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
+        // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
+        if (absorbedSet != null && !createSetFolded)
+          absorbedSetApplier.apply(absorbedSet, r, absorbedWrittenDocs, labelReplacements);
       }
 
       resultsRef.set(results);
@@ -304,10 +319,15 @@ public class MergeStep extends AbstractExecutionStep {
     // keeps its atomic match-or-create semantics instead of surfacing the raw
     // DuplicatedKeyException.
     try {
-      final Vertex vertex = createVertex(nodePattern, baseResult);
+      // Issue #8735: an ON CREATE SET that only assigns properties of the node is written with the node, in its
+      // first save, instead of growing the saved record in its page with a second write.
+      final List<SetClause.SetItem> folded = foldableCreateItems(nodePattern);
+      final Vertex vertex = createVertex(nodePattern, baseResult, folded);
       if (variable != null)
         baseResult.setProperty(variable, vertex);
       baseResult.setProperty("  wasCreated", true);
+      if (folded != null)
+        baseResult.setProperty("  createSetFolded", true);
       bindSingleNodePath(baseResult, pathPattern, vertex);
       return List.of(baseResult);
     } catch (final DuplicatedKeyException e) {
@@ -1297,15 +1317,70 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result) {
+    return createVertex(nodePattern, result, null);
+  }
+
+  /**
+   * @param foldedSet the SET items {@link #foldableCreateItems} accepted, applied to the vertex before its first
+   *                  save, or null
+   */
+  private Vertex createVertex(final NodePattern nodePattern, final Result result, final List<SetClause.SetItem> foldedSet) {
     // A pattern element: an existence constraint it does not satisfy yet belongs to the end of the statement, since
     // the SET of a MERGE ... SET upsert is what supplies the property (issue #7945).
     try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
         (DatabaseInternal) context.getDatabase())) {
-      return createPatternVertex(nodePattern, result);
+      return createPatternVertex(nodePattern, result, foldedSet);
     }
   }
 
-  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result) {
+  /**
+   * The {@code SET} items to write together with the node this MERGE creates (issue #8735), or null when the node is
+   * saved first and the clauses are applied to the saved record. A node is then written once instead of saved with
+   * the pattern's properties and written again by the SET, which grows the record inside its page.
+   * <p>
+   * The items are the {@code ON CREATE SET} ones followed by those of a {@code SET} this step absorbed, in the
+   * order the two clauses would have run. See {@link NewNodeSetFolding} for the shape that can be folded.
+   */
+  private List<SetClause.SetItem> foldableCreateItems(final NodePattern nodePattern) {
+    if (!createItemsResolved) {
+      createItemsResolved = true;
+      final String variable = nodePattern.getVariable();
+      if (variable != null && mergeClause.hasOnCreateSet()
+          && NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable))) {
+        final List<SetClause.SetItem> items = new ArrayList<>(mergeClause.getOnCreateSet().getItems());
+        if (absorbedSet != null)
+          items.addAll(absorbedSet.getItems());
+        createItems = items;
+      } else if (variable != null && !mergeClause.hasOnCreateSet() && absorbedSet != null)
+        createItems = absorbedSet.getItems();
+    }
+    return createItems;
+  }
+
+  /**
+   * Takes over the {@code SET} clause that directly follows this MERGE, when it can be written together with a
+   * created node (issue #8735): a created node gets it in its first save, and a matched one gets it applied here,
+   * as the {@code SET} step would have. A SET that cannot be folded stays a step of its own.
+   *
+   * @return true when this step now applies the clause, and the caller must not add a step for it
+   */
+  public boolean absorbSet(final SetClause setClause) {
+    if (absorbedSet != null || createItemsResolved || !mergeClause.getPathPattern().isSingleNode())
+      return false;
+    final String variable = mergeClause.getPathPattern().getFirstNode().getVariable();
+    if (variable == null || !NewNodeSetFolding.isFoldable(setClause, variable::equals, List.of(variable)))
+      return false;
+    // Folded after ON CREATE SET, so that one has to fold as well: a created node takes both in one write or neither
+    if (mergeClause.hasOnCreateSet()
+        && !NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable)))
+      return false;
+    absorbedSet = setClause;
+    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator);
+    return true;
+  }
+
+  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result,
+      final List<SetClause.SetItem> foldedSet) {
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
     // CreateStep.createVertex for why (issue #6395 review).
     final String typeName;
@@ -1325,6 +1400,9 @@ public class MergeStep extends AbstractExecutionStep {
       setProperties(vertex, evaluatedProperties, nodePattern.getProperties());
     }
 
+    final int patternProperties = vertex.getPropertyNames().size();
+    final int assignedBySet = foldedSet != null ? NewNodeSetFolding.apply(foldedSet, vertex, result, evaluator, context) : 0;
+
     vertex.save();
 
     final QueryStatistics stats = context.getStatistics();
@@ -1333,7 +1411,7 @@ public class MergeStep extends AbstractExecutionStep {
       // ArcadeDB dedups labels (Labels.ensureCompositeType), so count distinct labels only,
       // matching the actual number of labels added to the vertex.
       stats.addLabelsAdded((int) nodePattern.getLabels().stream().distinct().count());
-    stats.addPropertiesSet(vertex.getPropertyNames().size());
+    stats.addPropertiesSet(patternProperties + assignedBySet);
 
     return vertex;
   }

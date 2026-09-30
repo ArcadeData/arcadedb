@@ -1397,7 +1397,7 @@ public class CypherExecutionPlan {
 
         case SET: {
           final SetClause setClause = entry.getTypedClause();
-          if (!setClause.isEmpty()) {
+          if (!setClause.isEmpty() && !absorbsSet(currentStep, setClause)) {
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
@@ -1838,7 +1838,7 @@ public class CypherExecutionPlan {
 
       case SET:
         final SetClause setClause = entry.getTypedClause();
-        if (!setClause.isEmpty() && currentStep != null) {
+        if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
           final SetStep setStep =
               new SetStep(setClause, context, functionFactory);
           setStep.setPrevious(currentStep);
@@ -3234,6 +3234,20 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Hands a {@code SET} to the {@code CREATE} or {@code MERGE} step right before it when that step can write it with
+   * the node it creates, so a new node is saved once instead of twice (issue #8735).
+   *
+   * @return true when the step applies the clause and no step is to be added for it
+   */
+  private static boolean absorbsSet(final AbstractExecutionStep previous, final SetClause setClause) {
+    if (previous instanceof MergeStep mergeStep)
+      return mergeStep.absorbSet(setClause);
+    if (previous instanceof CreateStep createStep)
+      return createStep.absorbSet(setClause);
+    return false;
+  }
+
+  /**
    * Inserts the eager read/write barrier of issue #7171 ahead of a write clause: everything the pipeline has
    * read is drained into memory before the first row reaches the write, so no enumeration is still open while
    * the write adds entities it could match. Where the barrier is needed is decided by
@@ -3906,7 +3920,8 @@ public class CypherExecutionPlan {
     }
 
     // Step 5: SET clause - update properties
-    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null) {
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null
+        && !absorbsSet(currentStep, statement.getSetClause())) {
       final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
