@@ -173,6 +173,7 @@
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
     <script src="js/studio-server.js"></script>
+    <script src="js/studio-support.js"></script>
     <script src="js/studio-profiler.js"></script>
     <script src="js/studio-security.js"></script>
     <script src="js/studio-cluster.js"></script>
@@ -276,10 +277,10 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel" title="AI">
+                <a data-bs-toggle="tab" href="#tab-support" class="vertical-tab nav-link" id="tab-support-sel" title="Support">
                   <center>
-                    <i class="fa fa-robot" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">AI</div>
+                    <i class="fa fa-headset" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Support</div>
                   </center>
                 </a>
               </li>
@@ -344,7 +345,7 @@
               <div id="quickStartOverlay"></div>
             </div>
             <div class="tab-content" id="mainTabContent">
-              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:vector.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:ai.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:vector.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:support.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -414,7 +415,7 @@
 
           // Tabs that don't require a database - always show main content
           var noDatabaseTabs = ["tab-server-sel", "tab-profiler-sel", "tab-security-sel",
-            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-ai-sel", "tab-settings-sel"];
+            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-support-sel", "tab-settings-sel"];
           if (noDatabaseTabs.indexOf(activeTab) >= 0) {
             $("#quickStartPanel").hide();
             $("#mainTabContent").show();
@@ -454,9 +455,9 @@
             studioCurrentTab = "api";
           } else if (activeTab == "tab-resources-sel") {
             studioCurrentTab = "resources";
-          } else if (activeTab == "tab-ai-sel") {
-            studioCurrentTab = "ai";
-            initAi();
+          } else if (activeTab == "tab-support-sel") {
+            studioCurrentTab = "support";
+            initSupportTab();
           } else if (activeTab == "tab-settings-sel") {
             studioCurrentTab = "settings";
           }

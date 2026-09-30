@@ -32,6 +32,7 @@ import com.arcadedb.server.http.handler.openapi.OpenApiContributor;
 import com.arcadedb.server.http.handler.openapi.PluginApiSpec;
 import com.arcadedb.server.http.handler.openapi.PrometheusApiSpec;
 import com.arcadedb.server.http.handler.openapi.SecurityAdminApiSpec;
+import com.arcadedb.server.http.handler.openapi.SupportApiSpec;
 import com.arcadedb.server.http.handler.openapi.SpecBuilders;
 import com.arcadedb.server.http.handler.openapi.TimeSeriesApiSpec;
 import com.arcadedb.server.http.handler.openapi.VectorApiSpec;
@@ -93,6 +94,7 @@ public class OpenApiSpecGenerator {
       new PrometheusApiSpec(), //
       new AiApiSpec(), //
       new McpApiSpec(), //
+      new SupportApiSpec(), //
       new PluginApiSpec());
 
   /**
@@ -249,6 +251,7 @@ public class OpenApiSpecGenerator {
         tag("PromQL", "Prometheus-compatible query API"), //
         tag("AI", "AI assistant configuration and chat"), //
         tag("MCP", "Model Context Protocol endpoint and configuration"), //
+        tag("Support", "Registration with the ArcadeData customer portal, redacted diagnostics bundles and support issues"), //
         tag("Cluster", "Raft high-availability cluster management"), //
         tag("Metrics", "Metrics scrape endpoints"));
   }

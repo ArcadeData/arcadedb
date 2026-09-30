@@ -1,11 +1,22 @@
-<!-- AI Assistant Tab -->
+<!-- Support Tab: the AI Assistant first, then professional support (registration, open an issue, my issues, public GitHub issue) -->
 <style>
   .ai-message-content h1 { font-size: 1.3rem; }
   .ai-message-content h2 { font-size: 1.15rem; }
   .ai-message-content h3 { font-size: 1.05rem; }
   .ai-message-content h4, .ai-message-content h5, .ai-message-content h6 { font-size: 0.95rem; }
 </style>
-<div class="tab-pane fade" id="tab-ai" role="tabpanel">
+<div class="tab-pane fade" id="tab-support" role="tabpanel">
+  <ul class="nav nav-pills mb-3 support-nav" id="supportNav">
+    <li class="nav-item"><a href="#" class="nav-link active" data-support-view="ai"><i class="fa fa-robot"></i> AI Assistant</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="overview">Support</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="issue">Open an issue</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="issues">My issues</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="public">Report a public GitHub issue</a></li>
+  </ul>
+
+  <!-- AI Assistant view -->
+  <div id="supportViewAi">
+
 
   <!-- Inactive state (no subscription) -->
   <div id="aiInactivePanel" style="display: none;">
@@ -117,5 +128,24 @@
       </div>
     </div>
   </div>
+  </div>
 
+  <!-- Professional support views -->
+  <div id="supportSection" style="display: none;">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span style="font-size: 0.85rem; color: var(--text-muted);">Open a support issue with the logs and a diagnostics snapshot of this server attached, and follow the replies here. Secrets are masked before anything leaves the server, and you review exactly what is sent.</span>
+      <button class="btn btn-sm db-action-btn" onclick="refreshSupport()"><i class="fa fa-sync"></i> Refresh</button>
+    </div>
+    <div id="supportAlert"></div>
+      <div id="supportLoading" class="text-center py-4" style="display: none;">
+        <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem;"></div>
+        <div class="text-muted small mt-2">Loading the support status...</div>
+      </div>
+      <div id="supportContent" style="display: none;">
+        <div id="supportViewOverview" class="support-view"></div>
+        <div id="supportViewIssue" class="support-view" style="display: none;"></div>
+        <div id="supportViewIssues" class="support-view" style="display: none;"></div>
+        <div id="supportViewPublic" class="support-view" style="display: none;"></div>
+      </div>
+  </div>
 </div>
