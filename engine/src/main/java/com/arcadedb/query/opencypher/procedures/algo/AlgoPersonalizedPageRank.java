@@ -54,7 +54,9 @@ import java.util.stream.Stream;
  *   normalized to sum to 1 (so only their ratios matter). Plain nodes and pairs can be mixed, a plain node
  *   having weight 1.</li>
  * </ul>
- * Source nodes that are not part of the graph being analyzed are ignored; if none is, no row is returned.
+ * Source nodes that are not part of the graph being analyzed are ignored; if none is, no row is returned. When a
+ * positively weighted source is missing from the accelerated (CSR) view, the whole call is answered by the OLTP path
+ * over the full graph instead, where that node is analyzed like any other.
  * </p>
  * <p>
  * Example:

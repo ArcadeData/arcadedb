@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -163,12 +165,12 @@ class AlgoPersonalizedPageRankTest {
     return scores;
   }
 
-  private static final String NAMES = " YIELD nodeId, score RETURN nodeId, score";
+  private static final String YIELD_SUFFIX = " YIELD nodeId, score RETURN nodeId, score";
 
   @Test
   void pprSingleElementListEqualsSingleNode() {
-    final Map<String, Double> single = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a)" + NAMES);
-    final Map<String, Double> list = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank([a])" + NAMES);
+    final Map<String, Double> single = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a)" + YIELD_SUFFIX);
+    final Map<String, Double> list = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank([a])" + YIELD_SUFFIX);
     assertThat(list).hasSize(4);
     for (final String k : single.keySet())
       assertThat(list.get(k)).isCloseTo(single.get(k), within(1e-12));
@@ -186,11 +188,11 @@ class AlgoPersonalizedPageRankTest {
   void pprMultipleSourcesAreUniform() {
     closeCycle();
     final Map<String, Double> s = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, c], 'FOLLOWS', 0.85, 100, 0.0000000001)" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, c], 'FOLLOWS', 0.85, 100, 0.0000000001)" + YIELD_SUFFIX);
     final Map<String, Double> sa = scores(
-        "MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, 'FOLLOWS', 0.85, 100, 0.0000000001)" + NAMES);
+        "MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, 'FOLLOWS', 0.85, 100, 0.0000000001)" + YIELD_SUFFIX);
     final Map<String, Double> sc = scores(
-        "MATCH (c:Person {name:'C'}) CALL algo.personalizedPageRank(c, 'FOLLOWS', 0.85, 100, 0.0000000001)" + NAMES);
+        "MATCH (c:Person {name:'C'}) CALL algo.personalizedPageRank(c, 'FOLLOWS', 0.85, 100, 0.0000000001)" + YIELD_SUFFIX);
     // PPR is linear in the personalization vector when there are no dangling nodes (see closeCycle())
     for (final String k : s.keySet())
       assertThat(s.get(k)).isCloseTo(0.5 * sa.get(k) + 0.5 * sc.get(k), within(1e-9));
@@ -202,14 +204,14 @@ class AlgoPersonalizedPageRankTest {
     closeCycle();
     final String opts = "'FOLLOWS', 0.85, 100, 0.0000000001";
     final Map<String, Double> w = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 3.0], [c, 1.0]], " + opts + ")" + NAMES);
-    final Map<String, Double> sa = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, " + opts + ")" + NAMES);
-    final Map<String, Double> sc = scores("MATCH (c:Person {name:'C'}) CALL algo.personalizedPageRank(c, " + opts + ")" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 3.0], [c, 1.0]], " + opts + ")" + YIELD_SUFFIX);
+    final Map<String, Double> sa = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, " + opts + ")" + YIELD_SUFFIX);
+    final Map<String, Double> sc = scores("MATCH (c:Person {name:'C'}) CALL algo.personalizedPageRank(c, " + opts + ")" + YIELD_SUFFIX);
     for (final String k : w.keySet())
       assertThat(w.get(k)).isCloseTo(0.75 * sa.get(k) + 0.25 * sc.get(k), within(1e-9));
     // scaling every weight does not change the result
     final Map<String, Double> w2 = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 30], [c, 10]], " + opts + ")" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 30], [c, 10]], " + opts + ")" + YIELD_SUFFIX);
     for (final String k : w.keySet())
       assertThat(w2.get(k)).isCloseTo(w.get(k), within(1e-12));
   }
@@ -217,9 +219,9 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprDuplicateSourcesAccumulateWeight() {
     final Map<String, Double> dup = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, a, c])" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, a, c])" + YIELD_SUFFIX);
     final Map<String, Double> weighted = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 2], [c, 1]])" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 2], [c, 1]])" + YIELD_SUFFIX);
     for (final String k : dup.keySet())
       assertThat(dup.get(k)).isCloseTo(weighted.get(k), within(1e-12));
   }
@@ -237,55 +239,72 @@ class AlgoPersonalizedPageRankTest {
   @Test
   void pprMixesPlainNodesAndPairs() {
     final Map<String, Double> mixed = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, [c, 2]])" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, [c, 2]])" + YIELD_SUFFIX);
     final Map<String, Double> pairs = scores(
-        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 1], [c, 2]])" + NAMES);
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 1], [c, 2]])" + YIELD_SUFFIX);
     assertThat(mixed).hasSize(4);
     for (final String k : mixed.keySet())
       assertThat(mixed.get(k)).isCloseTo(pairs.get(k), within(1e-12));
   }
 
   @Test
-  void pprIgnoresSourceAbsentFromTheCsrView() {
-    database.getSchema().createVertexType("Other");
-    database.transaction(() -> database.newVertex("Other").set("name", "X").save());
+  void pprFallsBackToOltpWhenSourceAbsentFromCsrView() {
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withName("ppr-unknown-csr").withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS").build();
     try {
       assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
-      final String opts = "'FOLLOWS', 0.85, 50, 0";
-      final Map<String, Double> plain = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, " + opts + ")" + NAMES);
-      assertThat(plain).containsKeys("A", "B", "C", "D");
+      final Object a = database.query("sql", "SELECT FROM Person WHERE name = 'A'").next().getElement().get();
+      final Object[] noExtra = { List.of(a), "FOLLOWS", 0.85, 50, 0.0 };
+      final BasicCommandContext csrContext = new BasicCommandContext();
+      csrContext.setDatabase(database);
+      final Map<RID, Double> csr = run(csrContext, noExtra);
+      assertThat(csrContext.getVariable(CommandContext.CSR_ACCELERATED_VAR)).isEqualTo(true);
 
-      // X is not in the view: the CSR path declines and the OLTP path (whole graph) takes over; a zero weight adds nothing
-      final Map<String, Double> zero = scores(
-          "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([a, [x, 0]], " + opts + ")" + NAMES);
-      final Map<String, Double> weighted = scores(
-          "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([[a, 1], [x, 5]], " + opts + ")" + NAMES);
-      for (final String k : plain.keySet())
-        assertThat(zero.get(k)).isCloseTo(plain.get(k), within(1e-9));
-      // The OLTP fallback analyzes the whole graph, where X is a legitimate source, so it is not ignored there
-      assertThat(weighted.get("X")).isGreaterThan(0.0);
+      // A vertex created after the view was built is unknown to the CSR. Whichever path answers, a zero-weight unknown
+      // source must not change the scores of the others
+      final MutableVertex[] e = new MutableVertex[1];
+      database.transaction(() -> e[0] = database.newVertex("Person").set("name", "E").save());
+      final Map<RID, Double> withZero = run(newContext(), new Object[] { List.of(a, List.of(e[0], 0)), "FOLLOWS", 0.85, 50, 0.0 });
+      for (final Map.Entry<RID, Double> entry : csr.entrySet())
+        assertThat(withZero.get(entry.getKey())).isCloseTo(entry.getValue(), within(1e-9));
     } finally {
       gav.shutdown();
     }
   }
 
+  private BasicCommandContext newContext() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    return context;
+  }
+
+  private Map<RID, Double> run(final CommandContext context, final Object[] args) {
+    final Map<RID, Double> scores = new HashMap<>();
+    new AlgoPersonalizedPageRank().execute(args, null, context).forEach(r -> scores.put(r.getProperty("nodeId"), ((Number) r.getProperty("score")).doubleValue()));
+    return scores;
+  }
+
   @Test
   void pprMultipleSourcesOltpPathMatchesCsr() {
-    final String query = "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 2], [c, 1]], 'FOLLOWS', 0.85, 50, 0)"
-        + NAMES;
-    final Map<String, Double> oltp = scores(query);
+    final Object a = database.query("sql", "SELECT FROM Person WHERE name = 'A'").next().getElement().get();
+    final Object c = database.query("sql", "SELECT FROM Person WHERE name = 'C'").next().getElement().get();
+    final Object[] call = { List.of(List.of(a, 2), List.of(c, 1)), "FOLLOWS", 0.85, 50, 0.0 };
+
+    final BasicCommandContext oltpContext = newContext();
+    final Map<RID, Double> oltp = run(oltpContext, call);
     assertThat(oltp).hasSize(4);
+    assertThat(oltpContext.getVariable(CommandContext.CSR_ACCELERATED_VAR)).isNull();
 
     final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withName("ppr-multi-csr").withVertexTypes("Person")
         .withEdgeTypes("FOLLOWS").build();
     try {
       assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
-      final Map<String, Double> csr = scores(query);
+      final BasicCommandContext csrContext = newContext();
+      final Map<RID, Double> csr = run(csrContext, call);
+      assertThat(csrContext.getVariable(CommandContext.CSR_ACCELERATED_VAR)).isEqualTo(true);
       assertThat(csr).hasSize(4);
-      for (final String k : oltp.keySet())
-        assertThat(csr.get(k)).isCloseTo(oltp.get(k), within(1e-9));
+      for (final Map.Entry<RID, Double> entry : oltp.entrySet())
+        assertThat(csr.get(entry.getKey())).isCloseTo(entry.getValue(), within(1e-9));
     } finally {
       gav.shutdown();
     }
