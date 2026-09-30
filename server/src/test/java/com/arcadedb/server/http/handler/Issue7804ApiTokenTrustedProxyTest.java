@@ -253,15 +253,19 @@ class Issue7804ApiTokenTrustedProxyTest {
   }
 
   /**
-   * Issue #7804's first question, recorded where it cannot be lost: the default flips in 27.1.1, and the
-   * setting's own description says so, since that is the text an operator reads. Until then the default
-   * stays false - {@code Issue7372ApiTokenTransportGateTest#theRefusalIsOffByDefault} pins that half.
+   * Issue #7804's first question, recorded where it cannot be lost: the release in which the default
+   * flipped, written on the setting's own description since that is the text an operator reads. Issue
+   * #7823 made the flip, so the description now states what the default IS and since when, and no longer
+   * announces a future release - {@code Issue7372ApiTokenTransportGateTest#theRefusalIsOnByDefault} pins
+   * the value itself.
    */
   @Test
-  void theReleaseThatFlipsTheDefaultIsWrittenDown() {
+  void theReleaseThatFlippedTheDefaultIsWrittenDown() {
     assertThat(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getDescription())
-        .as("the operator has to be able to read the deprecation window off the setting itself")
-        .contains("27.1.1");
+        .as("the operator has to be able to read off the setting itself when refusing became the default")
+        .contains("Default is true since 26.10.1")
+        .doesNotContain("27.1.1")
+        .doesNotContain("Default is false");
   }
 
   private static IPAddressBlocklist trusting(final String csv) {

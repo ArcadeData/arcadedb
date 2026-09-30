@@ -1899,15 +1899,14 @@ public enum GlobalConfiguration {
       from a loopback peer - the same precondition the gRPC `CreateApiToken` RPC has applied since 26.10.1. The token \
       is the one response field on the HTTP API that the server can never reproduce and that authenticates its holder, \
       so over a cleartext listener to a remote client it is readable by anything on the path. \
-      Default is false, which keeps the behaviour this route has always had: Studio's own token UI mints over the very \
-      same route, so enforcing by default would break every Studio deployment served over plain HTTP from a host that \
-      is not the operator's own. When it is false and the transport is unprotected the mint is still logged at WARNING. \
+      Default is true since 26.10.1 (issue #7823): an unprotected mint is refused with HTTP 412, which Studio's token \
+      UI renders as an actionable message. This breaks any remote client, Studio included, that mints over plain HTTP \
+      from a host that is not the server's own; such a deployment moves to HTTPS, or sets this explicitly to false to \
+      restore the earlier behaviour, in which the mint is allowed and logged at WARNING. \
       A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless the \
       operator lists it in `arcadedb.server.apiTokenTrustedProxies`: this setting reads the live connection, and the \
-      X-Forwarded-Proto header only from a peer on that list, never from an arbitrary client (issues #7372, #7804). \
-      The default flips to true in 27.1.1. Until then an unprotected mint is allowed and logged; from 27.1.1 it is \
-      refused unless this is explicitly set back to false""",
-      Boolean.class, false),
+      X-Forwarded-Proto header only from a peer on that list, never from an arbitrary client (issues #7372, #7804)""",
+      Boolean.class, true),
 
   SERVER_API_TOKEN_TRUSTED_PROXIES("arcadedb.server.apiTokenTrustedProxies", SCOPE.SERVER,
       """

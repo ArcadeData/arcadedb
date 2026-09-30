@@ -44,17 +44,18 @@ import java.util.logging.Level;
  * reproduce and that authenticates its holder, so it must not be written back over a connection that
  * puts it on the wire in the clear. gRPC has refused that since 26.10.1
  * ({@code GrpcTransportSecurityInterceptor}); this route now applies the same rule - HTTPS, or a
- * loopback peer - but only when {@link GlobalConfiguration#SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT}
- * is on. It is off by default because Studio's own token UI mints over this route, so refusing by
- * default would break every Studio served over plain HTTP from a remote host: tightening a route that
- * has always behaved this way is a compatibility decision, and it is the operator's to take. With the
- * setting off, an unprotected mint is logged at WARNING rather than passing unremarked (issue #7372).
+ * loopback peer - when {@link GlobalConfiguration#SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT} is on.
+ * Issue #7372 shipped it off, because Studio's own token UI mints over this route and refusing by
+ * default would have broken every Studio served over plain HTTP from a remote host before Studio could
+ * explain the refusal. With the setting off, an unprotected mint is logged at WARNING rather than passing
+ * unremarked.
  * <p>
- * Issue #7804 settled the two questions that left open. The default flips in 27.1.1, stated on the
- * setting itself so an operator reads the window rather than discovering it; and a TLS-terminating
- * reverse proxy can vouch for the leg it terminated, but only from a peer address the operator listed
- * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}.
- * Studio renders the 412 through {@code apiTokenTransportRefusal()} in {@code studio-security.js}.
+ * Issue #7804 settled the two questions that left open: Studio renders the 412 through
+ * {@code apiTokenTransportRefusal()} in {@code studio-security.js}, and a TLS-terminating reverse proxy can
+ * vouch for the leg it terminated, but only from a peer address the operator listed in
+ * {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}.
+ * With both in place the default is on since 26.10.1 (issue #7823); setting it back to false is the
+ * operator's explicit opt-out.
  * <p>
  * <b>On an HA cluster the mint is forwarded to the leader</b>, as {@code /server/users} is (issue #8109), and the
  * transport is then checked on BOTH legs the plaintext token travels back over. The follower checks the client's
@@ -180,7 +181,8 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
 
     LogManager.instance().log(PostApiTokenHandler.class, Level.WARNING,
         "Minting an API token over an unprotected transport (scheme=%s, peer=%s): the token is readable on the "
-            + "wire. Set %s=true to refuse this", null, scheme, peer,
+            + "wire. It was allowed only because %s is set to false: remove that override to refuse this", null,
+        scheme, peer,
         GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey());
     return null;
   }
