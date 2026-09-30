@@ -1943,7 +1943,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (tooBig == null)
       return;
     // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
-    LogManager.instance().log(this, Level.WARNING,
+    // A client-caused refusal: logged at the level the leader's own 413 uses, not as a warning per request.
+    LogManager.instance().log(this, getUserSevereErrorLogLevel(),
         "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
             + "exceeded '%s' (%,d bytes) on this node. Raise that setting or split the payload; the leader's log "
             + "reports what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
