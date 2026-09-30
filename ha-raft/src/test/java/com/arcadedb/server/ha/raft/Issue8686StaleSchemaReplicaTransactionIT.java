@@ -38,6 +38,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * as the record is saved, under the schema the replica holds then), the leader creates the index, the replica applies it,
  * and only then does the replica commit. The leader must refuse that commit with a retryable conflict; the same insert
  * repeated in a new transaction, prepared under the new schema, must be accepted and land in the index everywhere.
+ * <p>
+ * The variant where the replica has NOT yet applied the DDL when it commits is covered at unit level, in
+ * {@code Issue8686StaleSchemaTransactionRefusedTest}: the leader's check only looks at the index the entry states.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

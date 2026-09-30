@@ -258,6 +258,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /** Throttle window for the "deltas are on but withheld" report (issue #7219), per database. */
   private static final long                                              SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private static final long                                              TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private volatile long                                                  lastTxPreparedAtWithheldLog;
 
   /**
    * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
@@ -884,8 +886,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (preparedAt < 0)
       return -1L;
     if (!raft.canStateTxPreparedAt()) {
-      HALog.log(this, HALog.DETAILED, "Not stating the index tx of database '%s' was prepared at: a peer does not advertise '%s'",
-          getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+      // Silent protection loss is the failure this check exists against, so it is said out loud, but not once per commit.
+      final long now = System.currentTimeMillis();
+      if (now - lastTxPreparedAtWithheldLog > TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS) {
+        lastTxPreparedAtWithheldLog = now;
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': transactions do not state the index they were prepared at, so a replica transaction prepared before a "
+                + "schema change is NOT refused. Some peer does not advertise '%s' (older build, not probed yet, or offline)",
+            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+      }
       return -1L;
     }
     return preparedAt;
