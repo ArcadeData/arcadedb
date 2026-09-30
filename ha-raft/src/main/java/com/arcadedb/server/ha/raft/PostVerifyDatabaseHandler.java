@@ -713,6 +713,8 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * The image one verify reads on the window path: the point-in-time page window, and the TimeSeries sealed stores as
    * they were listed in the same read-locked frame as its t0. {@code sealedFiles} is {@code null} when the compaction
    * pause was not held (the sealed stores are then left out of the answer) or when the directory could not be listed.
+   * A carrier only, never compared: the array component makes the generated {@code equals}/{@code hashCode}
+   * identity-based.
    */
   private record WindowImage(PageSnapshot snapshot, File[] sealedFiles) {
   }

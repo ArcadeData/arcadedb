@@ -50,30 +50,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  * files under a flush suspension, keeps the lock, and one test here pins that.
  */
 class Issue7634VerifyWindowHoldsNoReadLockTest {
-  private static final String DATABASE_PATH = "target/databases/verify-window-read-lock-7634";
-  private static final String DOC_TYPE      = "Doc";
-  private static final String TS_TYPE       = "Reading";
-  private static final String AFTER_T0_TYPE = "CreatedWhileVerifying";
-  private static final long   BASE_TS       = 1_700_000_000_000L;
-  private static final int    SAMPLES       = 5_000;
+  private static final String DATABASE_PATH    = "target/databases/verify-window-read-lock-7634";
+  private static final String DOC_TYPE         = "Doc";
+  private static final String TS_TYPE          = "Reading";
+  private static final String AFTER_T0_TYPE    = "CreatedWhileVerifying";
+  private static final long   BASE_TS          = 1_700_000_000_000L;
+  private static final int    SAMPLES          = 5_000;
   /** Budget for something expected to happen. Generous: a wider bound cannot turn a passing run red. */
-  private static final long   WAIT_MS       = 30_000L;
+  private static final long   WAIT_MS          = 30_000L;
   /** A wait that is EXPECTED to expire: it IS the assertion, and a stall can only make it more true. */
   private static final long   BLOCKED_PROBE_MS = 2_000L;
 
   private final PostVerifyDatabaseHandler handler = new PostVerifyDatabaseHandler(null, null);
 
   @BeforeEach
-  @AfterEach
   void clean() {
     PostVerifyDatabaseHandler.whileChecksummingForTesting = null;
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.reset();
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
+  /** One method, so the order is fixed: close the handler, then reset the seam and the setting, then delete. */
   @AfterEach
-  void closeHandler() {
+  void tearDown() {
     handler.close();
+    clean();
   }
 
   /**
@@ -205,6 +206,40 @@ class Issue7634VerifyWindowHoldsNoReadLockTest {
       assertThat(checksums.keySet())
           .as("a sealed store created after t0 has no pages in the window and must not be in the answer")
           .doesNotContainAnyElementsOf(createdDuringVerify);
+    }
+  }
+
+  /**
+   * The residual risk the narrowed lock accepts, pinned: a sealed store listed at t0 and gone before the CRC pass reads
+   * it - a {@code DROP TYPE} the lock no longer excludes - is REPORTED as not covered, never silently left out of an
+   * answer that still claims full coverage.
+   */
+  @Test
+  void aSealedStoreGoneAfterT0IsReportedAsNotCovered() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+
+    try (final Database database = createDatabase()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final Set<String> sealedAtT0 = sealedFileNames(db);
+      assertThat(sealedAtT0).as("the fixture must have sealed something, or this proves nothing").isNotEmpty();
+
+      final File[] sealed = TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath()));
+      final File moved = new File(sealed[0].getParentFile().getParentFile(), sealed[0].getName() + ".moved-7634");
+      final AtomicBoolean removed = new AtomicBoolean();
+      PostVerifyDatabaseHandler.whileChecksummingForTesting = snapshot -> removed.set(sealed[0].renameTo(moved));
+
+      final JSONObject checksums = new JSONObject();
+      try {
+        assertThat(handler.computeLocalChecksums(db, checksums, new JSONArray()))
+            .as("a sealed store listed at t0 and gone before it was read must make the answer report incomplete coverage")
+            .isFalse();
+      } finally {
+        PostVerifyDatabaseHandler.whileChecksummingForTesting = null;
+        if (moved.exists())
+          assertThat(moved.renameTo(sealed[0])).isTrue();
+      }
+      assertThat(removed.get()).as("the fixture must actually have removed the listed sealed store").isTrue();
+      assertThat(checksums.keySet()).doesNotContain(sealed[0].getName());
     }
   }
 
