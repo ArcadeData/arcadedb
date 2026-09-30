@@ -169,8 +169,9 @@ final class ParallelTypeScan {
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
    * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
-   * transaction deleted after that pull can still be returned. Once the transaction has written, the caller no longer
-   * scans units itself, it waits for the workers (polling, so it never hangs) rather than mix two views in one scan.
+   * transaction deleted after that pull can still be returned. Inside a transaction the caller never
+   * scans units itself in a streaming pull, it waits for the workers (polling, so it never hangs) rather than mix two
+   * views in one scan.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
@@ -487,8 +488,8 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          // NOT ONCE THE TRANSACTION IT RUNS IN HAS WRITTEN SINCE (#8775): THE CALLER READS THROUGH THAT TRANSACTION AND WOULD
-          // SEE ITS CHANGES IN THE UNITS IT TAKES, WHILE THE WORKERS' UNITS NEVER DO. IT WAITS FOR ITS WORKER INSTEAD
+          // NOT INSIDE A TRANSACTION (#8775): THE CALLER READS THROUGH IT AND A WRITE BETWEEN TWO BATCHES OF THE UNIT IT TOOK
+          // WOULD SHOW IN THE REST OF THAT UNIT, WHILE THE WORKERS' UNITS NEVER SHOW IT. IT WAITS FOR ITS WORKER INSTEAD
           if (nextUnit.get() == consumerUnit && callerMayScan() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             channels[consumerUnit] = null;
             if (consumerContext == null)
@@ -538,9 +539,14 @@ final class ParallelTypeScan {
     };
   }
 
-  /** Whether the caller reads what the workers read: it runs outside a transaction, or in one that has written nothing. */
+  /**
+   * Whether the caller may scan a unit itself in a streaming pull (#8594): only outside a transaction. Inside one, even
+   * an idle one, the unit it would claim is read batch by batch between pulls, through the transaction, and a write
+   * between two batches would show up in the rest of that unit but never in the workers' units. It waits for its
+   * worker instead, so every row of the scan comes from the same committed pages.
+   */
   private boolean callerMayScan() {
-    return !database.isTransactionActive() || database.getTransaction().isReadOnlyView();
+    return !database.isTransactionActive();
   }
 
   private void startProducers(final CommandContext context) {
