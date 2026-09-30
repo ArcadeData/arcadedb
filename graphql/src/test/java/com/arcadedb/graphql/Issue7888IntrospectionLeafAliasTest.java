@@ -19,6 +19,7 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #7888 (follow-up to #7036): the leaf fields of an introspection result ({@code name}, {@code kind},
@@ -340,6 +342,69 @@ class Issue7888IntrospectionLeafAliasTest extends AbstractGraphQLTest {
         assertThat(field.getPropertyNames()).containsExactly("type");
         assertThat(field.<Result>getProperty("type").getPropertyNames()).containsExactly("n");
       }
+      return null;
+    });
+  }
+
+  @Test
+  void fieldsNestedThroughTypeReferencesAreCapped() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // Book -> authors: [Author] -> wrote: [Book] -> ...: every nested `fields` multiplies the work, so the nesting is capped
+      assertThatThrownBy(() -> single(database,
+          "{ __type(name: \"Book\") { fields { type { ofType { fields { type { ofType { fields { name } } } } } } } } }"))
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("fields");
+
+      // the same shape through __schema { types } and __schema { queryType }
+      assertThatThrownBy(() -> single(database,
+          "{ __schema { types { fields { type { ofType { fields { type { ofType { fields { name } } } } } } } } } }"))
+          .isInstanceOf(CommandParsingException.class);
+      assertThatThrownBy(() -> single(database,
+          "{ __schema { queryType { fields { type { fields { type { ofType { fields { name } } } } } } } } }"))
+          .isInstanceOf(CommandParsingException.class);
+
+      // up to the cap, it is served
+      final Result record = single(database, "{ __schema { queryType { fields { name type { fields { name } } } } } }");
+      assertThat(record.<Result>getProperty("queryType").<List<Result>>getProperty("fields")).isNotEmpty();
+      return null;
+    });
+  }
+
+  @Test
+  void fragmentsOnFieldAndNamedSpreadsAreExpanded() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Result inline = single(database, "{ __type(name: \"Book\") { fields { ... on __Field { fn: name } } } }");
+      for (final Result field : inline.<List<Result>>getProperty("fields"))
+        assertThat(field.getPropertyNames()).containsExactly("fn");
+
+      final Result named = single(database, """
+          { __type(name: "Book") { ...T } }
+          fragment T on __Type { n: name fields { ...F } }
+          fragment F on __Field { fn: name t: type { k: kind } }""");
+      assertThat(named.getPropertyNames()).containsExactlyInAnyOrder("n", "fields");
+      assertThat(named.<String>getProperty("n")).isEqualTo("Book");
+      for (final Result field : named.<List<Result>>getProperty("fields")) {
+        assertThat(field.getPropertyNames()).containsExactlyInAnyOrder("fn", "t");
+        assertThat(field.<Result>getProperty("t").getPropertyNames()).containsExactly("k");
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void queryTypeWithoutSdlIsANamedObjectWithNoFields() {
+    executeTest(database -> {
+      // no SDL registered: Query is not declared
+      final Result record = single(database, "{ __schema { queryType { n: name k: kind f: fields { name } } } }");
+      final Result queryType = record.getProperty("queryType");
+      assertThat(queryType.getPropertyNames()).containsExactlyInAnyOrder("n", "k", "f");
+      assertThat(queryType.<String>getProperty("n")).isEqualTo("Query");
+      assertThat(queryType.<String>getProperty("k")).isEqualTo("OBJECT");
+      assertThat(queryType.<Object>getProperty("f")).isNull();
       return null;
     });
   }

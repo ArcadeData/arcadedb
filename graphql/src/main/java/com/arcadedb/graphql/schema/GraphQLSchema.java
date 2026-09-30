@@ -62,6 +62,11 @@ public class GraphQLSchema {
    * unlikely choice, a predicate that uses it at all is rejected: the reservation is enforced, not hoped for.
    */
   private static final String BOUND_PARAMETER_PREFIX = "__gqlArg";
+  /**
+   * How many {@code fields} selections an introspection document may nest. A named type reached through {@code type}/{@code ofType}
+   * is a full {@code __Type}, so without a cap each nested {@code fields} multiplies the work by the fan-out of the type it lists.
+   */
+  static final        int    MAX_INTROSPECTION_FIELDS_DEPTH = 2;
 
   private final Database                          database;
   private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
@@ -476,7 +481,7 @@ public class GraphQLSchema {
         if ("types".equals(fieldName))
           schemaResult.setProperty(responseKey, buildTypeList(sub, fragments));
         else if ("queryType".equals(fieldName))
-          schemaResult.setProperty(responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments));
+          schemaResult.setProperty(responseKey, buildQueryTypeResult(sub.getSelectionSet(), fragments, 0));
         else if ("mutationType".equals(fieldName))
           schemaResult.setProperty(responseKey, null);
         else if ("subscriptionType".equals(fieldName))
@@ -507,7 +512,7 @@ public class GraphQLSchema {
     if (typeName == null)
       throw new CommandParsingException("__type query requires a 'name' argument");
 
-    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet(), fragments);
+    final ResultInternal typeResult = buildTypeResult(typeName, selection.getSelectionSet(), fragments, 0);
 
     if (typeResult == null)
       throw new CommandParsingException("Type '" + typeName + "' not found");
@@ -534,14 +539,14 @@ public class GraphQLSchema {
 
     // Add GraphQL-defined types
     for (final Map.Entry<String, ObjectTypeDefinition> entry : objectTypeDefinitionMap.entrySet()) {
-      types.add(buildTypeResult(entry.getKey(), selectionSet, fragments));
+      types.add(buildTypeResult(entry.getKey(), selectionSet, fragments, 0));
       addedTypes.add(entry.getKey());
     }
 
     // Add database types not already covered by GraphQL definitions
     for (final DocumentType dbType : database.getSchema().getTypes()) {
       if (!addedTypes.contains(dbType.getName())) {
-        types.add(buildDatabaseTypeResult(dbType, selectionSet, fragments));
+        types.add(buildDatabaseTypeResult(dbType, selectionSet, fragments, 0));
         addedTypes.add(dbType.getName());
       }
     }
@@ -549,49 +554,50 @@ public class GraphQLSchema {
     // Add GraphQL built-in scalar types
     for (final String scalar : new String[] { "String", "Int", "Float", "Boolean", "ID" }) {
       if (!addedTypes.contains(scalar))
-        types.add(buildIntrospectionType(scalar, "SCALAR", selectionSet, fragments, null, null));
+        types.add(buildIntrospectionLeafType(scalar, "SCALAR", selectionSet, fragments));
     }
 
     return types;
   }
 
-  private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet, final GraphQLFragments fragments) {
+  private ResultInternal buildTypeResult(final String typeName, final SelectionSet selectionSet, final GraphQLFragments fragments,
+      final int fieldsDepth) {
     final ObjectTypeDefinition objType = objectTypeDefinitionMap.get(typeName);
     if (objType != null)
-      return buildGraphQLTypeResult(objType, selectionSet, fragments);
+      return buildGraphQLTypeResult(objType, selectionSet, fragments, fieldsDepth);
 
     // Check database types
     if (database.getSchema().existsType(typeName))
-      return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments);
+      return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments, fieldsDepth);
 
     // Check scalars
     if (Set.of("String", "Int", "Float", "Boolean", "ID").contains(typeName))
-      return buildIntrospectionType(typeName, "SCALAR", selectionSet, fragments, null, null);
+      return buildIntrospectionLeafType(typeName, "SCALAR", selectionSet, fragments);
 
     return null;
   }
 
   private ResultInternal buildGraphQLTypeResult(final ObjectTypeDefinition objType, final SelectionSet selectionSet,
-      final GraphQLFragments fragments) {
+      final GraphQLFragments fragments, final int fieldsDepth) {
     return buildIntrospectionType(objType.getName(), "OBJECT", selectionSet, fragments, fieldsSelection -> {
-      final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments);
+      final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments, fieldsDepth);
       final List<ResultInternal> fields = new ArrayList<>();
       for (final FieldDefinition fd : objType.getFieldDefinitions())
         fields.add(buildIntrospectionField(fd.getName(), fieldSelections,
-            typeSelectionSet -> buildTypeInfo(fd.getType(), typeSelectionSet, fragments)));
+            typeSelectionSet -> buildTypeInfo(fd.getType(), typeSelectionSet, fragments, fieldsDepth + 1)));
       return fields;
     }, null);
   }
 
   private ResultInternal buildDatabaseTypeResult(final DocumentType dbType, final SelectionSet selectionSet,
-      final GraphQLFragments fragments) {
+      final GraphQLFragments fragments, final int fieldsDepth) {
     return buildIntrospectionType(dbType.getName(), "OBJECT", selectionSet, fragments, fieldsSelection -> {
-      final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments);
+      final List<Selection> fieldSelections = expandFieldSelections(fieldsSelection, fragments, fieldsDepth);
       final List<ResultInternal> fields = new ArrayList<>();
       for (final Property prop : dbType.getProperties())
         fields.add(buildIntrospectionField(prop.getName(), fieldSelections,
-            typeSelectionSet -> buildIntrospectionType(mapDatabaseTypeToGraphQL(prop.getType()), "SCALAR", typeSelectionSet, fragments,
-                null, null)));
+            typeSelectionSet -> buildIntrospectionLeafType(mapDatabaseTypeToGraphQL(prop.getType()), "SCALAR", typeSelectionSet,
+                fragments)));
       return fields;
     }, null);
   }
@@ -600,11 +606,12 @@ public class GraphQLSchema {
    * The {@code Query} root type of {@code __schema { queryType { ... } }}: the full {@code __Type} when the SDL declares it, otherwise
    * a named OBJECT with no fields to list.
    */
-  private ResultInternal buildQueryTypeResult(final SelectionSet selectionSet, final GraphQLFragments fragments) {
+  private ResultInternal buildQueryTypeResult(final SelectionSet selectionSet, final GraphQLFragments fragments,
+      final int fieldsDepth) {
     final ObjectTypeDefinition queryType = objectTypeDefinitionMap.get("Query");
     if (queryType != null)
-      return buildGraphQLTypeResult(queryType, selectionSet, fragments);
-    return buildIntrospectionType("Query", "OBJECT", selectionSet, fragments, null, null);
+      return buildGraphQLTypeResult(queryType, selectionSet, fragments, fieldsDepth);
+    return buildIntrospectionLeafType("Query", "OBJECT", selectionSet, fragments);
   }
 
   /**
@@ -615,21 +622,21 @@ public class GraphQLSchema {
    * simple name.
    */
   private ResultInternal buildTypeInfo(final com.arcadedb.graphql.parser.Type type, final SelectionSet selectionSet,
-      final GraphQLFragments fragments) {
+      final GraphQLFragments fragments, final int fieldsDepth) {
     final Function<SelectionSet, ResultInternal> unwrapped;
     final boolean nonNull;
     if (type.getListType() != null) {
       final ListType listType = type.getListType();
       unwrapped = listSelectionSet -> buildIntrospectionType(null, "LIST", listSelectionSet, fragments, null,
-          ofTypeSelectionSet -> buildTypeInfo(listType.getType(), ofTypeSelectionSet, fragments));
+          ofTypeSelectionSet -> buildTypeInfo(listType.getType(), ofTypeSelectionSet, fragments, fieldsDepth));
       nonNull = listType.isBang();
     } else {
       final String name = type.getTypeName().getName();
       unwrapped = namedSelectionSet -> {
         final ObjectTypeDefinition objType = objectTypeDefinitionMap.get(name);
         return objType != null ?
-            buildGraphQLTypeResult(objType, namedSelectionSet, fragments) :
-            buildIntrospectionType(name, "SCALAR", namedSelectionSet, fragments, null, null);
+            buildGraphQLTypeResult(objType, namedSelectionSet, fragments, fieldsDepth) :
+            buildIntrospectionLeafType(name, "SCALAR", namedSelectionSet, fragments);
       };
       nonNull = type.isBang();
     }
@@ -675,6 +682,14 @@ public class GraphQLSchema {
   }
 
   /**
+   * A {@code __Type} with neither {@code fields} nor {@code ofType} to describe: a SCALAR, or an OBJECT whose fields are not known.
+   */
+  private static ResultInternal buildIntrospectionLeafType(final String name, final String kind, final SelectionSet selectionSet,
+      final GraphQLFragments fragments) {
+    return buildIntrospectionType(name, kind, selectionSet, fragments, null, null);
+  }
+
+  /**
    * Builds one {@code __Field} object, with the same selection-driven keying as {@link #buildIntrospectionType}. Null selections (a
    * {@code fields} selection with no selection set of its own) keep the historical shape: the field's {@code name} only.
    */
@@ -701,7 +716,11 @@ public class GraphQLSchema {
   /**
    * The selections of a {@code fields { ... }} selection, with its fragments expanded once for every field it describes.
    */
-  private static List<Selection> expandFieldSelections(final Selection fieldsSelection, final GraphQLFragments fragments) {
+  private static List<Selection> expandFieldSelections(final Selection fieldsSelection, final GraphQLFragments fragments,
+      final int fieldsDepth) {
+    if (fieldsDepth >= MAX_INTROSPECTION_FIELDS_DEPTH)
+      throw new CommandParsingException(
+          "Introspection query nests 'fields' more than " + MAX_INTROSPECTION_FIELDS_DEPTH + " levels deep");
     final SelectionSet fieldSelectionSet = fieldsSelection.getSelectionSet();
     return fieldSelectionSet != null ? fragments.expand(fieldSelectionSet.getSelections(), "__Field"::equals) : null;
   }
