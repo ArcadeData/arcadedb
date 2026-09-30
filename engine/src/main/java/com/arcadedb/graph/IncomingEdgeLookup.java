@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -206,6 +207,51 @@ public final class IncomingEdgeLookup {
     both.addIterator(graphEngine.getEdgesConnectedTo(vertex, Vertex.DIRECTION.OUT, target, edgeTypes));
     both.addIterator(incoming);
     return both;
+  }
+
+  /**
+   * The edges of the unidirectional types that end in {@code target}, for the delete of that vertex (issue #8676): the
+   * target holds no trace of them, so they are found here, as the edges of the incoming side a query reads. The
+   * result is a list, since the caller deletes the edges while it walks it.
+   * <p>
+   * The deletes of a transaction share one scan per type, kept with the transaction's {@link UnidirectionalEdgeChanges}
+   * (the edges the transaction deletes or creates in between are overlaid) and dropped when it ends, so deleting N
+   * vertices in one transaction costs one scan rather than N. A type too large to index in heap, or a delete with no
+   * transaction, is answered by a scan of its own for this vertex alone: slower, but on no heap.
+   * <p>
+   * A type with no edge record is skipped without a scan; a lightweight type has none, and is scanned through the
+   * outgoing lists of every vertex, which is the price of finding an edge stored only on its source.
+   */
+  public static List<Edge> getIncomingUnidirectionalEdges(final DatabaseInternal database, final RID target) {
+    final Schema schema = database.getSchema();
+    if (!schema.hasUnidirectionalEdgeTypes())
+      return Collections.emptyList();
+
+    final List<String> types = new ArrayList<>(2);
+    for (final String name : cachedClosure(schema, null).unidirectional)
+      if (schema.getType(name) instanceof EdgeType edgeType && (edgeType.isLightweight() || database.countType(name, false) > 0))
+        types.add(name);
+    if (types.isEmpty())
+      return Collections.emptyList();
+
+    final String[] names = types.toArray(new String[0]);
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null) {
+      try {
+        final IncomingEdgeLookup lookup = tx.getUnidirectionalEdgeChanges().getDeleteLookup();
+        final List<Edge> result = new ArrayList<>();
+        for (final Snapshot snapshot : lookup.snapshots(database, names, null))
+          for (final Iterator<Edge> it = snapshot.edgesInto(target); it.hasNext(); )
+            result.add(it.next());
+        return result;
+      } catch (final CommandExecutionException e) {
+        // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW
+        LogManager.instance().log(IncomingEdgeLookup.class, Level.FINE,
+            "Cannot index the unidirectional edge types in heap to delete vertex %s, scanning them for it alone: %s", target,
+            e.getMessage());
+      }
+    }
+    return Snapshot.scanEdgesInto(database, names, target);
   }
 
   /**
@@ -589,6 +635,43 @@ public final class IncomingEdgeLookup {
           });
         }
       }
+    }
+
+    /** The edges of {@code typeNames} that end in {@code target}, found by scanning them with no index kept in heap. */
+    static List<Edge> scanEdgesInto(final DatabaseInternal database, final String[] typeNames, final RID target) {
+      final Schema schema = database.getSchema();
+      final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+      final List<Edge> result = new ArrayList<>();
+      final List<String> lightweight = new ArrayList<>();
+      for (final String typeName : typeNames) {
+        for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
+          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+            scan(database, bucket, guard, record -> {
+              final Edge edge = record.asEdge();
+              if (target.equals(edge.getIn()))
+                result.add(edge);
+              return true;
+            });
+        if (schema.getType(typeName) instanceof EdgeType edgeType && edgeType.isLightweight())
+          lightweight.add(typeName);
+      }
+      if (lightweight.isEmpty())
+        return result;
+
+      final String[] names = lightweight.toArray(new String[0]);
+      for (final DocumentType type : schema.getTypes()) {
+        if (type.getType() != Vertex.RECORD_TYPE)
+          continue;
+        for (final Bucket bucket : type.getBuckets(false))
+          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+            scan(database, bucket, guard, record -> {
+              for (final Edge edge : record.asVertex().getEdges(Vertex.DIRECTION.OUT, names))
+                if (edge.getIdentity().getPosition() < 0 && target.equals(edge.getIn()))
+                  result.add(edge);
+              return true;
+            });
+      }
+      return result;
     }
 
     /**

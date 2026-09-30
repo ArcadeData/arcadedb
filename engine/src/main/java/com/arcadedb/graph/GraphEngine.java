@@ -1145,6 +1145,13 @@ public class GraphEngine {
     if (!vertexBucketOf(vertexRID).existsRecord(vertexRID))
       throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
 
+    // #8676: an edge of a unidirectional type that ENDS in this vertex is stored on its source only, so the walks
+    // below never meet it. Deleted here, from the source's list, so it leaves neither a record nor a pointer to a
+    // vertex that is gone. A self-loop is in the vertex's own outgoing list, which the walk below deletes.
+    for (final Edge incoming : IncomingEdgeLookup.getIncomingUnidirectionalEdges(database, vertexRID))
+      if (!vertexRID.equals(incoming.getOut()))
+        deleteEdgeOfDeletedVertex(incoming, mostUpdatedVertex, force);
+
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
