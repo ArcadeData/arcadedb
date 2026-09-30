@@ -19,6 +19,7 @@
 package com.arcadedb.server.info;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -47,6 +48,9 @@ public class ServerInfo {
     final JSONObject result = new JSONObject();
     result.put("version", Constants.getVersion());
     result.put("serverName", server.getServerName());
+    final String supportId = server.getConfiguration().getValueAsString(GlobalConfiguration.SUPPORT_ID);
+    if (supportId != null && !supportId.isEmpty())
+      result.put("supportId", supportId);
     result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
     final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());

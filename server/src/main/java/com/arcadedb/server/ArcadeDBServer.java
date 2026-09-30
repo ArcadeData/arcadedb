@@ -463,6 +463,10 @@ public class ArcadeDBServer {
     // Discover plugins from lib/plugins directory
     pluginManager.discoverPlugins();
 
+    final String supportId = configuration.getValueAsString(GlobalConfiguration.SUPPORT_ID);
+    if (supportId != null && !supportId.isEmpty())
+      LogManager.instance().log(this, Level.INFO, "Support id: %s", supportId);
+
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
         configuration.getValueAsString(GlobalConfiguration.SERVER_MODE),
         pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.info;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -52,5 +53,18 @@ class ServerInfoTest extends BaseGraphServerTest {
   @Test
   void theHaBlockIsOmittedWhenNotRequested() {
     assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).has("ha")).isFalse();
+  }
+
+  @Test
+  void supportIdIsOmittedWhenNotConfiguredAndReportedWhenSet() {
+    final String id = "123e4567-e89b-12d3-a456-426614174000";
+    assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).has("supportId")).isFalse();
+
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_ID, id);
+    try {
+      assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).getString("supportId")).isEqualTo(id);
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_ID, "");
+    }
   }
 }
