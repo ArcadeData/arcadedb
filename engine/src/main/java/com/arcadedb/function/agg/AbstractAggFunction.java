@@ -102,6 +102,9 @@ public abstract class AbstractAggFunction implements StatelessFunction {
           continue;
 
         final double value = number.doubleValue();
+        if (Double.isNaN(value))
+          continue; // never less, greater or equal to anything: taking it as the extreme would pin the result to it
+
         if (extreme == null || (max ? value > extreme : value < extreme)) {
           extreme = value;
           extremeItems.clear();

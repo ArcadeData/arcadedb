@@ -63,13 +63,13 @@ final class NdJsonKeepAlive implements AutoCloseable {
   static NdJsonKeepAlive start(final HttpServerExchange exchange, final NdJsonResultStream stream, final long intervalMs) {
     final NdJsonKeepAlive keepAlive = new NdJsonKeepAlive(exchange, stream, intervalMs);
     if (intervalMs > 0)
-      keepAlive.schedule();
+      keepAlive.schedule(intervalMs);
     return keepAlive;
   }
 
-  private void schedule() {
+  private void schedule(final long delayMs) {
     if (!stopped)
-      timer = ioThread.executeAfter(this::dispatch, intervalMs, TimeUnit.MILLISECONDS);
+      timer = ioThread.executeAfter(this::dispatch, delayMs, TimeUnit.MILLISECONDS);
   }
 
   private void dispatch() {
@@ -86,8 +86,10 @@ final class NdJsonKeepAlive implements AutoCloseable {
   private void tick() {
     if (stopped)
       return;
-    if (stream.keepAlive(intervalMs))
-      schedule();
+    // Checks again when the stream could next have been idle for the interval, not a full interval later
+    final long next = stream.keepAlive(intervalMs);
+    if (next > 0)
+      schedule(next);
     else
       stopped = true;
   }
