@@ -446,14 +446,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       final double g = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0.0);
       hresult = getSimpleHeuristicCost(n, g, paramDFactor);
     } else if (paramVertexAxisNames.length == 2) {
-      if (parent == null)
-        parent = node;
       final double sx = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[0]), 0);
       final double sy = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[1]), 0);
       final double nx = doubleOrDefault(node.get(paramVertexAxisNames[0]), 0);
       final double ny = doubleOrDefault(node.get(paramVertexAxisNames[1]), 0);
-      final double px = doubleOrDefault(parent.get(paramVertexAxisNames[0]), 0);
-      final double py = doubleOrDefault(parent.get(paramVertexAxisNames[1]), 0);
       final double gx = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0);
       final double gy = doubleOrDefault(target.get(paramVertexAxisNames[1]), 0);
 
@@ -475,7 +471,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         break;
       }
       if (paramTieBreaker) {
-        hresult = getTieBreakingHeuristicCost(px, py, sx, sy, gx, gy, hresult);
+        hresult = getTieBreakingHeuristicCost(nx, ny, sx, sy, gx, gy, hresult);
       }
 
     } else {
