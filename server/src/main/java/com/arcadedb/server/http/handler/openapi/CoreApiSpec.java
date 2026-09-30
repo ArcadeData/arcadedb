@@ -86,6 +86,19 @@ public class CoreApiSpec implements OpenApiContributor {
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
       transaction, and on the commit or rollback that ends it. Omit it to run outside a transaction.""";
 
+  // What the session header means on a bulk load (issue #7682). Not the query/command wording: the load runs under the
+  // session but does not join its transaction, because GraphBatch commits as it goes.
+  private static final String BATCH_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction'. It makes the load run under that session's lock and \
+      principal and refreshes its idle timer, and it turns a session id this server no longer knows - or one \
+      owned by another user - into a 404 rather than a silent load outside the transaction you believe you \
+      are in.
+
+      It does NOT put the loaded records in that transaction. The load commits every 'commitEvery' records \
+      whatever you have open, so the records are readable by everyone before you commit anything and rolling \
+      the transaction back does not remove them; a failed load does not roll it back either. Records the \
+      transaction wrote but has not committed are not visible to the load.""";
+
   private static final String BEGIN_SESSION_REQUEST_DESCRIPTION = """
       Normally omitted: 'beginTransaction' opens a new transaction and returns its own session id. \
       Supplying a session id here that still resolves to an open transaction does not start a nested \
@@ -493,6 +506,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.addParametersItem(batchNdJsonAcceptParam());
+    post.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BATCH_SESSION_REQUEST_DESCRIPTION, false));
     post.addParametersItem(SpecBuilders.queryParam("batchSize",
         "Records buffered per GraphBatch flush. Default 100000.", false, "integer"));
     post.addParametersItem(SpecBuilders.queryParam("lightEdges",
@@ -567,6 +581,7 @@ public class CoreApiSpec implements OpenApiContributor {
     // retrying. Every other failure keeps the base handler's standard error shape.
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Load completed", "BatchResponse"));
+    responses.get("200").addHeaderObject(SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     // The streaming encoding answers 200 for a FAILED load too: by the time the verdict is reached the status
     // line is already sent, so the failure is the terminal 'error' line and its 'status' field instead.
     final MediaType ndjsonBatch = new MediaType();
@@ -580,7 +595,8 @@ public class CoreApiSpec implements OpenApiContributor {
         "The body ended before it was fully consumed, with the counts attempted before that", "BatchError"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found, or the 'arcadedb-session-id' names a session this server cannot resolve"));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
         "Concurrent modification: a page the load touched changed underneath it"));
     responses.addApiResponse("413", SpecBuilders.errorResponse("Request body too large"));

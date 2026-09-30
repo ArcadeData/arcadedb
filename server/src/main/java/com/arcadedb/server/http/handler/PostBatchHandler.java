@@ -30,6 +30,9 @@ import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionException;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.batch.BatchRecord;
 import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
@@ -176,6 +179,12 @@ import java.util.logging.Level;
  * reading a multi-gigabyte remainder to keep the socket well-mannered - is the bug this replaced, and it pinned a
  * worker thread for the duration.
  * <p>
+ * Sessions: a request carrying {@code arcadedb-session-id} runs under that HTTP session - its lock, its principal and
+ * its idle clock - and a session id this server cannot resolve is refused with 404 rather than loaded outside it
+ * (issue #7682). The load does NOT join the session's transaction: it commits as it goes, whatever the caller has
+ * open, and rolling that transaction back does not remove it. See {@link #runInSession} for why that is the only
+ * answer this endpoint can give.
+ * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
  * carries {@code verticesCreated} / {@code edgesCreated} and a {@code partialCommit} flag; because
@@ -229,6 +238,7 @@ import java.util.logging.Level;
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
   private static final int        VERTEX_BATCH_SIZE     = 10_000;
+  private static final HttpString SESSION_ID_HEADER     = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
   /** Value of the {@code phase} field of a progress line while vertices are being committed. */
   private static final String     VERTEX_PHASE          = "vertices";
   /** Value of the {@code phase} field of a progress line while edges are being accepted. */
@@ -360,6 +370,102 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final CountingInputStream inputStream = new CountingInputStream(exchange, exchange.getInputStream(),
         httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
 
+    // A session id is resolved here, after the body stream exists and before a byte of it is read, so a refusal
+    // declines the upload the same way every other early verdict does (issue #7682). See runInSession.
+    final HttpSession session;
+    try {
+      session = resolveSession(exchange, user);
+    } catch (final HttpSessionException e) {
+      inputStream.close();
+      throw e;
+    }
+
+    if (session == null)
+      return load(exchange, user, databaseName, contentType, streaming, inputStream);
+
+    return runInSession(exchange, user, session, databaseName, contentType, streaming, inputStream);
+  }
+
+  /**
+   * Resolves the {@code arcadedb-session-id} the request names, or answers {@code null} when it names none
+   * (issue #7682).
+   * <p>
+   * An id this server cannot resolve - committed, rolled back, reaped by the idle sweep, or owned by another
+   * principal ({@link HttpSessionManager#getSessionById} checks ownership) - is REFUSED with
+   * {@link HttpSessionException}, which every handler answers 404. A bulk load is a write, and a write must not run
+   * outside the transaction its caller believes it is inside: the same answer {@code POST /ts/{database}/write}
+   * gives since issue #7402, rather than the degrade a read gets.
+   * <p>
+   * The presence test is deliberately the one {@code DatabaseAbstractHandler.setTransactionInThreadLocal} makes on
+   * the same header, so the two paths cannot disagree about whether a request named a session at all.
+   */
+  private HttpSession resolveSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
+    if (sessionId == null || sessionId.isEmpty())
+      return null;
+
+    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+    if (session == null)
+      throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+    return session;
+  }
+
+  /**
+   * Runs the load under the session the request named (issue #7682): its lock, so it is serialized against every
+   * other request of that session exactly like a command is; its principal; and its idle clock, which is refreshed
+   * when the load ends and cannot fire while it runs, because the idle sweep only reaps a session whose lock it can
+   * take. The session id is echoed on the response the way every session-bound route echoes it, set before the
+   * load starts so it also reaches a streamed answer, whose headers leave with the first progress line.
+   * <p>
+   * What it deliberately does NOT do is bind the session's transaction onto this thread, which is what
+   * {@code DatabaseAbstractHandler} does for a command. {@code GraphBatch.beginTx()} begins a transaction only when
+   * none is active and otherwise JOINS the active one, and it commits every {@code commitEvery} records: bound
+   * there, the first chunk would commit the caller's pending work behind its back, and every chunk after it would
+   * run in a transaction the caller no longer owns - a later {@code /rollback} would find nothing to take back and a
+   * {@code /commit} nothing to commit. Left unbound, the load opens and commits its own transactions, which is
+   * what it has always done and what the endpoint documents: a batch is not atomic, and it is not atomic with
+   * respect to the caller's transaction either. Records the session has written but not committed are therefore not
+   * visible to the load, and a session that later commits pages the load also wrote can be refused with a
+   * concurrent-modification error, as for any two independent transactions.
+   * <p>
+   * For the same reason a failed load does not roll the session's transaction back: nothing the load did was part
+   * of it, so the failure says nothing about the state of the caller's work. That is the
+   * {@code rollbackOnFailure = false} half of {@code HttpSession.execute(user, callback, rollbackOnFailure)}, the answer the {@code /ts} routes give for the same reason (issue #7734).
+   * <p>
+   * On a follower the forward to the leader runs under the local session's lock too, and the relayed request
+   * carries no session id: sessions are node-local, the leader has never heard of this one, and the load does not
+   * join it there either.
+   */
+  private ExecutionResponse runInSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final HttpSession session, final String databaseName, final String contentType, final boolean streaming,
+      final CountingInputStream inputStream) throws Exception {
+    exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
+
+    final ExecutionResponse[] response = new ExecutionResponse[1];
+    final boolean[] started = new boolean[1];
+    try {
+      session.execute(user, () -> {
+        started[0] = true;
+        response[0] = load(exchange, user, databaseName, contentType, streaming, inputStream);
+        return null;
+      }, false);
+    } catch (final Exception e) {
+      // Refused before the load began - the session lock timed out, or the session was committed, rolled back or
+      // reaped between the lookup above and taking its lock: decline the upload as resolveSession's refusal does.
+      if (!started[0])
+        inputStream.close();
+      throw e;
+    }
+    return response[0];
+  }
+
+  /**
+   * The load itself, identical with or without a session: see {@link #runInSession} for why a session changes what
+   * surrounds this call and nothing inside it.
+   */
+  private ExecutionResponse load(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String databaseName, final String contentType, final boolean streaming,
+      final CountingInputStream inputStream) throws Exception {
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
     final Integer previousReadTimeout = relaxConnectionReadTimeout(exchange);
