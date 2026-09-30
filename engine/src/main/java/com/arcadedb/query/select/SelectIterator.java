@@ -241,13 +241,7 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
       for (final Pair<String, Boolean> orderBy : executor.select.orderBy) {
         final Object aVal = a.get(orderBy.getFirst());
         final Object bVal = b.get(orderBy.getFirst());
-        int comp;
-        try {
-          comp = BinaryComparator.compareTo(aVal, bVal);
-        } catch (final IllegalArgumentException e) {
-          // NO DEFINED ORDERING FOR THIS PAIR (E.G. A BOOLEAN NEXT TO A TIMESTAMP, #7754): A STABLE STRING ORDER, AS SQL ORDER BY DOES
-          comp = aVal.toString().compareTo(bVal.toString());
-        }
+        int comp = BinaryComparator.compareTo(aVal, bVal);
         if (comp != 0) {
           if (!orderBy.getSecond())
             comp *= -1;

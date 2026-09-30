@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7754: a schemaless column holding both a boolean and a timestamp must still be filterable, through SQL and
@@ -58,8 +59,10 @@ class Issue7754MixedBooleanTemporalQueryTest extends TestHelper {
       assertThat(rs.stream().map(r -> r.getProperty("v")).toList()).containsExactly(false);
     }
 
-    // Native orderBy does not fail either: the pair has no ordering, so it falls back to a stable string order
-    assertThat(database.select().fromType("Mixed").orderBy("v", true).documents().toList()).hasSize(3);
+    // A sort has no "no match" to answer, and a string-order fallback mixed with the typed order would not be
+    // transitive, so the native orderBy refuses the pair loudly rather than failing data-dependently in TimSort
+    assertThatThrownBy(() -> database.select().fromType("Mixed").orderBy("v", true).documents().toList())
+        .isInstanceOf(IllegalArgumentException.class);
 
     // Native Select API, same column
     assertThat(database.select().fromType("Mixed").where().property("v").gt().value(bound).documents().toList()).hasSize(1);
