@@ -120,7 +120,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     // (issue #6792). wrap() is a no-op for a compact id space.
     final GraphTraversalProvider provider = DenseNodeIdProvider.wrap(findProvider(db, relTypes));
     if (provider != null) {
-      final double[] personalization = buildPersonalization(sources, provider.getNodeCount(), rid -> provider.getNodeId(rid));
+      final double[] personalization = buildPersonalization(sources, provider.getNodeCount(), provider::getNodeId, false);
       if (personalization != null) {
         context.setVariable(CommandContext.CSR_ACCELERATED_VAR, true);
         return executeWithCSR(provider, personalization, relTypes, dampingFactor, maxIterations, tolerance, guard);
@@ -136,6 +136,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
    */
   private Map<RID, Double> extractSources(final Object arg) {
     final Map<RID, Double> sources = new LinkedHashMap<>();
+    // Not extractVertexList(): the [node, weight] pairs need their own parsing
     if (arg instanceof Collection<?> items) {
       if (items.isEmpty())
         throw new IllegalArgumentException(getName() + "(): sourceNodes cannot be an empty list");
@@ -147,7 +148,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
             throw new IllegalArgumentException(getName() + "(): the weight of a [node, weight] pair must be a number");
           addSource(sources, extractVertex(pair.get(0), "sourceNodes[*]"), weight.doubleValue());
         } else
-          addSource(sources, extractVertex(item, "sourceNodes[*]"), 1.0);
+          addSource(sources, extractVertex(item, "sourceNodes[*] (use [[node, weight], ...] for weighted sources)"), 1.0);
       }
     } else
       addSource(sources, extractVertex(arg, "sourceNode"), 1.0);
@@ -168,18 +169,18 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
 
   /**
    * Builds the normalized personalization vector (sums to 1) of size {@code n}. Sources missing from the graph
-   * (index &lt; 0) are dropped and the rest renormalized. Returns null if any source with a positive weight is
-   * unknown to the caller's id space, so the caller can fall back to the OLTP path, and an all-zero vector
-   * is never returned.
+   * (index &lt; 0) are dropped and the rest renormalized when {@code lenient}; otherwise null is returned as soon as
+   * a source with a positive weight is unknown to the caller's id space, so the caller can fall back to the OLTP
+   * path. An all-zero vector is never returned (null instead).
    */
   private static double[] buildPersonalization(final Map<RID, Double> sources, final int n,
-      final ToIntFunction<RID> indexOf) {
+      final ToIntFunction<RID> indexOf, final boolean lenient) {
     final double[] personal = new double[n];
     double total = 0.0;
     for (final Map.Entry<RID, Double> e : sources.entrySet()) {
       final int idx = indexOf.applyAsInt(e.getKey());
       if (idx < 0) {
-        if (e.getValue() > 0.0)
+        if (!lenient && e.getValue() > 0.0)
           return null;
         continue;
       }
@@ -277,7 +278,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
 
-    final double[] personal = buildPersonalizationLenient(sources, n, graph);
+    // There is no other path to fall back to, so sources missing from the graph are ignored
+    final double[] personal = buildPersonalization(sources, n, graph::indexOf, true);
     if (personal == null)
       return Stream.empty();
 
@@ -326,16 +328,5 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       r.setProperty("score", rank[i]);
       return (Result) r;
     });
-  }
-
-  /**
-   * OLTP flavour: there is no other path to fall back to, so sources missing from the graph are ignored.
-   */
-  private static double[] buildPersonalizationLenient(final Map<RID, Double> sources, final int n, final GraphData graph) {
-    final Map<RID, Double> known = new LinkedHashMap<>();
-    for (final Map.Entry<RID, Double> e : sources.entrySet())
-      if (graph.indexOf(e.getKey()) >= 0)
-        known.put(e.getKey(), e.getValue());
-    return known.isEmpty() ? null : buildPersonalization(known, n, graph::indexOf);
   }
 }
