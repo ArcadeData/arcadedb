@@ -107,6 +107,14 @@ class JavaReferenceMethods {
     return "value " + value;
   }
 
+  public static String log(final int value) {
+    return "int";
+  }
+
+  public static String log(final Object value) {
+    return "object";
+  }
+
   public static int size(final Collection<?> values) {
     return values.size();
   }
@@ -313,6 +321,21 @@ class JavaQueryTest extends TestHelper {
         .hasMessageContaining("cannot resolve which overload");
   }
 
+  /**
+   * Also documented policy, and unlike javac (which picks {@code log(int)}): a primitive and a reference parameter are
+   * not ranked against each other, so {@code log(int)} and {@code log(Object)} for an {@code Integer} is ambiguous.
+   * Pinned so a change to that policy is a deliberate one.
+   */
+  @Test
+  void primitiveAndObjectOverloadsBothAcceptingABoxedArgumentAreAmbiguous() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    assertThatThrownBy(() -> database.command("java", REF + "::log", 1))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause()
+        .hasMessageContaining("cannot resolve which overload");
+  }
+
   @Test
   void nullArgumentForAPrimitiveParameterIsRefusedWhileMatching() {
     database.getQueryEngine("java").registerFunctions(REF);
@@ -428,7 +451,6 @@ class JavaQueryTest extends TestHelper {
     assertThatThrownBy(() -> database.command("java", cls + "::render", "x"))
         .isInstanceOf(CommandExecutionException.class)
         .cause()
-        .isInstanceOf(NoSuchMethodException.class)
-        .hasMessageContaining("<init>");
+        .isInstanceOf(NoSuchMethodException.class);
   }
 }

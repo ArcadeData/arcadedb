@@ -190,9 +190,6 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     final List<Method> candidates = candidatesByParameterCount(overloads, args.length);
     if (candidates.isEmpty())
       return null;
-    // Same order the constructor gives its overloads, so the ones an error message lists do not depend on the
-    // caller's (typically Class.getMethods()'s unspecified) order.
-    candidates.sort(OVERLOAD_ORDER);
     return disambiguateByArgumentType(name, candidates, args);
   }
 
@@ -436,13 +433,22 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
   private static FunctionExecutionException noMatchingOverloadException(final String name, final List<Method> candidates, final Object[] args) {
     return new FunctionExecutionException(
-        "Error on executing function '" + name + "': none of " + candidates + " accepts argument type(s) [" + describeArgumentTypes(args) + "]");
+        "Error on executing function '" + name + "': none of " + inOverloadOrder(candidates) + " accepts argument type(s) [" + describeArgumentTypes(args) + "]");
   }
 
   private static FunctionExecutionException ambiguousOverloadException(final String name, final List<Method> candidates, final Object[] args) {
     return new FunctionExecutionException(
-        "Error on executing function '" + name + "': cannot resolve which overload to call among " + candidates
+        "Error on executing function '" + name + "': cannot resolve which overload to call among " + inOverloadOrder(candidates)
             + " for argument type(s) [" + describeArgumentTypes(args) + "]");
+  }
+
+  /**
+   * The candidates in the order the constructor gives its overloads, so which ones an error message lists, and in
+   * which order, does not depend on the caller's (typically {@link Class#getMethods()}'s unspecified) order. Sorted
+   * only here, on the error path: the selection itself does not depend on the order.
+   */
+  private static List<Method> inOverloadOrder(final List<Method> candidates) {
+    return candidates.stream().sorted(OVERLOAD_ORDER).toList();
   }
 
   private static String describeArgumentTypes(final Object[] args) {
