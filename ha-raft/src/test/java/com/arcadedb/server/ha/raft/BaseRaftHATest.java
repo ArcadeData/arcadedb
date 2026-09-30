@@ -293,9 +293,23 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   @Override
   protected void startServers() {
     super.startServers();
-    // Patch every server's httpAddresses map with the ports the HTTP server actually bound to.
-    // This corrects stale values from getServerAddresses() when dynamic port assignment shifted
-    // any server away from its expected port (e.g. port already taken by another process).
+    // Normally a no-op by now: waitAllReplicasAreConnected() already patched. Kept for a subclass that overrides that
+    // wait without calling this class's version.
+    patchPeerHttpAddressesWithBoundPorts();
+  }
+
+  /**
+   * Patches every server's httpAddresses map with the ports the HTTP servers actually bound to. This corrects the
+   * stale hints of {@link #getServerAddresses()} when dynamic port assignment shifted a server away from its expected
+   * port (e.g. port already taken by another process).
+   * <p>
+   * Runs as soon as the last server has started, from {@link #waitAllReplicasAreConnected()}, and not only once
+   * {@code super.startServers()} has returned: that return comes after the bootstrap election has settled, and the
+   * election probes every peer at its hinted address. With {@code 2480 + i} held by another process the probe reached
+   * that process, or a neighbour of this cluster, and the election chose its source from their state
+   * (issue #8548).
+   */
+  protected void patchPeerHttpAddressesWithBoundPorts() {
     for (int i = 0; i < getServerCount(); i++) {
       final RaftHAPlugin plugin = getRaftPlugin(i);
       if (plugin == null || plugin.getRaftHAServer() == null)
@@ -421,6 +435,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected void waitAllReplicasAreConnected() {
+    // Every server is up: give each one the HTTP ports its peers really bound before the bootstrap election, which
+    // runs once a leader is elected, probes them (issue #8548).
+    patchPeerHttpAddressesWithBoundPorts();
+
     // Wait for a Raft leader to be elected
     final long startMs = System.currentTimeMillis();
     final long deadline = startMs + LEADER_ELECTION_TIMEOUT_MS;

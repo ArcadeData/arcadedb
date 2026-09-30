@@ -372,7 +372,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     closeLocally(DB_NAME);
     final DatabaseReconciler reconciler = legacyReconciler();
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
     assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
@@ -392,7 +392,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     final DatabaseReconciler reconciler = legacyReconciler();
 
     final DatabaseReconciler.ReconcileFromLeaderResult result =
-        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+        reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
     assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
@@ -413,7 +413,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     leaderServes(OTHER_DB);
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(new LeaderDatabaseQuery.DatabaseInfo(OTHER_DB, 1L)),
             TermIndex.valueOf(3L, MARKER));
@@ -422,7 +422,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     reconciler.setServer(server);
 
     final DatabaseReconciler.ReconcileFromLeaderResult result =
-        reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+        reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(result.notInstalled()).isEmpty();
     assertThat(result.leaderMissing()).containsExactly(DB_NAME);
@@ -454,7 +454,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     leaderAnswers(DB_NAME, 503);
     final DatabaseReconciler reconciler = legacyReconciler();
 
-    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L))
+    assertThatThrownBy(() -> reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L))
         .isInstanceOf(IOException.class)
         .isNotInstanceOf(LeaderDoesNotHoldDatabaseException.class);
   }
@@ -464,7 +464,7 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
   private DatabaseReconciler legacyReconciler() {
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
       }

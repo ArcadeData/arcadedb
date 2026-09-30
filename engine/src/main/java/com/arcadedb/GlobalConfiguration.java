@@ -1989,7 +1989,9 @@ public enum GlobalConfiguration {
       """
       Maximum election timeout in milliseconds. Default of 10000ms is a balance between fast failover and \
       resilience to heartbeat blips under heavy ingest. Bump higher for WAN clusters or sustained bulk-load \
-      workloads where leader appender threads compete with replication.""",
+      workloads where leader appender threads compete with replication. A value at or below \
+      arcadedb.ha.electionTimeoutMin is widened to twice the minimum, because with no spread followers split the vote \
+      again and again.""",
       Integer.class, 10_000),
 
   HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
@@ -2546,8 +2548,24 @@ public enum GlobalConfiguration {
   HA_STALE_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.staleFollowerRecoveryDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds the lag described by HA_STALE_FOLLOWER_LAG_THRESHOLD must persist continuously \
-      (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
+      (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag. \
+      Governs only the lag-based recovery: the stuck-at-stale-term reformat has its own window, \
+      HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS.""",
       Long.class, 60_000L),
+
+  HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.divergedFollowerRecoveryDurationMs", SCOPE.SERVER,
+      """
+      How long in milliseconds a follower must stay stuck at a stale term (see HA_DIVERGED_FOLLOWER_RECOVERY) - on \
+      consecutive health-monitor ticks and without its applied index advancing - before it reformats its Raft storage \
+      and rejoins. Any advance of the applied index restarts the window, so a follower that is still applying entries is \
+      never reformatted however long its catch-up takes. The effective value is floored at 2x HA_ELECTION_TIMEOUT_MAX: \
+      a follower that stops hearing its leader gives up on it within one election timeout, which clears the signature, \
+      so a window shorter than that could reformat a node that was only waiting for an election. \
+      UPGRADE NOTE: before 26.10.1 this window was HA_STALE_FOLLOWER_RECOVERY_DURATION_MS (default 60000), shared \
+      with the lag-based recovery. It is now separate and defaults to 20000, cutting the time a cluster runs without \
+      that follower's fault tolerance; a deployment that raised the old setting to delay the reformat must raise this \
+      one instead.""",
+      Long.class, 20_000L),
 
   HA_DIVERGED_FOLLOWER_RECOVERY("arcadedb.ha.divergedFollowerRecovery", SCOPE.SERVER,
       """
@@ -2559,11 +2577,11 @@ public enum GlobalConfiguration {
       (HA_STALE_FOLLOWER_LAG_THRESHOLD) nor the leader-driven stalled-replica resync \
       (HA_STALLED_REPLICA_RESYNC_DURATION_MS) ever fire - both need a large lag - and the leader's appender otherwise \
       loops on INCONSISTENCY forever until an operator restarts a node. The stuck condition must persist for \
-      HA_STALE_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers, and HA_DIVERGED_FOLLOWER_MAX_REFORMATS bounds how \
-      often it retries. \
+      HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers, and HA_DIVERGED_FOLLOWER_MAX_REFORMATS bounds \
+      how often it retries. \
       DESTRUCTIVE: this deletes the local Raft storage automatically (the database files are preserved and re-synced \
       from the leader). The signature is "stuck at a stale term", which a genuine log divergence satisfies but so can a \
-      sustained (> HA_STALE_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
+      sustained (> HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
       leader's current-term entries do not; in that case the reformat is wasteful (no data loss - the leader holds \
       everything) but does not fix the connectivity. \
       No cross-follower coordination: if a systemic condition makes several followers satisfy the signature at once they \
@@ -2576,7 +2594,7 @@ public enum GlobalConfiguration {
       """
       Maximum number of automatic Raft-storage reformats (HA_DIVERGED_FOLLOWER_RECOVERY) allowed within one divergence \
       episode before the follower gives up and logs a SEVERE message for operator intervention, instead of reformatting \
-      and full-snapshot-installing every HA_STALE_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
+      and full-snapshot-installing every HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
       shared Ratis restart-retry budget, so without this cap a node whose divergence keeps reproducing would loop \
       silently. The budget re-arms once the follower has looked healthy for 5x the recovery duration (the episode is \
       considered resolved). Set to 0 for unbounded reformats (no breaker).""",

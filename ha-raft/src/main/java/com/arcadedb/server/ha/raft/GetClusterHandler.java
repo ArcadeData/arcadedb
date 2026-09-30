@@ -626,7 +626,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         }
         try {
           final List<LeaderDatabaseQuery.DatabaseInfo> infos =
-              LeaderDatabaseQuery.fetch(dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
+              LeaderDatabaseQuery.fetch(peerIdStr, dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
                   .databases();
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());

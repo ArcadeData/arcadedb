@@ -34,6 +34,9 @@
     <name>ArcadeDB HA Raft</name>
 
     <properties>
+        <!-- On a bump, re-read LogAppender.shouldInstallSnapshot / getPrevious against FixedGrpcLogAppender (it re-derives
+             a Ratis clause, issue #8548) and run Issue8459InstallSnapshotNotifyLoopTest and
+             Issue8460LeaderAppenderAfterInstallBoundaryTest, which pin the stock appender's behaviour. -->
         <ratis.version>3.3.1</ratis.version>
     </properties>
 
