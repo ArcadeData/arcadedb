@@ -114,6 +114,9 @@ class PendingIndexRemovalsTest {
         new IndexKey(false, IndexKeyOperation.REMOVE, KEY, null), false);
     assertThat(widened.isKeyWide()).isTrue();
     assertThat(widened.hides(C)).isTrue();
+    final List<RID> rids = new ArrayList<>(List.of(A, B, C));
+    widened.removeFrom(rids);
+    assertThat(rids).isEmpty();
 
     // and a per-RID removal after a key-wide one does not narrow it back
     final PendingIndexRemovals stillWide = PendingIndexRemovals.accumulate(widened,

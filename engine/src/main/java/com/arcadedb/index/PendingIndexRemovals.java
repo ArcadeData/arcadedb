@@ -66,6 +66,10 @@ public final class PendingIndexRemovals {
 
   /**
    * Folds one overlay entry into the removals collected so far for its key.
+   * <p>
+   * The caller must always reassign the returned reference ({@code removals = accumulate(removals, entry, unique)}):
+   * the first removal of a key creates the instance, so ignoring the result while {@code current} is still null
+   * silently loses that removal.
    *
    * @param current the removals collected so far for this key, or null when none yet
    * @param value   the next overlay entry of this key

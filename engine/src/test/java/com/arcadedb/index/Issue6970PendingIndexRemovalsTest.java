@@ -34,7 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * three times ({@code LSMTreeIndex.get()}, {@code HashIndex.get()}, {@code LSMTreeIndexCursor.getClosestEntryInTx()})
  * and now live in {@link PendingIndexRemovals} (whose rules {@code PendingIndexRemovalsTest} pins on their own). This
  * class drives the point-lookup shapes that {@code Issue6927RangeScanTxRemovesTest} does not reach on the HASH and
- * LSM {@code get()} paths, so every caller of the helper is exercised by at least one test.
+ * LSM {@code get()} paths, so every caller of the helper is exercised by at least one test. Rule 3 ({@code REPLACE}
+ * with an {@code oldRid}) through a point lookup is covered there, on LSM by
+ * {@code rangeScanAndLookupAgreeOnAUniqueKeyReplacedInTheSameTransaction} and on HASH by
+ * {@code hashIndexLookupHonoursAUniqueKeyReplacedInTheSameTransaction}.
  */
 class Issue6970PendingIndexRemovalsTest extends TestHelper {
 
