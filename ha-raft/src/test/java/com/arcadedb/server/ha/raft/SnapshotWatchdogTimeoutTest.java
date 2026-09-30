@@ -36,17 +36,23 @@ class SnapshotWatchdogTimeoutTest {
 
   private long savedWatchdogTimeout;
   private int  savedElectionTimeoutMax;
+  private int  savedElectionTimeoutMin;
 
   @BeforeEach
   void saveDefaults() {
     savedWatchdogTimeout = GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getValueAsLong();
     savedElectionTimeoutMax = GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger();
+    savedElectionTimeoutMin = GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN.getValueAsInteger();
+    // Below every maximum these tests set: a maximum not above the minimum is widened to twice the minimum (issue #8672),
+    // which would make the floor follow the minimum instead of the maximum each test configures (issue #8694)
+    GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN.setValue(1_000);
   }
 
   @AfterEach
   void restoreDefaults() {
     GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.setValue(savedWatchdogTimeout);
     GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.setValue(savedElectionTimeoutMax);
+    GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN.setValue(savedElectionTimeoutMin);
   }
 
   @Test
@@ -61,7 +67,8 @@ class SnapshotWatchdogTimeoutTest {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     try {
       final long timeout = sm.computeSnapshotWatchdogTimeoutMs();
-      final long expectedFloor = GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger()
+      final long expectedFloor = (long) RaftPropertiesBuilder.electionTimeoutMaxFor(
+          GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN.getValueAsInteger(), GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger())
           * ArcadeStateMachine.WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER;
       final long configuredTimeout = GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getValueAsLong();
       assertThat(timeout).isEqualTo(Math.max(configuredTimeout, expectedFloor));
