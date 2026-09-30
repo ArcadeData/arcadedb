@@ -137,6 +137,7 @@ final class ParallelTypeScan {
   // THE THREADS READING THE UNITS THE CALLER CLAIMED INSIDE A TRANSACTION (#8775): close() STOPS THEM
   private          BlockingQueue<Integer>  readerUnits;
   private volatile Thread                  dedicatedReader;
+  private volatile boolean                 closed;
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
     this.database = database;
@@ -620,6 +621,9 @@ final class ParallelTypeScan {
       }, "ArcadeDB-parallel-scan-unit-reader-" + READER_IDS.incrementAndGet());
       dedicatedReader = reader;
       reader.start();
+      // A close() FROM ANOTHER THREAD THAT RAN BEFORE THE FIELD WAS SET FOUND NO READER TO STOP: STOP IT NOW
+      if (closed)
+        reader.interrupt();
     }
     readerUnits.add(unitIndex);
   }
@@ -752,6 +756,7 @@ final class ParallelTypeScan {
 
   /** Stops every worker still running and drops what the consumer holds. Idempotent. */
   void close() {
+    closed = true;
     if (futures != null)
       for (final Future<?> f : futures)
         f.cancel(true);

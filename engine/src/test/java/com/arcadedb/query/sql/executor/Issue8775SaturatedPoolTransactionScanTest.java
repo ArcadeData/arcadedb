@@ -29,6 +29,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,21 +173,35 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
       assertThat(ParallelScanProducerPool.getInstance().getPoolStats().activeThreads())
           .as("the abandoned scans must hold every producer thread, or this test proves nothing").isEqualTo(maxThreads);
 
+      // a watcher tracks the peak number of reader threads, so a transient second one cannot slip between samples
+      final AtomicBoolean watching = new AtomicBoolean(true);
+      final AtomicLong peakReaders = new AtomicLong();
+      final Thread watcher = new Thread(() -> {
+        while (watching.get()) {
+          peakReaders.accumulateAndGet(liveReaders(), Math::max);
+          try {
+            Thread.sleep(1);
+          } catch (final InterruptedException e) {
+            return;
+          }
+        }
+      });
+      watcher.setDaemon(true);
+      watcher.start();
       database.begin();
       try {
         long rows = 0;
-        long maxReaders = 0;
         try (final ResultSet rs = database.query("sql", "SELECT FROM Rating")) {
           while (rs.hasNext()) {
             rs.next();
             if (rows++ == 0 && writeAfterFirstRow)
               database.newDocument("Rating").set("id", -1).save();
-            if (rows % 1_000 == 0)
-              maxReaders = Math.max(maxReaders, liveReaders());
           }
         }
         // one reader serves every unit the caller claims: the threads do not pile up with the units
-        assertThat(maxReaders).isLessThanOrEqualTo(1);
+        watching.set(false);
+        watcher.join();
+        assertThat(peakReaders.get()).isLessThanOrEqualTo(1);
         return rows;
       } finally {
         database.rollback();
