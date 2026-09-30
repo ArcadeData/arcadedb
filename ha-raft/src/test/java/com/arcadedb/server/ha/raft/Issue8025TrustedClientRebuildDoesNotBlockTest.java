@@ -166,7 +166,12 @@ class Issue8025TrustedClientRebuildDoesNotBlockTest {
       assertThat(previous.isTerminated())
           .as("the client retired by the rotation is released by the same close(), not left to its straggler")
           .isTrue();
-      assertThat(parked).allMatch(CompletableFuture::isDone);
+      // The JDK completes a shut-down client's pending exchanges on the common pool, after and independently of its
+      // termination, so they are awaited rather than read at once (issue #8696). The bound only detects a hang: an
+      // exchange nothing ever completes is the straggler this test is about
+      assertThat(CompletableFuture.allOf(parked.toArray(new CompletableFuture[0])).exceptionally(e -> null))
+          .as("every exchange parked on the retired client is completed once it is released")
+          .succeedsWithin(Duration.ofSeconds(30));
     }
   }
 
