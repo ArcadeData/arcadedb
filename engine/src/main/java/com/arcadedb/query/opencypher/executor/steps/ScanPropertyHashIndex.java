@@ -49,10 +49,14 @@ import java.util.Map;
 final class ScanPropertyHashIndex {
   /** Above this many stored Double/Float/BigDecimal values a numeric lookup would return them all, so it declines instead. */
   static final int MAX_NON_INTEGRAL = 64;
+  /** A key with fewer distinct values than this over at least {@link #MIN_RECORDS_TO_JUDGE} records is not selective. */
+  static final int MIN_DISTINCT_KEYS = 8;
+  static final int MIN_RECORDS_TO_JUDGE = 64;
 
   // value: a RID for a key held by one record (the common case, no list allocated), else an ArrayList<RID>
   private final Map<Object, Object> byKey       = new HashMap<>();
   private final List<RID>           nonIntegral = new ArrayList<>();
+  private       int                 hashed;
 
   /** Drains {@code scan}, loading each record's {@code propertyName}; {@code guard} enforces the command deadline. The records' order is kept within a key. */
   ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName, final WorkGuard guard) {
@@ -70,6 +74,7 @@ final class ScanPropertyHashIndex {
         continue;
 
       final RID rid = record.getIdentity();
+      hashed++;
       if (value instanceof String)
         put(value, rid);
       else if (isIntegral(value))
@@ -94,13 +99,22 @@ final class ScanPropertyHashIndex {
     }
   }
 
+  /**
+   * True when the key narrows the scan: a property with a handful of distinct values (a status, a kind) hands back a
+   * bucket as large as a scan would have read, plus a reload by RID per candidate, so it is not worth answering from.
+   */
+  boolean isSelective() {
+    return hashed < MIN_RECORDS_TO_JUDGE || byKey.size() >= MIN_DISTINCT_KEYS;
+  }
+
   /** True when {@link #candidates(Object)} can answer for this expected value. */
   static boolean isSupported(final Object expected) {
     return expected instanceof String || isIntegral(expected);
   }
 
   /**
-   * The records that may equal {@code expected} (a supported value), in scan order within a key, or null when the hash
+   * The records that may equal {@code expected} (a supported value), in scan order within a key (a numeric lookup lists the
+   * exact matches first, then the non-integral numbers), or null when the hash
    * cannot answer cheaply - a numeric lookup against a type holding many non-integral numbers - and the caller must scan.
    */
   @SuppressWarnings("unchecked")
