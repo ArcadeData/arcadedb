@@ -165,6 +165,23 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   }
 
   @Test
+  void cypherDeleteDegradesToAScanWhenTheTypeIsTooLargeToIndex() {
+    createSchema(false);
+    createPair("U8");
+    database.transaction(() -> database.newVertex("V8").set("n", "c").save().asVertex().newEdge("U8", b));
+    final long cap = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(1L);
+    try {
+      assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (b:V8 {n: 'b'}) DELETE b").close()))
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("still has relationships");
+      database.transaction(() -> database.command("opencypher", "MATCH (b:V8 {n: 'b'}) DETACH DELETE b").close());
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(cap);
+    }
+    assertThat(database.countType("U8", false)).isZero();
+  }
+
+  @Test
   void cypherDetachDeleteCountsTheIncomingEdgeOfAUnidirectionalType() {
     createSchema(false);
     createPair("U8");

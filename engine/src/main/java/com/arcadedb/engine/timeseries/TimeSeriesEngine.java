@@ -54,7 +54,6 @@ public class TimeSeriesEngine implements AutoCloseable {
   // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER (ISSUE #7476)
   private static final long FLAT_WINDOW_PER_CEILING = 2L;
 
-
   private final DatabaseInternal       database;
   private final String                 typeName;
   private final List<ColumnDefinition> columns;
@@ -703,8 +702,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (useFlatMode && actualMin <= actualMax) {
       firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
-      // #7476: a window far wider than the ceiling could only hold a sparse answer, which the map mode holds for what it has;
-      // up to twice the ceiling the flat window costs about what the ceiling already allows, and is cheaper than a map
+      // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
       if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
