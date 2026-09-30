@@ -1328,11 +1328,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The Ratis {@code StateMachineUpdater} thread, recorded by {@link #applyTransaction}, when it has terminated; {@code null} while it is alive or has not been seen yet
-   * (issue #8652). Both callbacks run only on that thread, so a dead one is the updater that died - a node that applies
-   * nothing more and, once Ratis closes the division from the dying thread, rejects every append. Cheap enough for every
-   * health tick: one volatile read and {@link Thread#isAlive()}. A restart builds a fresh state machine that has seen no
-   * thread yet, which is what clears it.
+   * The Ratis {@code StateMachineUpdater} thread, recorded by {@link #applyTransaction}, when it has terminated;
+   * {@code null} while it is alive or has not been seen yet (issue #8652). A dead one is the updater that died - a node
+   * that applies nothing more and, once Ratis closes the division from the dying thread, rejects every append. Cheap
+   * enough for every health tick: one volatile read and {@link Thread#isAlive()}. A restart builds a fresh state machine
+   * that has seen no thread yet, which is what clears it.
+   * <p>
+   * Not covered: an updater that dies in {@link #notifyTermIndexUpdated} before its first {@code applyTransaction} (the
+   * {@code Failed updateLastAppliedTermIndex} shape of a poisoned log) never records a thread, and is left to the
+   * CLOSING/CLOSED lifecycle checks.
    */
   String describeDeadApplyThread() {
     final Thread thread = applyThread;
@@ -1343,10 +1347,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Runs on the {@code StateMachineUpdater} thread for the entries Ratis applies itself (metadata and configuration
-   * entries), (the thread is recorded only by {@link #applyTransaction}: this callback is not guaranteed to run on the updater alone, and a
-   * short-lived caller must never read as a dead updater, issue #8652). A throwable escaping here is what kills the
-   * updater and closes the division (issue #8651), so it is logged with its cause before it is rethrown: Ratis reports
-   * it only as "caught a Throwable" on its own logger.
+   * entries). A throwable escaping here is what kills the updater and closes the division (issue #8651), so it is logged
+   * with its cause before it is rethrown: Ratis reports it only as "caught a Throwable" on its own logger. The calling
+   * thread is deliberately not recorded as the updater (issue #8652): this callback is not guaranteed to run on that
+   * thread alone, and a short-lived caller must never read as a dead updater.
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
