@@ -851,6 +851,8 @@ public class CypherExecutionPlan {
    * CASE, etc.) that evaluate their children directly.
    */
   private void setupFunctionResolver(final BasicCommandContext context) {
+    // A read-only statement cannot change what an unindexed chained MATCH re-reads, so it may answer from a snapshot (issue #8695)
+    context.setVariable(MatchNodeStep.READ_ONLY_STATEMENT_KEY, statement.isReadOnly());
     if (expressionEvaluator != null) {
       final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
       context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,

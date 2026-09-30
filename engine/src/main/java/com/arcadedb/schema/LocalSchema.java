@@ -256,7 +256,7 @@ public class LocalSchema implements Schema {
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                         = Collections.synchronizedList(new ArrayList<>());
+  private final       FileSlots                              files                         = new FileSlots();
   // Concurrent for the same reason indexMap below is, and the reason is not symmetry: the bucket lookup maps are
   // written by the schema load and by DDL from arbitrary user threads while queries resolve bucket names on the
   // correctness path (LocalDocumentType.restoreExternalBuckets and ensureExternalBucketFor read it directly). A
@@ -714,17 +714,18 @@ public class LocalSchema implements Schema {
     if (rebuildingEverything || !stagedFiles.isEmpty())
       synchronized (files) {
         // The full rebuild REPLACES the array (issue #7963): a slot it did not stage belongs to a file the new
-        // generation does not have. Under the list's own lock, which every reader takes, so no reader sees it half
-        // rewritten.
+        // generation does not have. The new table is built aside and published in one step (issue #8634), so a
+        // lock-free reader never sees it half rewritten.
+        Component[] table = files.toArray();
         if (rebuildingEverything)
-          for (int i = 0; i < files.size(); ++i)
+          for (int i = 0; i < table.length; ++i)
             if (!stagedFiles.containsKey(i))
-              files.set(i, null);
+              table[i] = null;
 
         for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
           final int fileId = entry.getKey();
-          while (files.size() < fileId + 1)
-            files.add(null);
+          if (table.length < fileId + 1)
+            table = Arrays.copyOf(table, fileId + 1);
           final Component component = entry.getValue();
           // A page committed or flushed while this load ran raised the page count of the component that was
           // published THEN, the previous generation's, and not the one staged here. Neither source alone is the
@@ -734,7 +735,7 @@ public class LocalSchema implements Schema {
           // point resolves its component under this same lock, so it reaches the new instance; a write that
           // resolved the previous one before it had written its page before, and the file size covers it.
           if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
-            final Component previous = fileId < files.size() ? files.get(fileId) : null;
+            final Component previous = table[fileId];
             if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
               paginated.updatePageCount(previousPaginated.getCommittedPageCount());
             try {
@@ -744,8 +745,9 @@ public class LocalSchema implements Schema {
                   component.getName());
             }
           }
-          files.set(fileId, component);
+          table[fileId] = component;
         }
+        files.replaceAll(table);
       }
 
     // What the maps serve right now, taken before they change, so the instances this publication retires can be
@@ -1411,12 +1413,7 @@ public class LocalSchema implements Schema {
         return null;
     }
 
-    synchronized (files) {
-      for (final Component f : files)
-        if (f != null && name.equals(f.getName()))
-          return f;
-    }
-    return null;
+    return files.findByName(name);
   }
 
   /**
@@ -1437,9 +1434,8 @@ public class LocalSchema implements Schema {
         return staged;
     }
 
-    synchronized (files) {
-      return id < files.size() ? files.get(id) : null;
-    }
+    // lock-free (issue #8634): this is the per-record bucket resolution of every query thread
+    return files.get(id);
   }
 
   /**
@@ -1453,9 +1449,7 @@ public class LocalSchema implements Schema {
     if (isRebuildingEverything())
       snapshot = new ArrayList<>();
     else
-      synchronized (files) {
-        snapshot = new ArrayList<>(files);
-      }
+      snapshot = files.toList();
 
     if (isStagingPublication() && !stagedFiles.isEmpty())
       for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
@@ -2568,10 +2562,7 @@ public class LocalSchema implements Schema {
       if (!(component instanceof LocalBucket rebuilt))
         continue;
 
-      final Component live;
-      synchronized (files) {
-        live = rebuilt.getFileId() < files.size() ? files.get(rebuilt.getFileId()) : null;
-      }
+      final Component live = files.get(rebuilt.getFileId());
       if (live instanceof LocalBucket liveBucket && liveBucket != rebuilt && liveBucket.getName().equals(rebuilt.getName())) {
         rebuilt.setCachedRecordCount(liveBucket.getCachedRecordCount());
         rebuilt.setPageStatistics(liveBucket.getStatistics().getJSONArray("pages"));
@@ -4156,9 +4147,6 @@ public class LocalSchema implements Schema {
     }
 
     synchronized (files) {
-      while (files.size() < fileId + 1)
-        files.add(null);
-
       if (files.get(fileId) != null)
         throw new SchemaException(
             "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
