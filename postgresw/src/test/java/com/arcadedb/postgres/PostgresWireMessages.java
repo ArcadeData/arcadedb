@@ -88,6 +88,28 @@ final class PostgresWireMessages {
   }
 
   /**
+   * Bind ('B') with text-format parameter values, declared for a statement Parse left with untyped placeholders.
+   */
+  static void sendBind(final DataOutputStream out, final String portalName, final String statementName, final String... values)
+      throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, portalName);
+    writeCString(body, statementName);
+    body.write(0);
+    body.write(0); // int16 numParamFormatCodes = 0: all text
+    body.write(values.length >>> 8);
+    body.write(values.length); // int16 numParamValues
+    for (final String value : values) {
+      final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+      body.write(new byte[] { (byte) (bytes.length >>> 24), (byte) (bytes.length >>> 16), (byte) (bytes.length >>> 8), (byte) bytes.length });
+      body.write(bytes);
+    }
+    body.write(0);
+    body.write(0); // int16 numResultFormatCodes = 0
+    sendMessage(out, 'B', body);
+  }
+
+  /**
    * Describe ('D') of a bound portal ({@code 'P'}) or of a prepared statement ({@code 'S'}).
    */
   static void sendDescribe(final DataOutputStream out, final char describeType, final String name) throws Exception {

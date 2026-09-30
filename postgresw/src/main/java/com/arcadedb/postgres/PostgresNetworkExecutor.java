@@ -139,6 +139,8 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** PostgreSQL itself caps a statement at 65535 parameters. */
+  private static final int                                            MAX_STATEMENT_PARAMETERS = 65535;
   /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
   private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
       "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
@@ -618,9 +620,7 @@ public class PostgresNetworkExecutor extends Thread {
         else {
           // A catalog query whose filters are bound parameters is answered at Execute, but the columns are those of
           // the emulated catalog relation whatever the filter values are, so they can be named now (issue #8379)
-          final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query);
-          if (catalogAnswer != null)
-            portal.columns = catalogAnswer.columns();
+          portal.columns = describeCatalogColumns(portal.query);
         }
       }
 
@@ -675,7 +675,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (portal.catalogQuery) {
       // Deferred from parseCommand because the query's filters are bound parameters (issue #6412).
       final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query, getParams(portal));
-      if (catalogAnswer != null)
+      // A Describe('S') already announced the columns, and the rows are encoded from what the client was told
+      if (catalogAnswer != null && !portal.columnsDescribed)
         portal.columns = catalogAnswer.columns();
       return new IteratorResultSet(
           (catalogAnswer != null ? catalogAnswer.rows() : Collections.<Result>emptyList()).iterator());
@@ -1610,6 +1611,12 @@ public class PostgresNetworkExecutor extends Thread {
     if (isRowlessWrite(parsed))
       return null;
 
+    // A write WITH a RETURN returns rows, and its RETURN names them. Never the textual FROM fallback below: a write has
+    // no FROM target of its own to read the columns from, and a " FROM " inside a sub-select it carries would name the
+    // columns of that sub-select's type (issue #8562)
+    if (parsed instanceof InsertStatement || parsed instanceof UpdateStatement || parsed instanceof DeleteStatement)
+      return getColumnsFromWriteReturn(parsed);
+
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
     final String upperQuery = query.toUpperCase(Locale.ROOT);
@@ -1636,6 +1643,81 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return getColumnsFromType(typeName);
+  }
+
+  /**
+   * Columns announced by a write that has a RETURN clause: a projection names its own, {@code RETURN BEFORE} and
+   * {@code RETURN AFTER} return the record itself, so they are those of the target type. Null when they cannot be named
+   * before the statement runs (issue #8562).
+   */
+  private Map<String, PostgresType> getColumnsFromWriteReturn(final Statement statement) {
+    switch (statement) {
+    case InsertStatement insert:
+      return getColumnsFromReturn(insert.getTargetType(), insert.getReturnStatement());
+    case UpdateStatement update: {
+      if (update.getReturnProjection() != null) {
+        final FromItem item = update.getTarget() != null ? update.getTarget().getItem() : null;
+        return getColumnsFromReturn(item != null ? item.getIdentifier() : null, update.getReturnProjection());
+      }
+      if (update.isReturnBefore() || update.isReturnAfter())
+        return getColumnsFromTarget(update.getTarget());
+      return null;
+    }
+    case DeleteStatement delete:
+      return delete.isReturnBefore() ? getColumnsFromTarget(delete.getFromClause()) : null;
+    default:
+      return null;
+    }
+  }
+
+  /**
+   * The columns of a RETURN projection, typed from the declared properties of the type the write targets when it is
+   * known, so {@code RETURN id} on an INTEGER property is not announced as text.
+   */
+  private Map<String, PostgresType> getColumnsFromReturn(final Identifier targetType, final Projection projection) {
+    if (targetType != null) {
+      final Map<String, PostgresType> typeColumns = getColumnsFromType(targetType.getStringValue());
+      if (typeColumns != null && !typeColumns.isEmpty()) {
+        final Map<String, PostgresType> projected = applyProjection(projection, typeColumns);
+        if (projected != null && !projected.isEmpty())
+          return projected;
+      }
+    }
+    return getColumnsFromProjection(projection);
+  }
+
+  private Map<String, PostgresType> getColumnsFromTarget(final FromClause target) {
+    final FromItem item = target != null ? target.getItem() : null;
+    return item != null && item.getIdentifier() != null ? getColumnsFromType(item.getIdentifier().getStringValue()) : null;
+  }
+
+  /**
+   * The columns a {@code Describe('S')} announces for a catalog query whose filters are bound parameters, or null when
+   * they cannot be named. They are those of the emulated catalog relation whatever the filter values are (issue #8379),
+   * but a shape whose resolver needs a value to recognise it declines the query while the parameters are unbound, so it is
+   * asked again with a placeholder for each of them: only the columns are kept, never the rows of that probe (issue #8562).
+   */
+  private Map<String, PostgresType> describeCatalogColumns(final String query) {
+    CatalogAnswer answer = handleCatalogQuery(query);
+    if (answer != null && !answer.columns().isEmpty())
+      return answer.columns();
+
+    final int placeholders = PostgresCatalog.countPlaceholders(query);
+    // PostgreSQL itself caps a statement at 65535 parameters: a larger index is no placeholder to probe with
+    if (placeholders > 0 && placeholders <= MAX_STATEMENT_PARAMETERS) {
+      final Object[] probe = new Object[placeholders];
+      Arrays.fill(probe, "");
+      try {
+        answer = handleCatalogQuery(query, probe);
+      } catch (final RuntimeException e) {
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: cannot name the columns of catalog query '%s': %s", query, e.getMessage());
+        return null;
+      }
+      if (answer != null && !answer.columns().isEmpty())
+        return answer.columns();
+    }
+    return null;
   }
 
   /**

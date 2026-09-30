@@ -21,8 +21,9 @@ package com.arcadedb.function.coll;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * coll.union(list1, list2) - Returns the distinct union of two lists, preserving order of first occurrence.
@@ -54,12 +55,13 @@ public class CollUnion extends AbstractCollFunction {
     final List<Object> list1 = asList(args[0]);
     final List<Object> list2 = asList(args[1]);
 
-    final LinkedHashSet<Object> union = new LinkedHashSet<>();
+    final List<Object> union = new ArrayList<>();
+    final Set<Object> seen = new HashSet<>();
     if (list1 != null)
-      union.addAll(list1);
+      addDistinct(seen, union, list1);
     if (list2 != null)
-      union.addAll(list2);
+      addDistinct(seen, union, list2);
 
-    return new ArrayList<>(union);
+    return union;
   }
 }
