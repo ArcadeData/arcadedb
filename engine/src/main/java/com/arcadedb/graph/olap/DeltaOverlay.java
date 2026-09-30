@@ -752,6 +752,11 @@ class DeltaOverlay {
     return overflowCount - deletedOverflowNodes.cardinality();
   }
 
+  /** The edge types this overlay holds added edges for, which need not have a slice in the base snapshot. */
+  Set<String> getAddedEdgeTypes() {
+    return addedEdgesPerType.keySet();
+  }
+
   int getDeltaEdgeCount() {
     return deltaEdgeCount;
   }

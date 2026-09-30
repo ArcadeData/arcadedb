@@ -970,6 +970,11 @@ public class TransactionContext implements Transaction {
     return true;
   }
 
+  /** Whether {@link #addUpdatedRecord(Record)} has already queued a deferred write for this RID in this transaction. */
+  public boolean isUpdateQueued(final RID rid) {
+    return updatedRecords != null && updatedRecords.containsKey(rid);
+  }
+
   /**
    * Returns the snapshot of the last in-transaction indexed state for the given record, or {@code null} if the
    * record has not yet been updated in this transaction. Used by {@code updateRecord} so that a second (or later)

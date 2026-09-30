@@ -80,7 +80,7 @@ import java.util.zip.CRC32;
  */
 class GraphAnalyticalViewCSRPersistence {
   private static final int    MAGIC          = 0x47415643; // "GAVC"
-  private static final int    FORMAT_VERSION = 1;
+  private static final int    FORMAT_VERSION = 2;
   private static final String FILE_PREFIX    = "gav-";
   private static final String FILE_EXTENSION = ".csr";
 

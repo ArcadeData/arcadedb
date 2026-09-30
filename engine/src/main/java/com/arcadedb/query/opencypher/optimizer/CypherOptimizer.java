@@ -607,11 +607,12 @@ public class CypherOptimizer {
   }
 
   /**
-   * Whether every edge type a tracked hop would walk has no sub-type. A view builds a type's adjacency polymorphically,
-   * so the slice of a type with sub-types holds their edges too, under the parent's name: two hops asking for the parent
-   * and for the sub-type would then label one edge twice, under two names, and never see the collision (#8394). A leaf
-   * type's slice holds exactly its own edges, which is what makes the type part of a label an identity. An untyped hop
-   * walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have to be leaves.
+   * Whether every edge type a tracked hop would walk has no sub-type. A view keeps one slice per concrete type (#8426)
+   * and answers a type polymorphically, so a hop on a type with sub-types walks their slices too: two hops asking for
+   * the parent and for the sub-type would then label one edge twice, under two names, and never see the collision
+   * (#8394). A leaf type answers with exactly its own edges, which is what makes the type part of a label an identity.
+   * An untyped hop walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have
+   * to be leaves.
    */
   private boolean walksOnlyLeafEdgeTypes(final String[] edgeTypes) {
     for (final String type : GAVEdgeRef.trackedEdgeTypes(database, edgeTypes)) {
@@ -654,16 +655,23 @@ public class CypherOptimizer {
       return true;
 
     for (final String leftName : left.getTypes())
-      for (final String rightName : right.getTypes()) {
-        if (leftName.equals(rightName))
+      for (final String rightName : right.getTypes())
+        if (edgeTypesMayOverlap(database.getSchema(), leftName, rightName))
           return true;
-        final var leftType = database.getSchema().getTypeOrNull(leftName);
-        final var rightType = database.getSchema().getTypeOrNull(rightName);
-        if (leftType != null && rightType != null
-            && (leftType.instanceOf(rightName) || rightType.instanceOf(leftName)))
-          return true;
-      }
     return false;
+  }
+
+  /**
+   * Whether one edge can match both relationship types: the names are equal, or one type is a sub-type of the other,
+   * because a pattern on a type matches its sub-types' edges too (issues #6310, #8426). Shared with the count
+   * push-down, which must not call {@code [:K]} and {@code [:KC]} disjoint on the strength of their names.
+   */
+  public static boolean edgeTypesMayOverlap(final Schema schema, final String leftName, final String rightName) {
+    if (leftName.equals(rightName))
+      return true;
+    final DocumentType leftType = schema.getTypeOrNull(leftName);
+    final DocumentType rightType = schema.getTypeOrNull(rightName);
+    return leftType != null && rightType != null && (leftType.instanceOf(rightName) || rightType.instanceOf(leftName));
   }
 
   /** Partitions relationship patterns into deterministic node-connected components. */

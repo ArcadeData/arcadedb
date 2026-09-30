@@ -647,6 +647,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * Frees a record the engine has JUST written on behalf of a caller that was authorized to write it, because the
+   * indexing that followed refused it (#7467, #8051). Deliberately NOT permission-checked: {@code DELETE_RECORD} is a
+   * grant independent of {@code CREATE_RECORD}, so an ingestion role that can create a record but not delete one
+   * would otherwise see the compensation refused and the whole transaction marked rollback-only over one refused
+   * row. The engine undoing its own write is not a user delete. Only for that caller: a user-initiated delete must
+   * go through {@link #deleteRecord(RID)}.
+   */
+  public void retractRecord(final RID rid) {
+    deleteRecordInternal(rid, false, false, false);
+  }
+
+  /**
    * Force-deletes a record even when its multi-page chunk chain is structurally broken. A normal delete walks the
    * chain to free every chunk and, on a broken link, throws {@link ConcurrentModificationException} as a retry
    * signal (#4932) so it never orphans chunks. That guard makes a genuinely-corrupt record undeletable by every

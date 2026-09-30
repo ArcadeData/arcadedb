@@ -6647,18 +6647,6 @@ public class CypherExecutionPlan {
         directions[i] = Vertex.DIRECTION.BOTH;
     }
 
-    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when:
-    // (a) all edge types are disjoint, OR
-    // (b) there's an inequality filter
-    final Set<String> seenTypes = new HashSet<>();
-    boolean hasDuplicateTypes = false;
-    for (final String et : edgeTypes)
-      if (!seenTypes.add(et))
-        hasDuplicateTypes = true;
-
-    if (hasDuplicateTypes && inequalityVar1 == null)
-      return null;
-
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
     int inequalityIdxB = -1;
@@ -6677,10 +6665,48 @@ public class CypherExecutionPlan {
         return null;
     }
 
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when no two hops can bind the same edge
+    if (!chainHopsAreUnique(db, edgeTypes, inequalityIdxA, inequalityIdxB))
+      return null;
+
     if (!correlation.isCorrelated())
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
 
     return seededChainOp(db, correlation, pathPattern, nodeLabels, edgeTypes, directions, inequalityVar1 != null);
+  }
+
+  /**
+   * Whether no two hops of a chain can bind the same edge, so that counting adjacency paths is counting relationship
+   * paths (issues #6322, #8426). Two hops can share an edge only when their types overlap, and overlap is
+   * inheritance-aware: a {@code KC} edge matches both {@code [:K]} and {@code [:KC]} when {@code KC EXTENDS K}.
+   * <p>
+   * The one thing that rescues an overlapping pair is an inequality between the vertices two hops apart: hops
+   * {@code i} and {@code i + 1} bind the same edge only when the vertices around them coincide, {@code v(i) = v(i + 2)}.
+   * It protects that pair alone. A pair further apart, or a second overlapping pair, is not protected by any single
+   * inequality (a three-hop chain with {@code WHERE a <> d} still lets its first and third hop bind one edge), so the
+   * chain is declined.
+   */
+  private static boolean chainHopsAreUnique(final Database db, final String[] edgeTypes, final int inequalityIdxA,
+      final int inequalityIdxB) {
+    int overlappingPairs = 0;
+    int overlapFirstHop = -1;
+    int overlapSecondHop = -1;
+    for (int i = 0; i < edgeTypes.length; i++)
+      for (int j = i + 1; j < edgeTypes.length; j++)
+        if (CypherOptimizer.edgeTypesMayOverlap(db.getSchema(), edgeTypes[i], edgeTypes[j])) {
+          ++overlappingPairs;
+          overlapFirstHop = i;
+          overlapSecondHop = j;
+        }
+
+    if (overlappingPairs == 0)
+      return true;
+    if (overlappingPairs > 1 || overlapSecondHop != overlapFirstHop + 1 || inequalityIdxA < 0)
+      return false;
+
+    final int low = Math.min(inequalityIdxA, inequalityIdxB);
+    final int high = Math.max(inequalityIdxA, inequalityIdxB);
+    return low == overlapFirstHop && high == overlapFirstHop + 2;
   }
 
   /**
