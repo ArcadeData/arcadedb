@@ -64,6 +64,8 @@ public final class UnidirectionalEdgeChanges {
   private Map<RID, Long>                        deleted;
   // THE SCANS THE DELETES OF THE TRANSACTION SHARE (ISSUE #8676): DROPPED WITH THE CHANGES WHEN THE TRANSACTION ENDS
   private IncomingEdgeLookup                    deleteLookup;
+  // THE TYPES WERE TOO LARGE TO INDEX IN HEAP: THE NEXT DELETES OF THE TRANSACTION SCAN FOR THEIR VERTEX AT ONCE
+  private boolean                               deleteLookupTooLarge;
 
   /** The sequence of the last change, in any transaction of the context holding this object. */
   public long getSequence() {
@@ -130,9 +132,18 @@ public final class UnidirectionalEdgeChanges {
     return deleteLookup;
   }
 
+  boolean isDeleteLookupTooLarge() {
+    return deleteLookupTooLarge;
+  }
+
+  void deleteLookupTooLarge() {
+    deleteLookupTooLarge = true;
+  }
+
   /** Drops the changes of the transaction that ended: committed or rolled back, they are no longer its own. */
   public void transactionEnded() {
     deleteLookup = null;
+    deleteLookupTooLarge = false;
     created = null;
     deleted = null;
     changes = 0;
