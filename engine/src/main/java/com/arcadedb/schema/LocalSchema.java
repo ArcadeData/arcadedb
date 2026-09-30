@@ -2420,8 +2420,7 @@ public class LocalSchema implements Schema {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
         final long capturedGeneration = dirtyGeneration.get();
-        versionSerial.incrementAndGet();
-        update(toJSON());
+        writeNextGeneration();
         savedGeneration = capturedGeneration;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error saving schema configuration during close: %s", e,
@@ -3833,10 +3832,8 @@ public class LocalSchema implements Schema {
     final long capturedGeneration = dirtyGeneration.get();
 
     try {
-      LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
-      versionSerial.incrementAndGet();
-
-      update(toJSON());
+      LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - current versionSerial = %s ", versionSerial);
+      writeNextGeneration();
 
       savedGeneration = capturedGeneration;
 
@@ -3851,9 +3848,22 @@ public class LocalSchema implements Schema {
     updateSecurity();
   }
 
+  /**
+   * Writes the current schema to disk as the next generation. The version is carried in the document only:
+   * {@link #update(JSONObject)} publishes it to {@code versionSerial} once the bytes are on disk, so a failed write leaves
+   * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
+   */
+  private synchronized void writeNextGeneration() throws IOException {
+    update(toJSON(versionSerial.get() + 1));
+  }
+
   public synchronized JSONObject toJSON() {
+    return toJSON(versionSerial.get());
+  }
+
+  private synchronized JSONObject toJSON(final long schemaVersion) {
     final JSONObject root = new JSONObject();
-    root.put("schemaVersion", versionSerial.get());
+    root.put("schemaVersion", schemaVersion);
     root.put("dbmsVersion", Constants.getRawVersion());
     root.put("dbmsBuild", Constants.getBuildNumber());
 
