@@ -185,7 +185,8 @@ final class ParallelTypeScan {
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
    * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
-   * transaction deleted after that pull are dropped on their way out; one it updated comes back as committed. Inside a
+   * transaction deleted after that pull are dropped on their way out (whether it is in a transaction is decided per batch, so
+   * one begun in the middle of a batch is seen from the next); one it updated comes back as committed. Inside a
    * transaction the caller never reads a unit itself: one no worker has started (#8594) is read by a thread of its own,
    * from committed pages, into the unit's bounded channel, so the scan progresses on a saturated pool and never mixes
    * two views.
@@ -637,6 +638,7 @@ final class ParallelTypeScan {
    * nothing, so at once. Inside one it costs a reader thread, so it first gives the workers a moment to start: right
    * after the scan is submitted none has run yet, and that is not saturation.
    */
+  // RE-EVALUATED EACH TIME THE 10 ms POLL OF THE CHANNEL COMES BACK EMPTY: THE GRACE IS ROUNDED UP TO A MULTIPLE OF IT
   private boolean callerMayClaimNow() {
     // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST. THE READER THEN
     // TAKES THEM ONE AFTER THE OTHER, EVEN IF THE POOL RECOVERS: A SIMPLE RULE OVER A FASTER SCAN IN A RARE CASE

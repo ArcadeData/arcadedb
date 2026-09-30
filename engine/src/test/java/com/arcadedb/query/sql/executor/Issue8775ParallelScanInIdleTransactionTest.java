@@ -384,6 +384,31 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void indexRangeInATransactionAnswersTheSameAsOutsideOne() {
+    database.command("sql", "CREATE PROPERTY E.grp INTEGER");
+    database.command("sql", "CREATE INDEX ON E (grp) NOTUNIQUE");
+    final String range = "SELECT count(*) AS n FROM E WHERE grp >= 10 AND grp < 90";
+    final long outside = single(range);
+    assertThat(outside).isEqualTo(expected * 80);
+
+    database.begin();
+    try {
+      assertThat(single(range)).isEqualTo(outside);
+      database.newVertex("E").set("id", -1, "grp", 50).save();
+      // dirty: sequential through the transaction, and it sees its own write
+      assertThat(single(range)).isEqualTo(outside + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private long single(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return ((Number) rs.next().getProperty("n")).longValue();
+    }
+  }
+
+  @Test
   void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
     final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
     final long parallelUpdated = updatedIn(update, true);
