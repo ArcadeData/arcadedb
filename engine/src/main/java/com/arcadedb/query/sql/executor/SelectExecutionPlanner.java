@@ -4577,6 +4577,8 @@ public class SelectExecutionPlanner {
 
     AndBlock indexKeyValue = new AndBlock();
     BinaryCondition additionalRangeCondition = null;
+    // Conditions answered through the lower-casing of a CI index key, which must still be checked on what the index returns
+    List<BooleanExpression> lowerCaseRewrites = null;
 
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
@@ -4604,6 +4606,11 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
+          if (ciCollation && isLowerCaseRewrite(singleExp, info)) {
+            if (lowerCaseRewrites == null)
+              lowerCaseRewrites = new ArrayList<>(2);
+            lowerCaseRewrites.add(singleExp);
+          }
           if (singleExp instanceof BetweenCondition
               || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
             // a range-shaped condition (BETWEEN, or a single-sided comparison like >/</>=/<=) is terminal for
@@ -4619,6 +4626,11 @@ public class SelectExecutionPlanner {
               if (next.createRangeWith(singleExp)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
+                if (ciCollation && isLowerCaseRewrite(next, info)) {
+                  if (lowerCaseRewrites == null)
+                    lowerCaseRewrites = new ArrayList<>(2);
+                  lowerCaseRewrites.add(next);
+                }
                 break;
               }
             }
@@ -4641,10 +4653,31 @@ public class SelectExecutionPlanner {
       }
     }
 
-    if (found)
+    if (found) {
+      // The user wrote field.toLowerCase() <op> X, but a CI index lower-cases X as well before probing, and its keys hold
+      // the lower-cased field. That answers the question only when X is already lower case (and a range over 'A'..'C'
+      // becomes one over 'a'..'c'), so the condition stays as a filter on what the index returns (issue #8560)
+      if (lowerCaseRewrites != null)
+        for (final BooleanExpression rewrite : lowerCaseRewrites)
+          blockCopy.getSubBlocks().add(rewrite.copy());
       return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
+    }
 
     return null;
+  }
+
+  /**
+   * True when {@code expression} reached a case-insensitive index through {@code field.toLowerCase()} rather than through
+   * the plain property.
+   */
+  private static boolean isLowerCaseRewrite(final BooleanExpression expression, final IndexSearchInfo info) {
+    final Expression subject = switch (expression) {
+      case BinaryCondition condition -> condition.getLeft();
+      case InCondition condition -> condition.getLeft();
+      case BetweenCondition condition -> condition.getFirst();
+      default -> null;
+    };
+    return BinaryCondition.isFieldWithLowerCaseMethod(subject, info.getField());
   }
 
   /**

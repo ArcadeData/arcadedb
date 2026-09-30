@@ -323,14 +323,14 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void collUnionDedupsByTypeAndValue() {
-    // Dedup is by object equality, so an integer and a float of the same numeric value are NOT collapsed -
-    // e.g. coll.union([1], [1.0]) keeps both. Documented here since it's an easy surprise coming from Neo4j.
+  void collUnionDedupsByCypherEquality() {
+    // Dedup follows Cypher's =, so an integer and a float of the same numeric value collapse: coll.union([1], [1.0])
+    // keeps the first one met (issue #8561).
     final ResultSet rs = database.query("opencypher", "RETURN coll.union([1], [1.0]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
-    assertThat(result).hasSize(2);
+    assertThat(result).hasSize(1);
   }
 
   @Test
@@ -418,14 +418,14 @@ class CypherMissingFunctionsTest {
   }
 
   @Test
-  void collToSetDedupsByTypeAndValue() {
-    // Same caveat as coll.union/coll.distinct: dedup is by object equality, so an integer and a float of the
-    // same numeric value are NOT collapsed. Pinned here so the whole coll.* namespace stays consistent.
+  void collToSetDedupsByCypherEquality() {
+    // Dedup follows Cypher's =, like DISTINCT and coll.union/coll.distinct: an integer and a float of the same
+    // numeric value collapse, and the first one met is kept (issue #8561).
     final ResultSet rs = database.query("opencypher", "RETURN coll.toSet([1, 1.0]) AS result");
     assertThat(rs.hasNext()).isTrue();
     @SuppressWarnings("unchecked")
     final List<Object> result = rs.next().getProperty("result");
-    assertThat(result).hasSize(2);
+    assertThat(result).hasSize(1);
   }
 
   @Test

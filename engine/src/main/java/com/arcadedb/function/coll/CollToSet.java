@@ -23,8 +23,8 @@ package com.arcadedb.function.coll;
  * (issue #6157).
  * <p>
  * It is an alias and nothing more: both names answer {@code [1, 2]} for {@code [1, 1, 2]}, both preserve the order
- * of first occurrence, both recognize duplicates by object equality (so {@code coll.toSet([1, 1.0])} keeps both
- * elements), and both return a LIST - the name is the only difference. Written as a subclass rather than as a
+ * of first occurrence, both recognize duplicates by Cypher equality (so {@code coll.toSet([1, 1.0])} keeps only the first
+ * of the two, issue #8561), and both return a LIST - the name is the only difference. Written as a subclass rather than as a
  * second copy of the body so there is one implementation to fix: while there were two, every change to one had to
  * be remembered for the other, and the lazy-range short-circuit of issue #6353 had to be written twice
  * (issue #6403).

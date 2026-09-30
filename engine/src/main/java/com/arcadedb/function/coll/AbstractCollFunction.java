@@ -19,11 +19,15 @@
 package com.arcadedb.function.coll;
 
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.utility.LongRangeList;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Abstract base class for collection functions.
@@ -75,5 +79,23 @@ public abstract class AbstractCollFunction implements StatelessFunction {
    */
   protected static LongRangeList asRange(final Object arg) {
     return arg instanceof LongRangeList range ? range : null;
+  }
+
+  /**
+   * Appends to {@code result} every element of {@code source} whose canonical form (see {@link DistinctNumericKey}) is
+   * not in {@code seen} yet, so values equal under Cypher's {@code =} ({@code 1} and {@code 1.0}) collapse to the first
+   * one met, exactly as {@code DISTINCT} does (issue #8561).
+   */
+  protected static void addDistinct(final Set<Object> seen, final List<Object> result, final List<Object> source) {
+    for (final Object element : source)
+      if (seen.add(DistinctNumericKey.canonicalize(element)))
+        result.add(element);
+  }
+
+  /** The distinct elements of {@code source} under Cypher equality, in order of first occurrence. */
+  protected static List<Object> distinctOf(final List<Object> source) {
+    final List<Object> result = new ArrayList<>();
+    addDistinct(new HashSet<>(), result, source);
+    return result;
   }
 }

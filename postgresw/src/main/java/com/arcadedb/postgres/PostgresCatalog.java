@@ -260,6 +260,27 @@ public class PostgresCatalog {
   }
 
   /**
+   * The highest {@code $n} placeholder the query names, which is how many values must be bound to it.
+   */
+  static int countPlaceholders(final String query) {
+    final List<PostgresCatalogToken> tokens = PostgresCatalogToken.tokenize(query);
+    if (tokens == null)
+      return 0;
+
+    int highest = 0;
+    for (final PostgresCatalogToken token : tokens) {
+      if (token.type != PostgresCatalogToken.Type.SYMBOL || token.text.length() < 2 || token.text.charAt(0) != '$')
+        continue;
+      try {
+        highest = Math.max(highest, Integer.parseInt(token.text.substring(1)));
+      } catch (final NumberFormatException e) {
+        // not a placeholder
+      }
+    }
+    return highest;
+  }
+
+  /**
    * Replaces every {@code $n} placeholder with the literal the client bound to it. The catalog is answered
    * with the parameter values in hand rather than at Parse time, because the driver's table and column lists
    * put their name filters in parameters: without this, {@code getColumns("Article")} would be answered with

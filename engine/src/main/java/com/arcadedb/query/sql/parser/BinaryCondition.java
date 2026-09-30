@@ -368,7 +368,7 @@ public class BinaryCondition extends BooleanExpression {
    * <p>
    * Package-private so {@link BetweenCondition} can reuse it for the same CI-index optimization on ranges.
    */
-  static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
+  public static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
     if (expr == null || expr.getMathExpression() == null)
       return false;
     if (!(expr.getMathExpression() instanceof final BaseExpression base))
@@ -382,7 +382,7 @@ public class BinaryCondition extends BooleanExpression {
       return false;
     // Extract the field name and compare
     final String fieldName = base.identifier.toString();
-    return expectedField.equalsIgnoreCase(fieldName);
+    return expectedField.equals(fieldName);
   }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */
