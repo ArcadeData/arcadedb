@@ -1915,6 +1915,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within deadlineMs - the failure #7526/#7542 were
       // filed about: previously nothing bounded this wait at all. The body may have been cut by our own cap first.
+      // Not unit-tested: a cap trip aborts send() with an IOException at once, so reaching this arm needs a race.
       rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
       return new ExecutionResponse(504, new JSONObject()
