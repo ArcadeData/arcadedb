@@ -144,8 +144,10 @@ class RaftClusterManager {
     // drops one of two concurrent adds (issue #4795). Not Mode.ADD, which is atomic too but cannot carry the
     // address-uniqueness check that has to run against the state the change is applied to (issue #7802).
     setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
-        "The peer answered a connection but the Raft membership change did not commit: Ratis holds a Mode.ADD"
-            + " uncommitted until the new peer has caught up with the leader's log. Check that the server at "
+        "The peer answered a connection but the Raft membership change did not commit: Ratis holds the change"
+            + " uncommitted until the new peer has caught up with the leader's log, and the change is a"
+            + " compare-and-set that is refused, and retried, whenever another membership change lands first, so a"
+            + " cluster whose membership keeps changing can also run the budget out. Check that the server at "
             + address + " is running as part of this cluster - same cluster name and cluster token - and is"
             + " not still replaying its own log.");
 

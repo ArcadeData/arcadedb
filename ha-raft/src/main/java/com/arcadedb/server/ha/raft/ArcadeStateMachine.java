@@ -1340,7 +1340,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * with no other entry claiming those versions.
    * <p>
    * The wait is bounded by {@code drainTimeoutMs}: an entry that cannot be applied must not hold the caller, which is
-   * usually holding the database write lock, for ever. The registration stays either way. Never throws; an
+   * usually holding the database write lock, for ever. Applying an entry takes no database lock (the apply path in this
+   * class never touches the write or read lock), so the caller's lock cannot be what the reservations wait on and a
+   * healthy DDL does not spend the budget. The reservations counted are every entry's, the leader's own included: a
+   * leader-local commit still between its append and its apply is waited for as well, which is what the DDL needs.
+   * <p>
+   * <b>Availability trade-off:</b> for the whole of the operation, entries of other nodes for this database are
+   * refused with a retryable error, as the write lock already does to the leader's own writers. A long index build
+   * therefore makes a replica's writers retry until it ends; a writer whose retry budget is smaller than the build sees
+   * the {@link NeedRetryException} itself. The registration stays either way. Never throws; an
    * interruption ends the wait, keeps the registration and re-sets the interrupt flag.
    *
    * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up
