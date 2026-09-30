@@ -4151,7 +4151,7 @@ public class SelectExecutionPlanner {
     final Index index = desc.getIndex();
     if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
       return null;
-    if (index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive())
+    if (holdsFoldedKeys(index))
       return null;
     final List<String> indexProperties = index.getPropertyNames();
     for (final String property : indexProperties)
@@ -4754,7 +4754,8 @@ public class SelectExecutionPlanner {
 
   /**
    * Whether any key of the index is stored case-folded: its iteration order is that of the folded keys, so it can neither
-   * stand in for a sort nor answer min() / max() with a key.
+   * stand in for a sort nor answer min() / max() with a key. Deliberately conservative for a composite index with one
+   * folded column: it is refused even when the ORDER BY only reads a column that is not folded.
    */
   private static boolean holdsFoldedKeys(final Index index) {
     return index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive();

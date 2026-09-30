@@ -45,11 +45,27 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON Ci (s COLLATE ci) NOTUNIQUE");
     database.command("sql", "CREATE VERTEX TYPE Nx");
     database.command("sql", "CREATE PROPERTY Nx.s STRING");
+    database.command("sql", "CREATE VERTEX TYPE Cc");
+    database.command("sql", "CREATE PROPERTY Cc.k INTEGER");
+    database.command("sql", "CREATE PROPERTY Cc.s STRING");
+    database.command("sql", "CREATE INDEX ON Cc (k, s COLLATE ci) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE Cx");
+    database.command("sql", "CREATE PROPERTY Cx.k INTEGER");
+    database.command("sql", "CREATE PROPERTY Cx.s STRING");
     database.transaction(() -> {
+      int k = 0;
       for (final String value : VALUES) {
         database.newVertex("Ci").set("s", value).save();
         database.newVertex("Nx").set("s", value).save();
+        database.newVertex("Cc").set("k", k % 2).set("s", value).save();
+        database.newVertex("Cx").set("k", k++ % 2).set("s", value).save();
       }
+      for (final String value : new String[] { "\u00c9clair", "\u00e9t\u00e9", "zebra" }) {
+        database.newVertex("Ci").set("s", value).save();
+        database.newVertex("Nx").set("s", value).save();
+      }
+      database.newVertex("Ci").save();
+      database.newVertex("Nx").save();
     });
   }
 
@@ -95,5 +111,32 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
   void cypherRangePredicatesFollowTheValues() {
     for (final String predicate : new String[] { "c.s < 'a'", "c.s >= 'M'", "c.s > 'M'", "c.s <= 'Zoo'", "c.s >= 'B' AND c.s < 'b'" })
       sameAnswer("opencypher", "MATCH (c:%T) WHERE " + predicate + " RETURN c.s AS s", false);
+  }
+
+  @Test
+  void cypherOrderByDescendingFollowsTheValues() {
+    sameAnswer("opencypher", "MATCH (c:%T) RETURN c.s AS s ORDER BY s DESC LIMIT 3", true);
+  }
+
+  @Test
+  void compositeIndexWithAFoldedColumnFollowsTheValues() {
+    sameAnswer("sql", "SELECT s FROM %T WHERE k = 1 ORDER BY s", true);
+    sameAnswer("sql", "SELECT s FROM %T WHERE k = 0 ORDER BY s LIMIT 3", true);
+  }
+
+  @Test
+  void aPlanBuiltBeforeTheIndexWasFoldedStaysCorrect() {
+    database.command("sql", "CREATE VERTEX TYPE Late");
+    database.command("sql", "CREATE PROPERTY Late.s STRING");
+    database.command("sql", "CREATE INDEX ON Late (s) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String value : VALUES)
+        database.newVertex("Late").set("s", value).save();
+    });
+    final String query = "MATCH (c:Late) WHERE c.s < 'a' RETURN c.s AS s";
+    final List<Object> before = column("opencypher", query);
+    database.command("sql", "DROP INDEX `Late[s]`");
+    database.command("sql", "CREATE INDEX ON Late (s COLLATE ci) NOTUNIQUE");
+    assertThat(column("opencypher", query)).containsExactlyInAnyOrderElementsOf(before);
   }
 }
