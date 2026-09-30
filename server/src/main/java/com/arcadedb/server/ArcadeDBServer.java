@@ -2104,13 +2104,34 @@ public class ArcadeDBServer {
    * @param databasePath the directory the archive is restored into
    *
    * @throws ServerControlPlane.OperationInProgressException when a backup, restore or import of
-   *                                                         {@code databaseName} is already running on this
-   *                                                         server. Nothing is dropped and nothing is published.
+   *                                                         {@code databaseName} is still running on this server
+   *                                                         once {@code arcadedb.server.startupRestoreSlotWaitMs}
+   *                                                         has elapsed (issue #7652). Nothing is dropped and
+   *                                                         nothing is published.
    */
   void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
     // Issue #7454. Taken FIRST, before the drop and before anything is published: a refusal must leave the
     // database on disk exactly as it found it. Released in the finally at the bottom, which is the only exit.
-    final Operation running = backupCoordinator.begin(databaseName, Operation.RESTORE);
+    //
+    // Issue #7652. A conflicting holder is waited out, up to SERVER_STARTUP_RESTORE_SLOT_WAIT_MS, before refusing:
+    // a backup holding the slot then completes with a valid archive instead of dying with the JVM, and a client
+    // restore or import completes and is then replaced by this command - the same end state a refusal and restart
+    // reach. The wait is bounded and the refusal stays its fallback, so a pathological holder still fails the boot
+    // loudly instead of hanging it. Unlike SnapshotInstaller, which proceeds without the slot when its wait expires
+    // because it applies a committed Raft entry, an operator's startup command is allowed to decline, so on
+    // timeout it refuses instead.
+    //
+    // The non-waiting begin() below is not redundant with the waiting one: it is what names the holder in the INFO
+    // line an operator sees while the boot pauses, and it skips the log entirely when the slot is free. The waiting
+    // overload repeats that first attempt itself, so by the time it parks the holder may be a different one.
+    final long waitMs = configuration.getValueAsLong(GlobalConfiguration.SERVER_STARTUP_RESTORE_SLOT_WAIT_MS);
+    Operation running = backupCoordinator.begin(databaseName, Operation.RESTORE);
+    if (running != null && waitMs > 0) {
+      LogManager.instance().log(this, Level.INFO,
+          "The startup 'restore:' command for database '%s' is waiting up to %dms for %s that was running on it to finish",
+          null, databaseName, waitMs, running.phrase());
+      running = backupCoordinator.begin(databaseName, Operation.RESTORE, waitMs);
+    }
     if (running != null)
       throw new ServerControlPlane.OperationInProgressException(
           MaintenanceCoordinator.refusal(Operation.RESTORE, databaseName, running));

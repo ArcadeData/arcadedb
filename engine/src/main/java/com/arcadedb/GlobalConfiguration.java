@@ -1606,6 +1606,11 @@ public enum GlobalConfiguration {
        that copy was replicated, because the rest of the cluster keeps whatever it already has until it is restored the same way.""",
       String.class, ""),
 
+  SERVER_STARTUP_RESTORE_SLOT_WAIT_MS("arcadedb.server.startupRestoreSlotWaitMs", SCOPE.SERVER, """
+      Milliseconds the `restore:` command of `arcadedb.server.defaultDatabases` waits for a backup, restore or import of the same database, \
+      already running on this server, to finish before it refuses to start. A refusal stops the server boot. 0 or a negative value refuses immediately, without waiting.""",
+      Long.class, 60_000L),
+
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """
       The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}\
       Databases which are newly created will always be opened READ_WRITE.""", String.class, "READ_WRITE",
