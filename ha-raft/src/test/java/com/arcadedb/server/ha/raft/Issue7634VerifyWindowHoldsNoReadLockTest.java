@@ -39,6 +39,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -350,36 +351,29 @@ class Issue7634VerifyWindowHoldsNoReadLockTest {
     return !thread.isAlive();
   }
 
-  /** Blocks until {@code thread} is waiting inside {@code className.methodName}, or fails. */
-  private static void awaitParkedIn(final Thread thread, final String className, final String methodName) {
-    final long deadline = System.currentTimeMillis() + WAIT_MS;
-    while (System.currentTimeMillis() < deadline) {
-      final Thread.State state = thread.getState();
-      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
-        for (final StackTraceElement frame : thread.getStackTrace())
-          if (frame.getClassName().endsWith(className) && methodName.equals(frame.getMethodName()))
-            return;
-      if (state == Thread.State.TERMINATED)
-        break;
-      try {
-        Thread.sleep(10);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        break;
-      }
-    }
-    throw new AssertionError("thread '" + thread.getName() + "' never parked in " + className + "." + methodName
-        + " (state=" + thread.getState() + "); the block assertion that follows would have been vacuous");
-  }
-
   /** Blocks until {@code thread} is parked acquiring a write lock, or fails. */
   private static void awaitParkedOnTheWriteLock(final Thread thread) {
+    awaitParked(thread, frame -> frame.getClassName().endsWith("ReentrantReadWriteLock$WriteLock"), "on a write lock");
+  }
+
+  /** Blocks until {@code thread} is waiting inside {@code className.methodName}, or fails. */
+  private static void awaitParkedIn(final Thread thread, final String className, final String methodName) {
+    awaitParked(thread, frame -> frame.getClassName().endsWith(className) && methodName.equals(frame.getMethodName()),
+        "in " + className + "." + methodName);
+  }
+
+  /**
+   * Blocks until {@code thread} is WAITING with a stack frame matching {@code frameMatches}, or fails. The discriminator
+   * a "did it stay blocked?" assertion needs: a thread that was never scheduled does not complete either.
+   */
+  private static void awaitParked(final Thread thread, final Predicate<StackTraceElement> frameMatches,
+      final String where) {
     final long deadline = System.currentTimeMillis() + WAIT_MS;
     while (System.currentTimeMillis() < deadline) {
       final Thread.State state = thread.getState();
       if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
         for (final StackTraceElement frame : thread.getStackTrace())
-          if (frame.getClassName().endsWith("ReentrantReadWriteLock$WriteLock"))
+          if (frameMatches.test(frame))
             return;
       if (state == Thread.State.TERMINATED)
         break;
@@ -390,7 +384,7 @@ class Issue7634VerifyWindowHoldsNoReadLockTest {
         break;
       }
     }
-    throw new AssertionError("thread '" + thread.getName() + "' never parked on a write lock (state=" + thread.getState()
+    throw new AssertionError("thread '" + thread.getName() + "' never parked " + where + " (state=" + thread.getState()
         + "); the block assertion that follows would have been vacuous");
   }
 
