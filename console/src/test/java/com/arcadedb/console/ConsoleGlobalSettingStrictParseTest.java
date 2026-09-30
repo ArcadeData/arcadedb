@@ -124,7 +124,7 @@ class ConsoleGlobalSettingStrictParseTest {
 
   @Test
   void setCommandRefusesAnEmptyBooleanValue() {
-    assertThatThrownBy(() -> console.parse("set arcadedb.txWAL ="));
+    assertThatThrownBy(() -> console.parse("set arcadedb.txWAL =")).hasMessageContaining("arcadedb.txWAL");
 
     assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).isTrue();
   }
@@ -133,7 +133,7 @@ class ConsoleGlobalSettingStrictParseTest {
   void setCommandRefusesAValueOutsideTheAllowList() {
     assertThatThrownBy(() -> console.parse("set arcadedb.bucketReuseSpaceMode = huge")).hasMessageContaining("huge");
 
-    assertThat(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString()).isEqualTo("high");
+    assertThat(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString()).isEqualTo(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getDefValue());
   }
 
   @Test
@@ -142,6 +142,20 @@ class ConsoleGlobalSettingStrictParseTest {
 
     assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).as("'-Darcadedb.txWAL' alone must not turn the WAL off").isTrue();
     assertThat(stderr).contains(GlobalConfiguration.TX_WAL.getKey()).contains("ignored");
+  }
+
+  @Test
+  void refusalTellsTheOperatorWhatIsAccepted() {
+    assertThatThrownBy(() -> console.parse("set arcadedb.txWAL = yes")).hasMessageContaining("only 'true' and 'false' are accepted");
+  }
+
+  @Test
+  void commandLineArgumentRefusalKeepsAPreExistingSystemProperty() throws IOException {
+    System.setProperty(GlobalConfiguration.TX_WAL.getKey(), "false");
+
+    runCapturingStderr("-D" + GlobalConfiguration.TX_WAL.getKey() + "=yes");
+
+    assertThat(System.getProperty(GlobalConfiguration.TX_WAL.getKey())).isEqualTo("false");
   }
 
   @Test
