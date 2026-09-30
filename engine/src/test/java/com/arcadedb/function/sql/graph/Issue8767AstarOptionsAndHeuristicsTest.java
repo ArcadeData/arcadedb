@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -50,6 +51,9 @@ class Issue8767AstarOptionsAndHeuristicsTest {
     assertThat(astar.stringArray(List.of("Road", "Rail"))).containsExactly("Road", "Rail");
     assertThat(astar.stringArray(new Object[] { "x", "y" })).containsExactly("x", "y");
     assertThat(astar.stringArray("Road, Rail")).containsExactly("Road", "Rail");
+    assertThat(astar.stringArray(List.of("Road", " Rail "))).containsExactly("Road", "Rail");
+    assertThat(astar.stringArray("a,,b")).containsExactly("a", "b");
+    assertThat(astar.stringArray("")).isEmpty();
     assertThat(astar.stringArray(null)).isEmpty();
     assertThatThrownBy(() -> astar.stringArray(42)).isInstanceOf(CommandSQLParsingException.class);
   }
@@ -124,7 +128,7 @@ class Issue8767AstarOptionsAndHeuristicsTest {
       }
       // octile distance on deltas (3,1): 2 straight + 1 diagonal of cost sqrt(2)
       assertThat(heuristic(db, p, new String[] { "x", "y" }, SQLHeuristicFormula.DIAGONAL, false)).isCloseTo(2 + Math.sqrt(2),
-          org.assertj.core.data.Offset.offset(1e-9));
+          Offset.offset(1e-9));
     });
   }
 
@@ -139,7 +143,7 @@ class Issue8767AstarOptionsAndHeuristicsTest {
       });
       assertThat(heuristic(db, p, new String[] { "x", "y", "z" }, SQLHeuristicFormula.DIAGONAL, false))
           .isCloseTo(heuristic(db, p, new String[] { "x", "y" }, SQLHeuristicFormula.DIAGONAL, false),
-              org.assertj.core.data.Offset.offset(1e-9));
+              Offset.offset(1e-9));
     });
   }
 
