@@ -24,7 +24,10 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -102,6 +105,10 @@ class JavaReferenceMethods {
 
   public static String nullable(final String value) {
     return "value " + value;
+  }
+
+  public static int size(final Collection<?> values) {
+    return values.size();
   }
 }
 
@@ -381,6 +388,34 @@ class JavaQueryTest extends TestHelper {
     final ResultSet result = database.command("java", "com.arcadedb.query.java.JavaMethods::hello");
     assertThat(result.hasNext()).isTrue();
     assertThat((Object) result.next().getProperty("value")).isNull();
+  }
+
+  /**
+   * The shape a JSON array parameter arrives in: an {@code ArrayList} argument binds to a {@code Collection}
+   * parameter, a supertype of its class, which the inverted test only accepted by skipping the check. (A single
+   * {@code Map} argument cannot be tested this way: {@code Database.command} binds it to its named-parameters overload.)
+   */
+  @Test
+  void listArgumentBindsToACollectionParameter() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    final List<Object> values = new ArrayList<>(List.of(1, 2, 3));
+    assertThat((Integer) database.command("java", REF + "::size", values).next().getProperty("value")).isEqualTo(3);
+  }
+
+  /**
+   * A {@code Long} (how a JSON number often arrives) does not narrow into an {@code int} parameter: refused while
+   * matching, as it was by the old exact-wrapper check, and as a registered Java function refuses it.
+   */
+  @Test
+  void longArgumentIsNotNarrowedIntoAnIntParameter() {
+    database.getQueryEngine("java").registerFunctions(REF);
+
+    assertThatThrownBy(() -> database.command("java", REF + "::square", 3L))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause()
+        .hasMessageContaining("square")
+        .hasMessageContaining("java.lang.Long");
   }
 
   @Test
