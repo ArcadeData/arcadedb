@@ -172,7 +172,7 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
     // entries pass the #7511 capability gate only once this peer answers a probe - dials the port the peer
     // actually bound. Without it the probe went to a derived or withheld address and the verb answered 503
     // with failedSeeds [groups, API tokens] for a peer that was up.
-    patchHttpAddresses();
+    patchPeerHttpAddressesWithBoundPorts();
   }
 
   /**

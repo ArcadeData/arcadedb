@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.*;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Record;
@@ -80,6 +81,7 @@ import java.util.logging.Level;
 public class ArcadeGraph implements Graph, Closeable {
 
   public static final  String CONFIG_DIRECTORY    = "gremlin.arcadedb.directory";
+  // TinkerPop's default, used only when neither the client setting nor the server names the Gremlin port
   private static final int    GREMLIN_SERVER_PORT = 8182;
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
@@ -217,6 +219,9 @@ public class ArcadeGraph implements Graph, Closeable {
     if (!(database instanceof RemoteDatabase remoteDatabase))
       return Graph.super.traversal();
 
+    // OUTSIDE THE try: A MISCONFIGURED PORT IS THE CALLER'S ERROR, NOT "GREMLIN NOT AVAILABLE ON THE SERVER"
+    final int gremlinPort = resolveRemoteGremlinPort(remoteDatabase);
+
     try {
       final List<String> remoteAddresses = new ArrayList<>();
 
@@ -232,7 +237,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
       final String[] hosts = new String[remoteAddresses.size()];
       for (int i = 0; i < remoteAddresses.size(); i++)
-        hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + GREMLIN_SERVER_PORT)[0];
+        hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + gremlinPort)[0];
 
       final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
           new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
@@ -240,7 +245,7 @@ public class ArcadeGraph implements Graph, Closeable {
       // KEEP THE CLUSTER IN A FIELD: IT OWNS A NETTY EVENT-LOOP GROUP, A SCHEDULED EXECUTOR AND A CONNECTION POOL,
       // AND DriverRemoteConnection.using(Cluster, String) DOES NOT TAKE OWNERSHIP OF IT, SO ONLY close() CAN
       // RELEASE THOSE RESOURCES (ISSUE #6822).
-      cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(GREMLIN_SERVER_PORT)
+      cluster = Cluster.build().enableSsl(false).addContactPoints(hosts).port(gremlinPort)
           .credentials(remoteDatabase.getUserName(), remoteDatabase.getUserPassword()).serializer(serializer).create();
 
       // Use database name as the traversal source alias (dynamically registered by ArcadeGraphManager)
@@ -253,6 +258,29 @@ public class ArcadeGraph implements Graph, Closeable {
       closeCluster();
       return Graph.super.traversal();
     }
+  }
+
+  /**
+   * The port of the Gremlin Server the remote driver connects to (issue #8578): the client setting
+   * {@link GlobalConfiguration#GREMLIN_CLIENT_PORT} when it is set, because only the client knows a port mapping the
+   * server cannot see; else the port the server advertises for its Gremlin plugin; else TinkerPop's default. One port
+   * for every contact point: the advertised value is the one of the node that answered, so Gremlin is assumed to listen
+   * on the same port on every node of a cluster (set the client setting when it does not).
+   */
+  private static int resolveRemoteGremlinPort(final RemoteDatabase remoteDatabase) {
+    final int configured = remoteDatabase.getClientConfiguration().getValueAsInteger(GlobalConfiguration.GREMLIN_CLIENT_PORT);
+    if (configured < 0 || configured > 65535)
+      throw new IllegalArgumentException(GlobalConfiguration.GREMLIN_CLIENT_PORT.getKey() + " must be a TCP port (1-65535), or 0 for unset, found "
+          + configured);
+    if (configured > 0)
+      return configured;
+    final int advertised = remoteDatabase.getAdvertisedPort("gremlin");
+    if (advertised > 0)
+      return advertised;
+    // NEITHER SAID: A GREMLIN SERVER ON ANOTHER PORT IS THEN UNREACHABLE, AND THE FALLBACK TO THE EMBEDDED TRAVERSAL HIDES IT
+    LogManager.instance().log(ArcadeGraph.class, Level.INFO,
+        "No Gremlin port configured or advertised by the server: using the default %d", null, GREMLIN_SERVER_PORT);
+    return GREMLIN_SERVER_PORT;
   }
 
   public ArcadeSQL sql(final String query) {

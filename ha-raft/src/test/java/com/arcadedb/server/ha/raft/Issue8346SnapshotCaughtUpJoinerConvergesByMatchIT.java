@@ -41,9 +41,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * join without installing anything, which is what the snapshot install past the seed leaves behind. The catch-up is
  * then driven through its real snapshot-install trigger, which dials the leader over HTTP.
  * <p>
- * The leader's applied index standing still across the catch-up is the evidence that the release came from the
- * comparison ("matched") and not from a seed the leader replicated back ("seeded"), which would have converged the
- * node the old way.
+ * The evidence that the release came from the comparison ("matched") and not from a seed the leader replicated back
+ * ("seeded"), which would have converged the node the old way, is the leader's log holding no security entry past the
+ * position it had reached before the catch-up. It is read by entry type, not by the raw index (issue #8455): the
+ * leader commits other entries in that window about a third of the time, and an index that moved by one said nothing
+ * about which kind of entry moved it.
  * <p>
  * Tagged {@code slow}: it starts a two-node cluster.
  *
@@ -91,15 +93,15 @@ class Issue8346SnapshotCaughtUpJoinerConvergesByMatchIT extends BaseRaftHATest {
     db.transaction(() -> db.newVertex(VERTEX_TYPE).set("id", 1).save());
     waitUntil(() -> follower.getLastAppliedIndex() > joinIndex, "the follower must apply past the join index");
 
-    final long leaderIndexBefore = leader.getLastAppliedIndex();
+    final long leaderLogIndexBefore = lastRaftLogIndex(leader);
 
     follower.getStateMachine().getSecurityCatchUp().afterSnapshotInstall(getServer(followerIndex), follower);
 
     waitUntil(() -> follower.securityDocumentsNotInstalledSinceRuntimeJoin().isEmpty(),
         "a follower whose documents match the leader's must count as converged once the leader says so");
-    assertThat(leader.getLastAppliedIndex())
+    assertThat(securityEntriesInLogAfter(leader, leaderLogIndexBefore))
         .as("released by the fingerprint comparison, not by a seed the leader replicated")
-        .isEqualTo(leaderIndexBefore);
+        .isEmpty();
   }
 
   /** Polls a condition to a generous deadline; a hang detector, never a latency bound. */

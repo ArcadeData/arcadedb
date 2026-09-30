@@ -1008,7 +1008,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * The whole of it is {@code RaftClusterManager.addPeer} with the peer derived from one
    * {@code arcadedb.ha.serverList} entry, which is what makes the verb a thin alias for
    * {@code POST /api/v1/cluster/peer} rather than a second way to grow a cluster: the membership change
-   * is the same atomic {@code Mode.ADD}, issued by the same {@code RaftClusterManager}, with the same
+   * is the same atomic compare-and-set change, issued by the same {@code RaftClusterManager}, with the same
    * retry and the same idempotence when the peer is already a member.
    * <p>
    * It carries one thing that route cannot: the leader-election <b>priority</b>, which the object form

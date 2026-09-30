@@ -1145,6 +1145,24 @@ public class GraphEngine {
     if (!vertexBucketOf(vertexRID).existsRecord(vertexRID))
       throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
 
+    // #8676: an edge of a unidirectional type that ENDS in this vertex is stored on its source only, so the walks
+    // below never meet it. Deleted here, from the source's list, so it leaves neither a record nor a pointer to a
+    // vertex that is gone. A self-loop is in the vertex's own outgoing list, which the walk below deletes.
+    List<Edge> incomingEdges = Collections.emptyList();
+    try {
+      incomingEdges = IncomingEdgeLookup.getIncomingUnidirectionalEdges(database, vertexRID);
+    } catch (final RuntimeException e) {
+      // FORCE IS THE REPAIR PATH OF A DAMAGED VERTEX: A SCAN THAT CANNOT READ A RECORD MUST NOT STOP IT
+      if (!force)
+        throw e;
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot look for the unidirectional edges ending in vertex %s while force-deleting it: they survive, %s", e, vertexRID,
+          danglingRepairAdvice());
+    }
+    for (final Edge incoming : incomingEdges)
+      if (!vertexRID.equals(incoming.getOut()))
+        deleteEdgeOfDeletedVertex(incoming, mostUpdatedVertex, force);
+
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
 
@@ -2581,6 +2599,11 @@ public class GraphEngine {
       final List<Edge> inEdges = new ArrayList<>();
       for (Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
         inEdges.add(edge.asEdge(true));
+      // THE EDGES OF A UNIDIRECTIONAL TYPE THAT END IN THE VERTEX ARE NOT IN ITS IN LIST, AND DELETING THE VERTEX DELETES THEM
+      // (ISSUE #8676): RECREATED TOWARDS THE NEW RECORD LIKE THE OTHERS. A SELF-LOOP IS IN outEdges ALREADY.
+      for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) db, oldIdentity))
+        if (!oldIdentity.equals(edge.getOut()))
+          inEdges.add(edge.asEdge(true));
 
       // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
       vertex.delete();

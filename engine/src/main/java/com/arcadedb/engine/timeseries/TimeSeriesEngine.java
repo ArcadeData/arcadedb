@@ -51,6 +51,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesEngine implements AutoCloseable {
+  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER: UP TO TWICE, THE ARRAY COSTS ABOUT WHAT THE CEILING ALREADY ALLOWS
+  private static final long FLAT_WINDOW_PER_CEILING = 2L;
 
   private final DatabaseInternal       database;
   private final String                 typeName;
@@ -729,7 +731,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (useFlatMode && actualMin <= actualMax) {
       firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
-      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS)
+      // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS
+          || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
       else

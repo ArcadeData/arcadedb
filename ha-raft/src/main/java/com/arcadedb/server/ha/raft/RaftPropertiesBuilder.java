@@ -37,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -173,6 +174,40 @@ class RaftPropertiesBuilder {
     return file;
   }
 
+  /**
+   * The election timeout maximum Ratis is given (issue #8672 follow-up). Ratis draws each follower's timeout at random
+   * between the minimum and the maximum, and that spread is what keeps two followers that lost their leader together from
+   * standing for election at the same instant. A maximum at or below the minimum removes it: both time out together, split
+   * the vote and do so again, and a cluster that lost its leader stays without one for as long as that persists (seen
+   * for over a minute running {@code arcadedb.ha.electionTimeoutMax=5000} against the default minimum of 5000).
+   * <p>
+   * So such a window is widened to twice the minimum, the ratio of the defaults, rather than refused: the operator who
+   * lowered only the maximum wanted faster failover, but the minimum they left alone is the safer of the two values to
+   * keep, since an election timeout that is too short costs spurious elections and one that is too long only costs a
+   * slower failover. Lowering both is how a shorter timeout is asked for.
+   */
+  private static final Set<Long> WARNED_ELECTION_WINDOWS = ConcurrentHashMap.newKeySet();
+
+  static int effectiveElectionTimeoutMaxMs(final int minMs, final int maxMs) {
+    final int effective = electionTimeoutMaxFor(minMs, maxMs);
+    // Once per distinct pair: build() runs again on every in-place Ratis restart, and the same warning each time buries others
+    if (effective != maxMs && WARNED_ELECTION_WINDOWS.add(((long) minMs << 32) | (maxMs & 0xFFFFFFFFL)))
+      logWidenedElectionTimeoutMax(minMs, maxMs, effective);
+    return effective;
+  }
+
+  /** {@link #effectiveElectionTimeoutMaxMs} without the warning, for callers that only need the value. */
+  static int electionTimeoutMaxFor(final int minMs, final int maxMs) {
+    return maxMs > minMs ? maxMs : (int) Math.min(Integer.MAX_VALUE, 2L * Math.max(1, minMs));
+  }
+
+  private static void logWidenedElectionTimeoutMax(final int minMs, final int maxMs, final int widened) {
+    LogManager.instance().log(RaftPropertiesBuilder.class, Level.WARNING,
+        "arcadedb.ha.electionTimeoutMax=%d is not above arcadedb.ha.electionTimeoutMin=%d: with no spread between the two, "
+            + "followers of a lost leader time out together and split the vote again and again. Using a maximum of %dms; "
+            + "lower arcadedb.ha.electionTimeoutMin as well to ask for a shorter election timeout", maxMs, minMs, widened);
+  }
+
   static RaftProperties build(final ContextConfiguration configuration) {
     final RaftProperties properties = new RaftProperties();
 
@@ -193,7 +228,8 @@ class RaftPropertiesBuilder {
 
     // Configure Raft RPC timeouts for cluster stability
     final int electionMin = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN);
-    final int electionMax = configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX);
+    final int electionMax = effectiveElectionTimeoutMaxMs(electionMin,
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
     RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(electionMin, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties, TimeDuration.valueOf(electionMax, TimeUnit.MILLISECONDS));
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(10, TimeUnit.SECONDS));

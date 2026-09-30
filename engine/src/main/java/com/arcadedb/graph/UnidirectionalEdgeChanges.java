@@ -62,6 +62,10 @@ public final class UnidirectionalEdgeChanges {
   // BY TYPE, THEN BY TARGET: A LOOKUP READS THE CHANGES OF ONE TYPE INTO ONE VERTEX
   private Map<String, Map<RID, List<Created>>> created;
   private Map<RID, Long>                        deleted;
+  // THE SCANS THE DELETES OF THE TRANSACTION SHARE (ISSUE #8676): DROPPED WITH THE CHANGES WHEN THE TRANSACTION ENDS
+  private IncomingEdgeLookup                    deleteLookup;
+  // THE TYPES WERE TOO LARGE TO INDEX IN HEAP: THE NEXT DELETES OF THE TRANSACTION SCAN FOR THEIR VERTEX AT ONCE
+  private boolean                               deleteLookupTooLarge;
 
   /** The sequence of the last change, in any transaction of the context holding this object. */
   public long getSequence() {
@@ -121,8 +125,26 @@ public final class UnidirectionalEdgeChanges {
     }
   }
 
+  /** The lookup the vertex deletes of the current transaction share, created on first use (issue #8676). */
+  IncomingEdgeLookup getDeleteLookup() {
+    if (deleteLookup == null)
+      deleteLookup = new IncomingEdgeLookup(true);
+    return deleteLookup;
+  }
+
+  boolean isDeleteLookupTooLarge() {
+    return deleteLookupTooLarge;
+  }
+
+  void markDeleteLookupTooLarge() {
+    deleteLookupTooLarge = true;
+  }
+
   /** Drops the changes of the transaction that ended: committed or rolled back, they are no longer its own. */
   public void transactionEnded() {
+    // NO CONTEXT BUILT IT, SO ITS SNAPSHOTS CHARGED NO QUERY BUDGET THAT HAS TO BE GIVEN BACK: DROPPED AS THEY ARE
+    deleteLookup = null;
+    deleteLookupTooLarge = false;
     created = null;
     deleted = null;
     changes = 0;

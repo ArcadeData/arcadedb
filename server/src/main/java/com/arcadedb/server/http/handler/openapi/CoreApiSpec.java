@@ -1018,6 +1018,9 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("user", user);
     schema.addProperty("version", SpecBuilders.string("Server version"));
     schema.addProperty("serverName", SpecBuilders.string("This server's configured name"));
+    schema.addProperty("instanceId", SpecBuilders.string(
+        "Instance id ('adb-' followed by a UUID) of this server, to copy into the ArcadeData support portal. "
+            + "Never a credential"));
     schema.addProperty("languages", SpecBuilders.arrayOf(SpecBuilders.string("Query language name"),
         "Query languages this build can run, e.g. sql, sqlscript, cypher, gremlin"));
     schema.addProperty("metrics", SpecBuilders.freeFormObject("""
@@ -1037,6 +1040,11 @@ public class CoreApiSpec implements OpenApiContributor {
         lastEntryAppliedAt / lastSweepAt. entriesApplied rising while sweepsCompleted does not is a node \
         enforcing permissions it has already been told to replace; the same numbers are scrapable as the \
         arcadedb.ha.security.* meters."""));
+    schema.addProperty("ports", SpecBuilders.mapOf(SpecBuilders.integer("Bound TCP port"), """
+        The client-facing listeners of the active plugins other than HTTP, by service name (for example 'gremlin'), \
+        with the port each one is bound to. Present with mode=cluster only, empty when no plugin listens. A remote \
+        client that must reach such a listener reads it here instead of assuming the protocol's default port \
+        (issue #8578). Service names are unique: a second plugin advertising a name already taken is ignored."""));
     schema.setRequired(List.of("user", "version", "serverName", "languages"));
     return schema;
   }

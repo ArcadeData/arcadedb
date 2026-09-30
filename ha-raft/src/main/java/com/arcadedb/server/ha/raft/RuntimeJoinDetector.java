@@ -172,7 +172,11 @@ public final class RuntimeJoinDetector {
   private          long    stateVersion;
   /** The {@link #stateVersion} of the last marker written; guarded by {@link #persistLock}. */
   private          long    persistedVersion   = -1L;
-  /** The peer id the marker names, set when this detector arms. */
+  /**
+   * The peer id the marker names, set when this detector arms. Written under this instance's monitor together with
+   * the {@link #stateVersion} bump it belongs to, and read there by {@link #persist()} (issue #8390); volatile for
+   * the log lines that read it without the monitor.
+   */
   private volatile String  armedPeer;
   /** Whether the last configuration observed contained this node; {@code null} before the first one. */
   private          Boolean lastObservedMembership;
@@ -299,8 +303,12 @@ public final class RuntimeJoinDetector {
         joinIndex = index;
       } else if (rearmedNow)
         joinIndex = index;
-      if (armedNow || rearmedNow)
+      if (armedNow || rearmedNow) {
+        // Published with the version it belongs to (issue #8390): a concurrent persist() that reads this version
+        // must also read the peer, since the arming thread's own persist() then finds the version written and skips.
+        armedPeer = self.toString();
         stateVersion++;
+      }
     }
 
     if (armedNow)
@@ -313,7 +321,6 @@ public final class RuntimeJoinDetector {
               + "before no longer count, and readiness waits for the cluster's current ones to reach it "
               + "(arcadedb.ha.securityConvergenceReadinessTimeout)", self, index);
     if (armedNow || rearmedNow) {
-      armedPeer = self.toString();
       // Outside the monitor: the readiness probe reads it, and must not wait on a SYNC write.
       // Also deletes the hold marker, once the armed state it hands over to is on disk (issue #8465).
       persist();
@@ -671,10 +678,12 @@ public final class RuntimeJoinDetector {
       return;
     synchronized (persistLock) {
       final long version;
+      final String peer;
       final long join;
       final long[] installed;
       synchronized (this) {
         version = stateVersion;
+        peer = armedPeer;
         join = joinIndex;
         installed = lastInstalledIndex.clone();
       }
@@ -683,7 +692,7 @@ public final class RuntimeJoinDetector {
         return;
 
       final StringBuilder content = new StringBuilder(160);
-      content.append("peer=").append(armedPeer).append('\n');
+      content.append("peer=").append(peer).append('\n');
       content.append("armedAt=").append(System.currentTimeMillis()).append('\n');
       content.append(JOIN_INDEX_KEY).append('=').append(join).append('\n');
       for (int i = 0; i < INSTALLED_KEYS.length; i++)

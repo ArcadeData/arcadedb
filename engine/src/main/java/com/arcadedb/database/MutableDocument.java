@@ -314,6 +314,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * a collection, then the embedded document
    * is added to the collection. If that collection is immutable (e.g. a {@code List.of()} the caller set), it is replaced
    * by a mutable copy that carries the new element, so a reference the caller kept to the original does not see it.
+   * <p>
+   * If the property holds no collection (it is absent, or holds a single value such as the embedded document of an
+   * earlier call), the new embedded document is stored as the property's single value and replaces whatever was there,
+   * WITHOUT an error (issue #8613). That is the case for an undeclared property, and for one declared {@code EMBEDDED}.
+   * So calling this twice on the same undeclared property keeps only the second embedded document, and it is also what
+   * makes a scratch property usable to build an element that is then moved elsewhere. To keep several embedded
+   * documents, declare the property as {@code LIST} (the first call then stores a mutable one-element list and the
+   * following ones append), or set a collection first.
    *
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored

@@ -58,6 +58,7 @@ public class GremlinServerPlugin implements ServerPlugin {
   private              ContextConfiguration configuration;
   private              GremlinServer        gremlinServer;
   private              ExecutorService      gremlinExecutorService;
+  private volatile     int                  boundPort;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -111,19 +112,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     settings.authorization.config = new HashMap<>(1);
     settings.authorization.config.put("server", server);
 
-    for (final String key : configuration.getContextKeys()) {
-      if (key.startsWith("gremlin.")) {
-        final Object value = configuration.getValue(key, null);
-        final String gremlinConfigKey = key.substring("gremlin.".length());
-
-        try {
-          final Field field = settings.getClass().getField(gremlinConfigKey);
-          field.set(settings, value);
-        } catch (final NoSuchFieldException | IllegalAccessException e) {
-          // IGNORE IT
-        }
-      }
-    }
+    for (final String key : configuration.getContextKeys())
+      if (key.startsWith("gremlin."))
+        applyServerSetting(settings, key.substring("gremlin.".length()), configuration.getValue(key, null));
 
     // Ensure databases referenced in the graphs section of gremlin-server.yaml are created/opened.
     // This restores the pre-2026.2.1 behaviour where a static `graphs:` entry in gremlin-server.yaml
@@ -147,6 +138,78 @@ public class GremlinServerPlugin implements ServerPlugin {
     } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
+    boundPort = settings.port;
+  }
+
+  /**
+   * The port the Gremlin Server listens on (issue #8578), so the remote {@code ArcadeGraph} reaches it wherever it was
+   * configured instead of assuming TinkerPop's default.
+   */
+  @Override
+  public Map<String, Integer> getAdvertisedPorts() {
+    final int port = boundPort;
+    return port > 0 ? Map.of("gremlin", port) : Map.of();
+  }
+
+  /**
+   * Copies one {@code gremlin.*} server-configuration key onto the Gremlin Server settings. A name that is not a setting
+   * is ignored, as the same keys are shared with other configuration. A value that cannot be converted to the setting's
+   * type fails the start: a mistyped port or listener setting must not leave the server on the default, where it would
+   * also be advertised to clients.
+   */
+  static void applyServerSetting(final Settings settings, final String name, final Object value) {
+    final Field field;
+    try {
+      field = settings.getClass().getField(name);
+    } catch (final NoSuchFieldException e) {
+      // NOT A GREMLIN SERVER SETTING
+      return;
+    }
+    try {
+      field.set(settings, coerce(field.getType(), value));
+    } catch (final IllegalAccessException | IllegalArgumentException e) {
+      if (!isScalar(field.getType())) {
+        // A TEXT VALUE FOR A LIST, MAP OR NESTED SETTING CANNOT BE EXPRESSED AS A FLAT KEY: IT WAS ALWAYS SKIPPED
+        LogManager.instance().log(GremlinServerPlugin.class, Level.WARNING,
+            "Ignoring the Gremlin Server setting 'gremlin.%s': a value of type %s cannot be set from a flat key", null, name,
+            field.getType().getSimpleName());
+        return;
+      }
+      throw new ServerException("Invalid Gremlin Server setting 'gremlin." + name + "' with value '" + value + "': " + e.getMessage(),
+          e);
+    }
+  }
+
+  private static boolean isScalar(final Class<?> type) {
+    return type.isPrimitive() || Number.class.isAssignableFrom(type) || type == Boolean.class || type == String.class;
+  }
+
+  /**
+   * A {@code gremlin.*} server setting reaches this plugin as text when it comes from a system property or the
+   * command line, and {@link Field#set} refuses to store text into an {@code int} field: the setting was then dropped
+   * without a trace and the server started on the default. Numbers and booleans are converted to the field's type.
+   */
+  private static Object coerce(final Class<?> fieldType, final Object value) {
+    if (!(value instanceof String text))
+      return value;
+    if (fieldType == int.class || fieldType == Integer.class)
+      return Integer.valueOf(text.trim());
+    if (fieldType == long.class || fieldType == Long.class)
+      return Long.valueOf(text.trim());
+    if (fieldType == short.class || fieldType == Short.class)
+      return Short.valueOf(text.trim());
+    if (fieldType == double.class || fieldType == Double.class)
+      return Double.valueOf(text.trim());
+    if (fieldType == float.class || fieldType == Float.class)
+      return Float.valueOf(text.trim());
+    if (fieldType == boolean.class || fieldType == Boolean.class) {
+      // Boolean.valueOf() turns "yes" or "1" into false without a word: only the two spellings are a boolean
+      final String trimmed = text.trim();
+      if (!"true".equalsIgnoreCase(trimmed) && !"false".equalsIgnoreCase(trimmed))
+        throw new IllegalArgumentException("'" + text + "' is neither true nor false");
+      return Boolean.valueOf(trimmed);
+    }
+    return value;
   }
 
   private static ThreadFactory newGremlinThreadFactory() {
@@ -262,6 +325,7 @@ public class GremlinServerPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
+    boundPort = 0;
     if (gremlinServer != null) {
       // Close all dynamically created ArcadeGraph instances
       final var graphManager = gremlinServer.getServerGremlinExecutor().getGraphManager();

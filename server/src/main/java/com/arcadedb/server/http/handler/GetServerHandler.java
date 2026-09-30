@@ -31,6 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
@@ -70,6 +71,10 @@ public class GetServerHandler extends AbstractServerHttpHandler {
                                                 .put("serverName", httpServer.getServer().getServerName())
                                                 .put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
+    final String instanceId = httpServer.getServer().getInstanceId();
+    if (instanceId != null)
+      response.put("instanceId", instanceId);
+
     final String mode = getQueryParameter(exchange, "mode", "default");
 
     if ("basic".equals(mode)) {
@@ -79,11 +84,50 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       exportSettings(response);
     } else if ("cluster".equals(mode)) {
       exportCluster(response, user);
+      exportAdvertisedPorts(response);
     }
 
     Metrics.counter("http.server-info").increment();
 
     return new ExecutionResponse(200, response.toString());
+  }
+
+  /**
+   * Emits the {@code ports} section: the client-facing listeners of the active plugins, by service name (issue #8578).
+   * The remote clients call this route on every connection to learn the topology, so it is also where they learn the
+   * port of a listener that is not the HTTP one, instead of assuming the protocol's default. Always written, empty
+   * when no plugin listens, so a client can tell "none" from "this build does not report it".
+   */
+  private void exportAdvertisedPorts(final JSONObject response) {
+    response.put("ports", buildAdvertisedPorts(httpServer.getServer().getPlugins()));
+  }
+
+  /**
+   * The {@code ports} member: package-private so the filtering can be tested with stub plugins. A port that is null or
+   * not positive is dropped, a plugin that throws is skipped, and a service name a previous plugin already took keeps
+   * its first owner.
+   */
+  static JSONObject buildAdvertisedPorts(final Collection<ServerPlugin> plugins) {
+    final JSONObject ports = new JSONObject();
+    for (final ServerPlugin plugin : plugins) {
+      try {
+        for (final Map.Entry<String, Integer> port : plugin.getAdvertisedPorts().entrySet()) {
+          if (port.getValue() == null || port.getValue() <= 0)
+            continue;
+          if (ports.has(port.getKey()))
+            LogManager.instance().log(GetServerHandler.class, Level.WARNING,
+                "Plugin '%s' advertises the service '%s', which another plugin already advertises: ignored", null,
+                plugin.getName(), port.getKey());
+          else
+            ports.put(port.getKey(), port.getValue().intValue());
+        }
+      } catch (final RuntimeException e) {
+        // A PLUGIN THAT CANNOT ANSWER MUST NOT FAIL THE TOPOLOGY THE CLIENT IS ASKING FOR
+        LogManager.instance().log(GetServerHandler.class, Level.WARNING, "Cannot read the advertised ports of plugin '%s'", e,
+            plugin.getName());
+      }
+    }
+    return ports;
   }
 
   /**
