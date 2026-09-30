@@ -81,6 +81,20 @@ class Issue8713ChunkChainCycleTest extends TestHelper {
     });
   }
 
+  /**
+   * A walk that deletes what it visits must not meet a chunk it already deleted: with the A to B to A cycle it would
+   * resolve A again after deleting it.
+   */
+  @Test
+  void deleteAllSurvivesATwoChunkCycle() throws Exception {
+    final RID hub = createHubWithTwoChunkCycle();
+
+    runBounded(() -> {
+      database.transaction(() -> edgeLinkedListFor(hub).deleteAll());
+      return null;
+    });
+  }
+
   @Test
   void iteratorsEndOnATwoChunkCycle() throws Exception {
     final RID hub = createHubWithTwoChunkCycle();

@@ -20,12 +20,19 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * Detects a cycle of any length while walking a chunk chain, in constant memory and without allocating per hop
  * (Brent's algorithm): it remembers one checkpoint chunk, re-arms it at every power-of-two hop, and reports a cycle
  * when the walk comes back to it. A cycle is therefore caught within a few laps, whatever its length, where a
  * self-pointer comparison only catches a cycle of one (issue #8713). A legitimate chain never revisits a chunk, so
  * it never trips, however long it is.
+ * <p>
+ * Brent's detection reports the cycle a lap or so after the chain closes, so a walk that DESTROYS what it visits
+ * (deleting a chunk, then following a pointer back to it) needs {@link #exact} instead: it remembers every chunk and
+ * reports the first revisit, at the cost of one set entry per chunk on those walks only.
  * <p>
  * A cycle ENDS the walk, the policy every walker of the chain already applies to a chunk pointing at itself.
  * Because the detection happens a lap or so after the chain closes on itself, the chunks of the cycle may be
@@ -34,15 +41,31 @@ import com.arcadedb.database.RID;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ChainCycleGuard {
+  private final Set<RID> visited;
   private RID checkpoint;
   private int hops;
   private int limit = 1;
 
   ChainCycleGuard(final RID head) {
     this.checkpoint = head;
+    this.visited = null;
+  }
+
+  private ChainCycleGuard(final RID head, final Set<RID> visited) {
+    this.visited = visited;
+    if (head != null)
+      visited.add(head);
+  }
+
+  /**
+   * A guard that reports the FIRST revisit of a chunk, for the walks that delete what they visit.
+   */
+  static ChainCycleGuard exact(final RID head) {
+    return new ChainCycleGuard(head, new HashSet<>());
   }
 
   private ChainCycleGuard(final RID checkpoint, final int hops, final int limit) {
+    this.visited = null;
     this.checkpoint = checkpoint;
     this.hops = hops;
     this.limit = limit;
@@ -52,6 +75,8 @@ final class ChainCycleGuard {
    * A snapshot to resume from, for the iterators that rewind their position after a look-ahead walk.
    */
   ChainCycleGuard copy() {
+    if (visited != null)
+      throw new UnsupportedOperationException("An exact guard is not snapshotted");
     return new ChainCycleGuard(checkpoint, hops, limit);
   }
 
@@ -61,6 +86,8 @@ final class ChainCycleGuard {
    * @return true when {@code next} is the checkpoint, that is when the chain is a cycle
    */
   boolean revisits(final RID next) {
+    if (visited != null)
+      return !visited.add(next);
     if (next.equals(checkpoint))
       return true;
     if (++hops == limit) {

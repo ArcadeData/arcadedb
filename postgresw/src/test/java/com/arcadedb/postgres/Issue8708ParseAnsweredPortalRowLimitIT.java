@@ -61,6 +61,38 @@ class Issue8708ParseAnsweredPortalRowLimitIT extends PostgresWireProtocolTestBas
     assertSliced("SELECT typname FROM pg_catalog.pg_type");
   }
 
+  @Test
+  @DisplayName("[#8708] a partially fetched SHOW ALL keeps its slice when a SET runs before the next Execute")
+  void partiallyFetchedShowAllIsNotRestartedBySet() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "SHOW ALL");
+        final int total = count(readUntilReadyForQuery(in), 'D');
+
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        sendParse(out, "", "SHOW ALL");
+        sendBind(out, "P1", "");
+        sendExecute(out, "P1", LIMIT);
+        sendSync(out);
+        assertThat(count(readUntilReadyForQuery(in), 'D')).isEqualTo(LIMIT);
+
+        sendSimpleQuery(out, "SET statement_timeout = 7000");
+        readUntilReadyForQuery(in);
+
+        // The cursor resumes after the first slice: it neither restarts nor re-reads a different answer
+        sendExecute(out, "P1", 0);
+        sendSync(out);
+        assertThat(count(readUntilReadyForQuery(in), 'D')).isEqualTo(total - LIMIT);
+      });
+    }
+  }
+
   private void assertSliced(final String query) throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
