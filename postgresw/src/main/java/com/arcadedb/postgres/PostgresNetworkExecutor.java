@@ -890,7 +890,7 @@ public class PostgresNetworkExecutor extends Thread {
           if (portal.suspended)
             portalSuspendedResponse();
           else
-            writeCommandComplete(portal.query, portal.fullResultSet != null ? portal.resultCursor : portal.cachedResultSet.size());
+            writeCommandComplete(portal.query, portal.resultCursor);
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
           final long serStart = System.nanoTime();

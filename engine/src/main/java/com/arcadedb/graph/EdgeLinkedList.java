@@ -493,7 +493,7 @@ public class EdgeLinkedList {
 
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
     while (current != null) {
       // #5155: walk the chain with unanchored reads. A chunk that does not hold the target is read-only, so
       // anchoring it (loadChunkForWrite -> fetchPageInTransaction -> page.modify()) would copy its whole page
@@ -524,7 +524,7 @@ public class EdgeLinkedList {
   public void removeEdgeRID(final RID edge) {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
     while (current != null) {
       // #5155: probe read-only, anchor only the chunk that actually holds the edge (see removeEdge).
       if (current.containsEdge(edge)) {

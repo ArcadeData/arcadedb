@@ -73,7 +73,7 @@ class Issue8707GremlinStaleReadWriteTest {
     read.property("m", "literal");
     graph.tx().commit();
 
-    final com.arcadedb.graph.Vertex stored = graph.getDatabase().lookupByRID(rid, true).asVertex();
+    final var stored = graph.getDatabase().lookupByRID(rid, true).asVertex();
     assertThat(stored.getString("m")).isEqualTo("literal");
     // The write is the property's own, so the concurrent change to ANOTHER property must survive it
     assertThat(stored.getInteger("n")).as("the concurrent commit is not reverted").isEqualTo(5);

@@ -41,41 +41,41 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ChainCycleGuard {
-  private final Set<RID> visited;
-  private RID checkpoint;
+  private final boolean    exact;
+  private Set<RID>          visited;
+  private RID               checkpoint;
   private int hops;
   private int limit = 1;
 
   ChainCycleGuard(final RID head) {
+    this(head, false);
+  }
+
+  private ChainCycleGuard(final RID head, final boolean exact) {
     this.checkpoint = head;
-    this.visited = null;
-  }
-
-  private ChainCycleGuard(final RID head, final Set<RID> visited) {
-    this.visited = visited;
-    if (head != null)
-      visited.add(head);
-  }
-
-  /**
-   * A guard that reports the FIRST revisit of a chunk, for the walks that delete what they visit.
-   */
-  static ChainCycleGuard exact(final RID head) {
-    return new ChainCycleGuard(head, new HashSet<>());
+    this.exact = exact;
   }
 
   private ChainCycleGuard(final RID checkpoint, final int hops, final int limit) {
-    this.visited = null;
+    this.exact = false;
     this.checkpoint = checkpoint;
     this.hops = hops;
     this.limit = limit;
   }
 
   /**
+   * A guard that reports the FIRST revisit of a chunk, for the walks that delete what they visit. The set is only
+   * allocated on the first hop, so a one-chunk chain costs nothing.
+   */
+  static ChainCycleGuard exact(final RID head) {
+    return new ChainCycleGuard(head, true);
+  }
+
+  /**
    * A snapshot to resume from, for the iterators that rewind their position after a look-ahead walk.
    */
   ChainCycleGuard copy() {
-    if (visited != null)
+    if (exact)
       throw new UnsupportedOperationException("An exact guard is not snapshotted");
     return new ChainCycleGuard(checkpoint, hops, limit);
   }
@@ -86,8 +86,14 @@ final class ChainCycleGuard {
    * @return true when {@code next} is the checkpoint, that is when the chain is a cycle
    */
   boolean revisits(final RID next) {
-    if (visited != null)
+    if (exact) {
+      if (visited == null) {
+        visited = new HashSet<>();
+        if (checkpoint != null)
+          visited.add(checkpoint);
+      }
       return !visited.add(next);
+    }
     if (next.equals(checkpoint))
       return true;
     if (++hops == limit) {

@@ -102,9 +102,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
       final RID previousIdentity = currentContainer.getIdentity();
-      if (currentIdentity != null && currentIdentity.equals(previousIdentity)
-          // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER
-          || previousIdentity != null && cycleGuard.revisits(previousIdentity))
+      // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER
+      if ((currentIdentity != null && currentIdentity.equals(previousIdentity))
+          || (previousIdentity != null && cycleGuard.revisits(previousIdentity)))
         currentContainer = null;
     }
     return currentContainer;
