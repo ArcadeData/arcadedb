@@ -3866,13 +3866,24 @@ public class LocalSchema implements Schema {
     if (stage == null || !stage.restored)
       return;
 
+    // Best effort from here on, like the install loops below: the generation is already published, so a teardown that
+    // throws must not leave the members half swapped
     for (final String triggerName : new ArrayList<>(triggers.keySet()))
-      unregisterTriggerListener(triggerName);
+      try {
+        unregisterTriggerListener(triggerName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error unregistering trigger '%s': %s", e, triggerName, e.getMessage());
+      }
     triggers.clear();
     triggers.putAll(stage.triggers);
 
     for (final String viewName : new ArrayList<>(materializedViews.keySet()))
-      unregisterMaterializedViewRefresh(viewName);
+      try {
+        unregisterMaterializedViewRefresh(viewName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error releasing materialized view '%s': %s", e, viewName,
+            e.getMessage() != null ? e.getMessage() : e.toString());
+      }
     materializedViews.clear();
     materializedViews.putAll(stage.materializedViews);
 
@@ -3930,7 +3941,10 @@ public class LocalSchema implements Schema {
     final Map<String, FunctionLibraryDefinition> functionLibraries  = new LinkedHashMap<>();
     final Map<String, JSONObject>               extensions          = new LinkedHashMap<>();
     final Map<Integer, Integer>                 migratedFileIds     = new HashMap<>();
-    /** Whether the schema file was actually read: a load that found no file leaves the live members alone. */
+    /**
+     * Whether the schema file was actually read: a load that found no file leaves the live members alone. The
+     * file-migration map is staged with the members and shares this gate.
+     */
     boolean                                     restored;
 
     final TimeZone previousTimeZone;

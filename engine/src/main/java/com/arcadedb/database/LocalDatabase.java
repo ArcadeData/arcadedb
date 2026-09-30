@@ -1618,6 +1618,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
                 // The deferred write must not reach the commit either: it would store the refused values in a body
                 // no index entry describes. A record already queued by an earlier update keeps its queue entry,
                 // because the earlier update's indexed state is still what the index holds.
+                // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
+                // the record overwrites them, so they are harmless.)
                 if (!alreadyQueued)
                   tx.removeRecordFromCache(rid);
                 throw e;
