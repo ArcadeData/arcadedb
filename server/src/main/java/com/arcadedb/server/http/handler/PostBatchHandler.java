@@ -1255,8 +1255,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     private final long              maxBodySize;
     private       long              bytesRead;
     private       boolean           endOfBody;
-    /** The failure that ended this body, or {@code null} while it is still readable. */
-    private       IOException       bodyFailure;
+    /**
+     * The failure that ended this body, or {@code null} while it is still readable. Volatile: a forwarded body is
+     * read on the JDK client's publisher thread and asked about on the handler thread (issue #8161).
+     */
+    private volatile IOException    bodyFailure;
 
     /**
      * An UNCAPPED counter, for the callers that wrap a stream whose size is already bounded by something else -
@@ -1316,10 +1319,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     private void refuseIfOverCap() throws IOException {
       if (maxBodySize > 0 && bytesRead > maxBodySize) {
-        bodyFailure = new RequestTooBigException(
+        final RequestTooBigException tooBig = new RequestTooBigException(
             "Request body size exceeds the maximum allowed size of " + maxBodySize + " bytes. Configure '"
                 + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + "' to increase the limit");
-        throw bodyFailure;
+        bodyFailure = tooBig;
+        throw tooBig;
       }
     }
 
@@ -1329,6 +1333,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     boolean hasBodyFailed() {
       return bodyFailure != null;
+    }
+
+    /**
+     * The refusal this body ended with when it was cut off at {@code arcadedb.server.httpBodyContentMaxSize}, or
+     * {@code null} when it was not. Read by the leader-forwarding relay (issue #8161), where the refusal is raised on
+     * the JDK client's publishing thread and reaches the caller of {@code HttpClient.send} only as the cause of a
+     * plain {@link IOException} that says nothing about which side failed; the stream itself is the one witness that
+     * cannot be mistaken about it.
+     */
+    RequestTooBigException refusedOverCap() {
+      return bodyFailure instanceof RequestTooBigException tooBig ? tooBig : null;
     }
 
     /**
@@ -1455,6 +1470,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     long getBytesRead() {
       return bytesRead;
+    }
+
+    /** The cap this body enforces, {@code <= 0} when uncapped. */
+    long getMaxBodySize() {
+      return maxBodySize;
     }
 
     /** Whether the parser reached the end of the request body. */
@@ -1894,16 +1914,42 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .toString());
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within deadlineMs - the failure #7526/#7542 were
-      // filed about: previously nothing bounded this wait at all.
+      // filed about: previously nothing bounded this wait at all. The body may have been cut by our own cap first.
+      // Not unit-tested: a cap trip aborts send() with an IOException at once, so reaching this arm needs a race.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
           .toString());
     } catch (final Exception e) {
+      // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
-      return new ExecutionResponse(503,
-          "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Error forwarding batch to leader: " + e.getMessage())
+          .toString());
     }
+  }
+
+  /**
+   * Rethrows the refusal of a forwarded body that this node's own cap cut off mid-relay (issue #8161), so
+   * sendMappedErrorResponse answers the same 413 the leader would rather than a leader-blaming 503/504. The stream
+   * is asked, not the exception, because the JDK client reports the refusal only as the cause of a plain
+   * IOException. Connect failures need no check: the body is not read before the connection is up.
+   */
+  private void rethrowIfRefusedOverCap(final CountingInputStream body, final String databaseName)
+      throws RequestTooBigException {
+    final RequestTooBigException tooBig = body.refusedOverCap();
+    if (tooBig == null)
+      return;
+    // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
+    // A client-caused refusal: logged at the level the leader's own 413 uses, not as a warning per request.
+    LogManager.instance().log(this, getUserSevereErrorLogLevel(),
+        "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
+            + "exceeded '%s' (%,d bytes) on this node. Raise that setting or split the payload; the leader's log "
+            + "reports what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
+        GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(), body.getMaxBodySize());
+    throw tooBig;
   }
 
   /**
