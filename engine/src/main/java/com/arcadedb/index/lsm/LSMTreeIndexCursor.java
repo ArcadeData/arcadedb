@@ -28,6 +28,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
@@ -78,11 +79,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
   /** Key of the in-tx overlay batch currently held: non-null exactly while a batch is pending, whether it carries
    *  live ADDs ({@link #txCursor}), pending REMOVEs (#6927), or both. */
   private       Object[]                               txCursorKeys;
-  /** #6927: RIDs the pending overlay batch DELETES from the disk entry at {@link #txCursorKeys}. */
-  private       Set<RID>                               txRemovedRIDs;
-  /** #6927: the pending batch removes the WHOLE key - a {@code remove(keys)} carrying no RID, or any REMOVE on a
-   *  unique index, where the key can hold at most one RID. */
-  private       boolean                                txKeyWideRemove;
+  /** #6927: what the pending overlay batch DELETES from the disk entry at {@link #txCursorKeys} (#6970: the rules
+   *  live in {@link PendingIndexRemovals}), or null when it deletes nothing. */
+  private       PendingIndexRemovals                   txRemovals;
   /** Dead (tombstone-resolved) keys skipped by this scan; flushed to the main index stats at scan end. */
   private       long                                   deadEntriesSkipped = 0;
   /** Prefetched entry (#5635): produced by {@link #fetchNext()}, drained by {@link #next()}. Never a tombstone. */
@@ -596,14 +595,12 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (includeTx) {
         // #6927: SUBTRACT the overlay's pending REMOVEs from the disk RIDs before the overlay ADDs are merged in.
         // This is the range-scan half of the filter LSMTreeIndex.get() has always applied to a point lookup
-        // (its removedRids set): without it a key deleted - or re-keyed by an UPDATE, which DocumentIndexer turns
-        // into REMOVE(oldKey,rid) + ADD(newKey,rid) - is still read straight off the page, because the removal
-        // only reaches the pages at commit time. Subtracting BEFORE the ADDs keeps a re-insert at the same key
-        // winning over the removal that preceded it.
-        if (txKeyWideRemove)
-          mergedRIDs.clear();
-        else if (txRemovedRIDs != null)
-          mergedRIDs.removeAll(txRemovedRIDs);
+        // (both now built by PendingIndexRemovals, #6970): without it a key deleted - or re-keyed by an UPDATE,
+        // which DocumentIndexer turns into REMOVE(oldKey,rid) + ADD(newKey,rid) - is still read straight off the
+        // page, because the removal only reaches the pages at commit time. Subtracting BEFORE the ADDs keeps a
+        // re-insert at the same key winning over the removal that preceded it.
+        if (txRemovals != null)
+          txRemovals.removeFrom(mergedRIDs);
 
         // #5055: drain ALL overlay RIDs sharing this key (the whole txCursor batch) and merge them in.
         if (txCursor != null)
@@ -613,8 +610,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         // BATCH CONSUMED: drop it so the tail below navigates to the NEXT overlay key
         txCursor = null;
         txCursorKeys = null;
-        txRemovedRIDs = null;
-        txKeyWideRemove = false;
+        txRemovals = null;
       }
 
       // a consumed key with no surviving RID is pure skip work caused by tombstone build-up:
@@ -678,8 +674,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
   private void getClosestEntryInTx(final Object[] keys, final boolean inclusive) {
     txCursor = null;
     txCursorKeys = null;
-    txRemovedRIDs = null;
-    txKeyWideRemove = false;
+    txRemovals = null;
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
@@ -715,6 +710,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         // WHOLE in-tx overlay look exhausted beyond it, even though older/newer pending keys past it were still
         // live - e.g. a composite-index prefix scan whose ORDER BY DESC starts from the just-deleted top of the
         // group came back empty instead of falling through to the next surviving row (#6592 follow-up).
+        final boolean unique = index.isUnique();
         while (entry != null) {
           final Object[] tmpKeys = entry.getKey().values;
 
@@ -743,28 +739,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
               if (value == null)
                 continue;
 
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
-                keyContributes = true;
-                if (value.rid == null || index.isUnique())
-                  // remove(keys) carries no RID and kills the whole key. On a unique index every REMOVE does:
-                  // the key holds at most one RID, which is exactly why LSMTreeIndex.get() answers a pending
-                  // REMOVE with EMPTY_CURSOR there.
-                  txKeyWideRemove = true;
-                else {
-                  // NON-UNIQUE: A KEY CAN STILL HOLD OTHER LIVE VALUES, SO REMOVE JUST THIS RID
-                  if (txRemovedRIDs == null)
-                    txRemovedRIDs = new HashSet<>();
-                  txRemovedRIDs.add(value.rid);
-                }
-                continue;
-              }
+              // #6970: which disk RIDs this entry hides (REMOVE / key-wide REMOVE / REPLACE.oldRid) is decided in
+              // ONE place, shared with LSMTreeIndex.get() and HashIndex.get(). On a unique index every REMOVE is
+              // key-wide: the key holds at most one RID.
+              txRemovals = PendingIndexRemovals.accumulate(txRemovals, value, unique);
 
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REPLACE && value.oldRid != null) {
-                // REPLACE is a same-key REMOVE(oldRid) + ADD(rid) merged into one entry, and commit does replay
-                // the removal of oldRid (TransactionIndexContext.commit): the scan must not emit it either.
-                if (txRemovedRIDs == null)
-                  txRemovedRIDs = new HashSet<>();
-                txRemovedRIDs.add(value.oldRid);
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
+                // a key whose only pending changes are REMOVEs still contributes: it suppresses disk RIDs downstream
+                keyContributes = true;
+                continue;
               }
 
               if (txChanges == null)
@@ -817,8 +800,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
     // a closed cursor is exhausted: drop the prefetched entry and the merge state so hasNext() cannot resurrect it
     txCursor = null;
     txCursorKeys = null;
-    txRemovedRIDs = null;
-    txKeyWideRemove = false;
+    txRemovals = null;
     currentValues = null;
     currentValueIndex = 0;
     nextValue = null;
