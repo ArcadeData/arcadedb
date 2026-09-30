@@ -139,24 +139,63 @@ class RaftClusterManager {
    * {@code POST /api/v1/cluster/peer}, whose payload has no priority to pass.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
+    addPeer(newPeer, name, null);
+  }
+
+  /**
+   * {@link #addPeer(RaftPeer, String)} for a peer whose HTTP address the caller DECLARED (the {@code httpPort} or
+   * {@code http:} field of a {@code connect cluster} target).
+   * <p>
+   * The declared address is written <b>before</b> the membership change is submitted (issue #8330): the entry that
+   * change commits starts the leader's security seed, whose group and API-token entries pass the #7511 capability
+   * gate only once the new peer answers a probe sent to the address this map holds. Written after the commit, the
+   * seed raced it and probed the derived {@code raftPort + offset} guess instead. The address is therefore visible
+   * to other readers of the map while the change is in flight, for a peer that is not a member yet.
+   * <p>
+   * If the change fails and the peer is not in the current configuration, the declared entry is withdrawn - the
+   * previous one put back, or none left - unless something else has replaced it meanwhile. A change that timed out
+   * can still commit later; if that happens after the check, the peer is a member resolved by the derived address,
+   * exactly as without a declared one. Without a declared address the derived one is written after the commit, as
+   * before.
+   *
+   * @param declaredHttpAddress the {@code host:port} declared for the peer's HTTP listener, or {@code null} to derive
+   *                            one
+   */
+  void addPeer(final RaftPeer newPeer, final String name, final String declaredHttpAddress) {
     final String peerId = newPeer.getId().toString();
     final String address = newPeer.getAddress();
+    final Map<RaftPeerId, String> httpAddresses = raftHAServer.getHttpAddresses();
+
+    final String previousHttpAddress = declaredHttpAddress != null
+        ? httpAddresses.put(newPeer.getId(), declaredHttpAddress)
+        : null;
 
     // COMPARE_AND_SET commits only if the leader's configuration is still the snapshot the new one was built from,
     // so two near-simultaneous adds cannot clobber each other: the loser is rebuilt on top of the winner by the
     // retry loop. A plain setConfiguration(getLivePeers()+peer) is read-modify-write last-write-wins and silently
     // drops one of two concurrent adds (issue #4795). Not Mode.ADD, which is atomic too but cannot carry the
     // address-uniqueness check that has to run against the state the change is applied to (issue #7802).
-    setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
-        "The peer answered a connection but the Raft membership change did not commit: Ratis holds the change"
-            + " uncommitted until the new peer has caught up with the leader's log, and the change is a"
-            + " compare-and-set that is refused, and retried, whenever another membership change lands first, so a"
-            + " cluster whose membership keeps changing can also run the budget out. Check that the server at "
-            + address + " is running as part of this cluster - same cluster name and cluster token - and is"
-            + " not still replaying its own log.");
+    try {
+      setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
+          "The peer answered a connection but the Raft membership change did not commit: Ratis holds the change"
+              + " uncommitted until the new peer has caught up with the leader's log, and the change is a"
+              + " compare-and-set that is refused, and retried, whenever another membership change lands first, so a"
+              + " cluster whose membership keeps changing can also run the budget out. Check that the server at "
+              + address + " is running as part of this cluster - same cluster name and cluster token - and is"
+              + " not still replaying its own log.");
+    } catch (final RuntimeException | Error e) {
+      if (declaredHttpAddress != null && !isMember(newPeer.getId())) {
+        // Conditional both ways, so an entry something else wrote while the change was in flight is kept.
+        if (previousHttpAddress != null)
+          httpAddresses.replace(newPeer.getId(), declaredHttpAddress, previousHttpAddress);
+        else
+          httpAddresses.remove(newPeer.getId(), declaredHttpAddress);
+      }
+      throw e;
+    }
 
     final int colonIdx = address.lastIndexOf(':');
-    if (colonIdx > 0) {
+    if (declaredHttpAddress == null && colonIdx > 0) {
       final String host = address.substring(0, colonIdx);
       try {
         final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));
@@ -170,6 +209,18 @@ class RaftClusterManager {
       raftHAServer.registerPeerDisplayName(newPeer.getId(), name);
 
     LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
+  }
+
+  /** Whether {@code peerId} is in the configuration this node currently knows; never throws. */
+  private boolean isMember(final RaftPeerId peerId) {
+    try {
+      for (final RaftPeer peer : raftHAServer.getLivePeers())
+        if (peer.getId().equals(peerId))
+          return true;
+    } catch (final RuntimeException ignored) {
+      // Unreadable configuration: treat as "not a member", the answer that withdraws the address.
+    }
+    return false;
   }
 
   void removePeer(final String peerId) {
