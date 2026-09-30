@@ -88,6 +88,21 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
   }
 
   @Test
+  void compositeCiIndexRangeOnTheSecondFieldKeepsEveryMatchingRecord() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Q");
+      database.command("sql", "CREATE PROPERTY Q.k STRING");
+      database.command("sql", "CREATE PROPERTY Q.name STRING");
+      database.command("sql", "CREATE INDEX ON Q (k, name COLLATE ci) NOTUNIQUE");
+      for (final String n : List.of("John", "MARY", "anne", "Bob"))
+        database.command("sql", "INSERT INTO Q SET k = 'x', name = ?", n);
+    });
+    assertThat(names("SELECT name FROM Q WHERE k = 'x' AND name.toLowerCase() >= 'C'")).containsExactlyInAnyOrder("John", "MARY", "anne", "Bob");
+    assertThat(names("SELECT name FROM Q WHERE k = 'x' AND name.toLowerCase() >= 'a' AND name.toLowerCase() < 'C'")).isEmpty();
+    assertThat(names("SELECT name FROM Q WHERE k = 'x' AND name.toLowerCase() >= 'a' AND name.toLowerCase() < 'c'")).containsExactlyInAnyOrder("anne", "Bob");
+  }
+
+  @Test
   void rangeOperatorsAgreeWithTheSubqueryForm() {
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'A' AND name.toLowerCase() < 'C'")).isEmpty();
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'a' AND name.toLowerCase() < 'c'")).containsExactlyInAnyOrder("anne", "Bob");
