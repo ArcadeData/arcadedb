@@ -2076,8 +2076,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
    * @param body          the relayed upload, asked whether this node's cap cut it
    */
-  // Package-private so the in-band refusal of issue #8674 can be driven with a scripted leader answer: on the JDKs
-  // this runs on, the live forward never reaches it with a refused body (see the note on the terminal line below).
+  // Package-private so the in-band refusal of issue #8674 can be driven with a scripted leader answer.
   ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
       final String url, final HttpResponse<InputStream> response, final long readTimeoutMs,
       final CountingInputStream body) throws IOException {
@@ -2111,47 +2110,47 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
         final OutputStream out = WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(),
             () -> "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
-      // The last line relayed, kept only to tell whether the stream already has its ending (issue #8674), and the
-      // counters of the last progress line - tracked as they pass rather than read off the last line, which a leader
-      // cut mid-line leaves as a fragment that carries none. Only a line that opens as a progress event is parsed.
-      String lastLine = null;
+      // What issue #8674 needs to know once the relay ends: whether the leader's answer already has its ending, the
+      // counters of the last progress line (tracked as they pass: a leader cut mid-line leaves a fragment carrying
+      // none), and whether it was the CLIENT that went away, which no further line can reach.
+      boolean ended = false;
+      boolean clientGone = false;
       final long[] lastProgress = new long[2];
       IOException relayFailure = null;
       try {
         for (String line = in.readLine(); line != null; line = in.readLine()) {
-          out.write(line.getBytes(StandardCharsets.UTF_8));
-          out.write('\n');
-          out.flush();
-          lastLine = line;
-          if (line.startsWith(PROGRESS_EVENT_PREFIX))
-            readProgressCounters(line, lastProgress);
+          try {
+            out.write(line.getBytes(StandardCharsets.UTF_8));
+            out.write('\n');
+            out.flush();
+          } catch (final IOException e) {
+            clientGone = true;
+            throw e;
+          }
+          if (!line.isBlank())
+            ended = trackRelayedEvent(line, lastProgress);
         }
       } catch (final IOException e) {
         relayFailure = e;
       }
 
-      // This node's own body cap cut the relayed upload after the leader had started answering (issue #8674), so the
-      // 200 is on the wire and the 413 #8161 answers with can only travel in band - the same line the leader writes
-      // when it is fed the same oversize body directly. Asked of the stream, not of the failure: the JDK client
-      // reports the cut only as a plain IOException, or not at all when the leader's answer then simply ends. Never a
-      // second terminal line: a leader that already wrote one has given the stream its ending.
-      //
-      // Unreachable on the JDKs this runs on (21, 25, 27): HttpClient hands back an HTTP/1.1 response only once the
-      // request body has been published whole, so a cap trip fails the send itself and forwardBatchToLeader answers
-      // the real 413 (#8161). Kept so that a client that starts delivering the response mid-upload cannot bring
-      // back the leader-blaming, terminal-less ending this issue was filed about.
+      // This node's own body cap cut the relayed upload after the leader had started answering (issue #8674): the 200
+      // is on the wire, so the 413 #8161 answers with can only travel in band, as the line the leader writes for the
+      // same body. Asked of the stream, not of the failure: the JDK reports the cut as a plain IOException, or not at
+      // all when the leader's answer then simply ends. Unreachable on JDK 21/25/27, which hand back the response only
+      // once the upload is published whole (#8719); kept for a client that does not.
       final RequestTooBigException tooBig = body.refusedOverCap();
-      if (tooBig != null && !isTerminalNdJsonLine(lastLine)) {
+      if (tooBig != null && !ended) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(),
             "Batch load on database '%s' was refused after relaying %,d bytes to the leader, which had already "
-                + "started answering, because the request body exceeded '%s' (%,d bytes) on this node. The client's "
-                + "stream ends with an in-band 413. Raise that setting or split the payload; the leader's log reports "
-                + "what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
-            GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(), body.getMaxBodySize());
-        if (relayFailure != null)
-          LogManager.instance().log(this, Level.FINE, "The relay of database '%s' ended on: %s", null, databaseName,
-              relayFailure.getMessage());
-        writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastProgress);
+                + "started answering, because the request body exceeded '%s' (%,d bytes) on this node. %s Raise that "
+                + "setting or split the payload; the leader's log reports what it loaded before the relay was cut", null,
+            databaseName, body.getBytesRead(), GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
+            body.getMaxBodySize(), clientGone
+                ? "The client had already gone (" + relayFailure.getMessage() + "), so it is not told."
+                : "The client's stream ends with an in-band 413.");
+        if (!clientGone)
+          writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastProgress);
       } else if (relayFailure != null)
         logRelayFailure(relayFailure, leaderBody, url, readTimeoutMs, databaseName);
     } catch (final IOException e) {
@@ -2210,23 +2209,25 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     }
   }
 
-  /** How {@link NdJsonResultStream} opens a batch progress line: the envelope key comes first, with no whitespace. */
-  private static final String PROGRESS_EVENT_PREFIX = "{\"progress\"";
-
-  /** Updates {@code counters} from a relayed progress line; a line that does not parse leaves them as they were. */
-  private static void readProgressCounters(final String line, final long[] counters) {
+  /**
+   * Reads one relayed line: a progress event updates {@code counters}, and the answer is whether the line is one of
+   * the batch encoding's terminal events, {@code summary} or {@code error}. A line that does not parse is neither.
+   */
+  private static boolean trackRelayedEvent(final String line, final long[] counters) {
     final JSONObject event = parseNdJsonLine(line);
-    final JSONObject progress = event != null ? event.getJSONObject("progress", null) : null;
-    if (progress == null)
-      return;
-    counters[0] = progress.getLong("verticesCreated", counters[0]);
-    counters[1] = progress.getLong("edgesCreated", counters[1]);
-  }
-
-  /** Whether a relayed line is one of the batch encoding's terminal events, {@code summary} or {@code error}. */
-  static boolean isTerminalNdJsonLine(final String line) {
-    final JSONObject event = parseNdJsonLine(line);
-    return event != null && (event.has("summary") || event.has("error"));
+    if (event == null)
+      return false;
+    if (event.has("progress")) {
+      try {
+        final JSONObject progress = event.getJSONObject("progress");
+        counters[0] = progress.getLong("verticesCreated", counters[0]);
+        counters[1] = progress.getLong("edgesCreated", counters[1]);
+      } catch (final RuntimeException e) {
+        // Not the shape this node writes: the counters stay those of the last progress line that had it.
+      }
+      return false;
+    }
+    return event.has("summary") || event.has("error");
   }
 
   /** The event a relayed line carries, or {@code null} for no line or one that is not a JSON object. */

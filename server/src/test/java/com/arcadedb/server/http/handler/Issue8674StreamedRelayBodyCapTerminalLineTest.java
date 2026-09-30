@@ -33,10 +33,12 @@ import org.junit.jupiter.api.Timeout;
 import javax.net.ssl.SSLSession;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -83,8 +85,9 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   private static final long   CAP_BYTES      = 1_024L;
   private static final long   BUDGET_MS      = 10_000L;
   private static final int    CLIENT_READ_MS = 30_000;
-  private static final String PROGRESS_LINE  =
-      "{\"progress\":{\"phase\":\"vertices\",\"verticesCreated\":7,\"edgesCreated\":0}}";
+  /** Written by the leader's own writer, so a change to its format breaks this test rather than the relay's reading. */
+  private static final String PROGRESS_LINE  = leaderLine("progress",
+      new JSONObject().put("phase", "vertices").put("verticesCreated", 7L).put("edgesCreated", 0L));
 
   private Undertow follower;
 
@@ -157,6 +160,16 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
     final List<String> lines = relay(overCapBody(), PROGRESS_LINE + "\n" + leaderError + "\n", true);
 
     assertThat(lines).containsExactly(PROGRESS_LINE, leaderError);
+  }
+
+  /** Same with a {@code summary}, the other terminal event, followed by a stray blank line that ends nothing. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aSummaryTheLeaderAlreadyWroteIsNotFollowedByASecondTerminalLineEvenAfterABlankLine() throws Exception {
+    final String summary = leaderLine("summary", new JSONObject().put("verticesCreated", 7L).put("edgesCreated", 0L));
+    final List<String> lines = relay(overCapBody(), PROGRESS_LINE + "\n" + summary + "\n\n", false);
+
+    assertThat(lines).containsExactly(PROGRESS_LINE, summary, "");
   }
 
   /**
@@ -232,6 +245,16 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
   }
 
   // ---------------------------------------------------------------------------------------------------------
+
+  private static String leaderLine(final String kind, final JSONObject body) {
+    final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    try (final NdJsonResultStream stream = new NdJsonResultStream(buffer)) {
+      stream.writeEvent(kind, body, true);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    return buffer.toString(StandardCharsets.UTF_8).stripTrailing();
+  }
 
   private static void assertIn413ErrorLine(final String line, final long verticesCreated) {
     final JSONObject terminal = new JSONObject(line);
