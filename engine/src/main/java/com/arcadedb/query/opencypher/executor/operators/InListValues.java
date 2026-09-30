@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.opencypher.ast.Expression;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Marker holding the right-hand-side values of a {@code WHERE x.prop IN [...]} predicate.
@@ -34,10 +36,25 @@ import java.util.List;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class InListValues {
-  private final List<Expression> values;
+  private final List<Expression>  values;
+  // Elements that stand for one key even when their parameter resolves to a collection: the operand of an equality
+  private final Set<Expression>   scalarValues;
 
   public InListValues(final List<Expression> values) {
+    this(values, Collections.emptySet());
+  }
+
+  /**
+   * @param scalarValues the elements, by identity, that came from an equality ({@code x = $p}) rather than from a list: a
+   *                     collection they resolve to is compared whole by Cypher, so the seek must not split it into one key per item
+   */
+  public InListValues(final List<Expression> values, final Set<Expression> scalarValues) {
     this.values = values;
+    this.scalarValues = scalarValues;
+  }
+
+  public boolean isScalar(final Expression element) {
+    return scalarValues.contains(element);
   }
 
   public List<Expression> getValues() {

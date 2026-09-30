@@ -140,6 +140,49 @@ class Issue8723CypherOrIndexSeekTest extends TestHelper {
   }
 
   @Test
+  void aCollectionParameterOfAnEqualityIsComparedWholeNotSplitIntoKeys() {
+    for (final String type : new String[] { "Tagged", "TaggedPlain" }) {
+      database.command("sql", "CREATE VERTEX TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".tags LIST");
+      database.command("sql", "CREATE PROPERTY " + type + ".s STRING");
+    }
+    database.command("sql", "CREATE INDEX ON Tagged (tags) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Tagged (s) NOTUNIQUE");
+    database.transaction(() -> {
+      for (final String type : new String[] { "Tagged", "TaggedPlain" }) {
+        database.newVertex(type).set("tags", List.of(1, 2)).set("s", "a").save();
+        database.newVertex(type).set("tags", List.of(1)).set("s", "b").save();
+        database.newVertex(type).set("tags", List.of(2, 1)).set("s", "c").save();
+      }
+    });
+    final Map<String, Object> params = Map.of("p", List.of(1, 2), "q", "c");
+    final List<Object> plain = column("MATCH (t:TaggedPlain) WHERE t.tags = $p OR t.s = $q RETURN t.s AS s ORDER BY s", params);
+    assertThat(column("MATCH (t:Tagged) WHERE t.tags = $p OR t.s = $q RETURN t.s AS s ORDER BY s", params)).isEqualTo(plain);
+  }
+
+  @Test
+  void aCompositeIndexAndASubTypeAreSeekedByAUnion() {
+    database.command("sql", "CREATE VERTEX TYPE Comp");
+    database.command("sql", "CREATE PROPERTY Comp.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Comp.b INTEGER");
+    database.command("sql", "CREATE PROPERTY Comp.c STRING");
+    database.command("sql", "CREATE INDEX ON Comp (a, b) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Comp (c) NOTUNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE CompChild EXTENDS Comp");
+    database.transaction(() -> {
+      for (int i = 0; i < 300; i++)
+        database.newVertex(i % 3 == 0 ? "CompChild" : "Comp").set("a", i % 10, "b", i % 7, "c", "c" + (i % 50)).save();
+    });
+    final String query = "MATCH (n:Comp) WHERE n.a = 3 OR n.c = 'c4' RETURN count(*) AS n";
+    long expected = 0;
+    for (int i = 0; i < 300; i++)
+      if (i % 10 == 3 || i % 50 == 4)
+        expected++;
+    assertThat(column(query, Map.of())).containsExactly(expected);
+    assertThat(explain(query)).contains("NodeIndexUnionSeek");
+  }
+
+  @Test
   void anOrOnOtherVariableDoesNotSeekTheAnchor() {
     final String query = "MATCH (e:E), (f:E) WHERE e.x = 3 OR f.x = 4 RETURN count(*) AS n";
     final long expected = (long) expectedIds(i -> i % 500 == 3).size() * VERTICES + (long) VERTICES * expectedIds(i -> i % 500 == 4).size()
