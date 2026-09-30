@@ -379,6 +379,8 @@ public class LocalSchema implements Schema {
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
+  // statistics.json reflects the last graceful close: applied once on open, never over live state on a later reload.
+  private             boolean                                storedStatisticsApplied     = false;
   private             boolean                                multipleUpdate                = false;
   /**
    * Non-null while {@link #dropType} is dropping its own indexes as part of removing the type entirely (issue
@@ -2465,6 +2467,12 @@ public class LocalSchema implements Schema {
   }
 
   private void readStatisticsFile() {
+    if (storedStatisticsApplied) {
+      carryLiveRecordCountsIntoRebuiltBuckets();
+      return;
+    }
+    storedStatisticsApplied = true;
+
     try {
       boolean legacyFile = false;
       File file = new File(databasePath + File.separator + STATISTICS_FILE_NAME);
@@ -2523,6 +2531,27 @@ public class LocalSchema implements Schema {
 
     } catch (Throwable e) {
       LogManager.instance().log(this, Level.WARNING, "Error on reading cached count file", e);
+    }
+  }
+
+  /**
+   * A full reload builds new bucket instances before publishing them: each inherits the counter and page hints of the
+   * live instance on the same file id. Exact because schema reloads on a live database run on the Raft apply thread,
+   * serially with record writes. An unknown live counter (-1) stays unknown and is recomputed.
+   */
+  private void carryLiveRecordCountsIntoRebuiltBuckets() {
+    for (final Component component : filesDuringLoad()) {
+      if (!(component instanceof LocalBucket rebuilt))
+        continue;
+
+      final Component live;
+      synchronized (files) {
+        live = rebuilt.getFileId() < files.size() ? files.get(rebuilt.getFileId()) : null;
+      }
+      if (live instanceof LocalBucket liveBucket && liveBucket != rebuilt && liveBucket.getName().equals(rebuilt.getName())) {
+        rebuilt.setCachedRecordCount(liveBucket.getCachedRecordCount());
+        rebuilt.setPageStatistics(liveBucket.getStatistics().getJSONArray("pages"));
+      }
     }
   }
 
