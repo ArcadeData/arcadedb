@@ -31,7 +31,7 @@ import java.util.concurrent.TimeoutException;
  * The pre-flight reachability probe an add-peer request runs before asking Raft to change the
  * configuration (issue #7514).
  * <p>
- * Ratis does not commit a {@code Mode.ADD} until the new peer has caught up, so an address nothing is
+ * Ratis does not commit a membership change that adds a peer until the new peer has caught up, so an address nothing is
  * listening on cannot succeed - it can only consume the membership-change retry budget and then report
  * the failure as a serialized {@code SetConfigurationRequest}. A TCP connect answers the one question
  * that decides it, in milliseconds - name resolution included, which is why the dial runs on a throwaway

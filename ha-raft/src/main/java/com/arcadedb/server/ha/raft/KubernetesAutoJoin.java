@@ -261,7 +261,9 @@ public class KubernetesAutoJoin {
           HALog.log(this, HALog.BASIC, "K8s auto-join: adding self (%s) to existing cluster via peer %s",
               localPeerId, peer.getId());
 
-          // Mode.ADD atomically appends one peer to the current configuration.
+          // Mode.ADD atomically appends one peer to the current configuration. It is deliberately not the guarded
+          // compare-and-set RaftClusterManager.addPeer issues (issue #7802): this pod adds ITSELF, under the id derived from
+          // its own address, so it cannot put a second id on an address the way two operator requests can.
           // Unlike setConfiguration() (last-write-wins), concurrent joins from different pods are safe.
           final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
               .setServersInNewConf(List.of(localPeer))

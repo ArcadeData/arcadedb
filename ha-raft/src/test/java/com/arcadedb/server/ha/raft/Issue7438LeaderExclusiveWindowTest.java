@@ -25,6 +25,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -140,17 +141,24 @@ class Issue7438LeaderExclusiveWindowTest {
       entered.countDown();
       drained.set(stateMachine.beginLeaderExclusive(db.getName(), 30_000));
     });
+    ddl.setDaemon(true);
     ddl.start();
-    assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
-    ddl.join(200);
-    assertThat(ddl.isAlive()).as("the DDL waits while an accepted entry is still to be applied").isTrue();
+    try {
+      assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+      // A lower bound only: a stall can make the DDL look blocked for longer, never make a blocked DDL finish.
+      ddl.join(200);
+      assertThat(ddl.isAlive()).as("the DDL waits while an accepted entry is still to be applied").isTrue();
 
-    // The apply thread's release of the entry's reservation lets the DDL go on.
-    stateMachine.releaseReservedVersions(db.getName(), walData);
-    ddl.join(10_000);
-    assertThat(ddl.isAlive()).isFalse();
-    assertThat(drained.get()).isTrue();
-    stateMachine.endLeaderExclusive(db.getName());
+      // The apply thread's release of the entry's reservation lets the DDL go on.
+      stateMachine.releaseReservedVersions(db.getName(), walData);
+      ddl.join(10_000);
+      assertThat(ddl.isAlive()).isFalse();
+      assertThat(drained.get()).isTrue();
+    } finally {
+      stateMachine.releaseReservedVersions(db.getName(), walData);
+      ddl.join(10_000);
+      stateMachine.endLeaderExclusive(db.getName());
+    }
   }
 
   /** The wait is bounded: a reservation that never clears must not hold the DDL, and so its write lock, forever. */
@@ -160,23 +168,48 @@ class Issue7438LeaderExclusiveWindowTest {
     final byte[] second = prepareIncrement(db, counter);
     assertThat(stateMachine.startTransaction(request(db.getName(), first, 1)).getException()).isNull();
 
-    final long started = System.nanoTime();
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
     final boolean drained = stateMachine.beginLeaderExclusive(db.getName(), 100);
-    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+    watch.assertGaveUpWithin(30_000, "a wait that gives up at its budget from one that waits for the reservation to clear");
 
     assertThat(drained).isFalse();
-    assertThat(elapsedMs).as("gave up after its budget, not after the reservation cleared").isLessThan(30_000);
     // Still exclusive: the DDL goes ahead, and the window protects it from anything that arrives from here.
     assertThat(stateMachine.startTransaction(request(db.getName(), second, 2)).getException())
         .isInstanceOf(NeedRetryException.class);
     stateMachine.endLeaderExclusive(db.getName());
   }
 
-  /** A drop or reinstall entry that wins the append race against an in-flight transaction (the issue's second point). */
+  /**
+   * The check-then-act window: an entry passes the first check, and the DDL registers while the entry is being
+   * validated. The registration is then seen by the check made after the reservation, which backs the entry out and
+   * releases what it reserved, so neither order lets it in.
+   */
   @Test
-  void aDropIsExclusiveToo() throws Exception {
+  void anEntryThatSlipsPastTheFirstCheckIsBackedOutAfterItsReservation() throws Exception {
     final byte[] walData = prepareIncrement(db, counter);
+    final ArcadeStateMachine racing = new ArcadeStateMachine() {
+      @Override
+      DatabaseInternal databaseFor(final String databaseName) {
+        // Runs after the first check and before the reservation: the DDL registers in between.
+        beginLeaderExclusive(databaseName, 0);
+        return db;
+      }
+    };
+
+    final org.apache.ratis.statemachine.TransactionContext refused = racing.startTransaction(request(db.getName(), walData, 1));
+
+    assertThat(refused.getException()).isInstanceOf(NeedRetryException.class).hasMessageContaining("schema change");
+    assertThat(racing.reservedPageVersions(db.getName())).as("the reservation it took is released").isZero();
+    racing.endLeaderExclusive(db.getName());
+  }
+
+  /** Ending a window that was never begun must not disturb one that is open. */
+  @Test
+  void anUnbalancedEndLeavesTheOpenWindowAlone() throws Exception {
+    final byte[] walData = prepareIncrement(db, counter);
+    stateMachine.endLeaderExclusive(otherDb.getName());
     stateMachine.beginLeaderExclusive(db.getName(), 0);
+    stateMachine.endLeaderExclusive(otherDb.getName());
     try {
       assertThat(stateMachine.startTransaction(request(db.getName(), walData, 1)).getException())
           .isInstanceOf(NeedRetryException.class);

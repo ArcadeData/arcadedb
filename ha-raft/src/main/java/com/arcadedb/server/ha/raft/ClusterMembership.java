@@ -54,10 +54,10 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ClusterMembership {
-  private final List<RaftPeer>   peers;
-  private final Set<RaftPeerId>  configured;
-  private final List<String>     notInConfiguration;
-  private final List<String>     notInServerList;
+  private final List<RaftPeer>     peers;
+  private final Set<RaftPeerId>    configured;
+  private final List<String>       notInConfiguration;
+  private final List<String>       notInServerList;
   private final List<List<String>> sharedAddresses;
 
   private ClusterMembership(final List<RaftPeer> peers, final Set<RaftPeerId> configured,
