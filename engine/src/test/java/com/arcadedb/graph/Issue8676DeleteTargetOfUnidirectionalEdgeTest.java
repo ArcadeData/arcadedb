@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #8676: deleting the TARGET vertex of a unidirectional edge walked only the target's own lists, which hold no
  * trace of the edge, so the edge record survived and the source kept a pointer to a deleted vertex.
  *
+ * The tests that count scans read JVM-wide counters, so they assume the test classes of a JVM run one after the other.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
@@ -248,6 +250,21 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
     assertThat(database.countType("U8", false)).isEqualTo(2);
     assertThat(a.asVertex().getVertices(Vertex.DIRECTION.OUT, "U8")).extracting(v -> v.getIdentity()).containsOnly(moved[0]);
     assertThat(IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, moved[0])).hasSize(2);
+  }
+
+  @Test
+  void movingTheTargetKeepsItsIncomingLightweightUnidirectionalEdges() {
+    createSchema(false);
+    database.getSchema().createVertexType("V8Other");
+    database.getSchema().buildEdgeType().withName("L8").withBidirectional(false).withLightweight(true).create();
+    createPair("U8");
+    database.transaction(() -> a.asVertex().newEdge("L8", b));
+
+    database.transaction(() -> database.command("sql", "MOVE VERTEX " + b + " TO TYPE:V8Other").close());
+    final RID moved = database.iterateType("V8Other", false).next().getIdentity();
+
+    assertThat(a.asVertex().getVertices(Vertex.DIRECTION.OUT, "L8")).extracting(v -> v.getIdentity()).containsOnly(moved);
+    assertThat(a.asVertex().getVertices(Vertex.DIRECTION.OUT, "U8")).extracting(v -> v.getIdentity()).containsOnly(moved);
   }
 
   @Test

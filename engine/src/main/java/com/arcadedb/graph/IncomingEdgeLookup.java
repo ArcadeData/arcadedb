@@ -278,7 +278,7 @@ public final class IncomingEdgeLookup {
       } catch (final HeapLimitExceededException e) {
         // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW, AND FOR THE NEXT ONES OF THE TRANSACTION
         // WITHOUT TRYING TO INDEX AGAIN. SAID ONCE AT WARNING, AS EVERY DELETE PAYS FOR A FULL SCAN OF THE TYPES
-        changes.deleteLookupTooLarge();
+        changes.markDeleteLookupTooLarge();
         LogManager.instance().log(IncomingEdgeLookup.class, FALLBACK_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
             "Cannot index the unidirectional edge types in heap to delete vertex %s in database '%s', scanning them for it alone "
                 + "(every vertex delete pays a full scan of them; raise %s to index them): %s", target, database.getName(),
