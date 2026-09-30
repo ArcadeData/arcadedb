@@ -339,8 +339,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected String[] stringArray(final Object fromObject) {
     return switch (fromObject) {
       case null -> new String[] {};
-      case String s -> trimmed(s.replace("},{", " ,").split(","));
-      case String[] a -> a;
+      case String s -> toStrings(s.replace("},{", " ,").split(","));
       case Collection<?> c -> toStrings(c.toArray());
       case Object[] a -> toStrings(a);
       default -> throw new CommandSQLParsingException(
@@ -348,18 +347,17 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     };
   }
 
-  private static String[] trimmed(final String[] values) {
-    for (int i = 0; i < values.length; i++)
-      values[i] = values[i].trim();
-    return values;
-  }
-
+  /** Trims every value and drops null and blank ones, so an empty name never reaches an edge-type or property lookup. */
   private static String[] toStrings(final Object[] values) {
     int count = 0;
     final String[] result = new String[values.length];
-    for (final Object value : values)
-      if (value != null)
-        result[count++] = value.toString();
+    for (final Object value : values) {
+      if (value == null)
+        continue;
+      final String trimmed = value.toString().trim();
+      if (!trimmed.isEmpty())
+        result[count++] = trimmed;
+    }
     return count == result.length ? result : Arrays.copyOf(result, count);
   }
 
