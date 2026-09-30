@@ -51,6 +51,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesEngine implements AutoCloseable {
+  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER (ISSUE #7476)
+  private static final long FLAT_WINDOW_PER_CEILING = 2L;
+
 
   private final DatabaseInternal       database;
   private final String                 typeName;
@@ -630,9 +633,6 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Uses block-level aggregation on sealed stores (decompresses arrays directly, no Object[] boxing).
    * Falls back to row iteration only for the small mutable bucket.
    */
-  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER (ISSUE #7476)
-  private static final long FLAT_WINDOW_PER_CEILING = 2L;
-
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter) throws IOException {
