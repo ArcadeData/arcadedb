@@ -1535,6 +1535,17 @@ public class Console {
         return StringUtils.splitKeyValue(pair);
     }
 
+    /**
+     * Stores operator-typed text into a {@link GlobalConfiguration} setting, for both the {@code -D<key>=<value>} arguments
+     * ({@code printError == true}) and the {@code SET} command ({@code printError == false}).
+     * <p>
+     * Issue #7870: this is raw external text, so it goes through the same strict parse as every other such writer
+     * ({@link GlobalConfiguration#coerceFromAdminCommand(Object)}), not through {@code setValue}'s permissive
+     * {@code Boolean.parseBoolean}, which read {@code SET arcadedb.txWAL = yes} as {@code false} and silently turned the
+     * write-ahead log off. A refused value leaves the setting untouched. On the {@code -D} path it is reported on
+     * {@code System.err} and ignored, like the other two refusals there; on the {@code SET} path it is thrown as a
+     * {@link ConsoleException}, so it is reported as an ERROR and fails a batch script like any other failed command.
+     */
     private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
         final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
         if (cfg != null) {
@@ -1542,7 +1553,17 @@ public class Console {
                 if (printError)
                     System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
             } else {
-                cfg.setValue(value);
+                final Object coerced;
+                try {
+                    coerced = cfg.coerceFromAdminCommand(value);
+                } catch (final IllegalArgumentException e) {
+                    if (printError) {
+                        System.err.println(e.getMessage() + ". The setting will be ignored");
+                        return false;
+                    }
+                    throw new ConsoleException(e.getMessage());
+                }
+                cfg.setValue(coerced);
                 return true;
             }
         } else {

@@ -3754,7 +3754,10 @@ public enum GlobalConfiguration {
    *       {@link #fromJSON(String)} twin through the same (#7296);</li>
    *   <li>{@code arcadedb.ha.raftPersistStorage} read straight off {@code System.getProperty} by
    *       {@code RaftHAServer.resolvePersistStorage}, which is a READER of raw text rather than a writer and so
-   *       calls {@link #coerceFromConfigurationSource(Object, String)} without storing (#7296).</li>
+   *       calls {@link #coerceFromConfigurationSource(Object, String)} without storing (#7296);</li>
+   *   <li>the console's {@code SET <key> = <value>} command and its {@code -D<key>=<value>} arguments, both through
+   *       {@code Console.setGlobalConfiguration}, which calls this method directly and reports a refusal to the
+   *       operator - as an error for {@code SET}, on {@code System.err} for {@code -D} (#7870).</li>
    * </ol>
    * The last one used to store what it read straight into the overlay map with a plain {@code put}, touching
    * neither this method nor {@link #setValue(Object)}, so a {@code "yes"} written there survived as the string
