@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -144,6 +145,7 @@ class Issue8161FollowerForwardBodyCapTest {
           "mydb", rootUser(), "application/x-ndjson", body, false);
 
       assertThat(response.getCode()).isEqualTo(503);
+      assertThat(new JSONObject(response.getResponse()).getString("error", "")).startsWith("Error forwarding batch to leader");
       assertThat(body.hasBodyFailed()).isFalse();
     }
   }

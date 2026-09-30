@@ -1256,11 +1256,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     private       long              bytesRead;
     private       boolean           endOfBody;
     /**
-     * The failure that ended this body, or {@code null} while it is still readable. Volatile because a forwarded
-     * body is read on the JDK client's publisher thread while the handler thread asks {@link #refusedOverCap()}
-     * afterwards (issue #8161): the completion behind {@code HttpClient.send} most likely orders the two already,
-     * but a body that is not thread-confined should not rely on a happens-before edge nothing here documents. The
-     * write is rare and a volatile read is a plain load on x86.
+     * The failure that ended this body, or {@code null} while it is still readable. Volatile: a forwarded body is
+     * read on the JDK client's publisher thread and asked about on the handler thread (issue #8161).
      */
     private volatile IOException    bodyFailure;
 
@@ -1322,10 +1319,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     private void refuseIfOverCap() throws IOException {
       if (maxBodySize > 0 && bytesRead > maxBodySize) {
-        bodyFailure = new RequestTooBigException(
+        final RequestTooBigException tooBig = new RequestTooBigException(
             "Request body size exceeds the maximum allowed size of " + maxBodySize + " bytes. Configure '"
                 + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + "' to increase the limit");
-        throw bodyFailure;
+        bodyFailure = tooBig;
+        throw tooBig;
       }
     }
 
@@ -1917,17 +1915,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
           .toString());
     } catch (final Exception e) {
-      // This node's own body cap, not the leader (issue #8161). The capped stream is the forwarded request's body
-      // publisher, so a chunked upload that crosses arcadedb.server.httpBodyContentMaxSize fails HERE, on the JDK
-      // client's thread, and surfaces as a plain IOException from send() - indistinguishable, by type, from a
-      // leader that went away. Answering it below would hand the client a retryable 503 that blames the leader for
-      // a request that can only ever be refused again, where the leader answers the same request with the
-      // documented 413. The stream, not the exception, says which it was: rethrown so sendMappedErrorResponse
-      // builds that 413 exactly as it does on the leader and on every other route.
+      // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException,
+      // so ask the stream, and rethrow so sendMappedErrorResponse answers the same 413 the leader would.
       final RequestTooBigException tooBig = body.refusedOverCap();
       if (tooBig != null) {
-        // The leader was handed a body that ended early and treats it as a truncated upload: GraphBatch commits
-        // incrementally, so what it loaded before the cut stays loaded and its own log carries the counts.
+        // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
         LogManager.instance().log(this, Level.WARNING,
             "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
                 + "exceeded '%s' (currently %,d bytes) on this node. Raise that setting or split the payload; the "
@@ -1937,8 +1929,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         throw tooBig;
       }
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
-      return new ExecutionResponse(503,
-          "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Error forwarding batch to leader: " + e.getMessage())
+          .toString());
     }
   }
 
