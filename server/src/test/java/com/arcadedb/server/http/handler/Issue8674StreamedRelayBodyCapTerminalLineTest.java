@@ -119,6 +119,23 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
     assertIn413ErrorLine(lines.get(1), 7L);
   }
 
+  /**
+   * A leader cut mid-line leaves a fragment as the last line relayed. The counters still come from the last progress
+   * line: a fragment carries none, and reading them off it would claim nothing was loaded - {@code partialCommit:
+   * false} - to a client that would then re-send the whole load on top of what the leader already committed.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aFragmentAfterTheLastProgressLineDoesNotResetTheCounters() throws Exception {
+    final String fragment = "{\"progress\":{\"phase\":\"verti";
+    final List<String> lines = relay(overCapBody(), PROGRESS_LINE + "\n" + fragment, false);
+
+    assertThat(lines).hasSize(3);
+    assertThat(lines.get(0)).isEqualTo(PROGRESS_LINE);
+    assertThat(lines.get(1)).isEqualTo(fragment);
+    assertIn413ErrorLine(lines.get(2), 7L);
+  }
+
   /** No acknowledgement relayed yet: the line still goes out, with counters that claim nothing was loaded. */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)

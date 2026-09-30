@@ -2111,9 +2111,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
         final OutputStream out = WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(),
             () -> "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
-      // The last line relayed, kept only to tell whether the stream already has its ending and, if not, which
-      // counters the last acknowledgement carried (issue #8674). One reference, overwritten per line.
+      // The last line relayed, kept only to tell whether the stream already has its ending (issue #8674), and the
+      // counters of the last progress line - tracked as they pass rather than read off the last line, which a leader
+      // cut mid-line leaves as a fragment that carries none. Only a line that opens as a progress event is parsed.
       String lastLine = null;
+      final long[] lastProgress = new long[2];
       IOException relayFailure = null;
       try {
         for (String line = in.readLine(); line != null; line = in.readLine()) {
@@ -2121,6 +2123,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           out.write('\n');
           out.flush();
           lastLine = line;
+          if (line.startsWith(PROGRESS_EVENT_PREFIX))
+            readProgressCounters(line, lastProgress);
         }
       } catch (final IOException e) {
         relayFailure = e;
@@ -2136,7 +2140,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // request body has been published whole, so a cap trip fails the send itself and forwardBatchToLeader answers
       // the real 413 (#8161). Kept so that a client that starts delivering the response mid-upload cannot bring
       // back the leader-blaming, terminal-less ending this issue was filed about.
-      final RequestTooBigException tooBig = body != null ? body.refusedOverCap() : null;
+      final RequestTooBigException tooBig = body.refusedOverCap();
       if (tooBig != null && !isTerminalNdJsonLine(lastLine)) {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(),
             "Batch load on database '%s' was refused after relaying %,d bytes to the leader, which had already "
@@ -2144,7 +2148,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
                 + "stream ends with an in-band 413. Raise that setting or split the payload; the leader's log reports "
                 + "what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
             GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(), body.getMaxBodySize());
-        writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastLine);
+        if (relayFailure != null)
+          LogManager.instance().log(this, Level.FINE, "The relay of database '%s' ended on: %s", null, databaseName,
+              relayFailure.getMessage());
+        writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastProgress);
       } else if (relayFailure != null)
         logRelayFailure(relayFailure, leaderBody, url, readTimeoutMs, databaseName);
     } catch (final IOException e) {
@@ -2180,15 +2187,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * state and is left out.
    */
   private void writeRelayedCapRefusal(final HttpServerExchange exchange, final String databaseName,
-      final OutputStream out, final RequestTooBigException tooBig, final String lastLine) {
+      final OutputStream out, final RequestTooBigException tooBig, final long[] lastProgress) {
     final ErrorClassification classification = classifyError(tooBig);
     final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
         classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
         .put("status", classification.status());
-    final JSONObject progress = parseNdJsonLine(lastLine);
-    final JSONObject counters = progress != null ? progress.getJSONObject("progress", null) : null;
-    final long vertices = counters != null ? counters.getLong("verticesCreated", 0L) : 0L;
-    final long edges = counters != null ? counters.getLong("edgesCreated", 0L) : 0L;
+    final long vertices = lastProgress[0];
+    final long edges = lastProgress[1];
     error.put("verticesCreated", vertices);
     error.put("edgesCreated", edges);
     error.put("partialCommit", vertices > 0 || edges > 0);
@@ -2203,6 +2208,19 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           "Could not write the in-band refusal of a relayed streaming batch load on database '%s': %s", null,
           databaseName, e.getMessage());
     }
+  }
+
+  /** How {@link NdJsonResultStream} opens a batch progress line: the envelope key comes first, with no whitespace. */
+  private static final String PROGRESS_EVENT_PREFIX = "{\"progress\"";
+
+  /** Updates {@code counters} from a relayed progress line; a line that does not parse leaves them as they were. */
+  private static void readProgressCounters(final String line, final long[] counters) {
+    final JSONObject event = parseNdJsonLine(line);
+    final JSONObject progress = event != null ? event.getJSONObject("progress", null) : null;
+    if (progress == null)
+      return;
+    counters[0] = progress.getLong("verticesCreated", counters[0]);
+    counters[1] = progress.getLong("edgesCreated", counters[1]);
   }
 
   /** Whether a relayed line is one of the batch encoding's terminal events, {@code summary} or {@code error}. */
