@@ -130,18 +130,6 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   }
 
   /**
-   * Makes the scan produce its rows in index key order, which the plan then uses in place of a sort (issue #8422): no
-   * adaptive serving, which loads the rows in another order.
-   *
-   * @param ascending    the direction to walk the index in
-   * @param nullKeysLast whether the vertices of the label with no value for the key follow the index entries, so that
-   *                     a scan with no bound returns the whole label in Cypher order, where null sorts last
-   */
-  public void setIndexOrder(final boolean ascending, final boolean nullKeysLast) {
-    setIndexOrder(ascending, nullKeysLast ? NullKeys.LAST_FROM_LABEL : NullKeys.NONE);
-  }
-
-  /**
    * Where the vertices with no value for the key come in a scan that stands for a whole label (issue #8724).
    */
   public enum NullKeys {

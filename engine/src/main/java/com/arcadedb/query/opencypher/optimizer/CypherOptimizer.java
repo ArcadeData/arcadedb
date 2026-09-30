@@ -374,7 +374,7 @@ public class CypherOptimizer {
           || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
           || !rangeScan.getPropertyName().equals(indexProperties.getFirst()))
         return null;
-      rangeScan.setIndexOrder(ascending, false);
+      rangeScan.setIndexOrder(ascending, NodeIndexRangeScan.NullKeys.NONE);
       return rootOperator;
     }
 
@@ -386,7 +386,8 @@ public class CypherOptimizer {
     if (!excludesNulls && ((NodeByLabelScan) anchorOperator).getWhereFilter() != null)
       return null;
     final TypeIndex index = type.getPolymorphicIndexByProperties(property);
-    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE)
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+        || index.getPropertyNames().size() != 1)
       return null;
 
     final boolean nullKeysInIndex = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
@@ -394,7 +395,8 @@ public class CypherOptimizer {
     if (schemaProperty == null)
       return null;
     // MANDATORY makes the vertex carry the property and NOTNULL its value: NOTNULL alone leaves a vertex that never sets it,
-    // and such a vertex is not in the index either (issue #8701)
+    // and such a vertex is not in the index either (issue #8701). The constraint is trusted as SQL trusts it: ALTER PROPERTY does
+    // not validate the vertices written before it, so a type that gained the constraint over existing data must be repaired first
     final boolean everyVertexHasAKey = schemaProperty.isMandatory() && schemaProperty.isNotNull();
 
     final NodeIndexRangeScan.NullKeys nullKeys;

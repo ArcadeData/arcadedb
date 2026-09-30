@@ -183,8 +183,10 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
         }
 
         if (parallelRows != null) {
-          while (buffer.size() < n && parallelRows.hasNext())
+          while (buffer.size() < n && parallelRows.hasNext()) {
+            guard.check();
             buffer.add(parallelRows.next());
+          }
           if (!parallelRows.hasNext())
             finished = true;
           return;
