@@ -1328,8 +1328,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The Ratis {@code StateMachineUpdater} thread, recorded by {@link #applyTransaction} and
-   * {@link #notifyTermIndexUpdated}, when it has terminated; {@code null} while it is alive or has not been seen yet
+   * The Ratis {@code StateMachineUpdater} thread, recorded by {@link #applyTransaction}, when it has terminated; {@code null} while it is alive or has not been seen yet
    * (issue #8652). Both callbacks run only on that thread, so a dead one is the updater that died - a node that applies
    * nothing more and, once Ratis closes the division from the dying thread, rejects every append. Cheap enough for every
    * health tick: one volatile read and {@link Thread#isAlive()}. A restart builds a fresh state machine that has seen no
@@ -1344,14 +1343,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /**
    * Runs on the {@code StateMachineUpdater} thread for the entries Ratis applies itself (metadata and configuration
-   * entries), so it records that thread like {@link #applyTransaction} does (issue #8652): a node whose updater died
-   * before it ever applied a transaction would otherwise never be seen dead. A throwable escaping here is what kills the
+   * entries), (the thread is recorded only by {@link #applyTransaction}: this callback is not guaranteed to run on the updater alone, and a
+   * short-lived caller must never read as a dead updater, issue #8652). A throwable escaping here is what kills the
    * updater and closes the division (issue #8651), so it is logged with its cause before it is rethrown: Ratis reports
    * it only as "caught a Throwable" on its own logger.
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
-    applyThread = Thread.currentThread();
     try {
       super.notifyTermIndexUpdated(term, index);
     } catch (final Throwable t) {
@@ -1360,6 +1358,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "closes the division; the health monitor restarts it in place (issue #8652)", t, term, index);
       throw t;
     }
+  }
+
+  /** Records the calling thread as the updater, as {@link #applyTransaction} does, for tests (issue #8652). */
+  // @VisibleForTesting
+  void recordApplyThreadForTesting() {
+    applyThread = Thread.currentThread();
   }
 
   /** The thread this state machine last saw apply an entry, so a test can end the real updater (issue #8652). */

@@ -1967,10 +1967,11 @@ public enum GlobalConfiguration {
 
   HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
       """
-      Maximum election timeout in milliseconds. A value at or below arcadedb.ha.electionTimeoutMin is widened to twice \
-      the minimum, because with no spread followers split the vote again and again. Default of 10000ms is a balance between fast failover and \
+      Maximum election timeout in milliseconds. Default of 10000ms is a balance between fast failover and \
       resilience to heartbeat blips under heavy ingest. Bump higher for WAN clusters or sustained bulk-load \
-      workloads where leader appender threads compete with replication.""",
+      workloads where leader appender threads compete with replication. A value at or below \
+      arcadedb.ha.electionTimeoutMin is widened to twice the minimum, because with no spread followers split the vote \
+      again and again.""",
       Integer.class, 10_000),
 
   HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,

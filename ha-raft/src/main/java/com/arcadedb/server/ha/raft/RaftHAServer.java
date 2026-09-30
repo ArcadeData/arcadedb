@@ -107,7 +107,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -2011,12 +2010,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final ArcadeStateMachine.RaftLogFailure failure = sm.getRaftLogFailure();
     if (failure != null)
       return failure.describe();
-    // Two consecutive sightings, like a CLOSING division: a log closed and reopened by an in-place restart or a snapshot
-    // reload is a transition, not a zombie
-    final boolean closed = isRaftLogClosed();
-    final int sightings = closed ? raftLogClosedSightings.incrementAndGet() : raftLogClosedSightings.getAndSet(0);
-    return closed && sightings >= 2 ? "(the Raft log is closed under a division that reports RUNNING: every append is rejected, "
-        + "issue #8652)" : null;
+    return null;
   }
 
   @Override
@@ -2032,15 +2026,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code SegmentedRaftLog: Failed to append} and never reaches that callback, so the #7037 mark stayed empty on the
    * zombie of issue #8652. False when the log cannot be read: a transient window while the server starts or restarts.
    */
-  private final AtomicInteger raftLogClosedSightings = new AtomicInteger();
-
-  private boolean isRaftLogClosed() {
+  @Override
+  public boolean isRaftLogClosed() {
     final RaftServer server = raftServer;
     if (server == null || shutdownRequested)
       return false;
     try {
       return server.getDivision(raftGroup.getGroupId()).getRaftLog() instanceof RaftLogBase base && !base.isOpened();
     } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft log state: %s", e.getMessage());
       return false;
     }
   }

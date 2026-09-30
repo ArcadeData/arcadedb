@@ -94,7 +94,7 @@ class Issue8652DeadUpdaterRecoveryIT extends BaseRaftHATest {
     writeOnLeader(leaderIndex, "LogClosed", 1);
     waitForFollowerToApply(followerIndex, leaderIndex);
 
-    assertThat(followerRaft.getRaftLogFailure()).as("healthy log writer").isNull();
+    assertThat(followerRaft.isRaftLogClosed()).as("healthy log").isFalse();
     assertThat(followerRaft.getRaftLifeCycleState()).isEqualTo(LifeCycle.State.RUNNING);
 
     final ArcadeStateMachine before = followerRaft.getStateMachine();
@@ -102,9 +102,9 @@ class Issue8652DeadUpdaterRecoveryIT extends BaseRaftHATest {
     ((RaftLogBase) followerRaft.getRaftDivision().getRaftLog()).close();
 
     // The blind spot: not a writer failure Ratis reported, so the #7037 mark stays empty; the closed log is what shows.
-    // Believed on the second sighting, like a CLOSING division; the health monitor may already have restarted the node
+    // The health monitor may already have restarted the node
     Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
-        .until(() -> followerRaft.getRaftLogFailure() != null || followerRaft.getStateMachine() != before);
+        .until(() -> followerRaft.isRaftLogClosed() || followerRaft.getStateMachine() != before);
 
     awaitRecoveredAndReplicating(leaderIndex, followerIndex, "LogClosed");
   }
@@ -130,7 +130,7 @@ class Issue8652DeadUpdaterRecoveryIT extends BaseRaftHATest {
         .untilAsserted(() -> {
           final RaftHAServer recovered = getRaftPlugin(followerIndex).getRaftHAServer();
           assertThat(recovered.getRaftLifeCycleState()).isEqualTo(LifeCycle.State.RUNNING);
-          assertThat(recovered.getRaftLogFailure()).isNull();
+          assertThat(recovered.isRaftLogClosed()).isFalse();
           assertThat(recovered.getDeadStateMachineUpdater()).isNull();
         });
 
