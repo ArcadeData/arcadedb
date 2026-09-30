@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -276,6 +277,65 @@ class CypherMergeOnCreateSetSingleWriteIssue8735Test extends TestHelper {
     final int folded = propertiesSet("MERGE (v:V8735x {id: 1}) ON CREATE SET v.name = 'x', v.n = 2");
     final int unfolded = propertiesSet("MERGE (v:V8735y {id: 1}) ON CREATE SET v.name = 'x', v.n = v.id + 1");
     assertThat(folded).isEqualTo(unfolded);
+  }
+
+  @Test
+  void onCreateSetToNullRemovesAPatternPropertyAndCountsIt() {
+    assertThat(propertiesSet("MERGE (v:V8735z {id: 1, name: 'p'}) ON CREATE SET v.name = null")).isEqualTo(3);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735z) RETURN v")) {
+      assertThat(rs.next().getVertex().get().has("name")).isFalse();
+    }
+  }
+
+  @Test
+  void aCollidingUniqueValueAssignedByAnAbsorbedSetStillFails() {
+    database.command("sql", "CREATE VERTEX TYPE V8735aa");
+    database.command("sql", "CREATE PROPERTY V8735aa.id LONG");
+    database.command("sql", "CREATE PROPERTY V8735aa.code STRING");
+    database.command("sql", "CREATE INDEX ON V8735aa (code) UNIQUE");
+    database.command("opencypher", "MERGE (v:V8735aa {id: 1}) SET v.code = 'same'").close();
+    assertThatThrownBy(() -> database.command("opencypher", "MERGE (v:V8735aa {id: 2}) SET v.code = 'same'").close())
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aNonUniquePatternMatchingSeveralNodesAppliesTheAbsorbedSetToEachOnce() {
+    database.command("opencypher", "UNWIND range(1, 4) AS i CREATE (:V8735bb {grp: 1, n: i})").close();
+    database.command("opencypher", "MERGE (v:V8735bb {grp: 1}) SET v.seen = coalesce($p, 0) + 1", Map.of("p", 4)).close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735bb) RETURN count(v) AS c, sum(v.seen) AS s")) {
+      final Result r = rs.next();
+      assertThat(r.<Long>getProperty("c")).isEqualTo(4L);
+      assertThat(r.<Number>getProperty("s").longValue()).isEqualTo(20L);
+    }
+  }
+
+  @Test
+  void parameterAndFunctionValuesAreFolded() {
+    database.transaction(() -> {
+      final long before = updates(database);
+      database.command("opencypher", "MERGE (v:V8735cc {id: 1}) SET v.p = $p, v.ts = timestamp(), v.t = toUpper('x')", Map.of("p", 7)).close();
+      assertThat(updates(database) - before).isZero();
+    });
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735cc) RETURN v.p AS p, v.ts AS ts, v.t AS t")) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("p").longValue()).isEqualTo(7L);
+      assertThat(r.<Object>getProperty("ts")).isNotNull();
+      assertThat(r.<String>getProperty("t")).isEqualTo("X");
+    }
+    // a function whose argument is the node reads it, so it is not folded and still sees the node
+    database.command("opencypher", "MERGE (v:V8735dd {id: 1}) SET v.self = id(v) IS NOT NULL").close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735dd) RETURN v.self AS s")) {
+      assertThat(rs.next().<Boolean>getProperty("s")).isTrue();
+    }
+  }
+
+  @Test
+  void aLaterRowMatchesOnAValueAnEarlierRowsSetWrote() {
+    database.command("opencypher", "UNWIND [1, 2] AS i MERGE (v:V8735ee {k: 'a'}) SET v.k = 'b'").close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735ee) RETURN count(v) AS c")) {
+      // row 1 creates {k: 'a'} then sets k = 'b'; row 2 finds no {k: 'a'} and creates another node
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(2L);
+    }
   }
 
   private int propertiesSet(final String cypher) {
