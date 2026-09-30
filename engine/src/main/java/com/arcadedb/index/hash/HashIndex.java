@@ -176,6 +176,7 @@ public class HashIndex implements IndexInternal {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
       PendingIndexRemovals removals = null;
+      final boolean unique = isUnique();
 
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges =
           getDatabase().getTransaction().getIndexChanges().getIndexKeys(getName());
@@ -185,14 +186,14 @@ public class HashIndex implements IndexInternal {
         if (values != null) {
           for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
-              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE && isUnique())
+              if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE && unique)
                 // FOR UNIQUE INDEXES, A REMOVE MEANS THE KEY IS GONE (PendingIndexRemovals rule 2, answered here
                 // before the filter is even allocated: nothing on disk or in the overlay survives it)
                 return EMPTY_CURSOR;
 
               // #6970: the rules deciding which disk RIDs a pending entry hides (REMOVE / key-wide REMOVE /
               // REPLACE.oldRid) live in PendingIndexRemovals, shared by every index read path over the overlay.
-              removals = PendingIndexRemovals.accumulate(removals, value, isUnique());
+              removals = PendingIndexRemovals.accumulate(removals, value, unique);
               if (value.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE)
                 continue;
 

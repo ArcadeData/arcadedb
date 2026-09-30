@@ -48,6 +48,11 @@ import java.util.Set;
  * These must stay in step with the replay in {@code TransactionIndexContext.commit()}: if the merge rules ever
  * produce a new operation shape, this is the class to re-audit.
  * <p>
+ * One caller-side shortcut applies rule 2 without this class: the point lookups ({@code LSMTreeIndex.get()},
+ * {@code HashIndex.get()}) answer a {@code REMOVE} on a unique index with an empty cursor straight away, before
+ * calling {@link #accumulate}, because nothing on disk or in the overlay survives it and the early exit avoids
+ * allocating the filter. A change to rule 2 has to be mirrored there.
+ * <p>
  * Hot path: {@link #accumulate} returns {@code null} - and allocates nothing - for a key with no pending removal. The
  * instance, and its RID set, are created lazily on the first removal only, and a key-wide removal never allocates
  * the set at all.

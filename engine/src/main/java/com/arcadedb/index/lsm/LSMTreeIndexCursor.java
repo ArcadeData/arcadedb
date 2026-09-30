@@ -595,10 +595,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
       if (includeTx) {
         // #6927: SUBTRACT the overlay's pending REMOVEs from the disk RIDs before the overlay ADDs are merged in.
         // This is the range-scan half of the filter LSMTreeIndex.get() has always applied to a point lookup
-        // (both now built by PendingIndexRemovals, #6970): without it a key deleted - or re-keyed by an UPDATE, which DocumentIndexer turns
-        // into REMOVE(oldKey,rid) + ADD(newKey,rid) - is still read straight off the page, because the removal
-        // only reaches the pages at commit time. Subtracting BEFORE the ADDs keeps a re-insert at the same key
-        // winning over the removal that preceded it.
+        // (both now built by PendingIndexRemovals, #6970): without it a key deleted - or re-keyed by an UPDATE,
+        // which DocumentIndexer turns into REMOVE(oldKey,rid) + ADD(newKey,rid) - is still read straight off the
+        // page, because the removal only reaches the pages at commit time. Subtracting BEFORE the ADDs keeps a
+        // re-insert at the same key winning over the removal that preceded it.
         if (txRemovals != null)
           txRemovals.removeFrom(mergedRIDs);
 
