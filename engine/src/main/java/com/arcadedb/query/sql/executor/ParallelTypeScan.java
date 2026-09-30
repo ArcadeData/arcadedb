@@ -43,8 +43,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -473,12 +473,10 @@ final class ParallelTypeScan {
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
             lastConsumed = System.currentTimeMillis();
-            List<Result> fetched;
             if (database.isTransactionActive()) {
               // INSIDE A TRANSACTION THE WHOLE UNIT IS READ NOW, IN ONE PULL: A WRITE BETWEEN TWO BATCHES OF IT WOULD SHOW IN THE
               // REST OF IT, NEVER IN THE WORKERS' UNITS (#8775)
-              fetched = readWholeUnit();
-              consumerBatch = fetched;
+              consumerBatch = readWholeUnit();
               consumerBatchIndex = 0;
               chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
               consumerStep = null;
@@ -486,7 +484,7 @@ final class ParallelTypeScan {
               ++consumerUnit;
               continue;
             }
-            fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
+            final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
             if (fetched != null) {
               consumerBatch = fetched;
               consumerBatchIndex = 0;
@@ -567,6 +565,8 @@ final class ParallelTypeScan {
     final ResultSet[] cursor = consumerCursor;
     final AtomicReference<List<Result>> rows = new AtomicReference<>();
     final AtomicReference<Throwable> error = new AtomicReference<>();
+    // A THREAD OF ITS OWN, NOT THE PRODUCER POOL: THE POOL MAY BE HELD BY OTHER RESULT SETS FOR GOOD (#8594), AND THIS IS
+    // THE PATH THAT MUST PROGRESS ANYWAY. AT MOST ONE PER SCAN AT A TIME: THE CALLER BLOCKS ON IT
     final Thread reader = new Thread(() -> {
       try {
         initWorkerThread();
@@ -582,19 +582,32 @@ final class ParallelTypeScan {
     try {
       reader.join();
     } catch (final InterruptedException e) {
+      // NOTHING LEFT TO WAIT FOR: STOP THE READER AT ITS NEXT BATCH AND LET THE CALLER'S INTERRUPT PROPAGATE
+      reader.interrupt();
       Thread.currentThread().interrupt();
       throw new CommandExecutionException("Parallel scan interrupted", e);
     }
-    if (error.get() != null)
-      throw new CommandExecutionException("Parallel scan failed", error.get());
+
+    final Throwable failed = error.get();
+    if (failed instanceof RuntimeException runtime)
+      throw runtime;
+    if (failed instanceof Error err)
+      throw err;
+    if (failed != null)
+      throw new CommandExecutionException("Parallel scan failed", failed);
     return rows.get();
   }
 
   private List<Result> drain(final AbstractExecutionStep step, final CommandContext stepContext, final ResultSet[] cursor) {
     final List<Result> all = new ArrayList<>();
-    for (List<Result> batch = fetchBatch(step, stepContext, cursor, maxBatchBytes()); batch != null;
-        batch = fetchBatch(step, stepContext, cursor, maxBatchBytes()))
+    final long maxBytes = maxBatchBytes();
+    for (List<Result> batch = fetchBatch(step, stepContext, cursor, maxBytes); batch != null;
+        batch = fetchBatch(step, stepContext, cursor, maxBytes)) {
       all.addAll(batch);
+      // THE CALLER GAVE UP (INTERRUPTED): NOBODY IS LEFT TO TAKE THE ROWS
+      if (Thread.currentThread().isInterrupted())
+        throw new CommandExecutionException("Parallel scan interrupted");
+    }
     return all;
   }
 
