@@ -3731,9 +3731,9 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * True when no record this query returns can have a null (or missing) value for {@code propertyName}: the property is declared
-   * NOTNULL and MANDATORY, or every branch of the WHERE clause has a conjunct that a null cannot satisfy. Lets an index-ordered read skip the
-   * full scan that would otherwise look for the records the index does not hold (#8664).
+   * True when no record this query returns can have a null (or missing) value for {@code propertyName}: the property is
+   * declared NOTNULL and MANDATORY, or every branch of the WHERE clause has a conjunct that a null cannot satisfy. Lets an
+   * index-ordered read skip the full scan that would otherwise look for the records the index does not hold (#8664).
    * Only the shape {@code property <op> expression} is recognised (not {@code 5 < x}), and only the first indexed property is
    * considered: both fall back to the null sub-plan, which is always correct.
    */

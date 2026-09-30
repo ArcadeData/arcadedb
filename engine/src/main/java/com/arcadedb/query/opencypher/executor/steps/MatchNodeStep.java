@@ -133,7 +133,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   /** Context variable the plan sets to TRUE for a read-only statement; the scan hash below is only ever built for one. */
   public static final String READ_ONLY_STATEMENT_KEY = "cypherReadOnlyStatement";
   /** Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. */
-  private static final long  SCAN_HASH_MAX_RECORDS   = 500_000L;
+  private static final long  SCAN_HASH_MAX_RECORDS   = 200_000L;
 
   // Issue #8695: a chained single-label MATCH whose inline equality has no index re-scans the whole type once per outer
   // row. From the second such scan on, the type is read once into a hash over one property (see
@@ -141,7 +141,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // the fields above, never reset because the step instance lives for one execution. {@code unindexedScanOpens} counts
   // the scans so a query that opens it once (a LIMIT, a single outer row) never pays for the build. Only for a
   // read-only statement: the snapshot would not see a record an upstream CREATE/SET/MERGE produced mid-query, which
-  // the live scan does.
+  // the live scan does. Under READ_COMMITTED it likewise does not see records other transactions commit after the
+  // build; accepted, since the statement is a point-in-time read anyway. A dynamic-label pattern never uses it: the
+  // hash is built for one label.
   private       int                   unindexedScanOpens;
   private       String                scanHashProperty;
   private       ScanPropertyHashIndex scanHashIndex;
@@ -651,7 +653,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
         // No index available - a chained match re-opens this scan per outer row, which a transient hash answers
         // without the repeated full scans (issue #8695)
-        if (prev != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+        if (prev != null && !pattern.hasDynamicLabels() && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           final Iterator<Identifiable> hashed = tryScanHashIndex(label, currentInputResult);
           if (hashed != null)
             return hashed;
@@ -722,10 +724,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       @SuppressWarnings("unchecked") final Iterator<Identifiable> scan =
           (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-      scanHashIndex = new ScanPropertyHashIndex(scan, scanHashProperty);
+      scanHashIndex = new ScanPropertyHashIndex(scan, scanHashProperty, WorkGuard.forCommandDeadline(context));
     }
 
     final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
+    if (value == null)
+      return Collections.emptyIterator(); // a null inline value equals nothing (InlineProperties.matchesResolvedValue)
     return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null; // null: plain scan for this row
   }
 

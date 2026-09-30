@@ -138,4 +138,23 @@ class OpenCypherUnindexedChainedMatchIssue8695Test extends TestHelper {
     assertThat(c.get("n1")).isEqualTo(1);
     assertThat(c.get(null)).isEqualTo(0);
   }
+
+  /** A null inline value equals nothing, so those rows return no match however the lookup is answered. */
+  @Test
+  void nullLookupValuesMatchNothingOnceTheHashIsBuilt() {
+    database.getSchema().createVertexType("Conn");
+    database.getSchema().createVertexType("Ref");
+    database.transaction(() -> {
+      for (int i = 0; i < 6; i++)
+        database.newVertex("Conn").set("name", "n" + i).save();
+      database.newVertex("Conn").save();
+      for (int i = 0; i < 6; i++)
+        database.newVertex("Ref").set("v", "n" + i).save();
+      database.newVertex("Ref").save();
+      database.newVertex("Ref").save();
+    });
+    final Map<Object, Integer> c = counts("MATCH (r:Ref) OPTIONAL MATCH (c:Conn {name: r.v}) RETURN r.v AS v, count(c) AS c");
+    assertThat(c.get("n3")).isEqualTo(1);
+    assertThat(c.get(null)).isEqualTo(0);
+  }
 }

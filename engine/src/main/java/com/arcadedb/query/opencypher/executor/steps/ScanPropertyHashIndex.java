@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -47,15 +48,16 @@ import java.util.Map;
  */
 final class ScanPropertyHashIndex {
   /** Above this many stored Double/Float/BigDecimal values a numeric lookup would return them all, so it declines instead. */
-  private static final int MAX_NON_INTEGRAL = 64;
+  static final int MAX_NON_INTEGRAL = 64;
 
   // value: a RID for a key held by one record (the common case, no list allocated), else an ArrayList<RID>
   private final Map<Object, Object> byKey       = new HashMap<>();
   private final List<RID>           nonIntegral = new ArrayList<>();
 
-  /** Drains {@code scan}, loading each record's {@code propertyName}. The records' order is kept within a key. */
-  ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName) {
+  /** Drains {@code scan}, loading each record's {@code propertyName}; {@code guard} enforces the command deadline. The records' order is kept within a key. */
+  ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName, final WorkGuard guard) {
     while (scan.hasNext()) {
+      guard.check();
       final Identifiable identifiable = scan.next();
       final Document record;
       try {
