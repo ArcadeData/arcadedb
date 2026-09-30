@@ -578,17 +578,33 @@ public final class PropagateChainOp implements CountOp {
         // Binary search for vId in node's sorted neighbor list
         final int start = lastView.offset(node);
         final int end = lastView.offsetEnd(node);
-        if (Arrays.binarySearch(nbrs, start, end, vId) >= 0)
-          loopCount++;
+        loopCount += occurrencesOf(nbrs, start, end, vId);
       }
     } else {
       for (final int node : frontier) {
         final int[] neighbors = provider.getNeighborIds(node, directions[lastHopIdx], edgeTypes[lastHopIdx]);
-        if (Arrays.binarySearch(neighbors, vId) >= 0)
-          loopCount++;
+        loopCount += occurrencesOf(neighbors, 0, neighbors.length, vId);
       }
     }
     return loopCount;
+  }
+
+  /**
+   * How many times {@code value} occurs in the sorted range {@code [from, to)}: parallel edges are adjacent equal
+   * entries, and each of them closes a distinct path (issue #8426). Presence alone counted a pair joined by two
+   * edges once, so the self-loop subtraction fell short and the count came out too high.
+   */
+  private static int occurrencesOf(final int[] sorted, final int from, final int to, final int value) {
+    final int hit = Arrays.binarySearch(sorted, from, to, value);
+    if (hit < 0)
+      return 0;
+    int first = hit;
+    while (first > from && sorted[first - 1] == value)
+      first--;
+    int last = hit;
+    while (last + 1 < to && sorted[last + 1] == value)
+      last++;
+    return last - first + 1;
   }
 
   /**
