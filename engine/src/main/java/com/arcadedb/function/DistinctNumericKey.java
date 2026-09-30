@@ -97,9 +97,8 @@ public final class DistinctNumericKey {
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
         final Object canonical = canonicalize(element);
-        if (key == null && !Objects.equals(canonical, element)) {
+        if (key == null && !Objects.equals(canonical, element))
           key = new ArrayList<>(list);
-        }
         if (key != null)
           key.set(i, canonical);
       }
