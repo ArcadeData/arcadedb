@@ -2086,6 +2086,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
+    // Issue #7887: set on this (the sending) thread immediately before every terminal call inside the try, so the
+    // catch below never sends a second terminal when the first one threw - a concurrent client cancel closing the
+    // call under onCompleted()/onError() is the #6756 shape. `cancelled` cannot stand in for it: it is set
+    // asynchronously by the cancel handler and is not ordered against this thread.
+    boolean terminated = false;
 
     ProtocolContext.set("grpc");
     try {
@@ -2111,10 +2116,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       try {
         txCtx = resolveAuthorizedTransaction(incomingTxId, request.getCredentials());
       } catch (final StatusRuntimeException e) {
+        terminated = true;
         responseObserver.onError(e);
         return;
       }
       if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+        terminated = true;
         responseObserver.onError(unknownTransactionStatus(incomingTxId).asException());
         return;
       }
@@ -2134,6 +2141,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Restore the interrupt status and surface an explicit CANCELLED terminal rather than letting the
           // outer catch mask it as a generic INTERNAL error with the interrupt flag swallowed.
           Thread.currentThread().interrupt();
+          terminated = true;
           responseObserver.onError(
               Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
           return;
@@ -2149,17 +2157,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get()) {
           if (serverTimedOut.get()) {
             final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
+            terminated = true;
             try {
               scso.onError(Status.DEADLINE_EXCEEDED
                   .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
                       + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
                   .asRuntimeException());
-            } catch (final StatusRuntimeException ignore) {
+            } catch (final RuntimeException ignore) {
               // transport may have closed concurrently; the terminal is already moot
             }
           }
           return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
         }
+        terminated = true;
         scso.onCompleted();
         return;
       }
@@ -2185,13 +2195,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // genuine client cancel needs no terminal - its transport is already tearing down.
         if (serverTimedOut.get()) {
           final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
+          terminated = true;
           try {
             scso.onError(Status.DEADLINE_EXCEEDED
                 .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
                     + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
                 .asRuntimeException());
-          } catch (final StatusRuntimeException ignore) {
-            // transport may have closed concurrently; the terminal is already moot
+          } catch (final RuntimeException ignore) {
+            // transport may have closed concurrently (IllegalStateException "call already closed" included); the
+            // terminal is already moot, and the transaction outcome below must still be applied
           }
         }
         if (hasTx) {
@@ -2218,6 +2230,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
+      terminated = true;
       scso.onCompleted();
 
     } catch (Exception e) {
@@ -2237,7 +2250,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         /* no-op */
       }
 
-      if (!cancelled.get())
+      if (terminated)
+        // A terminal was already sent (or attempted) and the call is over from the client's side: never send a
+        // second one on a closed call (issue #7887).
+        LogManager.instance().log(this, Level.FINE,
+            "Stream query already terminated when a later step failed (client cancelled?): %s", e.getMessage());
+      else if (!cancelled.get())
         // GrpcErrorMapper both classifies the failure (a SQL syntax error, a missing type, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of masking it as INTERNAL.
@@ -3524,6 +3542,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
     call.setOnCancelHandler(() -> cancelled.set(true));
+    // Issue #7887: set on the sending thread immediately before every terminal inside the try, so a terminal that
+    // throws is never followed by a second one from the catch. Same role, and same reason `cancelled` cannot play
+    // it, as in streamQuery.
+    boolean terminated = false;
 
     ProtocolContext.set("grpc");
     try {
@@ -3548,6 +3570,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           throw rethrowCauseOf(e);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
+          terminated = true;
           if (!cancelled.get())
             resp.onError(Status.CANCELLED
                 .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
@@ -3558,15 +3581,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (serverTimedOut.get()) {
         // The consumer stopped reading and the bounded wait elapsed. Say so explicitly rather than letting the
         // stream end as if it were complete, which would look like an empty tail to the client.
+        terminated = true;
         resp.onError(Status.DEADLINE_EXCEEDED
             .withDescription("TimeSeriesQuery aborted: the client transport was not ready in time")
             .asRuntimeException());
         return;
       }
+      terminated = true;
       if (!cancelled.get())
         resp.onCompleted();
     } catch (final Exception e) {
-      if (!cancelled.get())
+      if (terminated)
+        LogManager.instance().log(this, Level.FINE,
+            "TimeSeriesQuery already terminated when its terminal failed (client cancelled?): %s", e.getMessage());
+      else if (!cancelled.get())
         resp.onError(mapError(e, "TimeSeriesQuery"));
     } finally {
       ProtocolContext.clear();
