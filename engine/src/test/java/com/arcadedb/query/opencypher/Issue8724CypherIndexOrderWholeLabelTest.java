@@ -160,6 +160,14 @@ class Issue8724CypherIndexOrderWholeLabelTest extends TestHelper {
   }
 
   @Test
+  void aSubTypeIsSeekedThroughItsParentsIndex() {
+    database.command("sql", "CREATE VERTEX TYPE DChild EXTENDS D");
+    database.transaction(() -> database.newVertex("DChild").set("x", -1).set("seq", -1).save());
+    assertThat(column("MATCH (d:D) WHERE d.x IS NOT NULL RETURN d.x AS x ORDER BY d.x LIMIT 1")).containsExactly(-1);
+    assertThat(column("MATCH (d:D) WHERE d.x < 0 OR d.x = 999999999 RETURN d.x AS x")).containsExactly(-1);
+  }
+
+  @Test
   void otherPredicatesKeepTheSort() {
     final String query = "MATCH (v:D) WHERE v.x IS NOT NULL AND v.seq >= 10 RETURN v.x AS x ORDER BY v.x DESC LIMIT 5";
     final List<Integer> values = new ArrayList<>();
