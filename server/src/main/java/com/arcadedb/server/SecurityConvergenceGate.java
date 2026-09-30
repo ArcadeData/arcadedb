@@ -68,4 +68,43 @@ final class SecurityConvergenceGate {
    */
   volatile List<String> gaveUpDocuments = List.of();
   volatile boolean gaveUpArmed = false;
+
+  /**
+   * Claims the give-up of the window currently open, recording what it gave up on (issue #8555). The HTTP and the gRPC
+   * readiness surfaces evaluate this gate concurrently (issue #8446), so exactly one of them gets {@code true} and logs
+   * the SEVERE line.
+   */
+  synchronized boolean claimGiveUp(final List<String> documents, final boolean armed) {
+    if (giveUpLogged)
+      return false;
+    gaveUpDocuments = documents;
+    gaveUpArmed = armed;
+    giveUpLogged = true;
+    return true;
+  }
+
+  /**
+   * Claims the "leading, so nobody can confirm" line for this join or install (issue #8465): exactly one caller across
+   * the readiness surfaces gets {@code true} (issue #8446).
+   */
+  synchronized boolean claimLeaderLog(final long index) {
+    if (leaderLoggedFor == index)
+      return false;
+    leaderLoggedFor = index;
+    return true;
+  }
+
+  /**
+   * Forgets every window and every logged decision: a server that (re)starts has not been held yet (issue #8446).
+   * Called at the top of the server's start, before the HTTP listener and the HA and gRPC plugins exist, so no probe
+   * can interleave with it.
+   */
+  synchronized void reset() {
+    windowOpenedAt = 0L;
+    giveUpLogged = false;
+    joinIndex = -1L;
+    leaderLoggedFor = -1L;
+    gaveUpDocuments = List.of();
+    gaveUpArmed = false;
+  }
 }
