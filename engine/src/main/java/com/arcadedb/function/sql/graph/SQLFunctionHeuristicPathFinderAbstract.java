@@ -194,7 +194,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dy = Math.abs(y - gy);
     final double h_diagonal = Math.min(dx, dy);
     final double h_straight = dx + dy;
-    // Octile distance: straight step costs D, diagonal step costs D2 = sqrt(2) * D. Fixing D2 at 2 * D (issue #8705)
+    // Octile distance (admissible on 8-connected grids, not for arbitrary Euclidean-weighted graphs): straight step costs D, diagonal step costs D2 = sqrt(2) * D. Fixing D2 at 2 * D (issue #8705)
     // cancelled the correction term and made this MANHATTAN.
     return dFactor * h_straight + (Math.sqrt(2) - 2) * dFactor * h_diagonal;
   }
