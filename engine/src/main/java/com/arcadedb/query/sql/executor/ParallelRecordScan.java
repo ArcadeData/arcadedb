@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
@@ -55,7 +56,7 @@ public final class ParallelRecordScan {
    */
   public static ParallelRecordScan plan(final CommandContext context, final String typeName, final RowMapper mapper) {
     final DocumentType type = context.getDatabase().getSchema().getType(typeName);
-    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(b -> b.getFileId()).distinct().sorted().toArray();
+    final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().sorted().toArray();
     final List<ExecutionStep> steps = new ArrayList<>(bucketIds.length);
     for (final int bucketId : bucketIds)
       if (bucketId > 0)

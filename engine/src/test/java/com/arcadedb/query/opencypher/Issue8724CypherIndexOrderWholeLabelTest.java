@@ -160,6 +160,27 @@ class Issue8724CypherIndexOrderWholeLabelTest extends TestHelper {
     assertThat(column(query)).containsExactlyElementsOf(expected(values, false, 0, 5));
   }
 
+  @Test
+  void theNullKeysSpanMoreThanOneFetchBatch() {
+    database.command("sql", "CREATE VERTEX TYPE N");
+    database.command("sql", "CREATE PROPERTY N.x INTEGER");
+    database.command("sql", "CREATE INDEX ON N (x) NOTUNIQUE NULL_STRATEGY INDEX");
+    final List<Integer> values = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 1_000; i++) {
+        final Integer value = i % 3 == 0 ? null : i;
+        values.add(value);
+        final var vertex = database.newVertex("N");
+        if (value != null)
+          vertex.set("x", value);
+        vertex.save();
+      }
+    });
+    assertThat(column("MATCH (n:N) RETURN n.x AS x ORDER BY n.x DESC LIMIT 1000")).containsExactlyElementsOf(expected(values, false, 0, 1000));
+    assertThat(column("MATCH (n:N) RETURN n.x AS x ORDER BY n.x LIMIT 1000")).containsExactlyElementsOf(expected(values, true, 0, 1000));
+    assertThat(column("MATCH (n:N) RETURN n.x AS x ORDER BY n.x DESC SKIP 150 LIMIT 300")).containsExactlyElementsOf(expected(values, false, 150, 300));
+  }
+
   private static List<Integer> nonNull(final List<Integer> values) {
     return values.stream().filter(v -> v != null).toList();
   }

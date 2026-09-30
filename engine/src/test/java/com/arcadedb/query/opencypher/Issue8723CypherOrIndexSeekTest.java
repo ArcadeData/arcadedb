@@ -114,6 +114,25 @@ class Issue8723CypherOrIndexSeekTest extends TestHelper {
   }
 
   @Test
+  void parametersOfAnotherNumericTypeStillMatch() {
+    final String query = "MATCH (e:E) WHERE e.x = $p OR e.s = $q RETURN e.id AS id ORDER BY id";
+    final List<Object> expected = expectedIds(i -> i % 500 == 3 || i % 400 == 10);
+    assertThat(column(query, Map.of("p", 3L, "q", "s10"))).containsExactlyElementsOf(expected);
+    assertThat(column(query, Map.of("p", 3.0, "q", "s10"))).containsExactlyElementsOf(expected);
+    assertThat(column("MATCH (e:E) WHERE e.x = $p OR e.x = $q RETURN e.id AS id ORDER BY id", Map.of("p", 3.0, "q", 7L)))
+        .containsExactlyElementsOf(expectedIds(i -> i % 500 == 3 || i % 500 == 7));
+  }
+
+  @Test
+  void theWhereOnASecondMatchOrAnOptionalMatchStillSeeks() {
+    final List<Object> expected = expectedIds(i -> i % 500 == 3 || i % 400 == 10);
+    assertThat(column("MATCH (e:E) MATCH (e) WHERE e.x = 3 OR e.s = 's10' RETURN e.id AS id ORDER BY id", Map.of()))
+        .containsExactlyElementsOf(expected);
+    assertThat(column("OPTIONAL MATCH (e:E) WHERE e.x = 3 OR e.s = 's10' RETURN e.id AS id ORDER BY id", Map.of()))
+        .containsExactlyElementsOf(expected);
+  }
+
+  @Test
   void anOrOnOtherVariableDoesNotSeekTheAnchor() {
     final String query = "MATCH (e:E), (f:E) WHERE e.x = 3 OR f.x = 4 RETURN count(*) AS n";
     final long expected = (long) expectedIds(i -> i % 500 == 3).size() * VERTICES + (long) VERTICES * expectedIds(i -> i % 500 == 4).size()
