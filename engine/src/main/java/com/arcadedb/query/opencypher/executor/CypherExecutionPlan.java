@@ -1846,6 +1846,9 @@ public class CypherExecutionPlan {
 
       case SET:
         final SetClause setClause = entry.getTypedClause();
+        // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
+        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause))
+          eagerness.observeWrite(setClause);
         if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
           if (eagerness.needsBarrier(setClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
