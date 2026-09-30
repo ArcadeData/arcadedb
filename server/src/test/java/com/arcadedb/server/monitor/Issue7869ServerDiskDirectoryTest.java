@@ -18,11 +18,14 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ReplicationCallback;
+import com.arcadedb.server.ServerException;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -33,8 +36,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7869, the server side: {@code GET /api/v1/server} must report the disk figures of the directory THIS
@@ -82,8 +87,42 @@ class Issue7869ServerDiskDirectoryTest extends BaseGraphServerTest {
 
     server.stop();
 
+    // Not pinned to the enum default: surefire reuses one JVM for the module, and a server another class left
+    // running would legitimately be the one reported. What must hold is that it is not the STOPPED one.
     assertThat(reportedDirectory()).as("the stopped server's configuration must be withdrawn from the profiler")
         .isNotEqualTo(configured);
+
+    server.start();
+
+    assertThat(reportedDirectory()).as("a restarted server publishes its configuration again").isEqualTo(configured);
+  }
+
+  @Test
+  void aServerThatFailsToStartIsNeverTheOneReported() throws Exception {
+    final File databases = new File("./target/issue7869-failed-start/databases");
+    assertThat(databases.mkdirs() || databases.isDirectory()).isTrue();
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databases.getPath());
+    final ArcadeDBServer failing = new ArcadeDBServer(config);
+
+    // SERVER_STARTING fires after the configuration is published and before any listener is bound, so the start
+    // fails on the path start()'s own catch has to clean up.
+    final AtomicBoolean fired = new AtomicBoolean();
+    failing.registerTestEventListener((type, object, s) -> {
+      if (type == ReplicationCallback.TYPE.SERVER_STARTING && fired.compareAndSet(false, true))
+        throw new IllegalStateException("issue #7869: refuse to start");
+    });
+
+    final File before = reportedDirectory();
+    assertThatThrownBy(failing::start).isInstanceOf(ServerException.class);
+    assertThat(fired.get()).isTrue();
+
+    assertThat(reportedDirectory()).as("a server that never came up must not be left published")
+        .isEqualTo(before)
+        .isNotEqualTo(databases.getCanonicalFile());
   }
 
   private static File reportedDirectory() throws IOException {

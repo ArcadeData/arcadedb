@@ -518,7 +518,8 @@ public class Profiler {
    * configuration is read on every report rather than copied, so a later change to the setting is followed.
    * <p>
    * The most recent publication wins. Pair every call with {@link #withdrawDiskSpaceConfiguration}; a {@code null}
-   * is ignored.
+   * is ignored. Publications are tracked by identity, so two servers constructed with the SAME
+   * {@link ContextConfiguration} instance share one entry: the first of them to stop withdraws it for both.
    */
   public static void publishDiskSpaceConfiguration(final ContextConfiguration configuration) {
     if (configuration == null)
