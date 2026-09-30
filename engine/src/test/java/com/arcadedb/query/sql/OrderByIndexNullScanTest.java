@@ -55,7 +55,7 @@ class OrderByIndexNullScanTest extends TestHelper {
 
   private void load(final String type, final boolean notNull, final boolean withNulls) {
     database.command("sql", "CREATE DOCUMENT TYPE " + type);
-    database.command("sql", "CREATE PROPERTY " + type + ".x INTEGER" + (notNull ? " (notnull true)" : ""));
+    database.command("sql", "CREATE PROPERTY " + type + ".x INTEGER" + (notNull ? " (notnull true, mandatory true)" : ""));
     database.command("sql", "CREATE INDEX ON " + type + " (x) NOTUNIQUE");
     database.transaction(() -> {
       for (int i = 20; i > 0; i--)
@@ -106,5 +106,30 @@ class OrderByIndexNullScanTest extends TestHelper {
     assertThat(plan("SELECT x FROM D WHERE x > 18 OR x < 3 ORDER BY x")).doesNotContain("FETCH FROM TYPE");
     assertThat(plan("SELECT x FROM D WHERE x > 18 OR x IS NULL ORDER BY x")).contains("FETCH FROM TYPE");
     assertThat(values("SELECT x FROM D WHERE x > 18 OR x IS NULL ORDER BY x")).hasSize(3);
+  }
+
+  /** Issue #8701: NOTNULL without MANDATORY accepts a record that never sets the property, which the index does not hold. */
+  @Test
+  void notNullWithoutMandatoryKeepsRecordsMissingTheProperty() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.x INTEGER (notnull true)");
+    database.command("sql", "CREATE PROPERTY T.id STRING");
+    database.command("sql", "CREATE INDEX ON T (x) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 4; i++)
+        database.newDocument("T").set("x", i).set("id", "v" + i).save();
+      database.newDocument("T").set("id", "missing").save();
+    });
+
+    assertThat(plan("SELECT FROM T ORDER BY x")).contains("FETCH FROM TYPE");
+    for (final String q : new String[] { "SELECT FROM T ORDER BY x", "SELECT x, id FROM T ORDER BY x",
+        "SELECT FROM T ORDER BY x LIMIT 10" }) {
+      final List<String> ids = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", q)) {
+        while (rs.hasNext())
+          ids.add(rs.next().getProperty("id"));
+      }
+      assertThat(ids).as(q).containsExactly("missing", "v0", "v1", "v2", "v3");
+    }
   }
 }
