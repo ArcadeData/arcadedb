@@ -71,6 +71,12 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
   }
 
   @Test
+  void anotherPropertySpellingIsNotBoundToTheIndex() {
+    // Property names are case sensitive: NAME is not the indexed property name
+    assertThat(names("SELECT name FROM P WHERE NAME.toLowerCase() = 'john'")).isEmpty();
+  }
+
+  @Test
   void unsatisfiableEqualityReturnsNothing() {
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() = 'JOHN'")).isEmpty();
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() = :n", Map.of("n", "JOHN"))).isEmpty();

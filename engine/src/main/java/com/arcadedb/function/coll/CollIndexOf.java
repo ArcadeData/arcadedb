@@ -57,6 +57,10 @@ public class CollIndexOf extends AbstractCollFunction {
       return null;
     // Elements are compared the way Cypher's = does, so 1 and 1.0 are the same element (issue #8561)
     final Object wanted = DistinctNumericKey.canonicalize(args[1]);
+    // Nothing canonicalizes to a different value than itself for a string or the like, so the plain search is exact and
+    // allocation-free: only a number or a container can equal an element of another representation
+    if (args[1] instanceof CharSequence)
+      return (long) list.indexOf(args[1]);
     if (asRange(list) != null)
       return wanted instanceof Long ? (long) list.indexOf(wanted) : -1L;
     for (int i = 0; i < list.size(); i++)
