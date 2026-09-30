@@ -74,11 +74,11 @@ public final class SupportRedactor {
 
   private static final Pattern HEADER_VALUE = Pattern.compile(
       "(?i)\\b(authorization|proxy-authorization|set-cookie|cookie|x-api-key|x-auth-token)(\\\\?[\"']?\\s*[:=]\\s*)(.*)");
-  private static final Pattern BEARER       = Pattern.compile("(?i)\\b(bearer)(\\s+)[A-Za-z0-9._~+/=\\-]{8,}");
+  private static final Pattern BEARER       = Pattern.compile("(?i)\\b(bearer)(\\s+)[A-Za-z0-9._~+/=\\-]{4,}");
   private static final Pattern CLI_OPTION   = Pattern.compile(
       "(?i)(--?[\\w.\\-]{0,64}(?:" + KEYWORDS + ")[\\w.\\-]{0,64})(\\s+)(?!-)(\\S+)");
   private static final Pattern IDENTIFIED   = Pattern.compile("(?i)(identified\\s+by\\s+)('[^']*'|\"[^\"]*\"|\\S+)");
-  private static final Pattern URL_CREDS    = Pattern.compile("(?i)\\b([a-z][a-z0-9+.\\-]{0,31}://)([^/\\s:@]{1,256}):([^@\\s/]{0,256})@");
+  private static final Pattern URL_CREDS    = Pattern.compile("(?i)\\b([a-z][a-z0-9+.\\-]{0,31}://)([^/\\s:@]{1,256}):([^\\s/]{0,256})@");
   private static final Pattern PEM_INLINE   = Pattern.compile("-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----");
   private static final Pattern PEM_BEGIN    = Pattern.compile("-----BEGIN [A-Z0-9 ]+-----");
   private static final Pattern PEM_END      = Pattern.compile("-----END [A-Z0-9 ]+-----");

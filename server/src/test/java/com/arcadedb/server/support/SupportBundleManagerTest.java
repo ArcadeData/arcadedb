@@ -171,4 +171,56 @@ class SupportBundleManagerTest {
       assertThatThrownBy(() -> manager.get(null)).isInstanceOf(SupportException.class);
     }
   }
+
+  @Test
+  void removingAPreviewAnotherRequestHoldsIsDeferredUntilItLetsGo() throws Exception {
+    try (final SupportBundleManager manager = new SupportBundleManager()) {
+      final SupportBundleManager.Bundle bundle = manager.create();
+      Files.writeString(bundle.getDirectory().resolve("logs.zip"), "x");
+      // Two tabs: one is downloading the preview while the other sends it (and removes it afterwards)
+      final SupportBundleManager.Lease download = manager.lease(bundle.getId());
+      final SupportBundleManager.Lease send = manager.lease(bundle.getId());
+
+      send.close();
+      manager.remove(bundle.getId());
+      assertThat(bundle.getDirectory().resolve("logs.zip")).as("the download is still reading it").exists();
+      // No new lease on a removed preview
+      assertThatThrownBy(() -> manager.lease(bundle.getId())).isInstanceOf(SupportException.class);
+      assertThat(manager.size()).isZero();
+
+      download.close();
+      assertThat(bundle.getDirectory()).doesNotExist();
+    }
+  }
+
+  @Test
+  void removingAnIdlePreviewDeletesItAtOnce() throws Exception {
+    try (final SupportBundleManager manager = new SupportBundleManager()) {
+      final SupportBundleManager.Bundle bundle = manager.create();
+      final SupportBundleManager.Lease lease = manager.lease(bundle.getId());
+      lease.close();
+      manager.remove(bundle.getId());
+      assertThat(bundle.getDirectory()).doesNotExist();
+    }
+  }
+
+  @Test
+  void previewsLeftByACrashedServerAreSweptButNothingElse(@org.junit.jupiter.api.io.TempDir final Path tmp) throws Exception {
+    final Path old = Files.createDirectory(tmp.resolve("arcadedb-support-old"));
+    Files.writeString(old.resolve("logs.zip"), "x");
+    final Path recent = Files.createDirectory(tmp.resolve("arcadedb-support-recent"));
+    final Path other = Files.createDirectory(tmp.resolve("somebody-elses-dir"));
+    final Path file = Files.writeString(tmp.resolve("arcadedb-support-not-a-directory"), "x");
+    final long now = System.currentTimeMillis();
+    final long twoHours = 2 * 3_600_000L;
+    Files.setLastModifiedTime(old, java.nio.file.attribute.FileTime.fromMillis(now - twoHours));
+    Files.setLastModifiedTime(other, java.nio.file.attribute.FileTime.fromMillis(now - twoHours));
+    Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(now - twoHours));
+
+    assertThat(SupportBundleManager.sweepLeftovers(tmp, SupportBundleManager.LEFTOVER_AGE_MS, now)).isEqualTo(1);
+    assertThat(old).doesNotExist();
+    assertThat(recent).exists();
+    assertThat(other).exists();
+    assertThat(file).exists();
+  }
 }

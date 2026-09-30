@@ -248,4 +248,17 @@ class SupportRedactorTest {
     for (final String name : new String[] { "apikey", "api-key", "api_key", "api.key", "api key" })
       assertThat(redact("service." + name + "=abc123def456")).as(name).doesNotContain("abc123def456");
   }
+
+  @Test
+  void aPasswordThatContainsAnAtSignIsMaskedWholeInAUrl() {
+    assertThat(redact("connect scheme://user:p@ss@host/db")).isEqualTo("connect scheme://user:***@host/db");
+    assertThat(redact("jdbc://admin:a@b@c@host:5432 done")).doesNotContain("a@b").doesNotContain("c@host").contains("***@host:5432 done");
+    // a plain address in the text is not credentials
+    assertThat(redact("contact me@example.com or see https://example.com/a@b")).isEqualTo("contact me@example.com or see https://example.com/a@b");
+  }
+
+  @Test
+  void aShortBearerTokenIsMaskedToo() {
+    assertThat(redact("sent bearer abc123 to the portal")).doesNotContain("abc123");
+  }
 }

@@ -52,7 +52,8 @@ import java.util.zip.ZipOutputStream;
 public class SupportService implements AutoCloseable {
   public static final String BUY_URL = "https://arcadedb.com/pricing.html";
 
-  private static final long WHOAMI_CACHE_MS = 60_000L;
+  private static final long WHOAMI_CACHE_MS   = 60_000L;
+  private static final long FAILURE_CACHE_MS  = 5_000L;
   private static final Set<String> KINDS = Set.of("bug", "question", "performance", "other");
   private static final Set<String> SEVERITIES = Set.of("S1", "S2", "S3", "S4");
   private static final int MAX_GITHUB_SUMMARY = 3000;
@@ -69,7 +70,11 @@ public class SupportService implements AutoCloseable {
   private record CachedWhoami(String fingerprint, String json, long at) {
   }
 
-  private volatile CachedWhoami whoami;
+  private record CachedFailure(String fingerprint, SupportException exception, long at) {
+  }
+
+  private volatile CachedWhoami  whoami;
+  private volatile CachedFailure failure;
   private final     Semaphore   previewSlot = new Semaphore(1);
 
   public SupportService(final ArcadeDBServer server, final Path configDirectory) {
@@ -133,7 +138,7 @@ public class SupportService implements AutoCloseable {
       json.put("registeredAt", registration.getRegisteredAt());
 
     try {
-      describeWhoami(json, new JSONObject(whoamiCached(registration, refresh)));
+      describeWhoami(json, parseWhoami(whoamiCached(registration, refresh)));
     } catch (final SupportException e) {
       // The portal is unreachable or refuses the key: Studio still shows the registration and why the portal did not answer
       json.put("portalError", new JSONObject().put("error", e.getCode()).put("message", e.getMessage()));
@@ -168,8 +173,24 @@ public class SupportService implements AutoCloseable {
     final SupportConfiguration.Registration candidate = candidate(clientId, key);
     final JSONObject json = new JSONObject().put("verified", true).put("clientId", clientId.trim()).put("keyHint",
         SupportConfiguration.keyHint(key.trim()));
-    describeWhoami(json, new JSONObject(client(candidate).whoami()));
+    describeWhoami(json, parseWhoami(client(candidate).whoami()));
     return json;
+  }
+
+  /**
+   * The body of {@code whoami} as a JSON object that {@link #describeWhoami} can read. A captive proxy, a maintenance page that
+   * answers 200 or a change of the portal's contract is reported as {@code portal_error}, which Studio renders, instead of
+   * escaping as a server error.
+   */
+  private static JSONObject parseWhoami(final String body) {
+    try {
+      final JSONObject who = new JSONObject(body);
+      describeWhoami(new JSONObject(), who);
+      return who;
+    } catch (final RuntimeException e) {
+      throw new SupportException("portal_error",
+          "The portal answered with something this server does not understand: check the portal address and try again later");
+    }
   }
 
   private SupportConfiguration.Registration candidate(final String clientId, final String key) {
@@ -190,9 +211,21 @@ public class SupportService implements AutoCloseable {
     final String fingerprint = fingerprint(registration.getPortalUrl(), registration.getClientId(), registration.getKey());
     if (!refresh && cached != null && cached.fingerprint.equals(fingerprint) && now - cached.at < WHOAMI_CACHE_MS)
       return cached.json;
-    final String json = client(registration).whoami();
-    whoami = new CachedWhoami(fingerprint, json, now);
-    return json;
+    // A portal that is down is remembered for a few seconds, so that every load of the tab does not cost two 30 s attempts on a
+    // worker thread; the Refresh button always asks again
+    final CachedFailure failed = failure;
+    if (!refresh && failed != null && failed.fingerprint.equals(fingerprint) && now - failed.at < FAILURE_CACHE_MS)
+      throw failed.exception;
+    try {
+      final String json = client(registration).whoami();
+      parseWhoami(json);
+      whoami = new CachedWhoami(fingerprint, json, now);
+      failure = null;
+      return json;
+    } catch (final SupportException e) {
+      failure = new CachedFailure(fingerprint, e, now);
+      throw e;
+    }
   }
 
   private static String fingerprint(final String portalUrl, final String clientId, final String key) {
@@ -223,6 +256,8 @@ public class SupportService implements AutoCloseable {
           + "settings arcadedb.support.clientId and arcadedb.support.clientKey instead");
 
     final String who = client(candidate).whoami();
+    // Not saved unless the portal's answer is one this server can read
+    parseWhoami(who);
 
     try {
       configuration.save(url, clientId, key);
@@ -243,6 +278,7 @@ public class SupportService implements AutoCloseable {
       throw new SupportException("config_not_writable", "Cannot remove the registration file: " + e.getClass().getSimpleName());
     }
     whoami = null;
+    failure = null;
   }
 
   private SupportPortalClient client(final SupportConfiguration.Registration registration) {
@@ -508,6 +544,9 @@ public class SupportService implements AutoCloseable {
       return response;
     } catch (final IOException e) {
       throw new SupportException("internal_error", "Cannot read the preview files: " + e.getClass().getSimpleName());
+    } catch (final SupportPortalException e) {
+      SupportPortalClient.logFailure(this, "add attachments", e);
+      throw e;
     }
   }
 

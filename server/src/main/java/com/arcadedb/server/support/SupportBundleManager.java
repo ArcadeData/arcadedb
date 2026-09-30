@@ -22,8 +22,10 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -48,6 +50,10 @@ import java.util.logging.Level;
 public class SupportBundleManager implements AutoCloseable {
   public static final long TTL_MS      = 15 * 60_000L;
   static final        int  MAX_BUNDLES = 5;
+  /** Name prefix of the preview directories in the temp directory. */
+  static final String PREFIX = "arcadedb-support-";
+  /** A preview directory this old was left by a server that died. */
+  static final long LEFTOVER_AGE_MS = 4 * TTL_MS;
 
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -71,9 +77,10 @@ public class SupportBundleManager implements AutoCloseable {
     private volatile String     githubSummary = "";
     // Serialises building the download zip, so two concurrent downloads of one preview do not write the same file
     private final Object   buildLock = new Object();
-    // In-use count and removal flag, both guarded by synchronized(this): see SupportBundleManager#lease
+    // In-use count and removal flags, all guarded by synchronized(this): see SupportBundleManager#lease
     private          int        leases;
     private          boolean    removed;
+    private          boolean    deleteWhenIdle;
 
     Bundle(final String id, final Path directory, final long expiresAt) {
       this.id = id;
@@ -156,11 +163,39 @@ public class SupportBundleManager implements AutoCloseable {
 
   public SupportBundleManager() {
     this(System::currentTimeMillis, TTL_MS);
+    // A JVM that crashed left its previews (redacted, but still logs and diagnostics) in the temp directory: nothing else sweeps them
+    sweepLeftovers(Path.of(System.getProperty("java.io.tmpdir")), LEFTOVER_AGE_MS, System.currentTimeMillis());
   }
 
   SupportBundleManager(final LongSupplier clock, final long ttlMs) {
     this.clock = clock;
     this.ttlMs = ttlMs;
+  }
+
+  /**
+   * Deletes the preview directories ({@code arcadedb-support-*}) of {@code tmp} that are older than {@code olderThanMs}: what a
+   * crashed or killed server left behind. A live preview is never that old (15 minutes, plus at most a 20 minute upload).
+   *
+   * @return how many directories were deleted
+   */
+  static int sweepLeftovers(final Path tmp, final long olderThanMs, final long now) {
+    int deleted = 0;
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(tmp, PREFIX + "*")) {
+      for (final Path directory : stream) {
+        try {
+          if (Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)
+              && now - Files.getLastModifiedTime(directory, LinkOption.NOFOLLOW_LINKS).toMillis() > olderThanMs) {
+            deleteRecursively(directory);
+            deleted++;
+          }
+        } catch (final IOException e) {
+          // not ours to worry about: it is tried again at the next start
+        }
+      }
+    } catch (final IOException e) {
+      LogManager.instance().log(SupportBundleManager.class, Level.FINE, "Cannot look for old support previews in '%s'", e, tmp);
+    }
+    return deleted;
   }
 
   /** A new, empty preview in a private temporary directory. */
@@ -183,7 +218,7 @@ public class SupportBundleManager implements AutoCloseable {
     RANDOM.nextBytes(random);
     final String id = HexFormat.of().formatHex(random);
     // Files.createTempDirectory is readable by the owner only on POSIX
-    final Path directory = Files.createTempDirectory("arcadedb-support-");
+    final Path directory = Files.createTempDirectory(PREFIX);
     final Bundle bundle = new Bundle(id, directory, clock.getAsLong() + ttlMs);
     bundles.put(id, bundle);
     scheduleCleanup();
@@ -235,16 +270,25 @@ public class SupportBundleManager implements AutoCloseable {
 
     @Override
     public void close() {
+      final boolean deleteNow;
       synchronized (bundle) {
         if (closedLease)
           return;
         closedLease = true;
         bundle.leases--;
+        // A removal that arrived while this preview was held (another tab sent or downloaded it): done by the last to let go
+        deleteNow = bundle.leases == 0 && bundle.deleteWhenIdle;
       }
+      if (deleteNow)
+        deleteRecursively(bundle.directory);
       purgeExpired();
     }
   }
 
+  /**
+   * Removes a preview: no new lease is granted, and its files are deleted at once when nobody holds it, otherwise when the last
+   * holder lets go (a send from one tab must not delete the files a download from another is still reading).
+   */
   public void remove(final String id) {
     final Bundle bundle = bundles.remove(id);
     if (bundle != null)
@@ -266,6 +310,10 @@ public class SupportBundleManager implements AutoCloseable {
   private static void dispose(final Bundle bundle) {
     synchronized (bundle) {
       bundle.removed = true;
+      if (bundle.leases > 0) {
+        bundle.deleteWhenIdle = true;
+        return;
+      }
     }
     deleteRecursively(bundle.directory);
   }

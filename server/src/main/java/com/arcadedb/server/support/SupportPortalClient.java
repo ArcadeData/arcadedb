@@ -24,6 +24,7 @@ import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.ConnectException;
@@ -32,6 +33,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +42,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
@@ -342,7 +347,6 @@ public class SupportPortalClient {
     return bytes;
   }
 
-  /** A multipart/form-data body whose files are read from disk while the request is sent. */
   /** The portal answered with more bytes than {@link #MAX_RESPONSE_BYTES}. */
   static final class ResponseTooLargeException extends IOException {
     ResponseTooLargeException(final long max) {
@@ -353,9 +357,9 @@ public class SupportPortalClient {
   /** The body as a UTF-8 string, cancelled as soon as it exceeds the limit. */
   static final class LimitedStringBody implements HttpResponse.BodySubscriber<String> {
     private final long                                                max;
-    private final java.io.ByteArrayOutputStream                       out    = new java.io.ByteArrayOutputStream();
-    private final java.util.concurrent.CompletableFuture<String>      result = new java.util.concurrent.CompletableFuture<>();
-    private       java.util.concurrent.Flow.Subscription              subscription;
+    private final ByteArrayOutputStream                       out    = new ByteArrayOutputStream();
+    private final CompletableFuture<String>      result = new CompletableFuture<>();
+    private       Flow.Subscription              subscription;
     private       long                                                size;
 
     LimitedStringBody(final long max) {
@@ -363,21 +367,21 @@ public class SupportPortalClient {
     }
 
     @Override
-    public java.util.concurrent.CompletionStage<String> getBody() {
+    public CompletionStage<String> getBody() {
       return result;
     }
 
     @Override
-    public void onSubscribe(final java.util.concurrent.Flow.Subscription subscription) {
+    public void onSubscribe(final Flow.Subscription subscription) {
       this.subscription = subscription;
       subscription.request(Long.MAX_VALUE);
     }
 
     @Override
-    public void onNext(final List<java.nio.ByteBuffer> buffers) {
+    public void onNext(final List<ByteBuffer> buffers) {
       if (result.isDone())
         return;
-      for (final java.nio.ByteBuffer buffer : buffers) {
+      for (final ByteBuffer buffer : buffers) {
         size += buffer.remaining();
         if (size > max) {
           subscription.cancel();
@@ -401,13 +405,14 @@ public class SupportPortalClient {
     }
   }
 
+  /** A multipart/form-data body whose files are read from disk while the request is sent. */
   static final class Multipart {
     private static final byte[] CRLF = "\r\n".getBytes(StandardCharsets.US_ASCII);
 
     private final List<Object> chunks = new ArrayList<>();
     private       long         length;
 
-    Multipart(final String boundary, final List<Part> parts) {
+    Multipart(final String boundary, final List<Part> parts) throws IOException {
       for (final Part part : parts) {
         final StringBuilder header = new StringBuilder("--").append(boundary).append("\r\nContent-Disposition: form-data; name=\"")
             .append(part.name()).append('"');
@@ -419,11 +424,8 @@ public class SupportPortalClient {
           add(part.bytes());
         else {
           chunks.add(part.file());
-          try {
-            length += Files.size(part.file());
-          } catch (final IOException e) {
-            throw new IllegalStateException("Cannot read the file to send: " + part.file().getFileName(), e);
-          }
+          // A preview file that has vanished is a failure on this server, reported as one (internal_error), not a request error
+          length += Files.size(part.file());
         }
         add(CRLF);
       }

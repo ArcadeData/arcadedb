@@ -93,9 +93,6 @@ public class SupportHandler extends AbstractServerHttpHandler {
       return error(e);
     } catch (final IllegalArgumentException e) {
       return error(new SupportException("bad_request", e.getMessage()));
-    } catch (final IllegalStateException e) {
-      LogManager.instance().log(this, Level.WARNING, "Support: %s is not available", e, action);
-      return error(new SupportException("support_stopped", "The support service is not available: " + e.getMessage()));
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Support: %s failed", e, action);
       // A temp file, a zip or a read of the logs failed on this server: not the caller's request

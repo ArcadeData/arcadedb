@@ -185,6 +185,10 @@ public class SupportLogCollector {
     if (!name.startsWith(stem))
       return false;
     final String lower = name.toLowerCase(Locale.ROOT);
+    // A log file and its rotations (arcadedb.log, arcadedb.log.1, arcadedb0.log.2.gz): not whatever else starts with the stem in a
+    // shared directory such as the temp directory
+    if (!lower.contains(".log"))
+      return false;
     return !(lower.endsWith(".lck") || lower.endsWith(".hprof") || lower.endsWith(".tmp") || lower.endsWith(".jfr"));
   }
 
