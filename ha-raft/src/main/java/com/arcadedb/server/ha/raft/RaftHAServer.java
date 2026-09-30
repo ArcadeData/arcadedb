@@ -6262,8 +6262,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Answered
    * from a value refreshed at most once per second: it is asked on every commit, and {@link #allPeersSupport} builds a list of
-   * the peers per call. A peer that stops advertising is noticed within the TTL, which is far inside the capability monitor's own
-   * refresh period.
+   * the peers per call. A membership change drops the cached answer at once ({@link #invalidateTxPreparedAtCapability}); a peer that merely stops
+   * advertising is noticed within the TTL.
    */
   public boolean canStateTxPreparedAt() {
     final long now = System.currentTimeMillis();
@@ -6272,6 +6272,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       txPreparedAtCapabilityCheckedAt = now;
     }
     return txPreparedAtCapable;
+  }
+
+  /** Drops the cached {@link #canStateTxPreparedAt} answer, so the next commit asks again; called when the membership changes. */
+  void invalidateTxPreparedAtCapability() {
+    txPreparedAtCapabilityCheckedAt = 0L;
   }
 
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */

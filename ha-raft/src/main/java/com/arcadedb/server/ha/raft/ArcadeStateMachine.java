@@ -2400,6 +2400,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final RaftProtos.RaftConfigurationProto newRaftConfiguration) {
     super.notifyConfigurationChanged(term, index, newRaftConfiguration);
 
+    // A peer that joins must be asked again before a transaction states its prepared-at index (issue #8686): the cached answer
+    // describes the membership that has just changed.
+    final RaftHAServer membershipHolder = raftHAServer;
+    if (membershipHolder != null)
+      membershipHolder.invalidateTxPreparedAtCapability();
+
     try {
       final List<RaftPeerId> peers = new ArrayList<>(newRaftConfiguration.getPeersCount());
       for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getPeersList())
