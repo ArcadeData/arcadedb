@@ -168,6 +168,29 @@ class Issue8724CypherIndexOrderWholeLabelTest extends TestHelper {
   }
 
   @Test
+  void nullKeysAreSeparatedFromZeroAndNegativeValues() {
+    database.command("sql", "CREATE VERTEX TYPE Z");
+    database.command("sql", "CREATE PROPERTY Z.x INTEGER");
+    database.command("sql", "CREATE INDEX ON Z (x) NOTUNIQUE NULL_STRATEGY INDEX");
+    final List<Integer> values = new ArrayList<>();
+    for (final Integer value : new Integer[] { 0, null, -5, 7, null, 0, Integer.MIN_VALUE, Integer.MAX_VALUE, null }) {
+      values.add(value);
+      database.transaction(() -> {
+        final var vertex = database.newVertex("Z");
+        if (value != null)
+          vertex.set("x", value);
+        vertex.save();
+      });
+    }
+    assertThat(column("MATCH (z:Z) RETURN z.x AS x ORDER BY z.x LIMIT 20")).containsExactlyElementsOf(expected(values, true, 0, 20));
+    assertThat(column("MATCH (z:Z) RETURN z.x AS x ORDER BY z.x DESC LIMIT 20")).containsExactlyElementsOf(expected(values, false, 0, 20));
+    assertThat(column("MATCH (z:Z) WHERE z.x IS NOT NULL RETURN z.x AS x ORDER BY z.x DESC LIMIT 20"))
+        .containsExactlyElementsOf(expected(nonNull(values), false, 0, 20));
+    assertThat(column("MATCH (z:Z) WHERE z.x IS NOT NULL RETURN z.x AS x ORDER BY z.x LIMIT 20"))
+        .containsExactlyElementsOf(expected(nonNull(values), true, 0, 20));
+  }
+
+  @Test
   void otherPredicatesKeepTheSort() {
     final String query = "MATCH (v:D) WHERE v.x IS NOT NULL AND v.seq >= 10 RETURN v.x AS x ORDER BY v.x DESC LIMIT 5";
     final List<Integer> values = new ArrayList<>();

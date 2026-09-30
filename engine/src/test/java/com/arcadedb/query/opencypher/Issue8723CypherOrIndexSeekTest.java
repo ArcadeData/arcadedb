@@ -133,6 +133,13 @@ class Issue8723CypherOrIndexSeekTest extends TestHelper {
   }
 
   @Test
+  void aListParameterDisjunctAndAScalarParameterDisjunct() {
+    final String query = "MATCH (e:E) WHERE e.x IN $xs OR e.s = $s RETURN e.id AS id ORDER BY id";
+    assertThat(column(query, Map.of("xs", List.of(1, 2, 3), "s", "s10")))
+        .containsExactlyElementsOf(expectedIds(i -> i % 500 == 1 || i % 500 == 2 || i % 500 == 3 || i % 400 == 10));
+  }
+
+  @Test
   void anOrOnOtherVariableDoesNotSeekTheAnchor() {
     final String query = "MATCH (e:E), (f:E) WHERE e.x = 3 OR f.x = 4 RETURN count(*) AS n";
     final long expected = (long) expectedIds(i -> i % 500 == 3).size() * VERTICES + (long) VERTICES * expectedIds(i -> i % 500 == 4).size()
