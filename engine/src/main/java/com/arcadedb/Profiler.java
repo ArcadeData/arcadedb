@@ -119,7 +119,8 @@ public class Profiler {
   private static volatile File[] canonicalDiskSpaceDirectory;
 
   /**
-   * The overlay {@link #diskSpaceDirectory()} reads the database directory through. An empty
+   * The overlay {@link #diskSpaceDirectory()} reads the database directory through when no server has published
+   * its own (see {@link #publishedDiskSpaceSettings}). An empty
    * {@link ContextConfiguration} is a pure proxy for the process-wide settings - it holds nothing and nothing here
    * writes to it - so one shared instance is what a per-call {@code new} was already asking for.
    * <p>
@@ -127,6 +128,23 @@ public class Profiler {
    * to be reading a disk figure, which is not what any caller of this class means to do.
    */
   private static final ContextConfiguration GLOBAL_SETTINGS = new ContextConfiguration(); // READ-ONLY: see above
+
+  /**
+   * The configurations of the servers running in this JVM, in start order (issue #7869). A server publishes its own
+   * {@link ContextConfiguration} here on start and withdraws it on stop, because that is where
+   * {@code arcadedb.server.databaseDirectory} set in {@code config/server-configuration.json} lands: the file never
+   * reaches the {@link GlobalConfiguration} enum, so {@link #GLOBAL_SETTINGS} alone measured the enum default while
+   * the databases sat on another filesystem.
+   * <p>
+   * A list rather than one slot because a JVM can run more than one server (embedded HA, tests): the profiler is a
+   * singleton and reports ONE directory, the most recently started server's, and stopping that one hands the report
+   * back to the one still running rather than to the enum default. Guarded by its own monitor; the read path goes
+   * through {@link #diskSpaceSettings} and never takes it.
+   */
+  private static final List<ContextConfiguration> publishedDiskSpaceSettings = new ArrayList<>();
+
+  /** The last entry of {@link #publishedDiskSpaceSettings}, or {@link #GLOBAL_SETTINGS} when none is published. */
+  private static volatile ContextConfiguration diskSpaceSettings = GLOBAL_SETTINGS;
 
   protected Profiler() {
   }
@@ -494,13 +512,66 @@ public class Profiler {
   }
 
   /**
+   * Makes the disk figures describe the database directory {@code configuration} names (issue #7869). Called by a
+   * server once its configuration file is loaded, so that {@code GET /api/v1/server}, the Studio disk card and the
+   * server's own low-disk warning read the directory through the same {@link ContextConfiguration}. The
+   * configuration is read on every report rather than copied, so a later change to the setting is followed.
+   * <p>
+   * The most recent publication wins. Pair every call with {@link #withdrawDiskSpaceConfiguration}; a {@code null}
+   * is ignored.
+   */
+  public static void publishDiskSpaceConfiguration(final ContextConfiguration configuration) {
+    if (configuration == null)
+      return;
+    synchronized (publishedDiskSpaceSettings) {
+      removeByIdentity(configuration);
+      publishedDiskSpaceSettings.add(configuration);
+      diskSpaceSettings = configuration;
+    }
+  }
+
+  /**
+   * Withdraws a configuration published with {@link #publishDiskSpaceConfiguration}. The disk figures then describe
+   * the most recently published configuration still present, or the process-wide settings if there is none. A
+   * configuration that was never published, or a {@code null}, is ignored.
+   */
+  public static void withdrawDiskSpaceConfiguration(final ContextConfiguration configuration) {
+    if (configuration == null)
+      return;
+    synchronized (publishedDiskSpaceSettings) {
+      removeByIdentity(configuration);
+      diskSpaceSettings = publishedDiskSpaceSettings.isEmpty() ?
+          GLOBAL_SETTINGS :
+          publishedDiskSpaceSettings.getLast();
+    }
+  }
+
+  /** Test support: forgets every published configuration. */
+  static void clearDiskSpaceConfigurations() {
+    synchronized (publishedDiskSpaceSettings) {
+      publishedDiskSpaceSettings.clear();
+      diskSpaceSettings = GLOBAL_SETTINGS;
+    }
+  }
+
+  // By identity, not equals(): two servers may well carry equal configurations and each must withdraw its own.
+  private static void removeByIdentity(final ContextConfiguration configuration) {
+    publishedDiskSpaceSettings.removeIf(c -> c == configuration);
+  }
+
+  /**
    * The directory whose filesystem the disk figures describe (issue #7223).
    * <p>
-   * The profiler has no {@link ContextConfiguration} of its own - it is a JVM-wide singleton that predates any
-   * server - so it reads the process-wide setting through {@link #GLOBAL_SETTINGS}, an empty one, which is what
-   * {@link ContextConfiguration#getValueAsString(GlobalConfiguration)} falls back to. That resolves to the same
-   * directory the server's own low-disk warning measures, so the two never describe different filesystems while
-   * reporting the same thing.
+   * The profiler is a JVM-wide singleton that predates any server, so it has no {@link ContextConfiguration} of its
+   * own. A running server publishes its configuration through {@link #publishDiskSpaceConfiguration} and the
+   * directory is resolved from that - the same configuration, and the same {@link FileUtils#resolveDiskSpaceDirectory}
+   * call, the server's low-disk warning uses, so the two describe the same filesystem. Issue #7869: reading only the
+   * process-wide settings did NOT achieve that, because a directory set in the server configuration file never
+   * reaches the {@link GlobalConfiguration} enum.
+   * <p>
+   * With no server published (embedded use), it reads the process-wide setting through {@link #GLOBAL_SETTINGS}, an
+   * empty configuration, which is what {@link ContextConfiguration#getValueAsString(GlobalConfiguration)} falls back
+   * to.
    * <p>
    * Canonicalised, because the path is REPORTED here and not only measured: the working-directory fallback is
    * {@code "."}, which names no filesystem to a reader looking at a disk figure they do not believe.
@@ -511,7 +582,7 @@ public class Profiler {
    * reporting the parent directory after the configured one is finally created.
    */
   private static File diskSpaceDirectory() {
-    final File dir = FileUtils.resolveDiskSpaceDirectory(GLOBAL_SETTINGS).getAbsoluteFile();
+    final File dir = FileUtils.resolveDiskSpaceDirectory(diskSpaceSettings).getAbsoluteFile();
 
     final File[] memo = canonicalDiskSpaceDirectory;
     if (memo != null && memo[0].equals(dir))
