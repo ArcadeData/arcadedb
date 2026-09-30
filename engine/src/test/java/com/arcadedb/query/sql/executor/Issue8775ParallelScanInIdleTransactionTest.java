@@ -23,6 +23,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
+import java.util.function.LongSupplier;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -34,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
-  private static final int    ROWS  = 20_000;
-  private static final String QUERY = "SELECT count(*) AS n FROM E WHERE grp = 5";
+  private static final int    ROWS   = 20_000;
+  private static final String QUERY  = "SELECT count(*) AS n FROM E WHERE grp = 5";
   private static final String CYPHER = "MATCH (e:E) WHERE e.grp = 5 RETURN count(*) AS n";
 
   private long expected;
@@ -119,6 +121,87 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
       assertThat(count()).isEqualTo(expected);
     } finally {
       database.rollback();
+    }
+  }
+
+  @Test
+  void writeDuringIterationDoesNotChangeTheScanThatAlreadyStarted() {
+    // A scan is decided at its first pull and reads the pages committed at that point, like a cursor that is
+    // insensitive to later writes: what the transaction writes while it drains is not fed back into it
+    database.begin();
+    try {
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          rs.next();
+          if (rows++ == 0)
+            database.newVertex("E").set("id", -1, "grp", 5).save();
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+      // the next query starts after the write: it sees it, on the calling thread
+      assertThat(count()).isEqualTo(expected + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
+    final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
+    final long parallelUpdated = updatedIn(update, true);
+    final long sequentialUpdated = updatedIn(update, false);
+    assertThat(parallelUpdated).isEqualTo(expected).isEqualTo(sequentialUpdated);
+  }
+
+  @Test
+  void deleteInIdleTransactionMatchesTheSequentialAnswer() {
+    assertThat(deletedIn(true)).isEqualTo(expected).isEqualTo(deletedIn(false));
+  }
+
+  @Test
+  void commitFromAnotherThreadIsSeenByTheIdleTransaction() throws InterruptedException {
+    database.begin();
+    try {
+      assertThat(count()).isEqualTo(expected);
+      final Thread writer = new Thread(() -> {
+        database.begin();
+        database.newVertex("E").set("id", -2, "grp", 5).save();
+        database.commit();
+      });
+      writer.start();
+      writer.join();
+      assertThat(sqlPlan()).contains("(parallel)");
+      assertThat(count()).isEqualTo(expected + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private long updatedIn(final String update, final boolean parallel) {
+    return inRolledBackTransaction(parallel, () -> {
+      try (final ResultSet rs = database.command("sql", update)) {
+        return ((Number) rs.next().getProperty("count")).longValue();
+      }
+    });
+  }
+
+  private long deletedIn(final boolean parallel) {
+    return inRolledBackTransaction(parallel, () -> {
+      try (final ResultSet rs = database.command("sql", "DELETE FROM E WHERE grp = 5")) {
+        return ((Number) rs.next().getProperty("count")).longValue();
+      }
+    });
+  }
+
+  private long inRolledBackTransaction(final boolean parallel, final LongSupplier body) {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, parallel);
+    database.begin();
+    try {
+      return body.getAsLong();
+    } finally {
+      database.rollback();
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
     }
   }
 

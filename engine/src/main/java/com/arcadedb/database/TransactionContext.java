@@ -1920,6 +1920,8 @@ public class TransactionContext implements Transaction {
    * it sees is then exactly what the committed pages hold, so a reader on another thread sees the same.
    */
   public boolean isReadOnlyView() {
+    // hasChanges() covers the pages and the index entries; the rest is state a write registers before or without
+    // dirtying a page (a deferred update, a record created or deleted, a bucket count delta, a new page counter)
     return isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED && !hasChanges() && newRecords.isEmpty()
         && modifiedRecordsCache.isEmpty() && deletedRecordsInTx.isEmpty() && (updatedRecords == null || updatedRecords.isEmpty())
         && bucketRecordDelta.isEmpty() && newPageCounters.isEmpty();
