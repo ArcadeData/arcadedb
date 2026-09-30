@@ -54,6 +54,12 @@ class Issue8561CollNumericEqualityTest extends TestHelper {
   }
 
   @Test
+  void nestedNumericsAreComparedLikeCypherEquality() {
+    assertThat((List<?>) one("RETURN coll.distinct([[1], [1.0], {a: 1}, {a: 1.0}]) AS r")).hasSize(2);
+    assertThat(((Number) one("RETURN coll.indexOf([[1.0, 2]], [1, 2]) AS r")).longValue()).isEqualTo(0L);
+  }
+
+  @Test
   void unionCollapsesNumericTwins() {
     assertThat((List<?>) one("RETURN coll.union([1], [1.0, 2]) AS r")).hasSize(2);
   }

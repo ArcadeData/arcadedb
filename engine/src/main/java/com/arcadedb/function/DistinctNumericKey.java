@@ -20,9 +20,12 @@ package com.arcadedb.function;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -77,6 +80,21 @@ public final class DistinctNumericKey {
       if (!Double.isNaN(d) && !Double.isInfinite(d) && d == Math.rint(d) && Math.abs(d) <= MAX_EXACT_DOUBLE_INTEGER)
         return (long) d;
       return d;
+    }
+
+    // Lists and maps are equal under Cypher's = when their elements are, so [1] and [1.0] share a key (issue #8561). A lazy
+    // range is left alone: walking it would materialise what it exists not to, and its elements are all Longs already
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      final List<Object> key = new ArrayList<>(list.size());
+      for (final Object element : list)
+        key.add(canonicalize(element));
+      return key;
+    }
+    if (value instanceof Map<?, ?> map) {
+      final Map<Object, Object> key = new HashMap<>(Math.max(4, map.size() * 2));
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        key.put(entry.getKey(), canonicalize(entry.getValue()));
+      return key;
     }
 
     if (value instanceof Identifiable identifiable) {

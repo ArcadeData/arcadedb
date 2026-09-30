@@ -97,11 +97,11 @@ final class PostgresWireMessages {
     writeCString(body, statementName);
     body.write(0);
     body.write(0); // int16 numParamFormatCodes = 0: all text
-    body.write(0);
+    body.write(values.length >>> 8);
     body.write(values.length); // int16 numParamValues
     for (final String value : values) {
       final byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-      body.write(new byte[] { 0, 0, 0, (byte) bytes.length });
+      body.write(new byte[] { (byte) (bytes.length >>> 24), (byte) (bytes.length >>> 16), (byte) (bytes.length >>> 8), (byte) bytes.length });
       body.write(bytes);
     }
     body.write(0);

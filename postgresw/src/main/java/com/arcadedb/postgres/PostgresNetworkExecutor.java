@@ -673,7 +673,8 @@ public class PostgresNetworkExecutor extends Thread {
     if (portal.catalogQuery) {
       // Deferred from parseCommand because the query's filters are bound parameters (issue #6412).
       final CatalogAnswer catalogAnswer = handleCatalogQuery(portal.query, getParams(portal));
-      if (catalogAnswer != null)
+      // A Describe('S') already announced the columns, and the rows are encoded from what the client was told
+      if (catalogAnswer != null && !portal.columnsDescribed)
         portal.columns = catalogAnswer.columns();
       return new IteratorResultSet(
           (catalogAnswer != null ? catalogAnswer.rows() : Collections.<Result>emptyList()).iterator());
@@ -1651,12 +1652,14 @@ public class PostgresNetworkExecutor extends Thread {
   private Map<String, PostgresType> getColumnsFromWriteReturn(final Statement statement) {
     switch (statement) {
     case InsertStatement insert:
-      return getColumnsFromProjection(insert.getReturnStatement());
+      return getColumnsFromReturn(insert.getTargetType(), insert.getReturnStatement());
     case CreateVertexStatement createVertex:
-      return getColumnsFromProjection(createVertex.getReturnStatement());
+      return getColumnsFromReturn(createVertex.getTargetType(), createVertex.getReturnStatement());
     case UpdateStatement update: {
-      if (update.getReturnProjection() != null)
-        return getColumnsFromProjection(update.getReturnProjection());
+      if (update.getReturnProjection() != null) {
+        final FromItem item = update.getTarget() != null ? update.getTarget().getItem() : null;
+        return getColumnsFromReturn(item != null ? item.getIdentifier() : null, update.getReturnProjection());
+      }
       if (update.isReturnBefore() || update.isReturnAfter())
         return getColumnsFromTarget(update.getTarget());
       return null;
@@ -1666,6 +1669,22 @@ public class PostgresNetworkExecutor extends Thread {
     default:
       return null;
     }
+  }
+
+  /**
+   * The columns of a RETURN projection, typed from the declared properties of the type the write targets when it is
+   * known, so {@code RETURN id} on an INTEGER property is not announced as text.
+   */
+  private Map<String, PostgresType> getColumnsFromReturn(final Identifier targetType, final Projection projection) {
+    if (targetType != null) {
+      final Map<String, PostgresType> typeColumns = getColumnsFromType(targetType.getStringValue());
+      if (typeColumns != null && !typeColumns.isEmpty()) {
+        final Map<String, PostgresType> projected = applyProjection(projection, typeColumns);
+        if (projected != null && !projected.isEmpty())
+          return projected;
+      }
+    }
+    return getColumnsFromProjection(projection);
   }
 
   private Map<String, PostgresType> getColumnsFromTarget(final FromClause target) {
@@ -1679,13 +1698,16 @@ public class PostgresNetworkExecutor extends Thread {
    * but a shape whose resolver needs a value to recognise it declines the query while the parameters are unbound, so it is
    * asked again with a placeholder for each of them: only the columns are kept, never the rows of that probe (issue #8562).
    */
+  private static final int MAX_STATEMENT_PARAMETERS = 65535;
+
   private Map<String, PostgresType> describeCatalogColumns(final String query) {
     CatalogAnswer answer = handleCatalogQuery(query);
     if (answer != null && !answer.columns().isEmpty())
       return answer.columns();
 
     final int placeholders = PostgresCatalog.countPlaceholders(query);
-    if (placeholders > 0) {
+    // PostgreSQL itself caps a statement at 65535 parameters: a larger index is no placeholder to probe with
+    if (placeholders > 0 && placeholders <= MAX_STATEMENT_PARAMETERS) {
       final Object[] probe = new Object[placeholders];
       Arrays.fill(probe, "");
       try {

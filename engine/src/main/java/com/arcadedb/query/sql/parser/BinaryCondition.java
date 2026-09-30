@@ -259,7 +259,9 @@ public class BinaryCondition extends BooleanExpression {
       if (right.isEarlyCalculated(info.getContext())) {
         if (operator instanceof EqualsCompareOperator)
           return true;
-        else return info.allowsRange() && operator.isRangeOperator();
+        // A CI index probes with the lower-cased bound, so a range is the one the user wrote only when the bound is
+        // already lower case: name.toLowerCase() >= 'C' matches "anne", the probe >= 'c' does not (issue #8560)
+        return info.allowsRange() && operator.isRangeOperator() && isLowerCaseLiteral(right, info.getContext());
       }
     }
     return false;
@@ -368,6 +370,12 @@ public class BinaryCondition extends BooleanExpression {
    * <p>
    * Package-private so {@link BetweenCondition} can reuse it for the same CI-index optimization on ranges.
    */
+  /** True when {@code expression} is a literal string that is its own lower-case form. */
+  public static boolean isLowerCaseLiteral(final Expression expression, final CommandContext context) {
+    return expression.isLiteral() && expression.execute((Result) null, context) instanceof final String string
+        && string.equals(string.toLowerCase(Locale.ROOT));
+  }
+
   public static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
     if (expr == null || expr.getMathExpression() == null)
       return false;
