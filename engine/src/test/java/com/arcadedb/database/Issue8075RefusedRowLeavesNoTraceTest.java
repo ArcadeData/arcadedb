@@ -133,6 +133,26 @@ class Issue8075RefusedRowLeavesNoTraceTest {
     assertThat(rowOf("c")).isEqualTo(3);
   }
 
+  /** A record already queued by an earlier update keeps its queue entry when a later update of it is refused. */
+  @Test
+  void aRefusedUpdateOfAnAlreadyQueuedRecordKeepsItsEarlierUpdate() {
+    // Same transaction throughout: a duplicate of a COMMITTED key is decided at commit, not inline
+    database.transaction(() -> {
+      database.newDocument(TYPE).set("name", "a").set("row", 1).save();
+      final MutableDocument mb = database.newDocument(TYPE).set("name", "b").set("row", 2);
+      mb.save();
+      mb.set("row", 20).save();
+      mb.set("name", "a");
+      assertThat(catchThrowable(mb::save)).isInstanceOf(DuplicatedKeyException.class);
+      mb.set("name", "b");
+      mb.save();
+    });
+
+    assertThat(database.countType(TYPE, false)).isEqualTo(2);
+    assertThat(rowOf("a")).isEqualTo(1);
+    assertThat(rowOf("b")).isEqualTo(20);
+  }
+
   private int rowOf(final String key) {
     return database.query("sql", "SELECT FROM " + TYPE + " WHERE name = '" + key + "'").next().<Integer>getProperty("row");
   }

@@ -230,6 +230,43 @@ class Issue8426GAVEdgeSubTypeSlicesTest extends TestHelper {
    * count push-down with or without a view, so the reference for those goes through {@code WITH *}, which the push-down
    * does not claim.
    */
+  /** getDegrees on a parent type sums its slices once each, on a two- and a three-level hierarchy, with and without an overlay. */
+  @Test
+  void degreesOfAParentTypeSumTheirSlicesOnce() {
+    database.command("sql", "CREATE EDGE TYPE KCC EXTENDS KC");
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 5").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 6").next().getVertex().get();
+      a.modify().newEdge("KCC", b);
+      a.modify().newEdge("KCC", b);
+    });
+    createView("VERTEX TYPES (P) PROPERTIES (id) UPDATE MODE SYNCHRONOUS");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "gav8426");
+    assertThat(view.resolveEdgeTypes("KC")).containsExactly("KC", "KCC");
+
+    assertDegreesMatchTheRecords(view);
+
+    database.transaction(() -> {
+      final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 5").next().getVertex().get();
+      final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 7").next().getVertex().get();
+      a.modify().newEdge("KCC", b);
+      a.modify().newEdge("KC", b);
+    });
+    assertDegreesMatchTheRecords(view);
+  }
+
+  private void assertDegreesMatchTheRecords(final GraphAnalyticalView view) {
+    for (final String type : new String[] { "K", "KC", "KCC" }) {
+      final int[] degrees = new int[view.getNodeIdUpperBound()];
+      view.getDegrees(degrees, Vertex.DIRECTION.OUT, type);
+      for (int id = 0; id < VERTICES; id++) {
+        final Vertex v = database.query("sql", "SELECT FROM P WHERE id = " + id).next().getVertex().get();
+        assertThat(degrees[view.getNodeId(v.getIdentity())]).as(type + " out-degree of " + id)
+            .isEqualTo((int) v.countEdges(Vertex.DIRECTION.OUT, type));
+      }
+    }
+  }
+
   private Map<String, List<String>> oracle() {
     final Map<String, List<String>> expected = new LinkedHashMap<>();
     for (final String query : QUERIES)

@@ -1029,6 +1029,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private String[] expandEdgeType(final String edgeType) {
+    if (edgeType == null)
+      return new String[] { null };
     final LocalSchema schema = database.getSchema().getEmbedded();
     final long serial = schema.getTypesChangeSerial();
     EdgeTypeExpansions cache = edgeTypeExpansions;
@@ -1108,18 +1110,23 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   @Override
   public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
     final String[] resolved = expandEdgeType(edgeType);
-    if (resolved.length > 1) {
-      // A type with sub-types: the degree is the sum over their slices
-      final int[] slice = new int[degrees.length];
-      Arrays.fill(degrees, 0);
-      for (final String concrete : resolved) {
-        getDegrees(slice, direction, concrete);
-        for (int v = 0; v < degrees.length; v++)
-          degrees[v] += slice[v];
-      }
+    if (resolved.length == 1) {
+      degreesOfSlice(degrees, direction, resolved[0]);
       return;
     }
 
+    // A type with sub-types: the degree is the sum over their slices, each read exactly once
+    Arrays.fill(degrees, 0);
+    final int[] slice = new int[degrees.length];
+    for (final String concrete : resolved) {
+      degreesOfSlice(slice, direction, concrete);
+      for (int v = 0; v < degrees.length; v++)
+        degrees[v] += slice[v];
+    }
+  }
+
+  /** The degrees of ONE concrete slice and its overlay, with no type expansion. */
+  private void degreesOfSlice(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
     final Snapshot snap = checkBuilt();
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     final DeltaOverlay ov = snap.overlay;
