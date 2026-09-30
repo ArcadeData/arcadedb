@@ -1022,6 +1022,8 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("user", user);
     schema.addProperty("version", SpecBuilders.string("Server version"));
     schema.addProperty("serverName", SpecBuilders.string("This server's configured name"));
+    schema.addProperty("supportId", SpecBuilders.string(
+        "Support identifier (UUID) from 'arcadedb.support.id'. Present only when configured; never a credential"));
     schema.addProperty("languages", SpecBuilders.arrayOf(SpecBuilders.string("Query language name"),
         "Query languages this build can run, e.g. sql, sqlscript, cypher, gremlin"));
     schema.addProperty("metrics", SpecBuilders.freeFormObject("""
