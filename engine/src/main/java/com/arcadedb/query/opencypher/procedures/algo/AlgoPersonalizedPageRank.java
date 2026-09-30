@@ -149,14 +149,14 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           if (!(pair.get(1) instanceof Number weight))
             throw new IllegalArgumentException(getName() + "(): the weight of a [node, weight] pair must be a number");
           addSource(sources, extractVertex(pair.get(0), "sourceNodes[*]"), weight.doubleValue());
-        } else if (item == null || item instanceof Vertex)
+        } else if (item == null || item instanceof Vertex) // null goes to extractVertex() for its "cannot be null" message
           addSource(sources, extractVertex(item, "sourceNodes[*]"), 1.0);
         else
           throw new IllegalArgumentException(getName() + "(): sourceNodes[*] must be a node or a [node, weight] pair, got "
               + item.getClass().getSimpleName() + " (use [[node, weight], ...] for weighted sources)");
       }
     } else
-      addSource(sources, extractVertex(arg, "sourceNode"), 1.0);
+      addSource(sources, extractVertex(arg, "sourceNodes"), 1.0);
 
     double total = 0.0;
     for (final double w : sources.values())
@@ -180,7 +180,10 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
    */
   private static double[] buildPersonalization(final Map<RID, Double> sources, final int n,
       final ToIntFunction<RID> indexOf, final boolean lenient) {
-    final double[] personal = new double[n];
+    // Resolve the (few) sources first, so the O(n) vector is only allocated when one is going to be returned
+    final int[] indexes = new int[sources.size()];
+    final double[] weights = new double[indexes.length];
+    int known = 0;
     double total = 0.0;
     for (final Map.Entry<RID, Double> e : sources.entrySet()) {
       final int idx = indexOf.applyAsInt(e.getKey());
@@ -189,13 +192,16 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           return null;
         continue;
       }
-      personal[idx] += e.getValue();
+      indexes[known] = idx;
+      weights[known++] = e.getValue();
       total += e.getValue();
     }
     if (!(total > 0.0))
       return null;
-    for (int i = 0; i < n; i++)
-      personal[i] /= total;
+
+    final double[] personal = new double[n];
+    for (int k = 0; k < known; k++)
+      personal[indexes[k]] += weights[k] / total;
     return personal;
   }
 
