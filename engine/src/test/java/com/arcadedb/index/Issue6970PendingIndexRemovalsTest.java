@@ -37,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * LSM {@code get()} paths, so every caller of the helper is exercised by at least one test. Rule 3 ({@code REPLACE}
  * with an {@code oldRid}) through a point lookup is covered there, on LSM by
  * {@code rangeScanAndLookupAgreeOnAUniqueKeyReplacedInTheSameTransaction} and on HASH by
- * {@code hashIndexLookupHonoursAUniqueKeyReplacedInTheSameTransaction}.
+ * {@code hashIndexLookupHonoursAUniqueKeyReplacedInTheSameTransaction}. The third caller, the range cursor
+ * ({@code LSMTreeIndexCursor}), is driven there too on unique and non-unique indexes, both scan directions.
  */
 class Issue6970PendingIndexRemovalsTest extends TestHelper {
 

@@ -48,10 +48,10 @@ import java.util.Set;
  * These must stay in step with the replay in {@code TransactionIndexContext.commit()}: if the merge rules ever
  * produce a new operation shape, this is the class to re-audit.
  * <p>
- * One caller-side shortcut applies rule 2 without this class: the point lookups ({@code LSMTreeIndex.get()},
- * {@code HashIndex.get()}) answer a {@code REMOVE} on a unique index with an empty cursor straight away, before
- * calling {@link #accumulate}, because nothing on disk or in the overlay survives it and the early exit avoids
- * allocating the filter. A change to rule 2 has to be mirrored there.
+ * The point lookups ({@code LSMTreeIndex.get()}, {@code HashIndex.get()}) answer a whole-key removal on a unique
+ * index with an empty cursor before calling {@link #accumulate}, because nothing on disk or in the overlay survives
+ * it. They ask {@link #removesWholeKey} for that, the same predicate {@link #accumulate} uses, so rule 2 still has
+ * one definition.
  * <p>
  * Hot path: {@link #accumulate} returns {@code null} - and allocates nothing - for a key with no pending removal. The
  * instance, and its RID set, are created lazily on the first removal only, and a key-wide removal never allocates
@@ -81,7 +81,7 @@ public final class PendingIndexRemovals {
   public static PendingIndexRemovals accumulate(final PendingIndexRemovals current, final IndexKey value, final boolean unique) {
     final RID hidden;
     if (value.operation == IndexKeyOperation.REMOVE) {
-      if (value.rid == null || unique) {
+      if (removesWholeKey(value, unique)) {
         final PendingIndexRemovals result = current != null ? current : new PendingIndexRemovals();
         result.keyWide = true;
         result.rids = null;
@@ -100,6 +100,14 @@ public final class PendingIndexRemovals {
       result.rids.add(hidden);
     }
     return result;
+  }
+
+  /**
+   * Rule 2: true when the overlay entry hides every disk RID of its key - a {@code REMOVE} carrying no RID, or any
+   * {@code REMOVE} on a unique index, whose key holds at most one RID.
+   */
+  public static boolean removesWholeKey(final IndexKey value, final boolean unique) {
+    return value.operation == IndexKeyOperation.REMOVE && (value.rid == null || unique);
   }
 
   /** True when every disk RID of the key is hidden. */

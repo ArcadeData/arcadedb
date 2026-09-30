@@ -91,6 +91,17 @@ class PendingIndexRemovalsTest {
   }
 
   @Test
+  void removesWholeKeyMatchesRule2() {
+    assertThat(PendingIndexRemovals.removesWholeKey(new IndexKey(false, IndexKeyOperation.REMOVE, KEY, null), false)).isTrue();
+    assertThat(PendingIndexRemovals.removesWholeKey(new IndexKey(true, IndexKeyOperation.REMOVE, KEY, A), true)).isTrue();
+    assertThat(PendingIndexRemovals.removesWholeKey(new IndexKey(false, IndexKeyOperation.REMOVE, KEY, A), false)).isFalse();
+    final IndexKey replace = new IndexKey(true, IndexKeyOperation.REPLACE, KEY, B);
+    replace.oldRid = A;
+    assertThat(PendingIndexRemovals.removesWholeKey(replace, true)).isFalse();
+    assertThat(PendingIndexRemovals.removesWholeKey(new IndexKey(true, IndexKeyOperation.ADD, KEY, A), true)).isFalse();
+  }
+
+  @Test
   void rule3ReplaceHidesItsOldRid() {
     final IndexKey replace = new IndexKey(true, IndexKeyOperation.REPLACE, KEY, B);
     replace.oldRid = A;
