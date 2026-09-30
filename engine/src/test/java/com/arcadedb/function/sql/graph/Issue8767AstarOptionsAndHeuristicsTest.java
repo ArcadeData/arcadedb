@@ -129,6 +129,13 @@ class Issue8767AstarOptionsAndHeuristicsTest {
         final double maxAxis = heuristic(db, p, axes, SQLHeuristicFormula.MAXAXIS, false);
         assertThat(diagonal).as("%d axes", axes.length).isLessThan(manhattan - 0.1).isGreaterThan(maxAxis);
       }
+      // N-axis octile on deltas (3,1,2): sorted 3>=2>=1 gives (3-2)*1 + (2-1)*sqrt(2) + 1*sqrt(3), scaled by dFactor
+      final String[] xyz = { "x", "y", "z" };
+      final double expected3 = 1 + Math.sqrt(2) + Math.sqrt(3);
+      assertThat(heuristic(db, p, xyz, SQLHeuristicFormula.DIAGONAL, false)).isCloseTo(expected3, Offset.offset(1e-9));
+      final SQLFunctionAstar scaled = newAstar(db, p[0], xyz, SQLHeuristicFormula.DIAGONAL, false);
+      scaled.paramDFactor = 2.5;
+      assertThat(scaled.getHeuristicCost(p[0], null, p[1], scaled.context)).isCloseTo(2.5 * expected3, Offset.offset(1e-9));
       // octile distance on deltas (3,1): 2 straight + 1 diagonal of cost sqrt(2)
       assertThat(heuristic(db, p, new String[] { "x", "y" }, SQLHeuristicFormula.DIAGONAL, false)).isCloseTo(2 + Math.sqrt(2),
           Offset.offset(1e-9));
