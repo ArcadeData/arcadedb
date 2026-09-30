@@ -116,7 +116,9 @@ public class ContinuousAggregateBuilder {
     sql.append("CREATE CONTINUOUS AGGREGATE ");
     if (ifNotExists)
       sql.append("IF NOT EXISTS ");
-    return sql.append(Identifier.quote(name)).append(" AS ").append(query).toString();
+    sql.append(Identifier.quote(name)).append(" AS ");
+    MaterializedViewBuilder.appendQuery(sql, query);
+    return sql.toString();
   }
 
   /**

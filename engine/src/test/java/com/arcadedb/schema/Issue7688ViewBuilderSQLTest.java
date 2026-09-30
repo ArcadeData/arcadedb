@@ -144,6 +144,29 @@ class Issue7688ViewBuilderSQLTest extends TestHelper {
     }
   }
 
+  /**
+   * Code review on PR #8727: the query is emitted verbatim and the refresh/bucket/page-size clauses follow it, so a
+   * trailing {@code ;} ended the statement early and a trailing {@code --} comment swallowed every clause after it -
+   * silently, creating a MANUAL view with default buckets.
+   */
+  @Test
+  void aTrailingSemicolonOrLineCommentInTheQueryDoesNotSwallowTheClauses() {
+    for (final String query : new String[] { "SELECT name FROM Account ; ", "SELECT name FROM Account -- the accounts" }) {
+      final String sql = database.getSchema().buildMaterializedView().withName("Swallow").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).withTotalBuckets(3).toSQL();
+
+      final CreateMaterializedViewStatement parsed = (CreateMaterializedViewStatement) parse(sql);
+      assertThat(parsed.refreshMode).as(sql).isEqualTo("INCREMENTAL");
+      assertThat(parsed.buckets).as(sql).isEqualTo(3);
+
+      database.command("sql", sql);
+      assertThat(database.getSchema().getMaterializedView("Swallow").getRefreshMode()).as(sql)
+          .isEqualTo(MaterializedViewRefreshMode.INCREMENTAL);
+      assertThat(database.getSchema().getType("Swallow").getBuckets(false)).as(sql).hasSize(3);
+      database.getSchema().dropMaterializedView("Swallow");
+    }
+  }
+
   @Test
   void aSubSecondIntervalHasNoSQLExpression() {
     assertThatThrownBy(() -> database.getSchema().buildMaterializedView().withName("V").withQuery("SELECT FROM Account")

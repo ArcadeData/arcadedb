@@ -153,7 +153,8 @@ public class MaterializedViewBuilder {
     sql.append("CREATE MATERIALIZED VIEW ");
     if (ifNotExists)
       sql.append("IF NOT EXISTS ");
-    sql.append(Identifier.quote(name)).append(" AS ").append(query);
+    sql.append(Identifier.quote(name)).append(" AS ");
+    appendQuery(sql, query);
 
     switch (refreshMode) {
     case MANUAL -> sql.append(" REFRESH MANUAL");
@@ -167,6 +168,22 @@ public class MaterializedViewBuilder {
       sql.append(" PAGESIZE ").append(pageSize);
 
     return sql.toString();
+  }
+
+  /**
+   * Appends the query so the clauses rendered after it cannot be swallowed by it (code review on PR #8727). A trailing
+   * {@code ;} is dropped, since the statement would otherwise end before {@code REFRESH}; and a query carrying a
+   * {@code --} line comment is terminated with a newline, since the comment would otherwise run to the end of the
+   * statement and silently drop every clause after it - creating a MANUAL view with default buckets instead of failing.
+   * Shared with {@link ContinuousAggregateBuilder#toSQL()} so the two render a query the same way.
+   */
+  static void appendQuery(final StringBuilder sql, final String query) {
+    int end = query.length();
+    while (end > 0 && (Character.isWhitespace(query.charAt(end - 1)) || query.charAt(end - 1) == ';'))
+      --end;
+    sql.append(query, 0, end);
+    if (query.lastIndexOf("--", end) >= 0)
+      sql.append('\n');
   }
 
   /**
