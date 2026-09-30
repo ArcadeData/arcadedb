@@ -95,13 +95,16 @@ class Issue7438ReplicaWritesDuringLeaderDdlIT extends BaseRaftHATest {
         }
       });
 
-      // DDLs back to back until the replica's writer has been refused at least once: a build that finishes without ever
+      // DDLs (property plus index) back to back until the replica's writer has been refused at least once: a build that finishes without ever
       // overlapping a replica write proves nothing, so the loop keeps opening windows (bounded) rather than assume one.
       final long ddlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
       int rounds = 0;
+      // A fresh property and index per round, never a drop: dropping an index under a transaction the replica has in flight
+      // closes its file beneath that transaction, a different matter from the window under test.
       while (refused.get() == 0 && System.nanoTime() < ddlDeadline) {
-        final Index built = leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, "id");
-        leaderDb.getSchema().dropIndex(built.getName());
+        final String property = "extra" + rounds;
+        leaderDb.getSchema().getType(TYPE_NAME).createProperty(property, Type.LONG);
+        leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, property);
         rounds++;
       }
       assertThat(refused.get()).as("replica inserts refused during %d leader DDL round(s)", rounds).isGreaterThan(0);
