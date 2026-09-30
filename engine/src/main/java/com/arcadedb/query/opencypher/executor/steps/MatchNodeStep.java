@@ -130,6 +130,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // the moment issue #7021 made this lookup polymorphic. Same write-once-per-execution contract as the
   // fields above, and cleared with them.
   private       Collection<TypeIndex> polymorphicIndexes;
+  // Issue #8695: a chained single-label MATCH whose inline equality has no index re-scans the whole type once per outer
+  // row. From the second such scan on, the type is read once into a hash over one property (see
+  // {@link ScanPropertyHashIndex}) and each row only visits the records sharing its value. Same per-execution contract
+  // as the fields above. {@code unindexedScanOpens} counts the scans so a query that opens it once (a LIMIT, a single
+  // outer row) never pays for the build.
+  private       int                   unindexedScanOpens;
+  private       String                scanHashProperty;
+  private       ScanPropertyHashIndex scanHashIndex;
+  private       boolean               scanHashDeclined;
 
   /**
    * Creates a match node step.
@@ -632,6 +641,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
             return partitionedIter;
         }
 
+        // No index available - a chained match re-opens this scan per outer row, which a transient hash answers
+        // without the repeated full scans (issue #8695)
+        if (prev != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+          final Iterator<Identifiable> hashed = tryScanHashIndex(label, currentInputResult);
+          if (hashed != null)
+            return hashed;
+        }
+
         // No index available - fall back to full type scan
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
@@ -663,6 +680,40 @@ public class MatchNodeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
+  }
+
+  /** Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. */
+  private static final long SCAN_HASH_MAX_RECORDS = 5_000_000L;
+
+  /**
+   * Answers a chained, unindexed inline-equality match from a hash built over one full scan, or returns null to
+   * leave the plain scan in charge (first open, unsupported value type, type too large).
+   */
+  private Iterator<Identifiable> tryScanHashIndex(final String label, final Result currentInputResult) {
+    if (scanHashDeclined)
+      return null;
+    if (scanHashIndex == null) {
+      if (++unindexedScanOpens < 2)
+        return null;
+      if (context.getDatabase().countType(label, true) > SCAN_HASH_MAX_RECORDS) {
+        scanHashDeclined = true;
+        return null;
+      }
+      for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet())
+        if (ScanPropertyHashIndex.isSupported(InlineProperties.resolve(entry.getValue(), currentInputResult, context))) {
+          scanHashProperty = entry.getKey();
+          break;
+        }
+      if (scanHashProperty == null)
+        return null;
+
+      @SuppressWarnings("unchecked") final Iterator<Identifiable> scan =
+          (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+      scanHashIndex = new ScanPropertyHashIndex(scan, scanHashProperty);
+    }
+
+    final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
+    return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null;
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
