@@ -881,7 +881,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private long preparedAtIndexToState(final RaftHAServer raft, final ReplicationPayload payload) {
     final long preparedAt = payload.tx().getReplicationBasePosition();
-    return preparedAt >= 0 && raft.allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX) ? preparedAt : -1L;
+    if (preparedAt < 0)
+      return -1L;
+    if (!raft.canStateTxPreparedAt()) {
+      HALog.log(this, HALog.DETAILED, "Not stating the index tx of database '%s' was prepared at: a peer does not advertise '%s'",
+          getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+      return -1L;
+    }
+    return preparedAt;
   }
 
   /** Waits for the schema change the leader refused a transaction over to be applied locally, so the retry sees it. */
@@ -1669,6 +1676,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * index changes as its records are saved, against the schema this node holds at that moment, so a position sampled
    * before the first save can only be older than the schema the transaction was prepared under, never newer. Older is
    * the safe direction - at worst the leader refuses a transaction that would have been fine and it is retried.
+   * <p>
+   * Relies on the apply order in {@code ArcadeStateMachine}: a schema-changing entry is applied and recorded BEFORE the applied
+   * index advances past it, so an index read here always stands for a schema at least as new as it says.
    * <p>
    * {@code -1} when there is no Raft server, when the check is switched off ({@code arcadedb.ha.txSchemaCheck}), or when
    * the node has applied nothing yet, all of which read as "unknown" on the leader and are never refused.

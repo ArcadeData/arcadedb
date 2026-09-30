@@ -37,6 +37,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -167,15 +169,15 @@ class Issue8686StaleSchemaTransactionRefusedTest {
   @Test
   void onlyEntriesThatChangeTheSchemaCountAsSchemaChanges() {
     final byte[] wal = { 1 };
-    final java.util.List<byte[]> walEntries = java.util.List.of(wal);
-    final java.util.List<java.util.Map<Integer, Integer>> deltas = java.util.List.of(Collections.emptyMap());
+    final List<byte[]> walEntries = List.of(wal);
+    final List<Map<Integer, Integer>> deltas = List.of(Collections.emptyMap());
 
     // A whole-document change.
     assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
         "{\"schemaVersion\":5}", Collections.emptyMap(), Collections.emptyMap(), walEntries, deltas)))).isTrue();
     // A change of the file set alone, as an index compaction: frequent, and no schema a transaction could be stale against.
     assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
-        "", java.util.Map.of(7, "Counter_0.1.65536.v0.bucket"), Collections.emptyMap(), walEntries, deltas)))).isFalse();
+        "", Map.of(7, "Counter_0.1.65536.v0.bucket"), Collections.emptyMap(), walEntries, deltas)))).isFalse();
     // WAL only, as a TimeSeries maintenance entry: prepared-against state is untouched.
     assertThat(ArcadeStateMachine.changesSchema(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry("db",
         "", Collections.emptyMap(), Collections.emptyMap(), walEntries, deltas)))).isFalse();
