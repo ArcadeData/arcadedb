@@ -23,7 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -55,6 +55,10 @@ import java.util.function.Function;
  * can render two different strings depending on load state alone, even though they represent one
  * value. Canonicalizing to the identity ({@link RID}) up front, whose own {@code toString()} is just
  * the RID text, sidesteps that instability. See issue #6488.
+ * <p>
+ * <p>
+ * <b>Collections:</b> a list or map canonicalizes to a copy whose elements (map values) are canonicalized, so {@code [1]} and
+ * {@code [1.0]} share a key; one holding nothing to change is returned as is. A lazy range is never walked.
  * <p>
  * Other values pass through unchanged.
  */
@@ -109,7 +113,7 @@ public final class DistinctNumericKey {
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object canonical = canonicalize(entry.getValue());
         if (key == null && !Objects.equals(canonical, entry.getValue()))
-          key = new HashMap<>(map);
+          key = new LinkedHashMap<>(map);
         if (key != null)
           key.put(entry.getKey(), canonical);
       }
