@@ -68,6 +68,8 @@ public class NumberFormat extends AbstractNumberFunction {
     final String pattern = args.length > 1 && args[1] != null ? args[1].toString() : DEFAULT_PATTERN;
 
     final DecimalFormat format = new DecimalFormat(pattern, DecimalFormatSymbols.getInstance(Locale.ROOT));
-    return format.format(number.doubleValue());
+    // Float/Double go through double; everything else (Long, Integer, BigInteger, BigDecimal) is passed as is so DecimalFormat
+    // picks its exact overload instead of rounding to the nearest double.
+    return number instanceof Float || number instanceof Double ? format.format(number.doubleValue()) : format.format(number);
   }
 }
