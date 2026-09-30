@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -192,7 +194,9 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dy = Math.abs(y - gy);
     final double h_diagonal = Math.min(dx, dy);
     final double h_straight = dx + dy;
-    return (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
+    // Octile distance: straight step costs D, diagonal step costs D2 = sqrt(2) * D. Fixing D2 at 2 * D (issue #8705)
+    // cancelled the correction term and made this MANHATTAN.
+    return dFactor * h_straight + (Math.sqrt(2) - 2) * dFactor * h_diagonal;
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
@@ -268,17 +272,24 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
                                             final Map<String, Double> plist, final Map<String, Double> glist,
                                             final long depth, final double dFactor) {
 
-    final double heuristic;
-    double h_diagonal = 0.0;
-    double h_straight = 0.0;
-    for (final String str : axisNames) {
-      h_diagonal = Math.min(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ?
-          glist.get(str) : 0.0)), h_diagonal);
-      h_straight += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ?
-          glist.get(str) : 0.0));
+    // N-dimensional octile distance: a move changing k axes at once costs sqrt(k) * D. With the deltas sorted in
+    // descending order e1 >= ... >= en (e(n+1) = 0) the cheapest route costs sum((ek - e(k+1)) * sqrt(k)). For two
+    // axes it equals the two-axis overload, and an axis with delta zero contributes nothing (issue #8705).
+    final int n = axisNames.length;
+    final double[] deltas = new double[n];
+    for (int i = 0; i < n; i++) {
+      final Double c = clist.get(axisNames[i]);
+      final Double g = glist.get(axisNames[i]);
+      deltas[i] = Math.abs((c != null ? c : 0.0) - (g != null ? g : 0.0));
     }
-    heuristic = (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
-    return heuristic;
+    Arrays.sort(deltas);
+    double res = 0.0;
+    for (int k = 1; k <= n; k++) {
+      final double ek = deltas[n - k];
+      final double next = k < n ? deltas[n - k - 1] : 0.0;
+      res += (ek - next) * Math.sqrt(k);
+    }
+    return dFactor * res;
   }
 
   protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
@@ -326,24 +337,38 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    if (fromObject instanceof String) {
-      return (fromObject.toString().replace("},{", " ,").split(","));
-    } else if (fromObject instanceof String[]) {
-      return ((String[]) fromObject);
-    }
-    return new String[] {};
+    return switch (fromObject) {
+      case null -> new String[] {};
+      case String s -> trimmed(s.replace("},{", " ,").split(","));
+      case String[] a -> a;
+      case Collection<?> c -> toStrings(c.toArray());
+      case Object[] a -> toStrings(a);
+      default -> throw new CommandSQLParsingException(
+          "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
+    };
+  }
+
+  private static String[] trimmed(final String[] values) {
+    for (int i = 0; i < values.length; i++)
+      values[i] = values[i].trim();
+    return values;
+  }
+
+  private static String[] toStrings(final Object[] values) {
+    int count = 0;
+    final String[] result = new String[values.length];
+    for (final Object value : values)
+      if (value != null)
+        result[count++] = value.toString();
+    return count == result.length ? result : Arrays.copyOf(result, count);
   }
 
   protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {
-    Boolean res;
-    if (fromObject instanceof Boolean boolean1) {
-      res = boolean1;
-    } else if (fromObject instanceof String string) {
-      res = Boolean.parseBoolean(string);
-    } else {
-      res = defaultValue;
-    }
-    return res;
+    return switch (fromObject) {
+      case Boolean boolean1 -> boolean1;
+      case String string -> Boolean.parseBoolean(string);
+      case null, default -> defaultValue;
+    };
   }
 
   protected String stringOrDefault(final Object fromObject, final String defaultValue) {
@@ -353,42 +378,60 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected Integer integerOrDefault(final Object fromObject, final int defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.intValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Integer.parseInt(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
+    switch (fromObject) {
+      case null -> {
+        return defaultValue;
+      }
+      case Number number -> {
+        return number.intValue();
+      }
+      case String s -> {
+        try {
+          return Integer.parseInt(fromObject.toString());
+        } catch (final NumberFormatException ignore) {
+        }
+      }
+      default -> {
       }
     }
     return defaultValue;
   }
 
   protected Long longOrDefault(final Object fromObject, final long defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.longValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Long.parseLong(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
+    switch (fromObject) {
+      case null -> {
+        return defaultValue;
+      }
+      case Number number -> {
+        return number.longValue();
+      }
+      case String s -> {
+        try {
+          return Long.parseLong(fromObject.toString());
+        } catch (final NumberFormatException ignore) {
+        }
+      }
+      default -> {
       }
     }
     return defaultValue;
   }
 
   protected Double doubleOrDefault(final Object fromObject, final double defaultValue) {
-    if (fromObject == null) {
-      return defaultValue;
-    } else if (fromObject instanceof Number number) {
-      return number.doubleValue();
-    } else if (fromObject instanceof String) {
-      try {
-        return Double.parseDouble(fromObject.toString());
-      } catch (final NumberFormatException ignore) {
+    switch (fromObject) {
+      case null -> {
+        return defaultValue;
+      }
+      case Number number -> {
+        return number.doubleValue();
+      }
+      case String s -> {
+        try {
+          return Double.parseDouble(fromObject.toString());
+        } catch (final NumberFormatException ignore) {
+        }
+      }
+      default -> {
       }
     }
     return defaultValue;
