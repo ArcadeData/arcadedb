@@ -2272,6 +2272,27 @@ public enum GlobalConfiguration {
       Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
       Long.class, 128L * 1024 * 1024),
 
+  HA_TX_SCHEMA_CHECK("arcadedb.ha.txSchemaCheck", SCOPE.SERVER,
+      """
+      Have every transaction a node replicates state the Raft log index that node had applied when the transaction \
+      began, so the leader can refuse a transaction that was prepared before a schema change it has already applied \
+      (issue #8686). Without it a replica that has not yet applied a committed CREATE INDEX ships transactions whose \
+      WAL carries no page changes for the new index; the leader accepts them, every node applies them as they are, \
+      and the record is missing from the index on all nodes, with no error anywhere. The refusal is a retryable \
+      ConcurrentModificationException, and the retry waits for the schema change to be applied locally first. \
+      \
+      The index is written only once every peer advertises the capability to read it, so a rolling upgrade needs no \
+      sequencing, but ONE peer that is old, not yet probed or offline turns the check off for every writer, so a \
+      mixed-version cluster is unprotected until the last node is upgraded. Protection is also best-effort across a \
+      leader restart or a snapshot install: the leader knows no schema change until it applies the next one. \
+      \
+      This setting only controls whether THIS node states an index. The leader checks every entry that carries one, so \
+      turning it off on the leader alone changes nothing. Expect retryable ConcurrentModificationExceptions on replicas \
+      during DDL and set transaction retries accordingly: a transaction begun before a schema change is refused, and \
+      callers that do not retry (the default for plain HTTP commands) see the error. Turn it off on the nodes that write \
+      if a workload running long transactions across frequent schema changes sees too many retries.""",
+      Boolean.class, true),
+
   HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
       """
       Ship schema changes to the followers as a DELTA against the schema they already hold, instead of a \

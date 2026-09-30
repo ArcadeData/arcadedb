@@ -109,6 +109,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
@@ -491,6 +492,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * operations on one database nest and overlap. See {@link #beginLeaderExclusive}.
    */
   private final ConcurrentHashMap<String, Integer> databasesExclusiveOnLeader = new ConcurrentHashMap<>();
+
+  /**
+   * Per database, the Raft log index of the last schema-changing entry this node applied (issue #8686). The leader holds a
+   * transaction entry up against it: one whose originator says it was prepared at an older index was built against a
+   * schema the cluster has moved past, and is refused. Deliberately an index of the LOG and not the schema's own version
+   * counter: that counter also moves on purely local saves, so two nodes at the same schema legitimately disagree on it,
+   * whereas every node that has applied entry N agrees on N. Absent (never recorded) means "nothing to compare against",
+   * as it does after a restart until the next schema change is applied - a narrow window in which behaviour is exactly what
+   * it was before the check existed. Only ever moves forward.
+   */
+  private final ConcurrentHashMap<String, AtomicLong> lastSchemaChangeIndex = new ConcurrentHashMap<>();
 
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
@@ -1291,6 +1303,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(exclusiveOperationRefusal(databaseName));
     }
 
+    // Not accepted when it was prepared before the last schema change this node applied (issue #8686). The position is recorded at
+    // APPLY time, and the window between a DDL's append and its apply is closed by the leader-exclusive registration above, which
+    // spans the whole DDL; a snapshot install records none, so nothing is refused until the next schema change (as before). It is valid against the
+    // page versions - it comes after the change in the log - but its WAL was built against the schema the originator held,
+    // so it carries no page changes for an index the change created, and every node would apply it as it stands and leave the
+    // record out of that index. Refused BEFORE the reservation below, like the checks above, so it costs Ratis nothing and
+    // leaks no permit; the originator waits for the change to be applied and retries under the new schema.
+    // Only for entries of OTHER nodes: a DDL runs on the leader, so a transaction of the leader's own that contains one (a
+    // CREATE TYPE followed by an INSERT in one transaction) prepared its later records under the new schema although it began
+    // before it, and would be refused for a change it made itself. A leader transaction left open across a DDL of another thread
+    // is not covered: out of scope here, and the same as on a standalone database.
+    if (!isLocalOrigin && databaseName != null && decoded.txPreparedAtIndex() >= 0) {
+      final AtomicLong schemaChangeIndex = lastSchemaChangeIndex.get(databaseName);
+      final long schemaChanged = schemaChangeIndex != null ? schemaChangeIndex.get() : -1L;
+      if (schemaChanged > decoded.txPreparedAtIndex()) {
+        HALog.log(this, HALog.DETAILED,
+            "Refusing a transaction on database '%s' prepared at index %d: a schema change was applied at index %d",
+            databaseName, decoded.txPreparedAtIndex(), schemaChanged);
+        return context.build().setException(
+            new ReplicatedSchemaConflictException(databaseName, decoded.txPreparedAtIndex(), schemaChanged));
+      }
+    }
+
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
     final PageVersionLedger.Pages pages;
@@ -1324,6 +1359,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  /**
+   * Whether {@code decoded} publishes a schema document or delta (issue #8686): what a transaction prepared under the old
+   * schema can be stale against, such as an index it does not maintain. Deliberately NOT a files-only entry (an LSM index
+   * compaction swapping files) nor a WAL-only or sealed-store one: those change no schema and are frequent under load, and
+   * refusing every in-flight replica transaction at each of them would fail callers that do not retry. The non-final
+   * slices of a split schema change only deliver pages; the final one publishes.
+   */
+  // @VisibleForTesting
+  static boolean changesSchema(final RaftLogEntryCodec.DecodedEntry decoded) {
+    if (decoded.type() != RaftLogEntryType.SCHEMA_ENTRY || decoded.moreChunksFollow())
+      return false;
+    return decoded.schemaDelta() != null || (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
+  }
+
+  /** Records that a schema-changing entry was applied at {@code index}; the position only moves forward. */
+  // @VisibleForTesting
+  void recordSchemaChangeApplied(final String databaseName, final long index) {
+    if (databaseName != null)
+      lastSchemaChangeIndex.computeIfAbsent(databaseName, name -> new AtomicLong(-1L)).accumulateAndGet(index, Math::max);
   }
 
   private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
@@ -1569,7 +1625,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         securitySuperseded[0] = false;
         switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded, index, context instanceof AppendedEntry appended ? appended.pages() : null);
-        case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
+        case SCHEMA_ENTRY -> {
+          applySchemaEntry(decoded, index, originatedLocally);
+          // After the apply, so a node that reads the position sees the schema it stands for. The originator skips the
+          // apply (it made the change locally) and still records it: it is the leader that compares against it.
+          if (changesSchema(decoded))
+            recordSchemaChangeApplied(decoded.databaseName(), index);
+        }
         case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded, index);
         case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !applySecurityUsersEntry(decoded, index);
@@ -2336,6 +2398,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public void notifyConfigurationChanged(final long term, final long index,
       final RaftProtos.RaftConfigurationProto newRaftConfiguration) {
     super.notifyConfigurationChanged(term, index, newRaftConfiguration);
+
+    // A peer that joins must be asked again before a transaction states its prepared-at index (issue #8686): the cached answer
+    // describes the membership that has just changed.
+    final RaftHAServer membershipHolder = raftHAServer;
+    if (membershipHolder != null)
+      membershipHolder.invalidateTxPreparedAtCapability();
 
     try {
       final List<RaftPeerId> peers = new ArrayList<>(newRaftConfiguration.getPeersCount());
@@ -4050,15 +4118,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final int shardIndex, final File source) {
     final File target = new File(db.getDatabasePath(),
         TimeSeriesSealedStore.sealedFileNameFor(tsType.getName(), shardIndex));
+    // The move and the engine creation are one step a copy of the database must not straddle (issue #7475): with no
+    // engine there is no shard compaction lock for TimeSeriesCompactionPause to exclude this through, so the type's
+    // own lifecycle lock stands in for it. Already held when the entry's install lock named this type - it is
+    // reentrant, and the repair is only reached for types the entry names - and taken here for callers without one. A timeout
+    // returns false, which the caller turns into SealedStoreNotInstalledException: the entry is refused, not consumed (issue #8070).
+    final Lock lifecycleLock = tsType.getEngineLifecycleLock().writeLock();
+    boolean locked = false;
     try {
+      locked = lifecycleLock.tryLock(SEALED_INSTALL_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      if (!locked) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, but the type "
+                + "stayed locked for %dms (a backup or snapshot in flight?), so it was not installed", null, tsType.getName(),
+            shardIndex, decodedDbName(db), SEALED_INSTALL_LOCK_TIMEOUT_MS);
+        return false;
+      }
       Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
       tsType.initEngine();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LogManager.instance().log(this, Level.SEVERE,
+          "Interrupted while locking TimeSeries type '%s' shard %d (db=%s) for a sealed-store repair", e,
+          tsType.getName(), shardIndex, decodedDbName(db));
+      return false;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, and "
               + "the engine could not be initialised over it: %s", e, tsType.getName(), shardIndex,
           decodedDbName(db), e.getMessage());
       return false;
+    } finally {
+      if (locked)
+        lifecycleLock.unlock();
     }
 
     if (!tsType.isEngineAvailable()) {
@@ -6171,6 +6263,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
     // persisted applied index above), and a database recreated under the same name starts from a clean ledger.
     pageVersions.clear(databaseName);
+    lastSchemaChangeIndex.remove(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = installApplyGates.get(databaseName);
