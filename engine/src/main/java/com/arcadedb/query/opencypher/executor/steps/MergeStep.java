@@ -1344,16 +1344,23 @@ public class MergeStep extends AbstractExecutionStep {
     if (!createItemsResolved) {
       createItemsResolved = true;
       final String variable = nodePattern.getVariable();
-      if (variable != null && mergeClause.hasOnCreateSet()
-          && NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable))) {
-        final List<SetClause.SetItem> items = new ArrayList<>(mergeClause.getOnCreateSet().getItems());
+      if (variable != null && (absorbedSet != null || isOnCreateSetFoldable(variable))) {
+        // absorbSet() accepted the clause only when ON CREATE SET is empty or foldable, so the two are one decision
+        final List<SetClause.SetItem> items = new ArrayList<>();
+        if (mergeClause.hasOnCreateSet())
+          items.addAll(mergeClause.getOnCreateSet().getItems());
         if (absorbedSet != null)
           items.addAll(absorbedSet.getItems());
-        createItems = items;
-      } else if (variable != null && !mergeClause.hasOnCreateSet() && absorbedSet != null)
-        createItems = absorbedSet.getItems();
+        if (!items.isEmpty())
+          createItems = items;
+      }
     }
     return createItems;
+  }
+
+  private boolean isOnCreateSetFoldable(final String variable) {
+    return mergeClause.hasOnCreateSet()
+        && NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable));
   }
 
   /**
@@ -1364,14 +1371,14 @@ public class MergeStep extends AbstractExecutionStep {
    * @return true when this step now applies the clause, and the caller must not add a step for it
    */
   public boolean absorbSet(final SetClause setClause) {
+    // Single-node only: the other MERGE paths never set CREATE_SET_FOLDED, so their rows must keep the applier path
     if (absorbedSet != null || createItemsResolved || !mergeClause.getPathPattern().isSingleNode())
       return false;
     final String variable = mergeClause.getPathPattern().getFirstNode().getVariable();
     if (variable == null || !NewNodeSetFolding.isFoldable(setClause, variable::equals, List.of(variable)))
       return false;
     // Folded after ON CREATE SET, so that one has to fold as well: a created node takes both in one write or neither
-    if (mergeClause.hasOnCreateSet()
-        && !NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable)))
+    if (mergeClause.hasOnCreateSet() && !isOnCreateSetFoldable(variable))
       return false;
     absorbedSet = setClause;
     absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator);
