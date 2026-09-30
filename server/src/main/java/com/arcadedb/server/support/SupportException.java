@@ -21,7 +21,7 @@ package com.arcadedb.server.support;
 /**
  * A failure of the support feature with a code Studio can switch on and a clear user-facing message (never carrying the
  * Client key): {@code not_registered} (409), {@code preview_not_found} (404), {@code bundle_too_large} (413),
- * {@code bad_request} (400), and the ones of {@link SupportPortalException}.
+ * {@code bad_request} (400), {@code support_stopped} (503), and the ones of {@link SupportPortalException}.
  */
 public class SupportException extends RuntimeException {
   private final String code;
@@ -48,7 +48,7 @@ public class SupportException extends RuntimeException {
       case "support_not_active" -> 402;
       case "not_found" -> 404;
       case "rate_limited" -> 429;
-      case "portal_unreachable" -> 503;
+      case "portal_unreachable", "support_stopped" -> 503;
       default -> 502;
     };
   }

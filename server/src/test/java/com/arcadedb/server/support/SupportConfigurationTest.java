@@ -114,6 +114,19 @@ class SupportConfigurationTest {
   }
 
   @Test
+  void anExplicitSettingEqualToTheDefaultStillOverridesTheFile() throws Exception {
+    store(new ContextConfiguration()).save("https://portal.test.example.com", "ws-file", KEY);
+
+    // Not set: the file decides
+    assertThat(store(new ContextConfiguration()).get().getPortalUrl()).isEqualTo("https://portal.test.example.com");
+
+    // Explicitly set to the default portal: the operator's choice wins over a URL registered earlier in the file
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SUPPORT_URL, "https://portal.arcadedb.com");
+    assertThat(store(configuration).get().getPortalUrl()).isEqualTo("https://portal.arcadedb.com");
+  }
+
+  @Test
   void settingsAloneRegisterWithoutAFile() {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SUPPORT_CLIENT_ID, "ws-setting");

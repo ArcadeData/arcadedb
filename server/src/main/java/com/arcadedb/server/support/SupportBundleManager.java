@@ -51,17 +51,29 @@ public class SupportBundleManager implements AutoCloseable {
 
   private static final SecureRandom RANDOM = new SecureRandom();
 
+  private final Map<String, Bundle> bundles = new ConcurrentHashMap<>();
+  private final LongSupplier        clock;
+  private final long                ttlMs;
+  private volatile ScheduledExecutorService cleaner;
+  private volatile boolean                  closed;
+
   /** One preview. */
   public static final class Bundle {
     private final String id;
     private final Path   directory;
     private final long   expiresAt;
-    private       Path       logs;
-    private       Path       diagnostics;
-    private       Path       summary;
-    private       Path       threads;
-    private       JSONObject description;
-    private       String     githubSummary = "";
+    // Volatile: a bundle is published in the map by create() before the preview fills it in
+    private volatile Path       logs;
+    private volatile Path       diagnostics;
+    private volatile Path       summary;
+    private volatile Path       threads;
+    private volatile JSONObject description;
+    private volatile String     githubSummary = "";
+    // Serialises building the download zip, so two concurrent downloads of one preview do not write the same file
+    private final Object   buildLock = new Object();
+    // In-use count and removal flag, both guarded by synchronized(this): see SupportBundleManager#lease
+    private          int        leases;
+    private          boolean    removed;
 
     Bundle(final String id, final Path directory, final long expiresAt) {
       this.id = id;
@@ -132,13 +144,15 @@ public class SupportBundleManager implements AutoCloseable {
     public boolean isEmpty() {
       return logs == null && diagnostics == null && summary == null && threads == null;
     }
-  }
 
-  private final Map<String, Bundle> bundles = new ConcurrentHashMap<>();
-  private final LongSupplier        clock;
-  private final long                ttlMs;
-  private volatile ScheduledExecutorService cleaner;
-  private volatile boolean                  closed;
+    public Object getBuildLock() {
+      return buildLock;
+    }
+
+    synchronized boolean isLeased() {
+      return leases > 0;
+    }
+  }
 
   public SupportBundleManager() {
     this(System::currentTimeMillis, TTL_MS);
@@ -152,12 +166,17 @@ public class SupportBundleManager implements AutoCloseable {
   /** A new, empty preview in a private temporary directory. */
   public Bundle create() throws IOException {
     if (closed)
-      throw new IllegalStateException("The support service is stopped");
+      throw new SupportException("support_stopped", "The support service is stopping: try again when the server is back");
     purgeExpired();
 
     // Bound the disk used by previews nobody sent: the oldest goes
+    // (one that is being sent or downloaded is never the victim; if every one is, the limit is exceeded until they finish)
     while (bundles.size() >= MAX_BUNDLES) {
-      bundles.values().stream().min(Comparator.comparingLong(Bundle::getExpiresAt)).ifPresent(oldest -> remove(oldest.getId()));
+      final Bundle oldest = bundles.values().stream().filter(b -> !b.isLeased()).min(Comparator.comparingLong(Bundle::getExpiresAt))
+          .orElse(null);
+      if (oldest == null)
+        break;
+      removeIfIdle(oldest);
     }
 
     final byte[] random = new byte[16];
@@ -183,10 +202,72 @@ public class SupportBundleManager implements AutoCloseable {
     return bundle;
   }
 
+  /**
+   * Takes a preview for the duration of a send or a download: until the lease is closed the preview is neither expired
+   * nor evicted, so a slow 100 MB upload that outlives the 15 minutes is not deleted under its own feet. An expired
+   * preview is deleted as soon as its last lease closes.
+   *
+   * @throws SupportException {@code preview_not_found} when the id is unknown, expired or already removed
+   */
+  public Lease lease(final String id) {
+    final Bundle bundle = get(id);
+    synchronized (bundle) {
+      if (bundle.removed)
+        throw new SupportException("preview_not_found",
+            "The preview does not exist or has expired (previews last 15 minutes): build the preview again");
+      bundle.leases++;
+    }
+    return new Lease(bundle);
+  }
+
+  /** A preview held by a send or a download. Close it in a finally. */
+  public final class Lease implements AutoCloseable {
+    private final Bundle bundle;
+    private       boolean closedLease;
+
+    private Lease(final Bundle bundle) {
+      this.bundle = bundle;
+    }
+
+    public Bundle bundle() {
+      return bundle;
+    }
+
+    @Override
+    public void close() {
+      synchronized (bundle) {
+        if (closedLease)
+          return;
+        closedLease = true;
+        bundle.leases--;
+      }
+      purgeExpired();
+    }
+  }
+
   public void remove(final String id) {
     final Bundle bundle = bundles.remove(id);
     if (bundle != null)
-      deleteRecursively(bundle.directory);
+      dispose(bundle);
+  }
+
+  /** Removes the preview unless somebody holds it; true when it is gone. */
+  private boolean removeIfIdle(final Bundle bundle) {
+    synchronized (bundle) {
+      if (bundle.leases > 0)
+        return false;
+      bundle.removed = true;
+    }
+    bundles.remove(bundle.id, bundle);
+    deleteRecursively(bundle.directory);
+    return true;
+  }
+
+  private static void dispose(final Bundle bundle) {
+    synchronized (bundle) {
+      bundle.removed = true;
+    }
+    deleteRecursively(bundle.directory);
   }
 
   public int size() {
@@ -198,7 +279,7 @@ public class SupportBundleManager implements AutoCloseable {
     final long now = clock.getAsLong();
     for (final Bundle bundle : new ArrayList<>(bundles.values()))
       if (bundle.expiresAt <= now)
-        remove(bundle.id);
+        removeIfIdle(bundle);
   }
 
   private void scheduleCleanup() {

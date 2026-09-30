@@ -653,7 +653,8 @@ function supportPreviewHtml(d) {
   });
   html +=
     '<div class="support-hint mt-2"><i class="fa fa-lock"></i> Exactly these files are what is sent or downloaded. Passwords, tokens, keys, credentials in URLs and PEM blocks are masked before they are written; ' +
-    "review the content if the logs may hold other sensitive data. The preview expires at " +
+    "the masking cannot recognise free-text secrets, query text, host names, IP addresses or user names in the logs, so review the content. " +
+    "The diagnostics also carry the server name, the cluster name, the database names and sizes (never their data) and the JVM arguments. The preview expires at " +
     supportEsc(supportFormatDate(d.expiresAt)) +
     ".</div>";
   return html;

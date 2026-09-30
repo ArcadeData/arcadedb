@@ -42,6 +42,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * Client of the support API of the ArcadeData customer portal (contract SUPPORT-API.md, section 2). Uses
@@ -63,6 +64,8 @@ public class SupportPortalClient {
   public static final long UPLOAD_TIMEOUT_MS = 20 * 60_000L;
 
   private static final SecureRandom RANDOM = new SecureRandom();
+  /** A workspace key as the portal issues it: {@code wsk_} and 43 URL-safe base64 characters. */
+  private static final Pattern PORTAL_KEY = Pattern.compile("wsk_[A-Za-z0-9_-]{20,}");
 
   private final SupportConfiguration.Registration registration;
   private final String                            instanceId;
@@ -196,29 +199,37 @@ public class SupportPortalClient {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new SupportPortalException("portal_unreachable", 0, "The request to the portal was interrupted", 0);
-      } catch (final IOException e) {
-        last = new SupportPortalException("portal_unreachable", 0,
-            "Cannot reach the support portal at " + registration.getPortalUrl() + " (" + describe(e) + "). Check the network "
-                + "connection and the proxy settings of this server", 0);
+      } catch (final ConnectException | HttpConnectTimeoutException e) {
         // A request that never connected was not processed: it is safe to retry it whatever the method
-        if (idempotent || e instanceof ConnectException || e instanceof HttpConnectTimeoutException)
+        last = unreachable(e);
+        continue;
+      } catch (final IOException e) {
+        last = unreachable(e);
+        if (idempotent)
           continue;
         throw last;
       }
 
       final int status = response.statusCode();
       if (status >= 200 && status < 300)
-        return scrub(response.body() == null ? "" : response.body());
+        return scrubKey(response.body() == null ? "" : response.body());
 
       last = toException(status, response);
-      final boolean transientStatus = status == 503 || (idempotent && (status == 502 || status == 504));
-      if (transientStatus)
+      // Only a call that can be repeated is retried on a gateway or availability error: a proxy may answer 502/503/504
+      // after the portal has already processed a POST, and repeating it would file a second issue or comment.
+      if (idempotent && (status == 502 || status == 503 || status == 504))
         continue;
       throw last;
     }
     if (last != null)
       throw last;
     throw new SupportPortalException("portal_error", 0, "The support portal did not answer", 0);
+  }
+
+  private SupportPortalException unreachable(final IOException e) {
+    return new SupportPortalException("portal_unreachable", 0,
+        "Cannot reach the support portal at " + registration.getPortalUrl() + " (" + describe(e) + "). Check the network "
+            + "connection and the proxy settings of this server", 0);
   }
 
   SupportPortalException toException(final int status, final HttpResponse<String> response) {
@@ -279,7 +290,22 @@ public class SupportPortalClient {
     return "ArcadeDB/" + Constants.getRawVersion() + " support-client";
   }
 
-  /** Removes the Client key (and anything shaped like a portal key) from a text that leaves this class. */
+  /**
+   * Removes the Client key (and anything shaped like a portal key) from a SUCCESSFUL portal response, and nothing else.
+   * The redactor is built for log lines: on compact JSON its unquoted-value rule would swallow the rest of the
+   * document after a key such as {@code "tokenId":5}, and it would mask text the user wrote in an issue or a comment.
+   */
+  String scrubKey(final String body) {
+    if (body == null)
+      return null;
+    String result = body;
+    final String key = registration.getKey();
+    if (key != null && !key.isEmpty())
+      result = result.replace(key, "***");
+    return PORTAL_KEY.matcher(result).replaceAll("***");
+  }
+
+  /** Removes the Client key and anything the log redactor would mask, from a text shown to a person (an error message). */
   String scrub(final String text) {
     if (text == null)
       return null;

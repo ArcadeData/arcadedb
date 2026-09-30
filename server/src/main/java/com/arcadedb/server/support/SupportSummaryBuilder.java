@@ -48,6 +48,18 @@ public class SupportSummaryBuilder {
   private static final Pattern EXCEPTION_LINE = Pattern.compile(
       "^\\s*(?:Caused by:\\s*|Suppressed:\\s*)?((?:[a-z_][\\w$]*\\.)+[A-Z][\\w$]*)(?::\\s?(.*))?$");
 
+  private final ZoneId             zone;
+  private final Map<String, Long>  levels = new TreeMap<>();
+  private final Map<String, Group> groups = new LinkedHashMap<>();
+  private       long               lines;
+
+  // current entry
+  private long          entryKey = -1;
+  private String        exClass;
+  private String        exMessage;
+  private StringBuilder exStack;
+  private int           exStackLines;
+
   private static final class Group {
     final String className;
     final String message;
@@ -64,18 +76,6 @@ public class SupportSummaryBuilder {
       this.lastSeenKey = key;
     }
   }
-
-  private final ZoneId zone;
-  private final Map<String, Long>  levels = new TreeMap<>();
-  private final Map<String, Group> groups = new LinkedHashMap<>();
-  private long lines;
-
-  // current entry
-  private long         entryKey = -1;
-  private String       exClass;
-  private String       exMessage;
-  private StringBuilder exStack;
-  private int          exStackLines;
 
   public SupportSummaryBuilder(final ZoneId zone) {
     this.zone = zone;

@@ -104,6 +104,7 @@ public class SupportDiagnostics {
     final OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
     final JSONObject json = new JSONObject().put("name", os.getName()).put("version", os.getVersion()).put("arch", os.getArch())
         .put("cpuCores", os.getAvailableProcessors());
+    // The com.sun.management types are fully qualified: they share their simple names with the java.lang.management ones imported above
     if (os instanceof com.sun.management.OperatingSystemMXBean sun)
       json.put("totalMemoryBytes", sun.getTotalMemorySize());
     return json;

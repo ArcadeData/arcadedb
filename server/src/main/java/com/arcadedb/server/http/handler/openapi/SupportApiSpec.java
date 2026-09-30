@@ -36,6 +36,9 @@ import java.util.List;
  */
 public class SupportApiSpec implements OpenApiContributor {
   private static final String TAG = "Support";
+  private static final String ERRORS = " Errors carry a code in 'error' (invalid_key, client_mismatch, scope_denied, "
+      + "support_not_active, not_found, too_large, rate_limited, bad_request, portal_unreachable, portal_error, not_registered, "
+      + "preview_not_found, bundle_too_large, support_stopped) and a clear message in 'message'.";
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -67,10 +70,6 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("SupportSetOpenRequest", createSetOpenRequestSchema());
     openAPI.getComponents().addSchemas("SupportAttachRequest", createAttachRequestSchema());
   }
-
-  private static final String ERRORS = " Errors carry a code in 'error' (invalid_key, client_mismatch, scope_denied, "
-      + "support_not_active, not_found, too_large, rate_limited, bad_request, portal_unreachable, portal_error, not_registered, "
-      + "preview_not_found, bundle_too_large) and a clear message in 'message'.";
 
   private PathItem createStatusPath() {
     final Operation get = SpecBuilders.operation("getSupportStatus", TAG, "Read the support registration of this server",

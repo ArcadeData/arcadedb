@@ -307,6 +307,41 @@ class SupportPortalClientTest {
   }
 
   @Test
+  void aPostIsNotRetriedOn503EitherBecauseAProxyMayHaveAnsweredAfterProcessingIt() throws Exception {
+    final AtomicInteger calls = new AtomicInteger();
+    portal.handler = r -> {
+      calls.incrementAndGet();
+      return new MockPortal.Response(503, "");
+    };
+    assertThatThrownBy(() -> client().createIssue(new JSONObject().put("title", "t").put("severity", "S4"), null, null, null, null))
+        .isInstanceOf(SupportPortalException.class);
+    assertThat(calls.get()).isEqualTo(1);
+
+    calls.set(0);
+    catchPortal(() -> client().addComment(1, "x"));
+    assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void aSuccessfulResponseIsReturnedIntactEvenWhenItLooksLikeASecretToTheLogRedactor() {
+    // Compact JSON with keyword-named keys and unquoted (numeric) values: the log redactor would swallow the rest of the
+    // document after "tokenId":5 and the caller would fail to parse it
+    final String body = "{\"tokenId\":5,\"label\":\"x\",\"password\":7,\"comment\":\"my password: hunter2 is the old one\"}";
+    portal.handler = r -> new MockPortal.Response(200, body);
+    assertThat(client().whoami()).isEqualTo(body);
+    assertThat(new JSONObject(client().whoami()).getInt("tokenId")).isEqualTo(5);
+  }
+
+  @Test
+  void theClientKeyAndAnythingShapedLikeOneIsStillMaskedInAResponse() {
+    final String other = "wsk_" + "A".repeat(43);
+    portal.handler = r -> new MockPortal.Response(200, "{\"echo\":\"" + MockPortal.KEY + "\",\"other\":\"" + other + "\"}");
+    final String response = client().whoami();
+    assertThat(response).doesNotContain(MockPortal.KEY).doesNotContain(other);
+    assertThat(new JSONObject(response).getString("echo")).isEqualTo("***");
+  }
+
+  @Test
   void aPostIsNotRetriedOnAServerErrorThatMayHaveBeenProcessed() throws Exception {
     final AtomicInteger calls = new AtomicInteger();
     portal.handler = r -> {
