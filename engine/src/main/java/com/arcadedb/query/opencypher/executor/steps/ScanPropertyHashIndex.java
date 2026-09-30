@@ -46,8 +46,12 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ScanPropertyHashIndex {
-  private final Map<Object, List<RID>> byKey         = new HashMap<>();
-  private final List<RID>              nonIntegral   = new ArrayList<>();
+  /** Above this many stored Double/Float/BigDecimal values a numeric lookup would return them all, so it declines instead. */
+  private static final int MAX_NON_INTEGRAL = 64;
+
+  // value: a RID for a key held by one record (the common case, no list allocated), else an ArrayList<RID>
+  private final Map<Object, Object> byKey       = new HashMap<>();
+  private final List<RID>           nonIntegral = new ArrayList<>();
 
   /** Drains {@code scan}, loading each record's {@code propertyName}. The records' order is kept within a key. */
   ScanPropertyHashIndex(final Iterator<Identifiable> scan, final String propertyName) {
@@ -65,11 +69,26 @@ final class ScanPropertyHashIndex {
 
       final RID rid = record.getIdentity();
       if (value instanceof String)
-        byKey.computeIfAbsent(value, k -> new ArrayList<>(2)).add(rid);
+        put(value, rid);
       else if (isIntegral(value))
-        byKey.computeIfAbsent(((Number) value).longValue(), k -> new ArrayList<>(2)).add(rid);
+        put(((Number) value).longValue(), rid);
       else if (value instanceof Number)
         nonIntegral.add(rid);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private void put(final Object key, final RID rid) {
+    final Object existing = byKey.putIfAbsent(key, rid);
+    if (existing == null)
+      return;
+    if (existing instanceof List)
+      ((List<RID>) existing).add(rid);
+    else {
+      final List<RID> list = new ArrayList<>(4);
+      list.add((RID) existing);
+      list.add(rid);
+      byKey.put(key, list);
     }
   }
 
@@ -78,22 +97,31 @@ final class ScanPropertyHashIndex {
     return expected instanceof String || isIntegral(expected);
   }
 
-  /** The records that may equal {@code expected} (a supported value), in scan order within a key. */
+  /**
+   * The records that may equal {@code expected} (a supported value), in scan order within a key, or null when the hash
+   * cannot answer cheaply - a numeric lookup against a type holding many non-integral numbers - and the caller must scan.
+   */
+  @SuppressWarnings("unchecked")
   Iterator<Identifiable> candidates(final Object expected) {
-    final List<RID> exact = byKey.get(expected instanceof String ? expected : (Object) ((Number) expected).longValue());
-    if (expected instanceof String || nonIntegral.isEmpty())
-      return exact == null ? Collections.emptyIterator() : cast(exact);
+    final boolean text = expected instanceof String;
+    if (!text && nonIntegral.size() > MAX_NON_INTEGRAL)
+      return null;
 
-    final List<Identifiable> merged = new ArrayList<>(nonIntegral.size() + (exact != null ? exact.size() : 0));
-    if (exact != null)
-      merged.addAll(exact);
+    final Object exact = byKey.get(text ? expected : (Object) ((Number) expected).longValue());
+    if (text || nonIntegral.isEmpty()) {
+      if (exact == null)
+        return Collections.emptyIterator();
+      return exact instanceof List ? (Iterator<Identifiable>) (Iterator<?>) ((List<RID>) exact).iterator()
+          : Collections.<Identifiable>singletonList((RID) exact).iterator();
+    }
+
+    final List<Identifiable> merged = new ArrayList<>(nonIntegral.size() + 1);
+    if (exact instanceof List)
+      merged.addAll((List<RID>) exact);
+    else if (exact != null)
+      merged.add((RID) exact);
     merged.addAll(nonIntegral);
     return merged.iterator();
-  }
-
-  @SuppressWarnings({ "unchecked", "rawtypes" })
-  private static Iterator<Identifiable> cast(final List<RID> list) {
-    return (Iterator) list.iterator();
   }
 
   private static boolean isIntegral(final Object value) {
