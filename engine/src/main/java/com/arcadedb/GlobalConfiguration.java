@@ -2282,8 +2282,12 @@ public enum GlobalConfiguration {
       ConcurrentModificationException, and the retry waits for the schema change to be applied locally first. \
       \
       The index is written only once every peer advertises the capability to read it, so a rolling upgrade needs no \
-      sequencing, but ONE peer that is old, not yet probed or offline turns the check off for every writer, so a mixed-version \
-      cluster is unprotected until the last node is upgraded. Turn it off to stop this node stating one, which is also the escape hatch if a workload that runs \
+      sequencing, but ONE peer that is old, not yet probed or offline turns the check off for every writer, so a \
+      mixed-version cluster is unprotected until the last node is upgraded. Protection is also best-effort across a \
+      leader restart or a snapshot install: the leader knows no schema change until it applies the next one. \
+      \
+      This setting only controls whether THIS node states an index. The leader checks every entry that carries one, so \
+      turning it off on the leader alone changes nothing. Turn it off on the nodes that write if a workload running \
       long transactions across frequent schema changes sees too many retries.""",
       Boolean.class, true),
 

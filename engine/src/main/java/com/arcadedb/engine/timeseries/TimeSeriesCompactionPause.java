@@ -24,7 +24,6 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 /**
@@ -98,13 +97,13 @@ public final class TimeSeriesCompactionPause implements AutoCloseable {
       for (final LocalTimeSeriesType tsType : TimeSeriesShardOrder.typesOf(database)) {
         // The type's own lock first, engine or no engine (issue #7475): it is the only thing a type whose engine
         // never loaded can be excluded through, and it is what the repair that creates the engine holds.
-        lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().readLock(), deadline, timeoutMs, tsType.getName(), -1);
+        TimeSeriesShardOrder.lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().readLock(), deadline, timeoutMs, tsType.getName(), -1, "pausing the compaction of");
 
         // Read only NOW: with the lifecycle lock held the engine cannot appear or go away underneath the walk, so
         // a repair that finished while this thread waited is covered shard by shard rather than by the type alone.
         for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.shardsOf(tsType)) {
-          lockOrTimeOut(acquired, slot.shard().getCompactionLock().readLock(), deadline, timeoutMs, slot.typeName(),
-              slot.shardIndex());
+          TimeSeriesShardOrder.lockOrTimeOut(acquired, slot.shard().getCompactionLock().readLock(), deadline, timeoutMs, slot.typeName(),
+              slot.shardIndex(), "pausing the compaction of");
           shards++;
         }
       }
@@ -117,16 +116,6 @@ public final class TimeSeriesCompactionPause implements AutoCloseable {
       throw e;
     }
     return new TimeSeriesCompactionPause(acquired, shards);
-  }
-
-  private static void lockOrTimeOut(final List<Lock> acquired, final Lock lock, final long deadline, final long timeoutMs,
-      final String typeName, final int shardIndex) throws InterruptedException {
-    final long remaining = deadline - System.currentTimeMillis();
-    if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-      throw new TimeoutException(
-          "Timeout of %dms expired while pausing the compaction of TimeSeries type '%s'%s".formatted(timeoutMs, typeName,
-              shardIndex < 0 ? "" : " shard " + shardIndex));
-    acquired.add(lock);
   }
 
   /**
