@@ -158,8 +158,7 @@ public class ArcadeDBServer {
    * are the customer's stored data, unlike the exception class, the index name and the RID, which are schema and
    * addressing metadata a driver needs to rebuild a typed {@code DuplicatedKeyException} (issue #7760). A
    * placeholder rather than an empty segment, so the pipe-separated {@code exceptionArgs} keeps its three parts for
-   * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer,
-   * which is omitted instead) must both apply it, or the setting means one thing on each surface.
+   * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer) must both apply it, or the setting means one thing on each surface.
    */
   public static final String                                CONCEALED_DUPLICATED_KEYS            = "[concealed]";
 
