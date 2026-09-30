@@ -1359,6 +1359,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   boolean beginLeaderExclusive(final String databaseName, final long drainTimeoutMs) {
     databasesExclusiveOnLeader.merge(databaseName, 1, Integer::sum);
     final long deadline = System.currentTimeMillis() + drainTimeoutMs;
+    long pauseMs = 2L;
     int live;
     while ((live = pageVersions.liveReservations(databaseName)) > 0) {
       if (System.currentTimeMillis() >= deadline) {
@@ -1368,11 +1369,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return false;
       }
       try {
-        Thread.sleep(2);
+        Thread.sleep(pauseMs);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
       }
+      // Backed off (2, 4, 8, 16, 20 ms): each poll scans the database's ledger while the caller holds the write lock.
+      pauseMs = Math.min(pauseMs * 2, 20L);
     }
     return true;
   }
@@ -2885,6 +2888,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (trx.getStateMachineContext() instanceof AppendedEntry appended && !appended.originatedLocally()
         && databasesExclusiveOnLeader.containsKey(appended.decoded().databaseName())) {
       pageVersions.release(appended.decoded().databaseName(), appended.pages(), appended.decoded().walData());
+      // Logged because each of these costs a Ratis pending-write permit (see startTransaction): a leak, if this window
+      // turns out to be wider than assumed, must be diagnosable.
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing to append tx %d of another node on database '%s': the leader began an exclusive operation on it after "
+              + "the entry was accepted", peekWalTransactionId(appended.decoded().walData()), appended.decoded().databaseName());
       final NeedRetryException refusal = exclusiveOperationRefusal(appended.decoded().databaseName());
       throw new StateMachineException(refusal.getMessage(), refusal, false);
     }
