@@ -2705,9 +2705,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final long configured = server != null
         ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT)
         : GlobalConfiguration.HA_SNAPSHOT_WATCHDOG_TIMEOUT.getValueAsLong();
-    final long electionTimeoutMax = server != null
-        ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)
-        : GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger();
+    final long electionTimeoutMax = RaftPropertiesBuilder.electionTimeoutMaxFor(
+        server != null ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN)
+            : GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN.getValueAsInteger(),
+        server != null ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)
+            : GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getValueAsInteger());
     final long floor = electionTimeoutMax * WATCHDOG_ELECTION_TIMEOUT_MULTIPLIER;
     return Math.max(configured, floor);
   }

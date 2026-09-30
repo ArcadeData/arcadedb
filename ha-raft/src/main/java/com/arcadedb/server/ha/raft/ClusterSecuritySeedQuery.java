@@ -145,7 +145,8 @@ public final class ClusterSecuritySeedQuery {
    */
   private static long notLeaderBackoffMs(final ContextConfiguration configuration) {
     return Math.max(NOT_LEADER_MIN_BACKOFF_MS,
-        configuration.getValueAsLong(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
+        RaftPropertiesBuilder.electionTimeoutMaxFor(configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
+            configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)));
   }
 
   /**

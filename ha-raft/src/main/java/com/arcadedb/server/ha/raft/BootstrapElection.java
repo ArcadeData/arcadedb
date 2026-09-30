@@ -304,10 +304,12 @@ class BootstrapElection {
     try {
       final boolean useSSL = server != null
           && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-      final Map<String, RaftPeerId> peerByUrl = new LinkedHashMap<>();
+      // Every peer behind a URL is kept: two peers that resolve to one address get one request, but each of them is owed
+      // the report when a stranger answers it
+      final Map<String, List<RaftPeerId>> peerByUrl = new LinkedHashMap<>();
       for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet())
         if (entry.getValue() != null)
-          peerByUrl.put(entry.getValue(), entry.getKey());
+          peerByUrl.computeIfAbsent(entry.getValue(), u -> new ArrayList<>(1)).add(entry.getKey());
       final List<String> urls = new ArrayList<>(peerByUrl.keySet());
       if (urls.isEmpty())
         return;
@@ -324,7 +326,7 @@ class BootstrapElection {
         }
       try (final HttpClient client = httpsClient) {
         final List<CompletableFuture<HttpResponse<String>>> sends = new ArrayList<>(urls.size());
-        final List<RaftPeerId> sentTo = new ArrayList<>(urls.size());
+        final List<List<RaftPeerId>> sentTo = new ArrayList<>(urls.size());
         for (final String url : urls) {
           final boolean https = url.startsWith("https://");
           if (https && client == null)
@@ -337,7 +339,8 @@ class BootstrapElection {
           CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
               .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
           for (int i = 0; i < sends.size(); i++)
-            reportStrangerAnswer(sentTo.get(i), sends.get(i).getNow(null));
+            for (final RaftPeerId meantFor : sentTo.get(i))
+              reportStrangerAnswer(meantFor, sends.get(i).getNow(null));
         } finally {
           // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
           // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
