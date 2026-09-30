@@ -6780,8 +6780,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
-    if (bodyCtx.BUCKETS() != null)
-      stmt.buckets = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+    if (bodyCtx.bucketCount != null)
+      stmt.buckets = Integer.parseInt(bodyCtx.bucketCount.getText());
+
+    if (bodyCtx.pageSize != null)
+      stmt.pageSize = Integer.parseInt(bodyCtx.pageSize.getText());
 
     return stmt;
   }

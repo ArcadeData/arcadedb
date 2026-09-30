@@ -808,13 +808,16 @@ dropTriggerBody
 
 /**
  * CREATE MATERIALIZED VIEW statement
- * Syntax: CREATE MATERIALIZED VIEW [IF NOT EXISTS] name AS selectStatement [REFRESH MANUAL|INCREMENTAL|EVERY n SECOND|MINUTE|HOUR] [BUCKETS n]
+ * Syntax: CREATE MATERIALIZED VIEW [IF NOT EXISTS] name AS selectStatement [REFRESH MANUAL|INCREMENTAL|EVERY n SECOND|MINUTE|HOUR] [BUCKETS n] [PAGESIZE n]
+ * PAGESIZE (issue #7688) gives the backing type's page size the expression MaterializedViewBuilder.withPageSize() needs
+ * to be rendered as DDL by a remote schema.
  */
 createMaterializedViewBody
     : (IF NOT EXISTS)? identifier
       AS selectStatement
       materializedViewRefreshClause?
-      (BUCKETS INTEGER_LITERAL)?
+      (BUCKETS bucketCount=INTEGER_LITERAL)?
+      (PAGESIZE pageSize=INTEGER_LITERAL)?
     ;
 
 materializedViewRefreshClause
