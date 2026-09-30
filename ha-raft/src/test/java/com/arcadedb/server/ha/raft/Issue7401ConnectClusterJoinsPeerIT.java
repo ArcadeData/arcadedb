@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.awaitility.Awaitility;
@@ -83,12 +84,12 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     dropFromConfigurationAndRestart(leader, rejoining);
 
-    final Response response = serverCommand(leader, "connect cluster " + raftAddressOf(rejoining));
+    final Response response = serverCommand(leader, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
     assertThat(peerIds(leader)).contains(peerIdForIndex(rejoining)).hasSize(getServerCount());
 
-    final Response again = serverCommand(leader, "connect cluster " + raftAddressOf(rejoining));
+    final Response again = serverCommand(leader, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(again.status()).as("body: %s", again.body()).isEqualTo(200);
     assertThat(peerIds(leader)).hasSize(getServerCount());
@@ -110,7 +111,9 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     dropFromConfigurationAndRestart(leader, rejoining);
 
-    final Response response = serverCommand(follower, "connect cluster " + raftAddressOf(rejoining));
+    // Passes only because the fixture restored the leader's HTTP-address map: the declared port reaches the
+    // follower's map, not the leader's, where the seed runs. Drop that restore once #8689 is fixed.
+    final Response response = serverCommand(follower, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
     assertThat(peerIds(leader)).as("the leader's committed configuration").contains(peerIdForIndex(rejoining));
@@ -146,24 +149,35 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
     final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
     assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount());
 
+    // Issue #8330: back on the HTTP port it owned, as BaseGraphServerTest.endTest restarts one, so every other
+    // node's map still names it and the restart cannot re-scan onto a port the fixture steered past.
+    final int boundHttpPort = getServerHttpPort(rejoining);
+    getServer(rejoining).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT,
+        String.valueOf(boundHttpPort));
+
     getServer(rejoining).stop();
     leaderRaft.removePeer(peerIdForIndex(rejoining), true);
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount() - 1));
 
     getServer(rejoining).start();
+    assertThat(getServerHttpPort(rejoining)).as("the restarted node's HTTP port").isEqualTo(boundHttpPort);
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(getRaftPlugin(rejoining)).isNotNull());
     assertThat(peerIds(leader)).doesNotContain(peerIdForIndex(rejoining));
+
+    // Issue #8330: removePeer dropped this node's HTTP address from the leader's map, and the leader's security seed
+    // probes it there; without it the seed's group and API-token entries are refused by the #7511 gate.
+    patchPeerHttpAddressesWithBoundPorts();
   }
 
   /**
-   * The Raft address of a fixture server, recovered from its peer id. The two are the same string with
-   * one character changed, which is the rule this verb relies on - so deriving one from the other here
-   * keeps the test from hardcoding a port the base class owns.
+   * The address {@code connect cluster} is given for a fixture server: its Raft address (the peer id with one
+   * character changed) plus the HTTP port it bound. The port is declared because this fixture's Raft and HTTP ports
+   * are not in step, so the derived {@code raftPort + offset} address would name nobody (issue #8330).
    */
-  private String raftAddressOf(final int serverIndex) {
-    return peerIdForIndex(serverIndex).replace('_', ':');
+  private String joinAddressOf(final int serverIndex) {
+    return peerIdForIndex(serverIndex).replace('_', ':') + ":" + getServerHttpPort(serverIndex);
   }
 
   private List<String> peerIds(final int serverIndex) {
@@ -175,7 +189,7 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
   }
 
   private Response serverCommand(final int serverIndex, final String command) throws Exception {
-    final int port = getServer(serverIndex).getHttpServer().getPort();
+    final int port = getServerHttpPort(serverIndex);
     final HttpURLConnection conn = (HttpURLConnection) new URI(
         "http://localhost:" + port + "/api/v1/server").toURL().openConnection();
     conn.setRequestMethod("POST");

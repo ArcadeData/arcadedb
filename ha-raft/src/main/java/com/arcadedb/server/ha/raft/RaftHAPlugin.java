@@ -1034,14 +1034,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     // The peer goes in whole, not as an id and an address: it also carries the leader-election
     // priority the entry may have declared, and rebuilding it from parts is how that gets lost.
-    final RaftPeerId peerId = target.peer().getId();
-    raft.addPeer(target.peer(), target.name());
-
-    // After addPeer, not before: RaftClusterManager.addPeer derives an HTTP address from the Raft port
-    // plus THIS node's HTTP offset, which is right only for a homogeneous cluster. An entry that
-    // declared its own HTTP port said so, and that answer wins over the derived one.
-    if (target.httpAddress() != null)
-      raft.getHttpAddresses().put(peerId, target.httpAddress());
+    // A declared HTTP port goes in with it, so it is in place before the commit starts the security seed whose
+    // capability probe dials it (issue #8330).
+    raft.addPeer(target.peer(), target.name(), target.httpAddress());
   }
 
   @Override
