@@ -83,6 +83,12 @@ public final class DistinctNumericKey {
       return d;
     }
 
+    if (value instanceof Identifiable identifiable) {
+      final RID rid = identifiable.getIdentity();
+      if (rid != null)
+        return rid;
+    }
+
     // Lists and maps are equal under Cypher's = when their elements are, so [1] and [1.0] share a key (issue #8561). A lazy
     // range is left alone: walking it would materialise what it exists not to, and its elements are all Longs already
     if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
@@ -109,12 +115,6 @@ public final class DistinctNumericKey {
           key.put(entry.getKey(), canonical);
       }
       return key != null ? key : value;
-    }
-
-    if (value instanceof Identifiable identifiable) {
-      final RID rid = identifiable.getIdentity();
-      if (rid != null)
-        return rid;
     }
 
     return value;

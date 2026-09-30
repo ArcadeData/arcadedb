@@ -4624,15 +4624,9 @@ public class SelectExecutionPlanner {
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
               // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
-              if (next.createRangeWith(singleExp) && (!(ciCollation && isLowerCaseRewrite(singleExp, info))
-                  || next instanceof BinaryCondition other && BinaryCondition.isLowerCaseLiteral(other.getRight(), context))) {
+              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
-                if (ciCollation && needsLowerCaseResidual(next, info)) {
-                  if (lowerCaseRewrites == null)
-                    lowerCaseRewrites = new ArrayList<>(2);
-                  lowerCaseRewrites.add(next);
-                }
                 break;
               }
             }
@@ -4666,6 +4660,17 @@ public class SelectExecutionPlanner {
     }
 
     return null;
+  }
+
+  /**
+   * True when {@code next} may be the other side of the range {@code first} opens. Over {@code field.toLowerCase()} on a CI
+   * index its bound is probed lower-cased too, so it must already be a lower-case literal (issue #8560).
+   */
+  private static boolean rangePartnerAllowed(final BooleanExpression first, final BooleanExpression next, final boolean ciCollation,
+      final IndexSearchInfo info) {
+    if (!ciCollation || !isLowerCaseRewrite(first, info))
+      return true;
+    return next instanceof BinaryCondition other && BinaryCondition.isLowerCaseLiteral(other.getRight(), info.getContext());
   }
 
   /**
