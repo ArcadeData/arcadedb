@@ -193,6 +193,60 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void rowsDeletedAfterTheFirstPullCanBeTouchedAgainWithoutFailing() {
+    database.begin();
+    try {
+      long rows = 0;
+      long touched = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          if (rows++ == 0)
+            database.command("sql", "DELETE FROM E WHERE grp = 5");
+          // a stale row: the update of a record the transaction deleted finds nothing and does not fail
+          try (final ResultSet update = database.command("sql", "UPDATE " + row.getIdentity().get() + " SET touched = true")) {
+            touched += ((Number) update.next().getProperty("count")).longValue();
+          }
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+      assertThat(touched).isLessThanOrEqualTo(1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void unitsAsLargeAsTheWholeBucketStayCorrectInATransaction() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 0);
+    database.begin();
+    try {
+      assertThat(count()).isEqualTo(expected);
+      database.newVertex("E").set("id", -1, "grp", 5).save();
+      assertThat(count()).isEqualTo(expected + 1);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void limitInATransactionReturnsItsRows() {
+    database.begin();
+    try {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5 LIMIT 3")) {
+        long n = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          n++;
+        }
+        assertThat(n).isEqualTo(3);
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
     final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
     final long parallelUpdated = updatedIn(update, true);

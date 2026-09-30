@@ -99,6 +99,8 @@ final class ParallelTypeScan {
   // of entries is smaller than the records of a unit of pages.
   private static final int ENTRIES_PER_UNIT_PAGE = 32;
   // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
+  // THE MOST PAGES OF A UNIT THE CALLER READS WHOLE INSIDE A TRANSACTION (#8775): IT HOLDS ALL ITS ROWS ON THE HEAP AT ONCE
+  private static final int MAX_CALLER_UNIT_PAGES = 64;
   private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
   private final DatabaseInternal     database;
@@ -500,7 +502,7 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          if (nextUnit.get() == consumerUnit && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+          if (nextUnit.get() == consumerUnit && callerMayTake(units.get(consumerUnit)) && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             channels[consumerUnit] = null;
             if (consumerContext == null)
               consumerContext = workerContext(context);
@@ -550,6 +552,21 @@ final class ParallelTypeScan {
   }
 
   /**
+   * Whether the caller may claim {@code unit} itself (#8594). Outside a transaction it streams the unit, so any. Inside
+   * one it reads the unit whole into memory (see {@link #readWholeUnit}), so only a unit of a bounded, small number of
+   * pages: a larger one (a whole bucket, the big units of a large type) is left to its worker,
+   * which streams it under the batch byte bound.
+   */
+  private boolean callerMayTake(final Unit unit) {
+    if (!database.isTransactionActive())
+      return true;
+    // THE PAGES THE UNIT HOLDS: ITS RANGE, OR WHAT IS LEFT OF THE BUCKET FOR A WHOLE UNIT AND FOR THE OPEN-ENDED LAST RANGE
+    final long pages = unit.toPage() >= 0 ? unit.toPage() - unit.fromPage()
+        : pagesOf(database, bucketIdOf(unit.template())) - Math.max(unit.fromPage(), 0);
+    return pages <= MAX_CALLER_UNIT_PAGES;
+  }
+
+  /**
    * Reads the rest of the unit the caller claimed (#8594) in one go, from committed pages only (#8775). A transaction
    * that has written nothing reads the same pages a worker does, so the caller reads it itself. After a write the
    * caller's reads would show the transaction's changes, which the workers' units never do, and it cannot wait for a
@@ -589,8 +606,11 @@ final class ParallelTypeScan {
     }
 
     final Throwable failed = error.get();
-    if (failed instanceof RuntimeException runtime)
+    if (failed instanceof RuntimeException runtime) {
+      // THE CALLER'S STACK TOO: THE READER'S SAYS WHERE IT FAILED, NOT WHO WAS WAITING
+      runtime.addSuppressed(new CommandExecutionException("Thrown in the reader thread of a parallel scan unit"));
       throw runtime;
+    }
     if (failed instanceof Error err)
       throw err;
     if (failed != null)

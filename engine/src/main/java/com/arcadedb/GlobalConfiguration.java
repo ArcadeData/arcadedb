@@ -959,8 +959,8 @@ public enum GlobalConfiguration {
       Minimum number of pages of the unit of work a parallel type scan cuts a bucket in: a bucket of at least twice \
       as many pages is scanned by several workers, each on a range of its pages, so a type with a single bucket is \
       scanned in parallel too. The rows are still returned in the order of a sequential scan. 0 disables the split: \
-      each bucket is then scanned by one worker. Inside a transaction, a unit the caller has to read itself because no \
-      worker started it is held in memory whole, so a large unit of wide records weighs that much heap""",
+      each bucket is then scanned by one worker. Inside a transaction, the caller reads a unit no worker started itself, \
+      whole, only when it has at most 64 pages; a larger one waits for its worker""",
       Integer.class, 32),
 
   QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES("arcadedb.queryParallelScanMaxBatchBytes", SCOPE.DATABASE,
