@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONArray;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.api.AdminApi;
@@ -79,6 +80,8 @@ class Issue7802ConcurrentAddSameAddressTest {
       live.add(peer("X", "h4:2434"));
       final RaftClientReply reply = mock(RaftClientReply.class);
       when(reply.isSuccess()).thenReturn(false);
+      // The Ratis type for a rejected configuration change: the retry loop must treat it as transient (only a group
+      // mismatch is permanent, see RaftClusterManager.isPermanent).
       when(reply.getException()).thenReturn(new SetConfigurationException("the current configuration does not match the request"));
       return reply;
     });
@@ -127,6 +130,24 @@ class Issue7802ConcurrentAddSameAddressTest {
     assertThat(sent.get(1).getServersInCurrentConf()).extracting(p -> p.getId().toString())
         .as("the retry is rebuilt on top of the winner").containsExactly("A", "B", "C", "X");
     assertThat(live).extracting(p -> p.getId().toString()).containsExactly("A", "B", "C", "X", "Y");
+  }
+
+  /** A configuration that cannot be read is reported as such, not papered over with the declared list; the wait is cut short by an interrupt. */
+  @Test
+  void anUnreadableConfigurationIsReportedNotGuessed() {
+    final RaftHAServer server = mock(RaftHAServer.class);
+    when(server.getCommittedPeersOrNull()).thenReturn(null);
+    when(server.getClient()).thenReturn(mock(RaftClient.class));
+    when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
+
+    Thread.currentThread().interrupt();
+    try {
+      assertThatThrownBy(() -> new RaftClusterManager(server).addPeer("Y", "h5:2434"))
+          .isInstanceOf(ConfigurationException.class).hasMessageContaining("cannot read the live Raft configuration");
+      assertThat(Thread.currentThread().isInterrupted()).as("the interrupt is preserved").isTrue();
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @Test

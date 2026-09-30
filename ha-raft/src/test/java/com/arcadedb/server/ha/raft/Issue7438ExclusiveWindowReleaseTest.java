@@ -61,6 +61,7 @@ class Issue7438ExclusiveWindowReleaseTest {
   private ArcadeStateMachine     stateMachine;
   private RaftReplicatedDatabase replicated;
   private RID                    counter;
+  private RaftHAServer           raft;
 
   @BeforeEach
   void setUp() {
@@ -76,7 +77,7 @@ class Issue7438ExclusiveWindowReleaseTest {
       }
     };
     // No transaction broker: every replicate call fails, which is the exit these tests take.
-    final RaftHAServer raft = mock(RaftHAServer.class);
+    raft = mock(RaftHAServer.class);
     when(raft.getStateMachine()).thenReturn(stateMachine);
     replicated = new RaftReplicatedDatabase(mock(ArcadeDBServer.class), db, raft);
   }
@@ -103,6 +104,18 @@ class Issue7438ExclusiveWindowReleaseTest {
   void aFailedDropReleasesTheWindow() throws Exception {
     assertThatThrownBy(() -> replicated.dropInReplicas()).isInstanceOf(RuntimeException.class);
     assertReplicaEntryAccepted(3);
+  }
+
+  /** The DDL path: a callback that throws must not leave the leader exclusive on the database. */
+  @Test
+  void aDdlWhoseCallbackThrowsReleasesTheWindow() throws Exception {
+    when(raft.isLeader()).thenReturn(true);
+
+    assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
+      throw new IllegalStateException("the DDL failed");
+    })).isInstanceOf(IllegalStateException.class);
+
+    assertReplicaEntryAccepted(4);
   }
 
   private void assertReplicaEntryAccepted(final long callId) throws Exception {
