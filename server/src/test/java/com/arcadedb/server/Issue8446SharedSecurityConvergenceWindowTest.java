@@ -92,7 +92,7 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
 
     assertThat(http.notReadyReason()).isNotNull();
     assertThat(grpc.notReadyReason()).isNotNull();
-    assertThat(http.securityConvergenceWindow()).isSameAs(grpc.securityConvergenceWindow());
+    assertThat(http.gate()).isSameAs(grpc.gate());
   }
 
   /** The issue's second symptom: the SEVERE give-up line is once per window, not once per readiness surface. */
@@ -221,24 +221,24 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
   void aRealServerSharesOneWindowAndClearsItOnStart() {
     realServer = new ArcadeDBServer(serverConfiguration());
 
-    final SecurityConvergenceWindow window = realServer.getSecurityConvergenceWindow();
+    final SecurityConvergenceGate window = realServer.getSecurityConvergenceGate();
     assertThat(window).isNotNull();
-    assertThat(new ServerControlPlane(realServer).securityConvergenceWindow()).isSameAs(window);
-    assertThat(new ServerControlPlane(realServer).securityConvergenceWindow()).isSameAs(window);
+    assertThat(new ServerControlPlane(realServer).gate()).isSameAs(window);
+    assertThat(new ServerControlPlane(realServer).gate()).isSameAs(window);
 
     // What an expired window of an earlier run of this instance leaves behind.
     window.joinIndex = 42L;
-    window.openedAt = 1L;
-    window.giveUpLogged.set(true);
-    window.leaderLoggedFor.set(42L);
+    window.windowOpenedAt = 1L;
+    window.giveUpLogged = true;
+    window.leaderLoggedFor = 42L;
 
     realServer.start();
 
-    assertThat(realServer.getSecurityConvergenceWindow()).isSameAs(window);
+    assertThat(realServer.getSecurityConvergenceGate()).isSameAs(window);
     assertThat(window.joinIndex).isEqualTo(-1L);
-    assertThat(window.openedAt).isZero();
-    assertThat(window.giveUpLogged.get()).isFalse();
-    assertThat(window.leaderLoggedFor.get()).isEqualTo(-1L);
+    assertThat(window.windowOpenedAt).isZero();
+    assertThat(window.giveUpLogged).isFalse();
+    assertThat(window.leaderLoggedFor).isEqualTo(-1L);
   }
 
   // -----------------------------------------------------------------------------------------------------------
@@ -271,7 +271,7 @@ class Issue8446SharedSecurityConvergenceWindowTest extends StaticBaseServerTest 
     when(server.getConfiguration()).thenReturn(configuration);
     when(server.getHA()).thenReturn(ha);
     when(server.getSecurity()).thenReturn(security);
-    when(server.getSecurityConvergenceWindow()).thenReturn(new SecurityConvergenceWindow());
+    when(server.getSecurityConvergenceGate()).thenReturn(new SecurityConvergenceGate());
     return server;
   }
 

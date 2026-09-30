@@ -524,6 +524,8 @@ public class JSONImporterFormat implements FormatImporter {
         final String strategy = mapping.getString("@strategy", "");
         if ("merge".equalsIgnoreCase(strategy)) {
           record = existent.next().asDocument().modify();
+          // The merge writes the imported values, not values computed from the record read: no stale-read refusal (#8610)
+          record.clearBasedOnStaleRead();
         } else
           // SKIP IT, RETURN THE EXISTENT ONE
           return existent.next().asDocument();

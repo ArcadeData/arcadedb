@@ -54,17 +54,19 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ClusterMembership {
-  private final List<RaftPeer>   peers;
-  private final Set<RaftPeerId>  configured;
-  private final List<String>     notInConfiguration;
-  private final List<String>     notInServerList;
+  private final List<RaftPeer>     peers;
+  private final Set<RaftPeerId>    configured;
+  private final List<String>       notInConfiguration;
+  private final List<String>       notInServerList;
+  private final List<List<String>> sharedAddresses;
 
   private ClusterMembership(final List<RaftPeer> peers, final Set<RaftPeerId> configured,
-      final List<String> notInConfiguration, final List<String> notInServerList) {
+      final List<String> notInConfiguration, final List<String> notInServerList, final List<List<String>> sharedAddresses) {
     this.peers = peers;
     this.configured = configured;
     this.notInConfiguration = notInConfiguration;
     this.notInServerList = notInServerList;
+    this.sharedAddresses = sharedAddresses;
   }
 
   /**
@@ -93,7 +95,40 @@ final class ClusterMembership {
         notInConfiguration.add(peer.getId().toString());
 
     return new ClusterMembership(Collections.unmodifiableList(new ArrayList<>(byId.values())), configured,
-        Collections.unmodifiableList(notInConfiguration), Collections.unmodifiableList(notInServerList));
+        Collections.unmodifiableList(notInConfiguration), Collections.unmodifiableList(notInServerList),
+        findSharedAddresses(livePeers));
+  }
+
+  /**
+   * The groups of committed members that sit on one Raft address (issue #7802), each group as its member ids in
+   * configuration order. Empty on every healthy cluster. Compared with {@link RaftHAServer#isSameHttpEndpoint}, the
+   * comparison the add-peer guard refuses new duplicates with, so what is reported here is exactly what that guard
+   * would have refused had it existed when the configuration was built.
+   */
+  static List<List<String>> findSharedAddresses(final Collection<RaftPeer> livePeers) {
+    final List<RaftPeer> members = new ArrayList<>(livePeers);
+    final boolean[] grouped = new boolean[members.size()];
+    List<List<String>> groups = Collections.emptyList();
+    for (int i = 0; i < members.size(); i++) {
+      if (grouped[i])
+        continue;
+      List<String> group = null;
+      for (int j = i + 1; j < members.size(); j++)
+        if (!grouped[j] && RaftHAServer.isSameHttpEndpoint(members.get(i).getAddress(), members.get(j).getAddress())) {
+          if (group == null) {
+            group = new ArrayList<>();
+            group.add(members.get(i).getId().toString());
+          }
+          group.add(members.get(j).getId().toString());
+          grouped[j] = true;
+        }
+      if (group != null) {
+        if (groups.isEmpty())
+          groups = new ArrayList<>();
+        groups.add(Collections.unmodifiableList(group));
+      }
+    }
+    return groups;
   }
 
   /** Every peer known to this node: the static list first, then the peers only the live configuration holds. */
@@ -123,6 +158,11 @@ final class ClusterMembership {
   /** Ids of the committed members that {@code arcadedb.ha.serverList} does not declare, in configuration order. */
   List<String> notInServerList() {
     return notInServerList;
+  }
+
+  /** Groups of committed members sharing one Raft address, as ids; empty unless the configuration holds a duplicate. */
+  List<List<String>> sharedAddresses() {
+    return sharedAddresses;
   }
 
   /** Whether the two lists differ at all. */

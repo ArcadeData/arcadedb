@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeIdentitySet;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -31,6 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.utility.MultiIterator;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -104,6 +106,10 @@ public class ExpandInto extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    // Both ends are bound, so an edge no vertex stores on its incoming side is still found from the end that stores it
+    // (issue #8625)
+    final boolean fromEachSource = IncomingEdgeLookup.isIncomingSideMissing(context.getDatabase().getSchema(),
+        direction.toArcadeDirection(), edgeTypes);
 
     return new ResultSet() {
       private       Result         currentInputResult       = null;
@@ -158,7 +164,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
               continue;
             }
 
-            edgeIterator = connectingEdges(sourceVertex, targetVertex);
+            edgeIterator = fromEachSource ?
+                connectingEdgesFromEachSource(sourceVertex, targetVertex) :
+                connectingEdges(sourceVertex, targetVertex);
             currentInputUsedEdgeRids = collectUsedEdgeRids(currentInputResult);
             continue;
           }
@@ -218,6 +226,34 @@ public class ExpandInto extends AbstractPhysicalOperator {
           target.getIdentity(), arcadeDirection);
 
     return arcadeDirection == Vertex.DIRECTION.BOTH ? SelfLoops.deduplicatingEdges(connecting) : connecting;
+  }
+
+  /**
+   * {@link #connectingEdges} for a hop over an edge type declared unidirectional, whose edges are stored on their source
+   * vertex only (issue #8625): an incoming relationship of {@code source} is an outgoing one of {@code target}, and an
+   * undirected hop is the outgoing relationships of either end towards the other. The outgoing side is always stored,
+   * so this is complete for every type.
+   */
+  private Iterator<Edge> connectingEdgesFromEachSource(final Vertex source, final Vertex target) {
+    final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
+    if (source instanceof VertexInternal internalSource)
+      return IncomingEdgeLookup.getEdgesConnectedTo(internalSource, arcadeDirection, target.getIdentity(), edgeTypes);
+
+    if (arcadeDirection == Vertex.DIRECTION.IN)
+      return outgoingEdgesTo(target, source);
+
+    final MultiIterator<Edge> both = new MultiIterator<>();
+    both.addIterator(outgoingEdgesTo(source, target));
+    both.addIterator(outgoingEdgesTo(target, source));
+    return SelfLoops.deduplicatingEdges(both);
+  }
+
+  private Iterator<Edge> outgoingEdgesTo(final Vertex from, final Vertex to) {
+    if (from instanceof VertexInternal internal)
+      return ((DatabaseInternal) from.getDatabase()).getGraphEngine()
+          .getEdgesConnectedTo(internal, Vertex.DIRECTION.OUT, to.getIdentity(), edgeTypes);
+    return reachingTarget(from.getEdges(Vertex.DIRECTION.OUT, edgeTypes).iterator(), to.getIdentity(),
+        Vertex.DIRECTION.OUT);
   }
 
   /**

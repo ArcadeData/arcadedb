@@ -517,12 +517,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             // TWO TRANSACTIONS, and the split is the whole of issue #6324, item 1.
             //
-            // The COMPONENT is created in a transaction of its OWN. recordFileChanges writes the schema entry that
-            // names this index as soon as this callback returns, whatever the caller's transaction goes on to do, so
-            // the index FILE has to be committed on the same terms: leaving its first page inside a caller's
-            // transaction that later rolls back would leave the schema pointing at a file with no pages, which fails
-            // on the next write with "the file is invalid". Committing it also keeps the index usable from a NESTED
-            // transaction, which cannot see an outer transaction's uncommitted pages.
+            // The COMPONENT is created in a transaction of its OWN. The schema entry that names this index is written
+            // whatever the caller's transaction goes on to do - postponed to its end, commit and rollback alike
+            // (#8635), since the index exists either way - so the index FILE has to be committed on the same terms:
+            // leaving its first page inside a caller's transaction that later rolls back would leave the schema
+            // pointing at a file with no pages, which fails on the next write with "the file is invalid". Committing
+            // it also keeps the index usable from a NESTED transaction, which cannot see an outer transaction's
+            // uncommitted pages.
             database.transaction(() -> {
 
               final LocalBucket bucket = (LocalBucket) buckets.get(finalIdx);

@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +43,9 @@ import static org.mockito.Mockito.when;
  * <p>
  * The leave now goes through the shared hand-off: the peers {@link RaftHAServer#selectStepDownTargets} ranks, tried
  * in order within one budget, and no bare step-down when none takes over - the removal demotes the leader itself.
+ * <p>
+ * The candidates are also screened for reachability ({@link RaftHAServer#handoffReachablePeers()}, issue #8556), so
+ * the fixture makes both peers reachable unless a test says otherwise (issue #8632).
  */
 class Issue8592LeaveClusterHandOffTargetTest {
 
@@ -67,6 +71,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
     when(raft.isLeader()).thenAnswer(invocation -> leader.get());
     when(raft.getClusterMonitor()).thenReturn(monitor);
     when(raft.getLivePeers()).thenReturn(List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
+    // Both peers answered this leader recently: without it the #8556 screen drops every candidate (issue #8632)
+    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
   }
 
   /** The first configured peer is lagging (the shape a peer that went down takes): the leave hands off to the next. */
@@ -77,6 +83,34 @@ class Issue8592LeaveClusterHandOffTargetTest {
     manager(C).leaveCluster(false);
 
     assertThat(transferTargets).containsExactly(C.toString());
+    assertThat(bareStepDowns.get()).isZero();
+    assertThat(removed).containsExactly(SELF.toString());
+  }
+
+  /**
+   * A peer not proven reachable is never tried (issue #8556), even when it ranks first: a targeted transfer to it would
+   * hold every write on this leader refused for its slice of the budget.
+   */
+  @Test
+  void anUnreachableFirstPeerIsNeverTried() {
+    when(raft.handoffReachablePeers()).thenReturn(Set.of(C.toString()));
+
+    manager(C).leaveCluster(false);
+
+    assertThat(transferTargets).containsExactly(C.toString());
+    assertThat(leader.get()).as("the hand-off to the only reachable peer landed").isFalse();
+    assertThat(bareStepDowns.get()).isZero();
+    assertThat(removed).containsExactly(SELF.toString());
+  }
+
+  /** No peer is reachable: the screen alone leaves nothing to try, and the removal still demotes this leader. */
+  @Test
+  void noReachablePeerSkipsTheHandOffAndStillRemoves() {
+    when(raft.handoffReachablePeers()).thenReturn(Set.of());
+
+    manager(C).leaveCluster(false);
+
+    assertThat(transferTargets).isEmpty();
     assertThat(bareStepDowns.get()).isZero();
     assertThat(removed).containsExactly(SELF.toString());
   }

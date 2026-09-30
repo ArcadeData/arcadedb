@@ -1331,6 +1331,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         // Get mutable view for updates (works for docs, vertices, edges)
         MutableVertex mvertex = elAsVertex.modify();
+        // The values come from the request, not from the record read: no stale-read refusal (#8610)
+        mvertex.clearBasedOnStaleRead();
 
         var dtype = db.getSchema().getType(mvertex.getTypeName());
 
@@ -1367,6 +1369,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.FINE, "updateRecord(): Processing Document ...");
 
         MutableDocument mdoc = elAsDocument.modify();
+        // The values come from the request, not from the record read: no stale-read refusal (#8610)
+        mdoc.clearBasedOnStaleRead();
 
         var dtype = db.getSchema().getType(mdoc.getTypeName());
 
@@ -4472,6 +4476,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return false;
 
       final MutableDocument existing = res.getElement().get().asDocument().modify();
+      // The upsert writes the request's values, not values computed from the record read: no stale-read refusal (#8610)
+      existing.clearBasedOnStaleRead();
       applyConflictUpdates(ctx, r, isEdge, existing);
       existing.save();
       return true;

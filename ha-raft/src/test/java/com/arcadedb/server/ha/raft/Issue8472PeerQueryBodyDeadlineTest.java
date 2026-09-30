@@ -173,7 +173,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   @Test
   void aBootstrapStateProbeWhosePeerStallsInsideItsBodyAnswersNoResult() throws Exception {
     try (final StallingBodyPeer leader = new StallingBodyPeer()) {
-      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(null, leader.address(), null,
+      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(null, null, leader.address(), null,
           "test-token", Set.of("db"), TIMEOUT_MS));
     }
   }
@@ -183,7 +183,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void aBootstrapStateProbeWhosePeerStallsInsideItsBodyOverTlsAnswersNoResult() throws Exception {
     try (final StallingBodyPeer leader = new StallingBodyPeer(tls())) {
       final ArcadeDBServer server = tlsServer();
-      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(server, "127.0.0.1:1",
+      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(server, null, "127.0.0.1:1",
           leader.address(), "test-token", Set.of("db"), TIMEOUT_MS));
     }
   }
@@ -226,7 +226,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
     try (final StallingBodyPeer leader = new StallingBodyPeer(tls())) {
       final ArcadeDBServer server = tlsServer();
       assertGivenUpOn(leader,
-          () -> LeaderDatabaseQuery.fetch("127.0.0.1:1", leader.address(), "test-token", TIMEOUT_MS, server));
+          () -> LeaderDatabaseQuery.fetch(null, "127.0.0.1:1", leader.address(), "test-token", TIMEOUT_MS, server));
     }
   }
 

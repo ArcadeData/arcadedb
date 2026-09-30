@@ -601,8 +601,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               state.bufferedBytes += wal.length;
           } else
             tx.reset();
-          if (getSchema().getEmbedded().isDirty())
-            getSchema().getEmbedded().saveConfiguration();
+          // THIS ARM RUNS ONLY ON THE THREAD OF AN OPEN recordFileChanges FRAME, WHICH WRITES THE FILE ON ITS WAY OUT (#8635)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         } catch (final ArcadeDBException e) {
           // Issue #8149: the same answer as the ordinary arm below. Without it a refused DDL commit left its
           // transaction ACTIVE - the pop in the finally removes nothing from a single-level stack - with the read
@@ -645,8 +645,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         // Read-only transaction: nothing to replicate.
         tx.reset();
-        if (leader && getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+        if (leader)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         current.popIfNotLastTransaction();
         return null;
       } catch (final ArcadeDBException e) {
@@ -906,8 +908,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (outcome == LocalCommit.Outcome.PUBLISHED) {
           try {
             payload.tx().completeCommit();
-            if (getSchema().getEmbedded().isDirty())
-              getSchema().getEmbedded().saveConfiguration();
+            getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
             return null;
           } catch (final Exception e) {
             // The pages are published: only the bookkeeping after them failed (completeCommit fenced and reset the
@@ -1001,13 +1002,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         payload.tx().commit2ndPhase(payload.phase1());
 
-        if (getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
       } catch (final Exception e) {
-        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
-        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
-        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
-        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        // NOTE (#5075 review): this catch can fire after commit2ndPhase SUCCEEDED, when the failure came from the
+        // bookkeeping after it (the schema save itself never throws). Reconciling then replays the payload WAL
+        // against pages the commit already published - safe by the #4926 replay semantics: an equal-version entry
+        // re-applies the same absolute bytes (idempotent), a lower-version one is skipped.
         throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
         current.popIfNotLastTransaction();
@@ -2100,12 +2100,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     isSchemaCommitThread.set(Boolean.TRUE);
     schemaInstalments.set(instalmentState);
 
+    // Exclusive on the cluster for the whole session (issue #7438). The session publishes its pages locally before its
+    // SCHEMA_ENTRY is appended, and the write lock keeps out this leader's own writers but not a replica's: an entry
+    // accepted in between would claim the same page versions as the DDL's embedded WAL. Ended in the finally below,
+    // after the final entry is committed and applied, which is when the log carries the DDL's versions itself.
+    ArcadeStateMachine exclusiveOn = null;
+
     // Set only once the session's FINAL entry has gone out. Everything an instalment shipped before that is
     // delivery-only, so leaving this false is what tells the finally block that the followers are holding an
     // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
     boolean published = false;
 
     try {
+      // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
+      exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
 
       // Capture file changes
@@ -2215,30 +2223,60 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
-      if (!published)
-        retireAbandonedInstalments(instalmentState);
-      if (outerSchemaCommitThread == null)
-        isSchemaCommitThread.remove();
-      else
-        isSchemaCommitThread.set(outerSchemaCommitThread);
-      if (outerInstalments == null)
-        schemaInstalments.remove();
-      else {
-        // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
-        // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
-        // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
-        // the counter and the buffer telling the same story.
-        //
-        // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
-        // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
-        // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
-        outerInstalments.bufferedBytes = 0;
-        schemaInstalments.set(outerInstalments);
+      // Released last and in a finally of its own: this cleanup must not be able to leave the registration open, which is
+      // silent and permanent (every replica write to the database is refused until the node restarts). It stays open
+      // through the retire submit above, which still belongs to the exclusive operation.
+      try {
+        if (!published)
+          retireAbandonedInstalments(instalmentState);
+        if (outerSchemaCommitThread == null)
+          isSchemaCommitThread.remove();
+        else
+          isSchemaCommitThread.set(outerSchemaCommitThread);
+        if (outerInstalments == null)
+          schemaInstalments.remove();
+        else {
+          // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
+          // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
+          // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
+          // the counter and the buffer telling the same story.
+          //
+          // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
+          // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
+          // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
+          outerInstalments.bufferedBytes = 0;
+          schemaInstalments.set(outerInstalments);
+        }
+        schemaWalBuffer.get().clear();
+        schemaBucketDeltaBuffer.get().clear();
+        proxied.getFileManager().stopRecordingChanges();
+      } finally {
+        endLeaderExclusive(exclusiveOn);
       }
-      schemaWalBuffer.get().clear();
-      schemaBucketDeltaBuffer.get().clear();
-      proxied.getFileManager().stopRecordingChanges();
     }
+  }
+
+  /**
+   * Makes the leader exclusive on this database for a DDL, a drop or a reinstall (issue #7438), see
+   * {@link ArcadeStateMachine#beginLeaderExclusive}. Returns the state machine the registration was made on, to hand
+   * back to {@link #endLeaderExclusive}, or {@code null} when there is none (a database outside a Raft server).
+   */
+  private ArcadeStateMachine beginLeaderExclusive() {
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null && !stateMachine.beginLeaderExclusive(getName(), RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS)) {
+      // Entries the log already gave page versions to are still not applied here: going ahead would publish this
+      // operation's pages over versions the followers have been told are taken, the corruption the window exists to
+      // prevent. Failing is the safe answer, and a retryable one - the entries apply or expire and the caller asks again.
+      stateMachine.endLeaderExclusive(getName());
+      throw new NeedRetryException("Database '" + getName() + "' still has replicated transactions in flight on the "
+          + "leader, so a schema change, drop or install cannot start safely right now. Please retry");
+    }
+    return stateMachine;
+  }
+
+  private void endLeaderExclusive(final ArcadeStateMachine stateMachine) {
+    if (stateMachine != null)
+      stateMachine.endLeaderExclusive(getName());
   }
 
   /**
@@ -3632,6 +3670,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas() {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
@@ -3639,12 +3678,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' install-database entry committed via Raft", getName());
   }
 
   @Override
   public void createInReplicas(final boolean forceSnapshot) {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
@@ -3652,6 +3694,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance()
         .log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(),
@@ -3684,6 +3728,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void dropInReplicas() {
     final long committedLogIndex;
+    // Exclusive until this node has applied the drop (issue #7438): an entry of another node that wins the append race
+    // against the drop would otherwise be published on a database the drop has just closed, and surface as a
+    // transaction committed remotely that its originator never sees applied.
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       // Registered for the length of the submit and the wait (issue #8035): the caller holds this database's
@@ -3706,6 +3754,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the drop is not confirmed done on this node, and ServerControlPlane.dropDatabase's finally is about to
       // release the DROP slot regardless.
       throw new TransactionException("Error dropping database '" + getName() + "' via Raft", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry applied locally at index %d", getName(),
         committedLogIndex);

@@ -21,35 +21,27 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
+import com.arcadedb.utility.SegmentedLRUCache;
 
 /**
- * This class is an LRU cache for already parsed SQL statement executors. It stores itself in the storage as a resource. It also
- * acts an an entry point for the SQL parser.
+ * Scan-resistant LRU cache for already parsed SQL statement executors (issue #8286: a burst of one-off statement texts, such
+ * as queries that embed their values, must not evict the statements the application keeps re-running). It also acts as an
+ * entry point for the SQL parser.
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class StatementCache {
-  private final Database               db;
-  private final Map<String, Statement> cache;
-  private final int                    maxCacheSize;
-  private final SQLAntlrParser         antlrParser;
+  private final Database                             db;
+  private final SegmentedLRUCache<String, Statement> cache;
+  private final SQLAntlrParser                       antlrParser;
 
   /**
    * @param size the size of the cache
    */
   public StatementCache(final Database db, final int size) {
     this.db = db;
-    this.maxCacheSize = size;
     this.antlrParser = new SQLAntlrParser(db);  // Create ANTLR parser once, reuse for all parses
-    this.cache = new LinkedHashMap<>(size) {
-      @Override
-      protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
-        return super.size() > maxCacheSize;
-      }
-    };
+    this.cache = new SegmentedLRUCache<>(size);
   }
 
   /**
@@ -59,11 +51,7 @@ public class StatementCache {
   public Statement get(final String statement) {
     Statement parsedStatement;
     synchronized (cache) {
-      //LRU
-      parsedStatement = cache.remove(statement);
-      if (parsedStatement != null) {
-        cache.put(statement, parsedStatement);
-      }
+      parsedStatement = cache.get(statement);
     }
     if (parsedStatement == null) {
       parsedStatement = parse(statement);

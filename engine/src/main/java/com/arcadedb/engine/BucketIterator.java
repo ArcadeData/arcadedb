@@ -65,6 +65,10 @@ public class BucketIterator implements Iterator<Record> {
   private final long[] positions;
   private       int    positionIndex;
   private final int    positionsEnd;
+  // #8610: the transaction the current batch is read in (-1 outside one), recorded on each record of the batch. Taken
+  // per batch, not per iterator: an iterator kept across commit() and begin() reads its next batch in the new
+  // transaction, and a record read there must be checked there
+  private       long   readInTransaction = -1;
 
   BucketIterator(final LocalBucket bucket, final boolean forwardDirection) {
     this(bucket, forwardDirection, 0, -1);
@@ -178,8 +182,11 @@ public class BucketIterator implements Iterator<Record> {
    */
   private Record newRecord(final RID rid, final Binary content, final long pageVersion) {
     final Record record = database.getRecordFactory().newImmutableRecord(recordDatabase, type, rid, content, null);
-    if (pageVersion > -1 && record instanceof ImmutableDocument document)
-      document.setContentPageVersion(pageVersion);
+    if (record instanceof ImmutableDocument document) {
+      if (pageVersion > -1)
+        document.setContentPageVersion(pageVersion);
+      document.setReadInTransaction(readInTransaction);
+    }
     return database.invokeAfterReadEvents(record);
   }
 
@@ -358,6 +365,9 @@ public class BucketIterator implements Iterator<Record> {
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
+
+    // One lookup per batch: every record of the batch is read now, in this transaction
+    readInTransaction = database.getTransaction().getBeginSequence();
 
     recordsRead = 0;
     try {

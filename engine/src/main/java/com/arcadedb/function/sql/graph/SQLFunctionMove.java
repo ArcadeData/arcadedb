@@ -22,11 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -79,6 +80,10 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
             return new CSRVertexIterable(provider, neighborIds);
           }
         }
+        // A unidirectional type stores no incoming side: a pattern walk (SQL MATCH) asks for it anyway, so answer it
+        // there (issue #8625). Called on its own the function reads what the vertex stores, as the vertex API does
+        if (IncomingEdgeLookup.isWalkingPattern() && IncomingEdgeLookup.isNeeded(context, database, iDirection, iLabels))
+          return (Iterable<Vertex>) () -> IncomingEdgeLookup.getVertices(context, vertex, iDirection, iLabels);
         return vertex.getVertices(iDirection, iLabels);
       }
     }
@@ -93,14 +98,17 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
   // Note: v2e always uses the OLTP path (Vertex.getEdges) because CSR stores only neighbor node IDs,
   // not edge RIDs. Unlike v2v, there is no CSR acceleration possible for edge-returning functions.
   protected Object v2e(final Identifiable iRecord, final Vertex.DIRECTION iDirection,
-      final String[] iLabels) {
+      final String[] iLabels, final CommandContext context) {
     if (iRecord == null)
       return null;
     final Document rec = (Document) iRecord.getRecord();
-    if (rec instanceof Vertex vertex)
+    if (rec instanceof Vertex vertex) {
+      if (IncomingEdgeLookup.isWalkingPattern()
+          && IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), iDirection, iLabels))
+        return (Iterable<Edge>) () -> IncomingEdgeLookup.getEdges(context, vertex, iDirection, iLabels);
       return vertex.getEdges(iDirection, iLabels);
+    }
     return null;
-
   }
 
   protected Object e2v(final Identifiable iRecord, final Vertex.DIRECTION iDirection,

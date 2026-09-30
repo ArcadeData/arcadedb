@@ -226,6 +226,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
                 final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
                 plan.chain(sub);
               }
+              // ISSUE #8633: THE BLOCK IS PLANNED, SO IT MUST NOT BE PLANNED AGAIN BY THE NEXT ONE
+              lastRetryBlock = new ArrayList<>();
             }
           }
         } else

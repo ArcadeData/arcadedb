@@ -520,7 +520,7 @@ public class FileUtils {
         fos.flush();
         fos.getFD().sync();
       }
-      publishAtomically(tmp, target);
+      publishAtomically(tmp, target, true);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -543,6 +543,23 @@ public class FileUtils {
    * @param target the name to publish the copy under, replaced if it already exists
    */
   public static void atomicCopyFile(final File source, final File target) throws IOException {
+    atomicCopyFile(source, target, true);
+  }
+
+  /**
+   * {@link #atomicCopyFile(File, File)}, with the directory fsync that makes the published name durable left to the
+   * caller when {@code syncDirectory} is {@code false} (issue #8635).
+   * <p>
+   * For a caller that publishes another file into the SAME directory right after, through
+   * {@link #atomicWriteFile}: that publication fsyncs the directory, which makes every rename made in it so far
+   * durable at once, so a second fsync here buys nothing and costs a full device flush on every call. Until then the
+   * copy is published but only process-crash durable: after a power failure {@code target} holds either its previous
+   * complete content or the full copy, never a partial one, exactly as with the fsync. The fallback copy for a file
+   * store without links always fsyncs.
+   *
+   * @param syncDirectory {@code false} only when the caller fsyncs the target's directory itself right after
+   */
+  public static void atomicCopyFile(final File source, final File target, final boolean syncDirectory) throws IOException {
     final Path from = source.toPath().toAbsolutePath();
     final Path to = target.toPath().toAbsolutePath();
     final Path dir = to.getParent();
@@ -558,7 +575,7 @@ public class FileUtils {
         atomicWriteFile(target, Files.readAllBytes(from));
         return;
       }
-      publishAtomically(tmp, to);
+      publishAtomically(tmp, to, syncDirectory);
     } finally {
       Files.deleteIfExists(tmp);
     }
@@ -574,8 +591,11 @@ public class FileUtils {
    * it is not, refusing to write would leave the caller - notably the schema save, whose only error
    * handling is a logged SEVERE - permanently unable to persist anything, which is far worse than one
    * replacement that is merely non-atomic. It is logged once per JVM so the condition is visible.
+   *
+   * @param syncDirectory whether to fsync the parent directory after the rename; {@code false} only for a caller that
+   *                      fsyncs that same directory itself right after (#8635)
    */
-  private static void publishAtomically(final Path tmp, final Path target) throws IOException {
+  private static void publishAtomically(final Path tmp, final Path target, final boolean syncDirectory) throws IOException {
     try {
       // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
       // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
@@ -592,8 +612,9 @@ public class FileUtils {
     // make it durable: after a machine crash the new content can be on disk while the directory still names the old
     // file, or nothing at all (issue #7465). Forcing the parent directory is what turns "the previous complete file
     // or the new complete file" from a statement about a process crash into one about a power failure, which is what
-    // both helpers' javadocs claim.
-    forceDirectory(target.getParent());
+    // both helpers' javadocs claim. Skipped only for a caller that fsyncs this same directory itself next (#8635).
+    if (syncDirectory)
+      forceDirectory(target.getParent());
   }
 
   /**

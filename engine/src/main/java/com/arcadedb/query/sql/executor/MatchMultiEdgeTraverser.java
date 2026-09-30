@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.MatchPathItemFirst;
 import com.arcadedb.query.sql.parser.MethodCall;
@@ -79,7 +80,8 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
 
         } else {
           iCommandContext.setVariable("current", o);
-          final Object nextSteps = method.execute(o, possibleResults, iCommandContext);
+          final MethodCall walk = method;
+          final Object nextSteps = IncomingEdgeLookup.walkingPattern(() -> walk.execute(o, possibleResults, iCommandContext));
           if (nextSteps instanceof Collection collection) {
             collection.stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull).forEach(i -> rightSide.add((ResultInternal) i));
           } else if (nextSteps instanceof Document document) {

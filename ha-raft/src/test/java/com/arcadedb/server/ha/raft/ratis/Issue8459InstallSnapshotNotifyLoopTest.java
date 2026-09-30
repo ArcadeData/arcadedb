@@ -126,14 +126,49 @@ class Issue8459InstallSnapshotNotifyLoopTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // The previous-entry question, asked without Ratis 3.3.1's own follower-snapshot exemption (issue #8548)
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void followerAtTheLeaderLogStartWithNoPreviousEntryLacksItsPrevious() {
+    // The anchored shape: Ratis 3.3.1 stops asking for a snapshot here on its own, before the override can see it.
+    assertThat(FixedGrpcLogAppender.leaderLacksPreviousEntry(101, 131, 101, true)).isTrue();
+  }
+
+  @Test
+  void followerThatCaughtUpLacksNothing() {
+    assertThat(FixedGrpcLogAppender.leaderLacksPreviousEntry(131, 131, 101, true)).isFalse();
+  }
+
+  @Test
+  void followerPastTheLeaderLogStartLacksNothing() {
+    // nextIndex inside the leader log: the previous entry is in the log itself.
+    assertThat(FixedGrpcLogAppender.leaderLacksPreviousEntry(110, 131, 101, true)).isFalse();
+  }
+
+  @Test
+  void leaderThatHoldsThePreviousEntryLacksNothing() {
+    // getPrevious found it, in the log or as the leader's own snapshot marker.
+    assertThat(FixedGrpcLogAppender.leaderLacksPreviousEntry(101, 131, 101, false)).isFalse();
+  }
+
+  @Test
+  void firstLogIndexNeverLacksAPrevious() {
+    assertThat(FixedGrpcLogAppender.leaderLacksPreviousEntry(0, 10, 0, true)).isFalse();
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // In-process leader LogAppender (the test #8457 asked for)
   // ---------------------------------------------------------------------------------------------
 
   /**
    * Drives a real leader {@link FixedGrpcLogAppender} into the exact state of the loop: a follower that installs a
    * snapshot ending at the leader's log start - 1 while the leader's own snapshot marker is past that index. With
-   * stock Ratis the follower never receives another entry (it answers ALREADY_INSTALLED forever); with the fix the
-   * leader ships the entries from its log start on and the follower catches up after a single install.
+   * stock Ratis 3.3.0 the follower never receives another entry (it answers ALREADY_INSTALLED forever); with the fix
+   * the leader ships the entries from its log start on and the follower catches up after a single install. Ratis 3.3.1
+   * ships the same outcome on its own, so this test no longer tells the two apart:
+   * {@link #rejectedAnchoredAppendFallsBackToANewNotification} is the one that fails when the stock answer hides the
+   * anchored state from the override (issue #8548).
    */
   @Test
   @Tag("slow")

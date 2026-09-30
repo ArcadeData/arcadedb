@@ -41,6 +41,10 @@ import java.util.Map;
  * @see MutableVertex
  */
 public class ImmutableVertex extends ImmutableDocument implements VertexInternal {
+  // Record type (1 byte) + out-edge RID (int+long) + in-edge RID (int+long): the properties start right after
+  private static final int PROPERTIES_OFFSET =
+      Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
+
   private RID outEdges;
   private RID inEdges;
 
@@ -58,7 +62,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
    * still be read/deleted (issue #4432).
    */
   private void parseEdgePointers(final Binary content) {
-    final int prefixSize = Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
+    final int prefixSize = PROPERTIES_OFFSET;
     if (content.size() < prefixSize)
       throw new SerializationException(
           "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + content.size()
@@ -91,7 +95,16 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return new MutableVertex(database, (VertexType) type, rid, content.copyOfContent());
+    return markIfReadWentStale(new MutableVertex(database, (VertexType) type, rid, content.copyOfContent()));
+  }
+
+  /**
+   * #8610: only the properties count as a change of the content a write may be computed from. The edge-list heads before
+   * them change freely under concurrent edge creation, which is what the reload on modify() exists for.
+   */
+  @Override
+  protected int contentChangeOffset() {
+    return PROPERTIES_OFFSET;
   }
 
   @Override
@@ -142,7 +155,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return database.getGraphEngine().newEdge(getMostUpdatedVertex(this), edgeType, toVertex, properties);
   }
@@ -157,7 +170,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Deprecated
   public ImmutableLightEdge newLightEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional) {
     if (!bidirectional && database.getSchema().getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return database.getGraphEngine().newLightEdge(getMostUpdatedVertex(this), edgeType, toVertex);
   }

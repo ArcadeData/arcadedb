@@ -104,7 +104,7 @@ public class VariableLengthPathTraverser extends GraphTraverser {
     final GraphTraverser strategy = useBFS ?
         new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode) :
         new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode);
-    return strategy.withEdgePredicate(edgePredicate).withEdgesUnread(edgesUnread);
+    return strategy.withEdgePredicate(edgePredicate).withEdgesUnread(edgesUnread).withContext(context);
   }
 
   /**

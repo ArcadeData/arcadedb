@@ -25,7 +25,9 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
@@ -46,6 +48,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -263,8 +266,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
     else
       edgeTypeParam = edgeTypes;
 
-    final List<RID> pathRids = shortestPathFunction.execute(null, null, null,
-        shortestPathArguments(source, target, direction, edgeTypeParam, bounds), context);
+    final Object[] arguments = shortestPathArguments(source, target, direction, edgeTypeParam, bounds);
+    // A pattern: the function answers the incoming side of the unidirectional types (issue #8625)
+    final List<RID> pathRids = IncomingEdgeLookup.walkingPattern(
+        () -> shortestPathFunction.execute(null, null, null, arguments, context));
     if (pathRids == null || pathRids.isEmpty())
       return null;
 
@@ -372,8 +377,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final Set<RID> nextLayerSeen = new HashSet<>();
 
       for (final Vertex v : currentLayer) {
-        final Iterable<Vertex> neighbors = typesArray != null ? v.getVertices(direction, typesArray) : v.getVertices(direction);
-        for (final Vertex neighbor : neighbors) {
+        // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+        for (final Iterator<Vertex> neighbors = IncomingEdgeLookup.getVertices(context, v, direction, typesArray);
+            neighbors.hasNext(); ) {
+          final Vertex neighbor = neighbors.next();
           final RID neighborRid = neighbor.getIdentity();
           final Integer existing = distance.get(neighborRid);
           if (existing == null) {
@@ -598,8 +605,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       final Deque<Vertex> next = new ArrayDeque<>();
       for (final Vertex v : frontier) {
         for (final Vertex.DIRECTION dir : directions) {
-          final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
-          for (final Edge edge : edges) {
+          for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, v, dir, typesArray); edges.hasNext(); ) {
+            final Edge edge = edges.next();
             if (!constraint.matches(edge))
               continue;
             final Vertex neighbor;
@@ -707,8 +714,8 @@ public class ShortestPathStep extends AbstractExecutionStep {
       for (final Vertex v : currentLayer) {
         final RID vRid = v.getIdentity();
         for (final Vertex.DIRECTION dir : directions) {
-          final Iterable<Edge> edges = typesArray != null ? v.getEdges(dir, typesArray) : v.getEdges(dir);
-          for (final Edge edge : edges) {
+          for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, v, dir, typesArray); edges.hasNext(); ) {
+            final Edge edge = edges.next();
             if (!constraint.matches(edge))
               continue;
             final Vertex neighbor;
@@ -982,6 +989,25 @@ public class ShortestPathStep extends AbstractExecutionStep {
         edgeTypes.toArray(new String[0]);
 
     for (final Vertex.DIRECTION dir : directions) {
+      // An edge type declared unidirectional stores no incoming side: the edge is found from the end that stores it
+      // (issue #8625)
+      if (dir == Vertex.DIRECTION.IN
+          && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), dir, typesArray)) {
+        final Iterator<Edge> connecting = from instanceof VertexInternal internal ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, to.getIdentity(), typesArray) :
+            to.getEdges(Vertex.DIRECTION.OUT, typesArray).iterator();
+        while (connecting.hasNext()) {
+          final Edge edge = connecting.next();
+          try {
+            if (edge.getIn().equals(from.getIdentity()))
+              return edge;
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
+          }
+        }
+        continue;
+      }
+
       final Iterable<Edge> edges = typesArray != null ?
           from.getEdges(dir, typesArray) :
           from.getEdges(dir);

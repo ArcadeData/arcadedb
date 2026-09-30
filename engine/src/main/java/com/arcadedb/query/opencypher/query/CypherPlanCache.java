@@ -40,9 +40,9 @@ import java.util.Map;
  * <p>
  * Total savings: 200-500ms per cached query execution.
  * <p>
- * {@link #put} and {@link #invalidate()} synchronize on {@code this}, so the {@code lastInvalidation} check and the
+ * {@link #put} and {@link #invalidate()} synchronize on {@code this}, so the {@code invalidationEpoch} check and the
  * insert into {@code cache} happen atomically with respect to a concurrent invalidation (issue #6671). {@link #get}
- * does not need that lock - it never reads {@link #lastInvalidation} - and instead relies on {@code cache} being a
+ * does not need that lock - it never reads {@link #invalidationEpoch} - and instead relies on {@code cache} being a
  * {@link Collections#synchronizedMap} for its own thread safety, so the frequent read path stays uncontended by the
  * much rarer {@code put}/{@code invalidate}.
  *
@@ -51,7 +51,11 @@ import java.util.Map;
 public class CypherPlanCache {
   private final DatabaseInternal database;
   private final Map<String, PhysicalPlan> cache;
-  private long lastInvalidation = -1;
+  /**
+   * How many times this cache has been invalidated. A counter rather than a timestamp (#8635): a plan built in the same
+   * millisecond as the invalidation before it was refused by the millisecond-granular comparison this replaces.
+   */
+  private volatile long invalidationEpoch = 0;
 
   /**
    * Creates a new plan cache.
@@ -77,8 +81,8 @@ public class CypherPlanCache {
   }
 
   /**
-   * Puts a physical plan into the cache, unless a DDL has invalidated the cache since {@code planningStart} - the
-   * moment the caller began building this plan. Without this guard a plan built against a schema that a concurrent
+   * Puts a physical plan into the cache, unless a DDL has invalidated the cache since {@code planningEpoch} - the
+   * epoch read when the caller began building this plan. Without this guard a plan built against a schema that a concurrent
    * {@code DROP INDEX}/{@code ALTER TYPE}/create-index already made stale could be cached right after the
    * invalidation that was supposed to keep it out, leaving future executions running against a dropped/renamed
    * bucket or index (or missing a new one) until the next invalidation happens to clear it (issue #6671). The check
@@ -87,11 +91,10 @@ public class CypherPlanCache {
    *
    * @param query         the OpenCypher query string (cache key)
    * @param plan          the optimized PhysicalPlan to cache
-   * @param planningStart the timestamp (as returned by {@link System#currentTimeMillis()}) taken before planning
-   *                      began
+   * @param planningEpoch the {@link #getInvalidationEpoch()} read before planning began
    */
-  public synchronized void put(final String query, final PhysicalPlan plan, final long planningStart) {
-    if (lastInvalidation >= planningStart)
+  public synchronized void put(final String query, final PhysicalPlan plan, final long planningEpoch) {
+    if (invalidationEpoch != planningEpoch)
       return;
     cache.put(query, plan);
   }
@@ -114,19 +117,17 @@ public class CypherPlanCache {
   public void invalidate() {
     synchronized (this) {
       cache.clear();
-      lastInvalidation = System.currentTimeMillis();
+      ++invalidationEpoch;
     }
   }
 
   /**
-   * Gets the timestamp of the last cache invalidation.
+   * The invalidation epoch a planner reads BEFORE it starts planning, and hands back to {@link #put}.
    *
-   * @return timestamp in milliseconds, or -1 if never invalidated
+   * @return how many times this cache has been invalidated
    */
-  public long getLastInvalidation() {
-    synchronized (this) {
-      return lastInvalidation;
-    }
+  public long getInvalidationEpoch() {
+    return invalidationEpoch;
   }
 
   /**

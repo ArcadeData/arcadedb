@@ -18,9 +18,14 @@
  */
 package com.arcadedb.server.info;
 
+import com.arcadedb.InstanceId;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.InstanceIdResolver;
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,5 +57,14 @@ class ServerInfoTest extends BaseGraphServerTest {
   @Test
   void theHaBlockIsOmittedWhenNotRequested() {
     assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).has("ha")).isFalse();
+  }
+
+  @Test
+  void instanceIdIsReportedAndPersistedInTheConfigDirectory() throws Exception {
+    final String id = ServerInfo.toJSON(getServer(0), db -> true, false).getString("instanceId");
+
+    assertThat(InstanceId.isValid(id)).isTrue();
+    assertThat(id).isEqualTo(getServer(0).getInstanceId());
+    assertThat(Files.readString(Path.of(getServer(0).getConfigPath(), InstanceIdResolver.FILE_NAME)).trim()).isEqualTo(id);
   }
 }

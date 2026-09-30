@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.HeapLimitExceededException;
 
 import java.util.Collection;
 
@@ -112,7 +113,7 @@ public final class OperationHeapLimit {
    */
   public void check(final long elements) {
     if (isExceededBy(elements))
-      throw new CommandExecutionException(
+      throw new HeapLimitExceededException(
           "Limit of allowed " + elementsName + " for in-heap " + operation + " in a single query exceeded (" + maxElements
               + "). You can set " + GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey() + " to increase this limit");
   }

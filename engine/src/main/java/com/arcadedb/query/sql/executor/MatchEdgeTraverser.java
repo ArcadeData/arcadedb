@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
@@ -431,7 +432,8 @@ public class MatchEdgeTraverser {
     iCommandContext.setVariable("current", startingPoint);
     Object qR;
     try {
-      qR = this.item.getMethod().execute(startingPoint, possibleResults, iCommandContext);
+      final Iterable candidates = possibleResults;
+      qR = IncomingEdgeLookup.walkingPattern(() -> this.item.getMethod().execute(startingPoint, candidates, iCommandContext));
     } finally {
       iCommandContext.setVariable("current", prevCurrent);
     }

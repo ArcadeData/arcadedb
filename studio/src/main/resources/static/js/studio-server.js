@@ -43,6 +43,8 @@ function updateServer(callback) {
       // Popover details
       let popoverHtml = "<div style='margin-bottom:8px;font-weight:600;color:var(--text-primary);'>Server Details</div>";
       popoverHtml += "<div style='margin-bottom:6px;'><b>Server:</b> " + escapeHtml(data.user) + "@" + escapeHtml(data.serverName) + "</div>";
+      if (data.instanceId)
+        popoverHtml += "<div style='margin-bottom:6px;word-break:break-all;'><b>Instance ID:</b> <span style='font-family:monospace;font-size:0.82rem;'>" + escapeHtml(data.instanceId) + "</span></div>";
       popoverHtml += "<div style='margin-bottom:6px;'><b>Version:</b> " + escapeHtml(version) + "</div>";
       if (buildInfo)
         popoverHtml += "<div style='margin-bottom:6px;font-size:0.78rem;color:var(--text-muted);word-break:break-all;'><b>Build:</b> " + escapeHtml(buildInfo) + "</div>";
@@ -51,6 +53,15 @@ function updateServer(callback) {
       $("#serverInfoPopoverBody").html(popoverHtml);
 
       serverData = data;
+
+      // The id ArcadeDB generated for itself (also logged at startup): what to quote to ArcadeDB support and what to
+      // paste into the customer portal. Hidden on a server too old to report one.
+      if (data.instanceId) {
+        $("#summInstanceId").text(data.instanceId);
+        $("#summInstanceIdRow").show();
+      } else {
+        $("#summInstanceIdRow").hide();
+      }
 
       displayServerSummary();
       displayMetrics();
@@ -1147,3 +1158,18 @@ document.addEventListener("DOMContentLoaded", function (event) {
   if (serverRefreshTimeoutInSecs == null) serverRefreshTimeoutInSecs = 0;
   $("#serverRefreshTimeout").val(serverRefreshTimeoutInSecs);
 });
+
+/** Copies the server's instance id (shown on the Summary tab) to the clipboard. */
+function copyInstanceId(button) {
+  var id = $("#summInstanceId").text();
+  if (!id) return;
+  var done = function () {
+    var icon = $(button).find("i");
+    icon.removeClass("fa-copy").addClass("fa-check");
+    setTimeout(function () { icon.removeClass("fa-check").addClass("fa-copy"); }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(id).then(done, function () { window.prompt("Instance ID", id); });
+  else
+    window.prompt("Instance ID", id);
+}

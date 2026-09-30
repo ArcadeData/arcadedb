@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #6671: {@code ExecutionPlanCache.getLastInvalidation() < planningStart} used to be checked in a separate
+ * Issue #6671: the cache's last invalidation used to be checked against the planning start in a separate
  * lock scope ({@code synchronized(this)}) from the {@code put()} that followed it ({@code synchronized(map)}),
  * leaving a window in which a concurrent {@code invalidate()} (triggered by a DDL such as {@code DROP INDEX}) could
  * run between the check and the insert: the check would see "not yet invalidated", the DDL would invalidate and
@@ -38,9 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * This test reproduces the race deterministically (no real threads, hence no flakiness) by driving the two
  * operations - "plan a query" and "invalidate the cache" - in the exact interleaving that used to defeat the
- * check: capture {@code planningStart}, invalidate the cache (standing in for a concurrent DDL), then attempt to
- * cache a plan built at that {@code planningStart}. The single-lock, single-call {@code put(statement, plan,
- * planningStart)} introduced by the fix must refuse to cache it.
+ * check: capture {@code planningEpoch}, invalidate the cache (standing in for a concurrent DDL), then attempt to
+ * cache a plan built at that {@code planningEpoch}. The single-lock, single-call {@code put(statement, plan,
+ * planningEpoch)} introduced by the fix must refuse to cache it.
  */
 class Issue6671ExecutionPlanCacheRaceTest {
   private DatabaseInternal database;
@@ -64,12 +64,8 @@ class Issue6671ExecutionPlanCacheRaceTest {
     final ExecutionPlanCache cache = database.getExecutionPlanCache();
     final CommandContext context = new BasicCommandContext().setDatabase(database);
 
-    // put()'s invalidation guard (issue #6671) is millisecond-timestamped: a plan built in the very same
-    // millisecond as a preceding invalidation (here, createDocumentType above) is correctly not cached. Sleeping
-    // past the millisecond boundary before the warm-up query below keeps this assertion deterministic, exactly
-    // like ExecutionPlanCacheTest.cacheInvalidation1 already does for the same reason.
-    Thread.sleep(2);
-
+    // No pause after createDocumentType's invalidation: put()'s guard counts invalidations rather than timestamping
+    // them, so the warm-up query below is cached even when planned in the same millisecond (#8635).
     // Warm the cache once to obtain a real, valid ExecutionPlan instance to fight over.
     database.query("sql", stm).close();
     assertThat(cache.contains(stm)).isTrue();
@@ -78,19 +74,19 @@ class Issue6671ExecutionPlanCacheRaceTest {
 
     // Planning "began" here, before the concurrent DDL below invalidates the cache - exactly the interleaving
     // that used to slip through the two separately-locked calls.
-    final long planningStart = System.currentTimeMillis();
+    final long planningEpoch = cache.getInvalidationEpoch();
 
     // Stand in for a concurrent DDL (e.g. DROP INDEX) landing on another thread while planning was in flight.
     cache.invalidate();
     assertThat(cache.contains(stm)).isFalse();
 
-    // The plan was built against planningStart, which is now older than the invalidation: it must be rejected.
-    cache.put(stm, plan, planningStart);
+    // The plan was built at planningEpoch, which the invalidation has moved past: it must be rejected.
+    cache.put(stm, plan, planningEpoch);
     assertThat(cache.contains(stm)).as("a plan built before a concurrent invalidation must never be cached").isFalse();
 
     // A plan whose planning genuinely started after the invalidation must still be cached normally.
-    final long freshPlanningStart = System.currentTimeMillis() + 1;
-    cache.put(stm, plan, freshPlanningStart);
+    final long freshPlanningEpoch = cache.getInvalidationEpoch();
+    cache.put(stm, plan, freshPlanningEpoch);
     assertThat(cache.contains(stm)).as("a plan planned after the invalidation must be cached").isTrue();
   }
 }
