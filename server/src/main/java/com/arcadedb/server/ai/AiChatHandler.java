@@ -410,9 +410,12 @@ public class AiChatHandler extends AbstractServerHttpHandler {
             forwardEvent(output, event);
             finished = true;
           }
-          default ->
-            // Forward any other event types unchanged (forward-compat).
+          default -> {
+            // Forward any other event types unchanged (forward-compat). An 'error' from the gateway is terminal too.
             forwardEvent(output, event);
+            if ("error".equals(type))
+              finished = true;
+          }
         }
         // Nothing follows 'done': a drop or silence after it must not add an 'error' to a delivered answer
         if (finished)
@@ -446,12 +449,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     final String code;
     final String message;
-    if (e instanceof AiTokenException tokenException) {
-      // Keeps the token_* code Studio switches to its inactive panel on, as the pre-stream answer does
-      final JSONObject body = new JSONObject(tokenException.getJsonResponse());
-      code = body.getString("code", "token_invalid");
-      message = body.getString("error", "Invalid or expired subscription token");
-    } else if (e instanceof HttpTimeoutException) {
+    if (e instanceof HttpTimeoutException) {
       code = "gateway_timeout";
       message = "AI service stopped responding before the answer was complete. Please try again later.";
     } else if (e instanceof IOException) {

@@ -224,6 +224,24 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
     assertNoSecondResponseWasAttempted();
   }
 
+  /** The gateway reports its own failure as an 'error' event and closes: relayed once, with no second 'error'. */
+  @Test
+  void aGatewayErrorEventIsTheOnlyErrorEvent() throws Exception {
+    startGateway((in, out) -> {
+      write(out, SSE_HEADERS);
+      writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
+      writeEvent(out, new JSONObject().put("type", "error").put("error", "model overloaded"));
+      write(out, "0\r\n\r\n");
+    });
+
+    final List<JSONObject> events = streamedChat();
+
+    assertThat(events.stream().filter(e -> "error".equals(e.getString("type", ""))).toList())
+        .singleElement()
+        .satisfies(e -> assertThat(e.getString("error", "")).isEqualTo("model overloaded"));
+    assertNoSecondResponseWasAttempted();
+  }
+
   /** A complete stream carries no 'error' event. */
   @Test
   void aCompleteStreamEndsWithDoneAndNoErrorEvent() throws Exception {

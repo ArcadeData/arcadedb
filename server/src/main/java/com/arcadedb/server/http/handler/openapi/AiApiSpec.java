@@ -175,7 +175,8 @@ public class AiApiSpec implements OpenApiContributor {
         Server-Sent Events stream. Each event is one 'data: ' line carrying a JSON object, followed by a blank \
         line; the schema below is the schema of that object. A complete stream ends with a 'done' event, and \
         exactly one: a stream that ends without it was cut short, and the reply it would have carried was never \
-        persisted. A stream the server knows it cut short ends with an 'error' event instead.""");
+        persisted. A stream the server knows it cut short ends with an 'error' event \
+        instead.""");
     ok.setContent(new Content().addMediaType("text/event-stream", sseMediaType));
 
     final ApiResponses responses = chatResponses();
@@ -475,8 +476,7 @@ public class AiApiSpec implements OpenApiContributor {
         the caller. On an 'error' event, a message fit to show the user saying why the stream ended early."""));
     schema.addProperty("code", SpecBuilders.string("""
         Machine-readable reason, on 'error' only: 'gateway_interrupted' when the gateway's connection dropped, \
-        'gateway_timeout' when it stopped sending, a 'token_*' code when the subscription token was rejected, \
-        'internal_error' otherwise. The same vocabulary as the 'code' member of the error bodies the chat \
+        'gateway_timeout' when it stopped sending, 'internal_error' otherwise. The same vocabulary as the 'code' member of the error bodies the chat \
         operations answer before a stream starts. The interrupted exchange was not persisted."""));
     schema.addProperty("response", SpecBuilders.string(
         "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
