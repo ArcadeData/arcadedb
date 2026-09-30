@@ -662,7 +662,8 @@ public class GraphQLSchema {
    * <p>
    * NON_NULL is a promise that the field never resolves to {@code null}, which code generators turn into non-nullable
    * client types. MANDATORY alone still allows an explicit {@code null}, and NOTNULL alone allows the property to be
-   * absent (which the resolver returns as {@code null}), so only the two together keep that promise.
+   * absent (which the resolver returns as {@code null}), so only the two together keep that promise. A LIST element is
+   * never wrapped: the schema has no flag constraining the elements of a collection.
    */
   private ResultInternal buildDatabaseFieldTypeInfo(final Property prop) {
     final Type type = prop.getType();
@@ -684,13 +685,13 @@ public class GraphQLSchema {
    */
   private ResultInternal buildDatabaseListElementInfo(final String ofType) {
     if (ofType != null && !ofType.isEmpty()) {
-      // A database type wins over a primitive of the same name (e.g. a document type called "Date"): the ofType of a
-      // LIST was declared against the schema, so a matching user type is the more specific reading
-      if (database.getSchema().existsType(ofType))
-        return buildNamedInfo(ofType, "OBJECT");
+      // A primitive wins over a database type of the same name, the order LocalProperty.setOfType() resolves it in:
+      // "Date" is stored as the primitive DATE even when a document type called Date exists
       final Type elementType = Type.getTypeByName(ofType);
       if (elementType != null)
         return buildNamedInfo(mapDatabaseTypeToGraphQL(elementType), "SCALAR");
+      if (database.getSchema().existsType(ofType))
+        return buildNamedInfo(ofType, "OBJECT");
     }
     return buildNamedInfo("String", "SCALAR");
   }

@@ -228,8 +228,27 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void primitiveWinsOverDatabaseTypeOfTheSameNameAsListElement() {
+    // Type.getTypeByName matches "date" case-insensitively, so a user type called Date is exactly where the lookup
+    // order decides. The engine stores this ofType as the primitive DATE (LocalProperty.setOfType() checks primitives
+    // first), so introspection must describe the element as the scalar a DATE maps to, not as the Date document type
+    executeTest(database -> {
+      database.getSchema().createDocumentType("Date");
+      database.getSchema().createDocumentType("Calendar").createProperty("days", Type.LIST, "Date");
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ __type(name: \"Calendar\") { fields { name type { kind name ofType { kind name } } } } }")) {
+        assertListOf(fieldType(resultSet.next(), "days"), "SCALAR", "String");
+      }
+      return null;
+    });
+  }
+
+  @Test
   void databaseTypeNamedLongShadowsTheScalar() {
-    // A user type called Long must still be served as that type, and listed once
+    // A user type called Long must still be served as that type, and listed once. Accepted limitation: GraphQL has one
+    // namespace for type names, so a LONG property on the same database still names "Long" as a SCALAR, which then
+    // resolves to this OBJECT; the same already held for a user type called String or Int
     executeTest(database -> {
       database.getSchema().createDocumentType("Long").createProperty("value", Type.STRING);
 
