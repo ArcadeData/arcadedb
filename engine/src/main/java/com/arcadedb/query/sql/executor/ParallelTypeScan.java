@@ -169,9 +169,10 @@ final class ParallelTypeScan {
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
    * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
-   * transaction deleted after that pull can still be returned. Inside a transaction the caller never
-   * scans units itself in a streaming pull, it waits for the workers (polling, so it never hangs) rather than mix two
-   * views in one scan.
+   * transaction deleted after that pull can still be returned. Inside a transaction that has written, the
+   * caller does not scan units itself in a streaming pull, it waits for the workers rather than mix two views in one
+   * scan. In one that has not, it still does (a saturated pool must not starve it, #8594), reading the whole unit in
+   * one pull so no write can land in the middle of it.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
@@ -472,8 +473,22 @@ final class ParallelTypeScan {
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
             lastConsumed = System.currentTimeMillis();
-            final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
-            if (fetched != null) {
+            List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
+            if (fetched != null && database.isTransactionActive()) {
+              // INSIDE A TRANSACTION THE WHOLE UNIT IS READ NOW, IN ONE PULL: A WRITE BETWEEN TWO BATCHES WOULD SHOW IN THE REST OF
+              // IT, NEVER IN THE WORKERS' UNITS (#8775). THE CALLER CLAIMED IT ONLY BECAUSE THE TRANSACTION HAS WRITTEN NOTHING
+              final List<Result> all = new ArrayList<>(fetched);
+              for (List<Result> more = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes); more != null;
+                  more = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes))
+                all.addAll(more);
+              fetched = all;
+              consumerBatch = fetched;
+              consumerBatchIndex = 0;
+              chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
+              consumerStep = null;
+              consumerCursor = null;
+              ++consumerUnit;
+            } else if (fetched != null) {
               consumerBatch = fetched;
               consumerBatchIndex = 0;
             } else {
@@ -488,8 +503,7 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          // NOT INSIDE A TRANSACTION (#8775): THE CALLER READS THROUGH IT AND A WRITE BETWEEN TWO BATCHES OF THE UNIT IT TOOK
-          // WOULD SHOW IN THE REST OF THAT UNIT, WHILE THE WORKERS' UNITS NEVER SHOW IT. IT WAITS FOR ITS WORKER INSTEAD
+          // INSIDE A TRANSACTION THAT HAS WRITTEN (#8775) THE CALLER WAITS FOR ITS WORKER: ITS OWN READS WOULD SHOW THE WRITES
           if (nextUnit.get() == consumerUnit && callerMayScan() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             channels[consumerUnit] = null;
             if (consumerContext == null)
@@ -540,13 +554,12 @@ final class ParallelTypeScan {
   }
 
   /**
-   * Whether the caller may scan a unit itself in a streaming pull (#8594): only outside a transaction. Inside one, even
-   * an idle one, the unit it would claim is read batch by batch between pulls, through the transaction, and a write
-   * between two batches would show up in the rest of that unit but never in the workers' units. It waits for its
-   * worker instead, so every row of the scan comes from the same committed pages.
+   * Whether the caller may scan a unit itself in a streaming pull (#8594): outside a transaction, or inside one that
+   * has written nothing, where it reads the unit whole in one pull (see {@link #pull}) so that no write can land
+   * between two of its batches. Otherwise the unit would show a write the workers' units never do.
    */
   private boolean callerMayScan() {
-    return !database.isTransactionActive();
+    return !database.isTransactionActive() || database.getTransaction().isReadOnlyView();
   }
 
   private void startProducers(final CommandContext context) {
