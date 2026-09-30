@@ -326,10 +326,13 @@ public class CypherOptimizer {
    * <ul>
    *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
    *   direction, and a null key never matches the range predicate the scan stands for;</li>
-   *   <li>a scan of a whole label, with no predicate at all, and an index on the single ORDER BY item, ascending: the
-   *   index entries in order and then the vertices with no key, which is where a null sorts. Taken only here, where the
-   *   first rows of the index are the answer: with a filter, the index order could read the whole label one random
-   *   access at a time to find the few rows a sort of the label would have found.</li>
+   *   <li>a scan of a whole label with an index on the single ORDER BY item, and no predicate but, at most,
+   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: they
+   *   follow the index entries ascending when the index holds none (a scan of the label finds them; descending that
+   *   scan would come first, so that shape keeps its sort), they are absent when the property is MANDATORY and NOTNULL or
+   *   the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
+   *   where the first rows of the index are the answer: with a filter, the index order could read the whole label one
+   *   random access at a time to find the few rows a sort of the label would have found.</li>
    * </ul>
    * Only under a LIMIT: without one the whole range is read anyway, and the adaptive range scan of #8333 reads it faster
    * out of index order and sorts it.
@@ -388,6 +391,8 @@ public class CypherOptimizer {
 
     final boolean nullKeysInIndex = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
     final Property schemaProperty = type.getPolymorphicPropertyIfExists(property);
+    if (schemaProperty == null)
+      return null;
     // MANDATORY makes the vertex carry the property and NOTNULL its value: NOTNULL alone leaves a vertex that never sets it,
     // and such a vertex is not in the index either (issue #8701)
     final boolean everyVertexHasAKey = schemaProperty.isMandatory() && schemaProperty.isNotNull();

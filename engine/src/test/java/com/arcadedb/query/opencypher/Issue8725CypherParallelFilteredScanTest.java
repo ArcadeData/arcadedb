@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8725: a Cypher {@code MATCH} with a filter on an unindexed property scanned the label on the calling thread,
@@ -105,6 +106,22 @@ class Issue8725CypherParallelFilteredScanTest extends TestHelper {
     final Map<String, Object> params = Map.of("from", LocalDate.of(2020, 3, 1), "to", LocalDate.of(2020, 6, 1));
     assertThat(profile(query, params)).contains("[parallel]");
     assertThat(column(query, params)).isNotEmpty().isEqualTo(sequential(query, params));
+  }
+
+  @Test
+  void stringAndRegexPredicatesRunInParallelAndAgree() {
+    for (final String predicate : new String[] { "e.name STARTS WITH 'n1'", "e.name ENDS WITH '7'", "e.name CONTAINS '4'" }) {
+      final String query = "MATCH (e:FourBuckets) WHERE " + predicate + " RETURN e.id AS id";
+      assertThat(profile(query)).as(query).contains("[parallel]");
+      assertThat(column(query, Map.of())).as(query).isNotEmpty().isEqualTo(sequential(query, Map.of()));
+    }
+  }
+
+  @Test
+  void aWorkerFailureFailsTheQueryAndLeavesTheDatabaseUsable() {
+    final String query = "MATCH (e:FourBuckets) WHERE e.id / 0 > 1 RETURN count(*) AS n";
+    assertThatThrownBy(() -> column(query, Map.of())).isInstanceOf(RuntimeException.class);
+    assertThat(column("MATCH (e:FourBuckets) WHERE e.grp = 5 RETURN count(*) AS n", Map.of())).hasSize(1);
   }
 
   @Test
