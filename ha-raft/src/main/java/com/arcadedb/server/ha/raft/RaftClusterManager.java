@@ -143,23 +143,23 @@ class RaftClusterManager {
   }
 
   /**
-   * {@link #addPeer(RaftPeer, String)} for a peer whose HTTP address was DECLARED by the caller - the
-   * {@code host:raftPort:httpPort} or {@code http:} field of a {@code connect cluster} target (issue #8330).
+   * {@link #addPeer(RaftPeer, String)} for a peer whose HTTP address the caller DECLARED (the {@code httpPort} or
+   * {@code http:} field of a {@code connect cluster} target).
    * <p>
-   * A declared address is written <b>before</b> the membership change is submitted, not after it returns. The
-   * configuration entry that change commits is what schedules the leader's security seed
-   * ({@link MembershipSecuritySeeder}), and the seed's group and API-token entries pass the #7511 capability gate
-   * only once the new peer has answered a capability probe sent to the address this map holds for it. Written
-   * after the commit, the seed raced it; and the address written in between was the derived
-   * {@code raftPort + offset} guess, which on a cluster whose ports are not in step names a socket nobody listens
-   * on, so every probe of the seed's retry budget failed and the admission answered 503 for a peer that was up.
+   * The declared address is written <b>before</b> the membership change is submitted (issue #8330): the entry that
+   * change commits starts the leader's security seed, whose group and API-token entries pass the #7511 capability
+   * gate only once the new peer answers a probe sent to the address this map holds. Written after the commit, the
+   * seed raced it and probed the derived {@code raftPort + offset} guess instead. The address is therefore visible
+   * to other readers of the map while the change is in flight, for a peer that is not a member yet.
    * <p>
-   * If the change does not commit, the previous entry is put back (or none left), so a failed join does not leave
-   * an address behind for a peer that never became a member. Without a declared address the derived one is
-   * written after the commit exactly as before.
+   * If the change fails and the peer is not in the current configuration, the declared entry is withdrawn - the
+   * previous one put back, or none left - unless something else has replaced it meanwhile. A change that timed out
+   * can still commit later; if that happens after the check, the peer is a member resolved by the derived address,
+   * exactly as without a declared one. Without a declared address the derived one is written after the commit, as
+   * before.
    *
-   * @param declaredHttpAddress the {@code host:port} the caller declared for the peer's HTTP listener, or
-   *                            {@code null} to derive one
+   * @param declaredHttpAddress the {@code host:port} declared for the peer's HTTP listener, or {@code null} to derive
+   *                            one
    */
   void addPeer(final RaftPeer newPeer, final String name, final String declaredHttpAddress) {
     final String peerId = newPeer.getId().toString();
@@ -184,9 +184,10 @@ class RaftClusterManager {
               + address + " is running as part of this cluster - same cluster name and cluster token - and is"
               + " not still replaying its own log.");
     } catch (final RuntimeException | Error e) {
-      if (declaredHttpAddress != null) {
+      if (declaredHttpAddress != null && !isMember(newPeer.getId())) {
+        // Conditional both ways, so an entry something else wrote while the change was in flight is kept.
         if (previousHttpAddress != null)
-          httpAddresses.put(newPeer.getId(), previousHttpAddress);
+          httpAddresses.replace(newPeer.getId(), declaredHttpAddress, previousHttpAddress);
         else
           httpAddresses.remove(newPeer.getId(), declaredHttpAddress);
       }
@@ -208,6 +209,18 @@ class RaftClusterManager {
       raftHAServer.registerPeerDisplayName(newPeer.getId(), name);
 
     LogManager.instance().log(this, Level.INFO, "Peer %s added to Raft cluster at %s", peerId, address);
+  }
+
+  /** Whether {@code peerId} is in the configuration this node currently knows; never throws. */
+  private boolean isMember(final RaftPeerId peerId) {
+    try {
+      for (final RaftPeer peer : raftHAServer.getLivePeers())
+        if (peer.getId().equals(peerId))
+          return true;
+    } catch (final RuntimeException ignored) {
+      // Unreadable configuration: treat as "not a member", the answer that withdraws the address.
+    }
+    return false;
   }
 
   void removePeer(final String peerId) {

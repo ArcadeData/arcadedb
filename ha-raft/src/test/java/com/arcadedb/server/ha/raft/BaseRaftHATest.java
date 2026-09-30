@@ -265,20 +265,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   /**
    * Starts the HTTP port range past every port something already answers on, on EITHER loopback family (issue
-   * #8330; the server-side gap it works around is #8692). A fixture node started earlier is skipped too, which costs
-   * nothing: its port would fail to bind anyway.
-   * <p>
-   * The range scan in {@code HttpServer} only skips a port whose bind fails, and the fixture binds
-   * {@code localhost}, which is {@code 127.0.0.1}. A stranger listening on the IPv6 wildcard - another worktree's
-   * server, a developer's own ArcadeDB on 2480 - leaves that IPv4 bind free, so a fixture node can take the port
-   * while {@code localhost:<port>} still names two sockets: which one a peer reaches depends on which family the
-   * resolver hands it first, and that order is not stable. A peer that reaches the stranger reads it as this node,
-   * and the #7511 capability probe is where it shows: the stranger answers 404 (a build with no capability route)
-   * or 401 (another cluster token), the node counts as incapable, and the security seed of an unrelated membership
-   * change is refused with {@code failedSeeds: [groups, API tokens]}.
-   * <p>
-   * Only the start of the range moves, because a range cannot have holes, and only for a range: a subclass that
-   * pinned one port keeps it. A connect that is refused costs nothing on loopback, so the check is cheap.
+   * #8330). The fixture binds {@code localhost} as {@code 127.0.0.1}, so a stranger on the IPv6 wildcard leaves the
+   * bind free while {@code localhost:<port>} still reaches the stranger for some callers; a peer then probes the
+   * stranger for this node's capabilities and the #7511 gate refuses the security seed (server side: #8692). Only
+   * the start moves, since a range cannot have holes, and a subclass that pinned one port keeps it.
    */
   private static void skipShadowedHttpPorts(final ContextConfiguration config) {
     final String range = config.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
@@ -288,8 +278,13 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
     final int end = Integer.parseInt(range.substring(dash + 1).trim());
     int start = Integer.parseInt(range.substring(0, dash).trim());
+    final int configuredStart = start;
     while (start < end && isAnswered(start))
       ++start;
+    if (start != configuredStart)
+      LogManager.instance().log(BaseRaftHATest.class, Level.INFO,
+          "HTTP ports %d-%d already answer on a loopback address; %s starts its HTTP range at %d", configuredStart,
+          start - 1, config.getValueAsString(GlobalConfiguration.SERVER_NAME), start);
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, start + "-" + end);
   }
 

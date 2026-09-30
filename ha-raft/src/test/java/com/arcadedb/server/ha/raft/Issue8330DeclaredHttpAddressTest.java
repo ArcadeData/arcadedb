@@ -31,6 +31,7 @@ import org.apache.ratis.protocol.SetConfigurationRequest;
 import org.apache.ratis.protocol.exceptions.GroupMismatchException;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -62,15 +63,19 @@ class Issue8330DeclaredHttpAddressTest {
 
   private static final int DEFAULT_RAFT_PORT = 2434;
 
+  /** What {@code getLivePeers()} answers once a test sets it, standing in for a change that committed. */
+  private final AtomicReference<List<RaftPeer>> livePeersOverride = new AtomicReference<>();
+
   /** A cluster whose Raft and HTTP ports are NOT in step, so a derived address is detectably wrong. */
-  private static RaftHAServer stubServer(final Map<RaftPeerId, String> httpAddresses, final AdminApi admin) {
+  private RaftHAServer stubServer(final Map<RaftPeerId, String> httpAddresses, final AdminApi admin) {
     final RaftHAServer server = mock(RaftHAServer.class);
     final RaftClient client = mock(RaftClient.class);
     when(server.getClient()).thenReturn(client);
     when(client.admin()).thenReturn(admin);
     final RaftPeer a = RaftPeer.newBuilder().setId(RaftPeerId.valueOf("A")).setAddress("localhost:28654").build();
     final RaftPeer b = RaftPeer.newBuilder().setId(RaftPeerId.valueOf("B")).setAddress("localhost:15712").build();
-    when(server.getLivePeers()).thenReturn(List.of(a, b));
+    final List<RaftPeer> live = List.of(a, b);
+    when(server.getLivePeers()).thenAnswer(invocation -> livePeersOverride.get() != null ? livePeersOverride.get() : live);
     when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId(), a, b));
     httpAddresses.put(a.getId(), "localhost:2480");
     httpAddresses.put(b.getId(), "localhost:2481");
@@ -159,5 +164,49 @@ class Issue8330DeclaredHttpAddressTest {
     assertThatThrownBy(() -> new RaftClusterManager(server, 60_000L).addPeer(known.peer(), known.name(), known.httpAddress()))
         .isInstanceOf(ConfigurationException.class);
     assertThat(httpAddresses.get(knownId)).isEqualTo("localhost:2483");
+  }
+
+  /**
+   * A failure is not proof the change did not commit: when the peer is in the configuration by the time the failure
+   * surfaces, the declared address stays, rather than leaving a member with only the derived guess.
+   */
+  @Test
+  void aFailureAfterThePeerBecameAMemberKeepsTheDeclaredAddress() throws Exception {
+    final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
+    final AdminApi admin = mock(AdminApi.class);
+    final RaftHAServer server = stubServer(httpAddresses, admin);
+    final JoinTarget target = RaftPeerAddressResolver.parseJoinTarget("localhost:22898:2482", DEFAULT_RAFT_PORT, "");
+
+    when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
+      final List<RaftPeer> withJoining = new ArrayList<>(server.getLivePeers());
+      withJoining.add(target.peer());
+      livePeersOverride.set(withJoining);
+      throw new GroupMismatchException("group-AAAA does not match group-BBBB");
+    });
+
+    assertThatThrownBy(() -> new RaftClusterManager(server, 60_000L).addPeer(target.peer(), target.name(), target.httpAddress()))
+        .isInstanceOf(ConfigurationException.class);
+    assertThat(httpAddresses.get(target.peer().getId())).isEqualTo("localhost:2482");
+  }
+
+  /** The rollback withdraws only its own write: an entry something else put in while the change was in flight stays. */
+  @Test
+  void theRollbackKeepsAnEntryWrittenWhileTheChangeWasInFlight() throws Exception {
+    final Map<RaftPeerId, String> httpAddresses = new ConcurrentHashMap<>();
+    final AdminApi admin = mock(AdminApi.class);
+    final RaftHAServer server = stubServer(httpAddresses, admin);
+
+    final RaftPeerId knownId = RaftPeerId.valueOf("localhost_24001");
+    httpAddresses.put(knownId, "localhost:2483");
+    final JoinTarget known = RaftPeerAddressResolver.parseJoinTarget("localhost:24001:2489", DEFAULT_RAFT_PORT, "");
+
+    when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
+      httpAddresses.put(knownId, "localhost:2487");
+      throw new GroupMismatchException("group-AAAA does not match group-BBBB");
+    });
+
+    assertThatThrownBy(() -> new RaftClusterManager(server, 60_000L).addPeer(known.peer(), known.name(), known.httpAddress()))
+        .isInstanceOf(ConfigurationException.class);
+    assertThat(httpAddresses.get(knownId)).isEqualTo("localhost:2487");
   }
 }
