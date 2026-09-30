@@ -37,13 +37,13 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class ParallelRecordScan {
+  private final ParallelTypeScan scan;
+
   /** Turns a scanned record into the row to hand on, or {@code null} to drop it. Called on the workers, concurrently. */
   @FunctionalInterface
   public interface RowMapper {
     Result map(Record record, CommandContext workerContext);
   }
-
-  private final ParallelTypeScan scan;
 
   private ParallelRecordScan(final ParallelTypeScan scan) {
     this.scan = scan;
