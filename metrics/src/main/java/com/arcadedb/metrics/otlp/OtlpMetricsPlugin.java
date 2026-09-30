@@ -23,11 +23,13 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.monitor.OtelResourceAttributes;
 import io.micrometer.core.instrument.Clock;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -56,9 +58,7 @@ public class OtlpMetricsPlugin implements ServerPlugin {
     if (!enabled)
       return;
 
-    final String endpoint = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
-    final OtlpConfig otlpConfig = key -> "otlp.url".equals(key) ? endpoint : null;
-    registry = new OtlpMeterRegistry(otlpConfig, Clock.SYSTEM);
+    registry = new OtlpMeterRegistry(otlpConfig(configuration, System.getenv()), Clock.SYSTEM);
     Metrics.addRegistry(registry);
   }
 
@@ -75,6 +75,29 @@ public class OtlpMetricsPlugin implements ServerPlugin {
       registry.close();
       registry = null;
     }
+  }
+
+  /**
+   * The OTLP registry's configuration: the endpoint from the ArcadeDB setting, and the resource attributes resolved by
+   * {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and spans report the same
+   * {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
+   * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME} and otherwise reported
+   * {@code unknown_service}.
+   */
+  static OtlpConfig otlpConfig(final ContextConfiguration configuration, final Map<String, String> environment) {
+    final String endpoint = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
+    final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
+    return new OtlpConfig() {
+      @Override
+      public String get(final String key) {
+        return "otlp.url".equals(key) ? endpoint : null;
+      }
+
+      @Override
+      public Map<String, String> resourceAttributes() {
+        return resourceAttributes;
+      }
+    };
   }
 
   /**
