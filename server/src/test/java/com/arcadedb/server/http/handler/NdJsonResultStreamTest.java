@@ -27,6 +27,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -235,5 +237,54 @@ class NdJsonResultStreamTest {
 
     assertThat(stream.keepAlive(0)).isEqualTo(-1);
     assertThat(out.text()).isEmpty();
+  }
+
+  @Test
+  void keepAliveReportsAFailedWriteSoTheTimerStops() throws IOException {
+    final OutputStream failing = new OutputStream() {
+      @Override
+      public void write(final int b) throws IOException {
+        throw new IOException("client gone");
+      }
+    };
+    final NdJsonResultStream stream = new NdJsonResultStream(failing, 50);
+
+    assertThat(stream.keepAlive(0)).isEqualTo(-1);
+  }
+
+  @Test
+  void keepAliveDoesNotWaitForAWriterHoldingTheStream() throws Exception {
+    final CountDownLatch inWrite = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final OutputStream blocking = new OutputStream() {
+      @Override
+      public void write(final int b) {
+      }
+
+      @Override
+      public void write(final byte[] b, final int off, final int len) {
+        inWrite.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+    };
+    final NdJsonResultStream stream = new NdJsonResultStream(blocking, 50);
+    final Thread writer = new Thread(() -> {
+      try {
+        stream.writeRecord(new JSONObject().put("n", 1));
+      } catch (final IOException ignored) {
+      }
+    });
+    writer.start();
+    try {
+      assertThat(inWrite.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(stream.keepAlive(0)).as("a stream somebody is writing to is not silent").isEqualTo(0);
+    } finally {
+      release.countDown();
+      writer.join(10_000);
+    }
   }
 }
