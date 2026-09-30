@@ -19,10 +19,10 @@
 package com.arcadedb.tracing;
 
 import com.arcadedb.server.BaseGraphServerTest;
-import io.opentelemetry.api.common.AttributeKey;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.ObservationRegistry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import org.junit.jupiter.api.Tag;
@@ -176,8 +176,8 @@ class ServerTracingIT extends BaseGraphServerTest {
 
       assertThat(databasesSpan).as("the non-probe request must still be traced").isNotNull();
 
-      // The exclusion turns the whole Observation into a no-op; the always-on HTTP RED timer is recorded outside it and
-      // must still count the probe. Polled: the timer is recorded in the handler's finally block, after the response.
+      // Only the tracing handler declines the probe; the always-on HTTP RED timer is recorded outside the Observation and
+      // must still count it. Polled: the timer is recorded in the handler's finally block, after the response.
       long readyRequestsAfter = readyRequestCount();
       for (int attempt = 0; attempt < 250 && readyRequestsAfter <= readyRequestsBefore; attempt++) {
         Thread.sleep(20);
@@ -192,6 +192,10 @@ class ServerTracingIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Reads the RED timer from the global registry. That needs a child registry, which the server fixture's metrics setup
+   * adds; without one {@code find(...).timer()} is null and the count stays 0, so the assertion above fails loudly.
+   */
   private static long readyRequestCount() {
     final Timer timer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/ready").tag("method", "GET").timer();
     return timer != null ? timer.count() : 0L;

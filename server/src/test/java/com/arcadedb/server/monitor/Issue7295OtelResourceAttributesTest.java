@@ -83,6 +83,15 @@ class Issue7295OtelResourceAttributesTest {
   }
 
   @Test
+  void blankServiceNameInResourceAttributesFallsBackToTheSetting() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.SERVER_METRICS_SERVICE_NAME, "from-setting");
+
+    assertThat(OtelResourceAttributes.resolve(configuration, Map.of("OTEL_RESOURCE_ATTRIBUTES", "service.name=")).get("service.name"))
+        .isEqualTo("from-setting");
+  }
+
+  @Test
   void blankOtelServiceNameIsIgnored() {
     assertThat(OtelResourceAttributes.resolve(new ContextConfiguration(), Map.of("OTEL_SERVICE_NAME", " ")).get("service.name"))
         .isEqualTo("arcadedb");

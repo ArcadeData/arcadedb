@@ -273,10 +273,9 @@ public class TracingPlugin implements ServerPlugin {
     private boolean isExcluded(final Observation.Context context) {
       if (excludedPaths.length == 0)
         return false;
-      final Object requestPath = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
-      if (!(requestPath instanceof String))
+      if (!(context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH) instanceof String requestPath))
         return false;
-      final String path = withoutTrailingSlash((String) requestPath);
+      final String path = withoutTrailingSlash(requestPath);
       for (final String excluded : excludedPaths)
         if (excluded.equals(path))
           return true;
