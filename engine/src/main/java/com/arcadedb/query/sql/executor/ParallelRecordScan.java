@@ -59,7 +59,7 @@ public final class ParallelRecordScan {
     final int[] bucketIds = type.getBuckets(true).stream().mapToInt(Bucket::getFileId).distinct().sorted().toArray();
     final List<ExecutionStep> steps = new ArrayList<>(bucketIds.length);
     for (final int bucketId : bucketIds)
-      if (bucketId > 0)
+      if (bucketId > 0) // as the SQL planner's scan steps do
         steps.add(new MappedScanStep(bucketId, mapper, context));
 
     final ParallelTypeScan scan = ParallelTypeScan.plan(context, typeName, steps);
@@ -69,10 +69,6 @@ public final class ParallelRecordScan {
   /** The rows, in the order a sequential scan would return them. Closing the result set stops the workers. */
   public ResultSet pull(final CommandContext context) {
     return scan.pull(context, Integer.MAX_VALUE);
-  }
-
-  public int getWorkerCount() {
-    return scan.getWorkerCount();
   }
 
   static void warnSkipped(final int bucketId, final long skipped) {

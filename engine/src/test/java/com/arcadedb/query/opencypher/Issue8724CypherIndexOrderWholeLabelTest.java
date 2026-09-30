@@ -151,6 +151,15 @@ class Issue8724CypherIndexOrderWholeLabelTest extends TestHelper {
   }
 
   @Test
+  void anIsNotNullOnASecondMatchStillAnswersCorrectly() {
+    final List<Integer> nonNull = nonNull(nullableValues);
+    assertThat(column("MATCH (a:D) WHERE a.seq = 1 MATCH (v:I) WHERE v.x IS NOT NULL RETURN v.x AS x ORDER BY v.x DESC LIMIT 5"))
+        .containsExactlyElementsOf(expected(nonNull, false, 0, 5));
+    assertThat(column("MATCH (v:I) WITH v WHERE v.x IS NOT NULL RETURN v.x AS x ORDER BY v.x LIMIT 5"))
+        .containsExactlyElementsOf(expected(nonNull, true, 0, 5));
+  }
+
+  @Test
   void otherPredicatesKeepTheSort() {
     final String query = "MATCH (v:D) WHERE v.x IS NOT NULL AND v.seq >= 10 RETURN v.x AS x ORDER BY v.x DESC LIMIT 5";
     final List<Integer> values = new ArrayList<>();

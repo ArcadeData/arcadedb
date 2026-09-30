@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.optimizer.plan;
 
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 
@@ -62,7 +63,7 @@ public class AnchorSelection {
   /**
    * One branch of a union of index seeks (issue #8723): {@code WHERE n.x = 1 OR n.s = 'a'} is answered by one seek per
    * disjunct, each on the index of its own property, with the vertices found by several de-duplicated. {@code value} is
-   * what the seek looks up ({@link com.arcadedb.query.opencypher.executor.operators.InListValues} when the branch stands
+   * what the seek looks up ({@link InListValues} when the branch stands
    * for several values), {@code keyValues} the equality values covering a leading prefix of the index's key.
    */
   public record UnionIndexSeek(String propertyName, Object value, IndexStatistics index, List<Object> keyValues) {
