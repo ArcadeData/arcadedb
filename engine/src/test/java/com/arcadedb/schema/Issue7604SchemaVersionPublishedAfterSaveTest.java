@@ -31,6 +31,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mockStatic;
@@ -48,10 +49,12 @@ class Issue7604SchemaVersionPublishedAfterSaveTest extends TestHelper {
     final long version = schema.getVersion();
     assertThat(fileVersion(schemaPath())).isEqualTo(version);
 
-    try (final MockedStatic<Files> ignored = failMoveTo(schemaPath())) {
+    final AtomicInteger injected = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = failMoveTo(schemaPath(), injected)) {
       // saveConfiguration() logs the IOException and returns: the only observable outcome is the version
       schema.saveConfiguration();
     }
+    assertThat(injected.get()).isEqualTo(1);
 
     assertThat(schema.getVersion()).isEqualTo(version);
     assertThat(fileVersion(schemaPath())).isEqualTo(version);
@@ -71,9 +74,11 @@ class Issue7604SchemaVersionPublishedAfterSaveTest extends TestHelper {
     schema.createDocumentType("Issue7604Pending");
     assertThat(schema.isDirty()).isTrue();
 
-    try (final MockedStatic<Files> ignored = failMoveTo(schemaPath())) {
+    final AtomicInteger injected = new AtomicInteger();
+    try (final MockedStatic<Files> ignored = failMoveTo(schemaPath(), injected)) {
       database.commit();
     }
+    assertThat(injected.get()).isPositive();
 
     assertThat(schema.isDirty()).isTrue();
     assertThat(schema.getVersion()).isEqualTo(fileVersion(schemaPath())).isEqualTo(version);
@@ -98,9 +103,11 @@ class Issue7604SchemaVersionPublishedAfterSaveTest extends TestHelper {
       schema.createDocumentType("Issue7604OnClose");
       assertThat(schema.isDirty()).isTrue();
 
-      try (final MockedStatic<Files> ignored = failMoveTo(primary)) {
+      final AtomicInteger injected = new AtomicInteger();
+      try (final MockedStatic<Files> ignored = failMoveTo(primary, injected)) {
         db.close();
       }
+      assertThat(injected.get()).isPositive();
 
       assertThat(schema.getVersion()).isEqualTo(version);
       assertThat(fileVersion(primary)).isEqualTo(version);
@@ -117,10 +124,17 @@ class Issue7604SchemaVersionPublishedAfterSaveTest extends TestHelper {
     return new JSONObject(Files.readString(file)).getLong("schemaVersion");
   }
 
-  private static MockedStatic<Files> failMoveTo(final Path target) {
+  /**
+   * Fails every rename onto {@code target} on the calling thread, counting each one: the tests assert the counter so a
+   * save moved off this thread, or a write that stops going through {@code Files.move}, cannot pass without the failure
+   * having been injected.
+   */
+  private static MockedStatic<Files> failMoveTo(final Path target, final AtomicInteger injected) {
     return mockStatic(Files.class, invocation -> {
-      if (invocation.getMethod().getName().equals("move") && target.equals(invocation.getArgument(1)))
+      if (invocation.getMethod().getName().equals("move") && target.equals(invocation.getArgument(1))) {
+        injected.incrementAndGet();
         throw new IOException("simulated schema write failure");
+      }
       return invocation.callRealMethod();
     });
   }

@@ -3832,7 +3832,8 @@ public class LocalSchema implements Schema {
     final long capturedGeneration = dirtyGeneration.get();
 
     try {
-      LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
+      LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - current versionSerial = %s, writing %s",
+          versionSerial.get(), versionSerial.get() + 1);
       writeNextGeneration();
 
       savedGeneration = capturedGeneration;
@@ -3855,6 +3856,7 @@ public class LocalSchema implements Schema {
    */
   private synchronized void writeNextGeneration() throws IOException {
     final JSONObject json = toJSON();
+    // DELIBERATELY OVERRIDES THE CURRENT VERSION toJSON() EMITTED: DO NOT "SIMPLIFY" THIS BACK INTO AN INCREMENT BEFORE toJSON()
     json.put("schemaVersion", versionSerial.get() + 1);
     update(json);
   }
