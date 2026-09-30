@@ -85,6 +85,7 @@ class Issue7476AggregationCeilingSizingTest extends TestHelper {
 
     final MultiColumnAggregationResult result = aggregate(engine, 50);
     assertThat(result.getBucketTimestamps().size()).isGreaterThan(50);
+    assertThat(result.isOverBucketCeiling()).isTrue();
   }
 
   @Test

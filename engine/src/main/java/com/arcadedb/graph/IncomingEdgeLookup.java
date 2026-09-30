@@ -18,13 +18,14 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -51,6 +52,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -103,6 +105,8 @@ public final class IncomingEdgeLookup {
   private static final long       LIGHTWEIGHT_POSITION = -1L;
   // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
   private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
+  // WHETHER THE PER-VERTEX FALLBACK OF A DELETE WAS REPORTED AT WARNING ALREADY
+  private static final AtomicBoolean FALLBACK_WARNED   = new AtomicBoolean();
   // THE LAST CLOSURE THE STATIC CHECKS COMPUTED ON THIS THREAD: STEPS ASK PER ROW FOR THE SAME TYPES
   private static final ThreadLocal<CachedClosure> LAST_STATIC_CLOSURE = new ThreadLocal<>();
   // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
@@ -219,6 +223,10 @@ public final class IncomingEdgeLookup {
    * vertices in one transaction costs one scan rather than N. A type too large to index in heap, or a delete with no
    * transaction, is answered by a scan of its own for this vertex alone: slower, but on no heap.
    * <p>
+   * The buckets the caller cannot read are left out, as in a query: a user who may delete the vertex but not read the
+   * edges leaves those edges behind. An edge another transaction creates into the vertex after this transaction's scan
+   * is not seen either, as the target holds no trace of it to conflict on.
+   * <p>
    * A type with no edge record is skipped without a scan; a lightweight type has none, and is scanned through the
    * outgoing lists of every vertex, which is the price of finding an edge stored only on its source.
    */
@@ -244,11 +252,13 @@ public final class IncomingEdgeLookup {
           for (final Iterator<Edge> it = snapshot.edgesInto(target); it.hasNext(); )
             result.add(it.next());
         return result;
-      } catch (final CommandExecutionException e) {
-        // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW
-        LogManager.instance().log(IncomingEdgeLookup.class, Level.FINE,
-            "Cannot index the unidirectional edge types in heap to delete vertex %s, scanning them for it alone: %s", target,
-            e.getMessage());
+      } catch (final HeapLimitExceededException e) {
+        // THE TYPE IS TOO LARGE TO INDEX IN HEAP: SCANNED FOR THIS VERTEX ALONE BELOW. SAID ONCE AT WARNING, AS EVERY
+        // DELETE OF THE TRANSACTION (AND OF THE NEXT ONES) PAYS FOR A FULL SCAN OF THE TYPES
+        LogManager.instance().log(IncomingEdgeLookup.class, FALLBACK_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
+            "Cannot index the unidirectional edge types in heap to delete vertex %s, scanning them for it alone (every vertex "
+                + "delete pays a full scan of them; raise %s to index them): %s", target,
+            GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey(), e.getMessage());
       }
     }
     return Snapshot.scanEdgesInto(database, names, target);

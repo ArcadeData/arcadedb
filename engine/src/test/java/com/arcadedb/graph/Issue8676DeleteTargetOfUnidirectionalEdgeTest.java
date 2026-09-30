@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -111,7 +112,7 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
       for (final RID target : targets)
         target.asVertex().delete();
     });
-    assertThat(IncomingEdgeLookup.getScansTaken() - before).isLessThanOrEqualTo(1L);
+    assertThat(IncomingEdgeLookup.getScansTaken() - before).isEqualTo(1L);
     assertThat(database.countType("U8", false)).isZero();
     assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "U8")).isZero();
   }
@@ -143,6 +144,45 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
       assertThat(stats.getRelationshipsDeleted()).isEqualTo(1);
     });
     assertEdgeGone("U8");
+  }
+
+  @Test
+  void aRegularAndALightweightUnidirectionalTypeAreBothCleaned() {
+    createSchema(false);
+    database.getSchema().buildEdgeType().withName("L8").withBidirectional(false).withLightweight(true).create();
+    createPair("U8");
+    database.transaction(() -> a.asVertex().newEdge("L8", b));
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "L8")).isEqualTo(1);
+
+    database.transaction(() -> b.asVertex().delete());
+    assertEdgeGone("U8");
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "L8")).isZero();
+  }
+
+  @Test
+  void anEdgeDeletedEarlierInTheTransactionIsNotDeletedAgain() {
+    createSchema(false);
+    final RID[] c = new RID[1];
+    createPair("U8");
+    database.transaction(() -> {
+      c[0] = database.newVertex("V8").set("n", "c").save().getIdentity();
+      a.asVertex().newEdge("U8", c[0]);
+    });
+    database.transaction(() -> {
+      // THE FIRST DELETE TAKES THE SCAN, THEN THE EDGE INTO c IS DELETED BY HAND, THEN c ITSELF
+      b.asVertex().delete();
+      a.asVertex().getEdges(Vertex.DIRECTION.OUT, "U8").forEach(Edge::delete);
+      c[0].asVertex().delete();
+    });
+    assertThat(database.countType("U8", false)).isZero();
+  }
+
+  @Test
+  void theIncomingEdgesAreFoundOutsideATransactionToo() {
+    createSchema(false);
+    createPair("U8");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, b)).hasSize(1);
   }
 
   @Test
