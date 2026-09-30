@@ -34,8 +34,10 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -44,7 +46,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -98,8 +99,6 @@ final class ParallelTypeScan {
   // holds at least 1024 of them. Loading a record by its address costs more than reading it in a page scan, so a unit
   // of entries is smaller than the records of a unit of pages.
   private static final int ENTRIES_PER_UNIT_PAGE = 32;
-  // THE MOST PAGES OF A UNIT THE CALLER READS WHOLE INSIDE A TRANSACTION (#8775): IT HOLDS ALL ITS ROWS ON THE HEAP AT ONCE
-  private static final int MAX_CALLER_UNIT_PAGES = 64;
   // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
   private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
@@ -127,6 +126,8 @@ final class ParallelTypeScan {
   private          ResultSet[]             consumerCursor;
   private          CommandContext          consumerContext;
   private final    AtomicInteger           nextUnit = new AtomicInteger();
+  // THE THREADS READING THE UNITS THE CALLER CLAIMED INSIDE A TRANSACTION (#8775): close() STOPS THEM
+  private final    Queue<Thread>           dedicatedReaders = new ConcurrentLinkedQueue<>();
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
     this.database = database;
@@ -172,9 +173,9 @@ final class ParallelTypeScan {
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
    * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
-   * transaction deleted after that pull can still be returned. Inside a transaction the caller that takes a
-   * starved unit (#8594) reads it whole in one pull, from committed pages only, so no write lands in the middle of it
-   * and the scan never mixes two views.
+   * transaction deleted after that pull can still be returned. Inside a transaction the caller never reads a unit
+   * itself: one no worker has started (#8594) is read by a thread of its own, from committed pages, into the unit's
+   * bounded channel, so the scan progresses on a saturated pool and never mixes two views.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
@@ -475,17 +476,6 @@ final class ParallelTypeScan {
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
             lastConsumed = System.currentTimeMillis();
-            if (database.isTransactionActive()) {
-              // INSIDE A TRANSACTION THE WHOLE UNIT IS READ NOW, IN ONE PULL: A WRITE BETWEEN TWO BATCHES OF IT WOULD SHOW IN THE
-              // REST OF IT, NEVER IN THE WORKERS' UNITS (#8775)
-              consumerBatch = readWholeUnit();
-              consumerBatchIndex = 0;
-              chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
-              consumerStep = null;
-              consumerCursor = null;
-              ++consumerUnit;
-              continue;
-            }
             final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
             if (fetched != null) {
               consumerBatch = fetched;
@@ -502,14 +492,19 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          if (nextUnit.get() == consumerUnit
-              && callerMayTake(units.get(consumerUnit)) && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
-            channels[consumerUnit] = null;
-            if (consumerContext == null)
-              consumerContext = workerContext(context);
-            consumerStep = stepFor(units.get(consumerUnit), consumerContext);
-            consumerCursor = new ResultSet[1];
-            continue;
+          if (nextUnit.get() == consumerUnit && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+            if (database.isTransactionActive()) {
+              // INSIDE A TRANSACTION THE CALLER DOES NOT READ THE UNIT: IT WOULD SEE THE TRANSACTION'S WRITES, AND THE WORKERS'
+              // UNITS NEVER DO (#8775). A THREAD OF ITS OWN READS IT FROM COMMITTED PAGES, INTO THE UNIT'S BOUNDED CHANNEL
+              startDedicatedReader(context, consumerUnit);
+            } else {
+              channels[consumerUnit] = null;
+              if (consumerContext == null)
+                consumerContext = workerContext(context);
+              consumerStep = stepFor(units.get(consumerUnit), consumerContext);
+              consumerCursor = new ResultSet[1];
+              continue;
+            }
           }
 
           final UnitChannel channel = channels[consumerUnit];
@@ -553,83 +548,35 @@ final class ParallelTypeScan {
   }
 
   /**
-   * Whether the caller may claim {@code unit} itself (#8594). Outside a transaction it streams the unit, so any. Inside
-   * one it reads the unit whole into memory (see {@link #readWholeUnit}), so only a unit of a bounded, small number of
-   * pages: a larger one (a whole bucket, the big units of a large type) is left to its worker,
-   * which streams it under the batch byte bound.
+   * Reads the unit {@code unitIndex}, which the caller claimed because no worker had started it (#8594), on a thread of
+   * its own: a thread with no transaction reads committed pages only, as the workers do, and the rows go through the
+   * unit's bounded channel like a worker's. Not the producer pool, which may be held by other result sets for good and
+   * is the very thing this path must not depend on. At most one runs per scan: the caller claims the next unit only
+   * once it has consumed the previous one.
    */
-  private boolean callerMayTake(final Unit unit) {
-    if (!database.isTransactionActive())
-      return true;
-    // THE PAGES THE UNIT HOLDS: ITS RANGE, OR WHAT IS LEFT OF THE BUCKET FOR A WHOLE UNIT AND FOR THE OPEN-ENDED LAST RANGE
-    final long pages = unit.toPage() >= 0 ? unit.toPage() - unit.fromPage()
-        : pagesOf(database, bucketIdOf(unit.template())) - Math.max(unit.fromPage(), 0);
-    return pages <= MAX_CALLER_UNIT_PAGES;
-  }
-
-  /**
-   * Reads the rest of the unit the caller claimed (#8594) in one go, from committed pages only (#8775). A transaction
-   * that has written nothing reads the same pages a worker does, so the caller reads it itself. After a write the
-   * caller's reads would show the transaction's changes, which the workers' units never do, and it cannot wait for a
-   * worker either: the pool may be parked by other result sets for good. A short-lived thread of its own, with no
-   * transaction, reads it instead.
-   */
-  private List<Result> readWholeUnit() {
-    if (database.getTransaction().isReadOnlyView())
-      return drain(consumerStep, consumerContext, consumerCursor);
-
-    final AbstractExecutionStep step = consumerStep;
-    final CommandContext stepContext = consumerContext;
-    final ResultSet[] cursor = consumerCursor;
-    final AtomicReference<List<Result>> rows = new AtomicReference<>();
-    final AtomicReference<Throwable> error = new AtomicReference<>();
-    // A THREAD OF ITS OWN, NOT THE PRODUCER POOL: THE POOL MAY BE HELD BY OTHER RESULT SETS FOR GOOD (#8594), AND THIS IS
-    // THE PATH THAT MUST PROGRESS ANYWAY. AT MOST ONE PER SCAN AT A TIME: THE CALLER BLOCKS ON IT
+  private void startDedicatedReader(final CommandContext context, final int unitIndex) {
+    final Unit unit = units.get(unitIndex);
+    final CommandContext readerContext = workerContext(context);
+    final long maxBatchBytes = maxBatchBytes();
+    final long abandonedTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
     final Thread reader = new Thread(() -> {
       try {
         initWorkerThread();
-        rows.set(drain(step, stepContext, cursor));
+        final AbstractExecutionStep step = stepFor(unit, readerContext);
+        try {
+          produceUnit(step, readerContext, channels[unitIndex], maxBatchBytes, abandonedTimeoutMs);
+        } finally {
+          chargeProfile(unit, step, readerContext);
+        }
       } catch (final Throwable e) {
-        error.set(e);
+        recordFailure(e);
       } finally {
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       }
     }, "ArcadeDB-parallel-scan-unit-reader");
     reader.setDaemon(true);
+    dedicatedReaders.add(reader);
     reader.start();
-    try {
-      reader.join();
-    } catch (final InterruptedException e) {
-      // NOTHING LEFT TO WAIT FOR: STOP THE READER AT ITS NEXT BATCH AND LET THE CALLER'S INTERRUPT PROPAGATE
-      reader.interrupt();
-      Thread.currentThread().interrupt();
-      throw new CommandExecutionException("Parallel scan interrupted", e);
-    }
-
-    final Throwable failed = error.get();
-    if (failed instanceof RuntimeException runtime) {
-      // THE CALLER'S STACK TOO: THE READER'S SAYS WHERE IT FAILED, NOT WHO WAS WAITING
-      runtime.addSuppressed(new CommandExecutionException("Thrown in the reader thread of a parallel scan unit"));
-      throw runtime;
-    }
-    if (failed instanceof Error err)
-      throw err;
-    if (failed != null)
-      throw new CommandExecutionException("Parallel scan failed", failed);
-    return rows.get();
-  }
-
-  private List<Result> drain(final AbstractExecutionStep step, final CommandContext stepContext, final ResultSet[] cursor) {
-    final List<Result> all = new ArrayList<>();
-    final long maxBytes = maxBatchBytes();
-    for (List<Result> batch = fetchBatch(step, stepContext, cursor, maxBytes); batch != null;
-        batch = fetchBatch(step, stepContext, cursor, maxBytes)) {
-      all.addAll(batch);
-      // THE CALLER GAVE UP (INTERRUPTED): NOBODY IS LEFT TO TAKE THE ROWS
-      if (Thread.currentThread().isInterrupted())
-        throw new CommandExecutionException("Parallel scan interrupted");
-    }
-    return all;
   }
 
   private void startProducers(final CommandContext context) {
@@ -726,6 +673,8 @@ final class ParallelTypeScan {
     if (futures != null)
       for (final Future<?> f : futures)
         f.cancel(true);
+    for (final Thread reader : dedicatedReaders)
+      reader.interrupt();
 
     // A UNIT THE CONSUMER WAS SCANNING ITSELF: A COPY IS THIS SCAN'S TO CLOSE, A WHOLE TEMPLATE IS ITS OWNING STEP'S
     final AbstractExecutionStep step = consumerStep;
