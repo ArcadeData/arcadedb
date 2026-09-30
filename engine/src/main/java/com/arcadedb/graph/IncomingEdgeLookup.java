@@ -229,6 +229,9 @@ public final class IncomingEdgeLookup {
    * edges leaves those edges behind. An edge another transaction creates into the vertex after this transaction's scan
    * is not seen either, as the target holds no trace of it to conflict on.
    * <p>
+   * As in the queries, a lightweight edge is looked for on a type that DECLARES itself lightweight: the deprecated
+   * {@code newLightEdge()} on a regular type is not scanned for, as that would walk every vertex for every such type.
+   * <p>
    * A type with no edge record is skipped without a scan; a lightweight type has none, and is scanned through the
    * outgoing lists of every vertex, which is the price of finding an edge stored only on its source.
    */

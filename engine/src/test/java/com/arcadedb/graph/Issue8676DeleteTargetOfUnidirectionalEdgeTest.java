@@ -190,6 +190,21 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   }
 
   @Test
+  void movingTheTargetKeepsItsIncomingUnidirectionalEdges() {
+    createSchema(false);
+    database.getSchema().createVertexType("V8Other");
+    createPair("U8");
+    database.transaction(() -> a.asVertex().newEdge("U8", b).set("w", 7).save());
+
+    database.transaction(() -> database.command("sql", "MOVE VERTEX " + b + " TO TYPE:V8Other").close());
+    final RID[] moved = new RID[] { database.iterateType("V8Other", false).next().getIdentity() };
+
+    assertThat(database.countType("U8", false)).isEqualTo(2);
+    assertThat(a.asVertex().getVertices(Vertex.DIRECTION.OUT, "U8")).extracting(v -> v.getIdentity()).containsOnly(moved[0]);
+    assertThat(IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, moved[0])).hasSize(2);
+  }
+
+  @Test
   void otherEdgesOfTheSourceSurvive() {
     createSchema(false);
     createPair("U8");
