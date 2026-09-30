@@ -82,6 +82,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * stand-alone SET step uses.
  */
 public class MergeStep extends AbstractExecutionStep {
+  // Internal row flags, removed before a row leaves the step
+  private static final String WAS_CREATED        = "  wasCreated";
+  private static final String CREATE_SET_FOLDED  = "  createSetFolded";
+
   private final MergeClause        mergeClause;
   private final ExpressionEvaluator evaluator;
   private final SetClauseApplier    setApplier;
@@ -261,12 +265,12 @@ public class MergeStep extends AbstractExecutionStep {
 
       // Apply ON CREATE SET or ON MATCH SET to each result
       for (final Result r : results) {
-        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty("  wasCreated"));
-        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty("  createSetFolded"));
+        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
+        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
         // Remove internal flags
         if (r instanceof ResultInternal) {
-          ((ResultInternal) r).removeProperty("  wasCreated");
-          ((ResultInternal) r).removeProperty("  createSetFolded");
+          ((ResultInternal) r).removeProperty(WAS_CREATED);
+          ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
         }
         // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
         if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
@@ -302,7 +306,7 @@ public class MergeStep extends AbstractExecutionStep {
         // No query reaches this today - the semantic validator refuses a single-node MERGE naming a variable an
         // earlier clause bound - but the row still describes a path if one ever does, so bind it here rather
         // than leave the variable unset behind a check that only holds as long as the validator does.
-        baseResult.setProperty("  wasCreated", false);
+        baseResult.setProperty(WAS_CREATED, false);
         bindSingleNodePath(baseResult, pathPattern, bound);
         return List.of(baseResult);
       }
@@ -326,9 +330,9 @@ public class MergeStep extends AbstractExecutionStep {
       final Vertex vertex = createVertex(nodePattern, baseResult, folded);
       if (variable != null)
         baseResult.setProperty(variable, vertex);
-      baseResult.setProperty("  wasCreated", true);
+      baseResult.setProperty(WAS_CREATED, true);
       if (folded != null)
-        baseResult.setProperty("  createSetFolded", true);
+        baseResult.setProperty(CREATE_SET_FOLDED, true);
       bindSingleNodePath(baseResult, pathPattern, vertex);
       return List.of(baseResult);
     } catch (final DuplicatedKeyException e) {
@@ -354,7 +358,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal r = copyResult(baseResult);
       if (variable != null)
         r.setProperty(variable, v);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       bindSingleNodePath(r, pathPattern, v);
       results.add(r);
     }
@@ -519,7 +523,7 @@ public class MergeStep extends AbstractExecutionStep {
         r.setProperty(unboundPattern.getVariable(), candidate);
       if (relPattern.getVariable() != null)
         r.setProperty(relPattern.getVariable(), matchingEdge);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
 
       final Object[] trace = newPathTrace(pathPattern);
       tracePathElement(trace, 2 * anchorIdx, anchorVertex);
@@ -743,7 +747,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal current, final Object[] trace, final List<Result> results) {
     if (nodeIdx == 0) {
       final ResultInternal r = copyResult(current);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       addPathBinding(r, pathPattern, trace);
       results.add(r);
       return;
@@ -849,7 +853,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal r = copyResult(currentResult);
       if (nodePattern.getVariable() != null)
         r.setProperty(nodePattern.getVariable(), vertex);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       tracePathElement(trace, 2 * nodeIndex, vertex);
       addPathBinding(r, pathPattern, trace);
       results.add(r);
@@ -1042,7 +1046,7 @@ public class MergeStep extends AbstractExecutionStep {
     }
 
     addPathBinding(baseResult, pathPattern, trace);
-    baseResult.setProperty("  wasCreated", true);
+    baseResult.setProperty(WAS_CREATED, true);
     return List.of(baseResult);
   }
 
@@ -1315,11 +1319,9 @@ public class MergeStep extends AbstractExecutionStep {
    *
    * @param nodePattern node pattern to create
    * @param result current result context for evaluating property expressions
-   * @return created vertex
-   */
-  /**
    * @param foldedSet the SET items {@link #foldableCreateItems} accepted, applied to the vertex before its first
    *                  save, or null
+   * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result, final List<SetClause.SetItem> foldedSet) {
     // A pattern element: an existence constraint it does not satisfy yet belongs to the end of the statement, since
