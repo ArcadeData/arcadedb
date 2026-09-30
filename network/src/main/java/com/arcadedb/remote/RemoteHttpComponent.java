@@ -200,6 +200,17 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   /**
+   * The silence, in milliseconds, a STREAMED answer may show before the read fails (issue #8565): the buffered path's
+   * budget, so a caller that set a short timeout to fail fast on a dead node gets the same floor on a stream as on
+   * every other call instead of a stricter one. A server that is alive but slow to produce the next row is not
+   * silent: it sends a keep-alive newline (see {@code arcadedb.server.httpStreamingKeepAliveInterval}). Overridable
+   * so a test can pin a short budget.
+   */
+  long streamSilenceMs() {
+    return computeWatchdogMs(timeout);
+  }
+
+  /**
    * Sends a request whose answer is STREAMED and returns once its headers have arrived, with its body bounded by
    * silence rather than by length (issue #8473).
    * <p>

@@ -75,8 +75,9 @@ public class RemoteStreamingResultSet implements ResultSet {
     if (closed)
       return false;
 
-    // A loop rather than a recursive call: a stream of blank lines is not something the server produces, but a
-    // proxy or a hostile peer can, and recursing once per line would turn that into a StackOverflowError.
+    // A loop rather than a recursive call: blank lines are how the server says it is alive while the next row is slow to
+    // produce (issue #8565), and a proxy or a hostile peer can send any number of them, so recursing once per line would
+    // turn that into a StackOverflowError.
     String line;
     while (true) {
       try {

@@ -20,11 +20,6 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 /**
  * agg.maxItems(values, items) - Return all items corresponding to the maximum value.
  *
@@ -56,33 +51,6 @@ public class AggMaxItems extends AbstractAggFunction {
     if (args[0] == null || args[1] == null)
       return null;
 
-    final List<Double> values = toDoubleList(args[0]);
-    final List<Object> items = toObjectList(args[1]);
-
-    if (values.isEmpty() || items.isEmpty() || values.size() != items.size()) {
-      final Map<String, Object> result = new HashMap<>();
-      result.put("value", null);
-      result.put("items", new ArrayList<>());
-      return result;
-    }
-
-    double maxValue = Double.NEGATIVE_INFINITY; // NOT Double.MIN_VALUE, which is the smallest POSITIVE double (issue #6672)
-    final List<Object> maxItems = new ArrayList<>();
-
-    for (int i = 0; i < values.size(); i++) {
-      final double value = values.get(i);
-      if (value > maxValue) {
-        maxValue = value;
-        maxItems.clear();
-        maxItems.add(items.get(i));
-      } else if (value == maxValue) {
-        maxItems.add(items.get(i));
-      }
-    }
-
-    final Map<String, Object> result = new HashMap<>();
-    result.put("value", maxValue);
-    result.put("items", maxItems);
-    return result;
+    return extremeItems(args[0], args[1], true);
   }
 }

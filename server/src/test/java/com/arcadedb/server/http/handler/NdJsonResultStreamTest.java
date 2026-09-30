@@ -197,4 +197,43 @@ class NdJsonResultStreamTest {
     assertThat(out.flushes.getLast()).isEqualTo(out.bytes.size());
     assertThat(out.closed).isTrue();
   }
+
+  /** Issue #8565: a stream that has been silent for the interval says it is alive, and nothing else. */
+  @Test
+  void keepAliveWritesABareNewlineOnlyAfterTheIdleInterval() throws IOException {
+    final FlushRecordingStream out = new FlushRecordingStream();
+    try (final NdJsonResultStream stream = new NdJsonResultStream(out, 50)) {
+      assertThat(stream.keepAlive(60_000)).isTrue();
+      assertThat(out.text()).as("not idle for long enough yet").isEmpty();
+
+      assertThat(stream.keepAlive(0)).isTrue();
+      assertThat(out.text()).isEqualTo("\n");
+      assertThat(out.flushes).hasSize(1);
+      assertThat(stream.hasStarted()).isTrue();
+    }
+  }
+
+  @Test
+  void keepAliveDeliversPendingRowsInsteadOfAddingANewline() throws IOException {
+    final FlushRecordingStream out = new FlushRecordingStream();
+    try (final NdJsonResultStream stream = new NdJsonResultStream(out, 60_000)) {
+      stream.writeRecord(new JSONObject().put("n", 1)); // first line is flushed at once
+      stream.writeRecord(new JSONObject().put("n", 2)); // pending: neither threshold reached
+      assertThat(out.flushes).hasSize(1);
+
+      assertThat(stream.keepAlive(0)).isTrue();
+      assertThat(out.flushes).hasSize(2);
+      assertThat(out.lines()).hasSize(2).noneMatch(String::isEmpty);
+    }
+  }
+
+  @Test
+  void keepAliveStopsOnceTheStreamIsClosed() throws IOException {
+    final FlushRecordingStream out = new FlushRecordingStream();
+    final NdJsonResultStream stream = new NdJsonResultStream(out, 50);
+    stream.close();
+
+    assertThat(stream.keepAlive(0)).isFalse();
+    assertThat(out.text()).isEmpty();
+  }
 }

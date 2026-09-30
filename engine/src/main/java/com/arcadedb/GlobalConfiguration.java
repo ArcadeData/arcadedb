@@ -1782,6 +1782,18 @@ public enum GlobalConfiguration {
       block). Default is 1 minute""",
       Integer.class, 60_000), // 1 MINUTE DEFAULT
 
+  SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL("arcadedb.server.httpStreamingKeepAliveInterval", SCOPE.SERVER,
+      """
+      Interval in milliseconds after which a streamed query answer (Accept: application/x-ndjson on /query and \
+      /command) that has had nothing to send writes a bare newline, which every consumer of the encoding skips. \
+      Without it a query whose next row takes a while to produce - a selective predicate over a large bucket, an \
+      expensive projection, a cold cache - is silent on the wire, and a client that bounds the silence (the Java \
+      remote client does, with 'arcadedb.network.socketTimeout' and a 30 second floor) cannot tell it from a \
+      server that went away and fails a healthy query (issue #8565). Keep it well below the smallest silence \
+      budget of the clients and of any proxy in front of the server. Set to 0, or to any negative value, to send \
+      no keep-alive. Default is 5 seconds""",
+      Integer.class, 5_000), // 5 SECONDS DEFAULT
+
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
       """
