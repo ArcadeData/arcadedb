@@ -73,6 +73,9 @@ final class PageVersionLedger {
    */
   static final long STALE_RESERVATION_MS = 3 * RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS;
 
+  /** How long a DDL waiting for the ledger to drain still counts an unconfirmed reservation, see {@link #liveReservations}. */
+  static final long UNCONFIRMED_DRAIN_GRACE_MS = 2_000L;
+
   private static final int WAL_TX_HEADER_SIZE   = 2 * Long.BYTES + 2 * Integer.BYTES;
   private static final int WAL_PAGE_HEADER_SIZE = 6 * Integer.BYTES;
 
@@ -278,6 +281,33 @@ final class PageVersionLedger {
       return false;
     ledger.pages.remove(key, reserved);
     return true;
+  }
+
+  /**
+   * Number of pages of the database that an entry of the log still holds a version for, after discarding the
+   * reservations of requests Ratis dropped ({@link #dropIfStale}). What a leader DDL waits to reach zero before it
+   * publishes its own pages (issue #7438): a reservation that will be applied is a page the DDL must not publish over.
+   */
+  int liveReservations(final String databaseName) {
+    final DatabaseLedger ledger = byDatabase.get(databaseName);
+    if (ledger == null || ledger.pages.isEmpty())
+      return 0;
+    final long now = System.currentTimeMillis();
+    int live = 0;
+    for (final Map.Entry<Long, Reservation> reserved : ledger.pages.entrySet()) {
+      final Reservation reservation = reserved.getValue();
+      if (dropIfStale(ledger, reserved.getKey(), reservation, now))
+        continue;
+      // A reservation the log has not confirmed yet is a request between its validation and its append, which takes
+      // milliseconds; one older than the grace is a request Ratis dropped, and waiting for it would make every DDL
+      // spend its whole budget until the stale sweep (three client timeouts) finally removes it. It is not removed
+      // here, only not waited for: were it to be appended after all,
+      // ArcadeStateMachine.preAppendTransaction refuses it (an entry of another node, while the database is exclusive).
+      if (!reservation.appended && now - reservation.reservedAtMs > UNCONFIRMED_DRAIN_GRACE_MS)
+        continue;
+      live++;
+    }
+    return live;
   }
 
   /** Number of pages currently reserved for the database (diagnostics and tests). */

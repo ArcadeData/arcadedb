@@ -268,8 +268,10 @@ public class ClusterAlerts {
     addStalledBehindLeaderAlert(stalledBehindLeader, stuckAtStaleTerm, alerts);
     addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
-    if (membership != null)
+    if (membership != null) {
       addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
+      addSharedPeerAddressAlert(membership.sharedAddresses(), alerts);
+    }
     return alerts;
   }
 
@@ -506,6 +508,41 @@ public class ClusterAlerts {
               + "cluster agree.")
           .put("details", new JSONObject().put("peers", names)));
     }
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the shared-peer-address alert iff the committed
+   * configuration holds two or more peer ids on one Raft address (issue #7802).
+   * <p>
+   * The add-peer guard refuses to create that state, but a configuration built before the guard existed can already
+   * hold it, and refusing to serve would be wrong - the cluster is up. Ids that share an address vote separately
+   * while only one process can answer, so a proposal needs a majority of a membership larger than the servers that
+   * exist, and nothing in the configuration says which of them is the real one: the operator has to.
+   */
+  static void addSharedPeerAddressAlert(final List<List<String>> sharedAddresses, final JSONArray alerts) {
+    if (sharedAddresses == null || sharedAddresses.isEmpty())
+      return;
+
+    final JSONArray groups = new JSONArray();
+    for (final List<String> group : sharedAddresses) {
+      final JSONArray ids = new JSONArray();
+      for (final String id : group)
+        ids.put(id);
+      groups.put(ids);
+    }
+
+    alerts.put(new JSONObject()
+        .put("id", "peers-share-address")
+        .put("severity", SEVERITY_WARNING)
+        .put("title", "Several Raft peer ids share one address")
+        .put("message", "The committed Raft configuration holds more than one peer id on the same Raft address, compared as "
+            + "host and port with loopback spellings counted as one: " + sharedAddresses
+            + ". Only one process listens there, but every id votes, so a proposal needs a majority of a membership "
+            + "larger than the set of servers that can answer it, and the cluster tolerates fewer failures than its size "
+            + "suggests.")
+        .put("recommendation", "Identify the id the server at that address really runs under (its arcadedb.server.name) "
+            + "and remove each other id with DELETE /api/v1/cluster/peer/{id}.")
+        .put("details", new JSONObject().put("groups", groups)));
   }
 
   /**

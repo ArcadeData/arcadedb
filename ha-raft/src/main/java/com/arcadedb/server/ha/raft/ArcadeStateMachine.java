@@ -485,6 +485,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
+  /**
+   * The databases on which this node, as leader, is running an operation that must not interleave with a replica's
+   * transaction: a DDL (issue #7438), or the drop or reinstall of the database. Counted rather than flagged, since
+   * operations on one database nest and overlap. See {@link #beginLeaderExclusive}.
+   */
+  private final ConcurrentHashMap<String, Integer> databasesExclusiveOnLeader = new ConcurrentHashMap<>();
+
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
   // election on every health tick. Measured from the end, not the start (issue #8556): an attempt can outlast the
@@ -1273,6 +1280,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Database '" + databaseName + "' is being replaced with a copy from another node, so the leader cannot "
               + "validate the transaction against it right now. Please retry"));
 
+    // Not accepted while this leader runs a DDL, a drop or a reinstall on the database (issue #7438). A DDL publishes its
+    // pages locally BEFORE its SCHEMA_ENTRY is appended, so an entry validated against the pre-DDL version in between
+    // claims the same next version as the DDL's embedded WAL and the followers would splice the two; the write lock that
+    // excludes the leader's own writers says nothing about a replica's. Only entries of other nodes: the leader's own
+    // writers are already excluded by that lock. The check is repeated after the reservation below.
+    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+      HALog.log(this, HALog.DETAILED, "Refusing a transaction of another node on database '%s': the leader is running an exclusive operation on it",
+          databaseName);
+      return context.build().setException(exclusiveOperationRefusal(databaseName));
+    }
+
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
     final PageVersionLedger.Pages pages;
@@ -1296,7 +1314,82 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(e);
     }
 
+    // The second half of the check above, which alone leaves a window: an entry can pass it just before the operation
+    // registers and reserve just after. Registration happens BEFORE the operation waits for the reservations in flight
+    // (beginLeaderExclusive), so an entry either sees the registration here and backs out, or its reservation is one the
+    // operation waits for. Neither order lets it slip in unseen.
+    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+      pageVersions.release(databaseName, pages, decoded.walData());
+      return context.build().setException(exclusiveOperationRefusal(databaseName));
+    }
+
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
+    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped or "
+        + "reinstalled, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+  }
+
+  /**
+   * Makes this leader exclusive on the database for the duration of a DDL, a drop or a reinstall (issue #7438): from
+   * here until the matching {@link #endLeaderExclusive}, transaction entries of other nodes for it are refused with a
+   * retryable error, and the call itself returns only once the entries the leader had already accepted are applied.
+   * <p>
+   * The order is what makes it work: the database is registered first, so nothing new is accepted, and only then does
+   * the call wait for the reservations of the entries that were. Once it returns, every page the log has given a
+   * version to is on this node, and nothing can be given one until the operation ends - so the DDL's own pages are
+   * published against the versions the followers hold, and its {@code SCHEMA_ENTRY} takes the next place in the log
+   * with no other entry claiming those versions.
+   * <p>
+   * The wait is bounded by {@code drainTimeoutMs}: an entry that cannot be applied must not hold the caller, which is
+   * usually holding the database write lock, for ever. Applying an entry takes no database lock (the apply path in this
+   * class never touches the write or read lock), so the caller's lock cannot be what the reservations wait on and a
+   * healthy DDL does not spend the budget. The reservations counted are every entry's, the leader's own included: a
+   * leader-local commit still between its append and its apply is waited for as well, which is what the DDL needs.
+   * <p>
+   * <b>Availability trade-off:</b> for the whole of the operation, entries of other nodes for this database are
+   * refused with a retryable error, as the write lock already does to the leader's own writers. A long index build
+   * therefore makes a replica's writers retry until it ends; a writer whose retry budget is smaller than the build sees
+   * the {@link NeedRetryException} itself. The registration stays either way. Never throws; an
+   * interruption ends the wait, keeps the registration and re-sets the interrupt flag.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up
+   */
+  boolean beginLeaderExclusive(final String databaseName, final long drainTimeoutMs) {
+    databasesExclusiveOnLeader.merge(databaseName, 1, Integer::sum);
+    final long deadline = System.currentTimeMillis() + drainTimeoutMs;
+    long pauseMs = 2L;
+    int live;
+    while ((live = pageVersions.liveReservations(databaseName)) > 0) {
+      if (System.currentTimeMillis() >= deadline) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' still has %d page version(s) reserved by entries not applied yet after %d ms; the caller "
+                + "gives up", databaseName, live, drainTimeoutMs);
+        return false;
+      }
+      try {
+        Thread.sleep(pauseMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      // Backed off (2, 4, 8, 16, 20 ms): each poll scans the database's ledger while the caller holds the write lock.
+      pauseMs = Math.min(pauseMs * 2, 20L);
+    }
+    return true;
+  }
+
+  /** Ends one registration taken by {@link #beginLeaderExclusive}. */
+  void endLeaderExclusive(final String databaseName) {
+    final boolean[] wasOpen = new boolean[1];
+    databasesExclusiveOnLeader.computeIfPresent(databaseName, (name, count) -> {
+      wasOpen[0] = true;
+      return count <= 1 ? null : count - 1;
+    });
+    if (!wasOpen[0])
+      LogManager.instance().log(this, Level.WARNING,
+          "Ended a leader exclusive window on database '%s' that was not open: an unbalanced begin/end", databaseName);
   }
 
   /**
@@ -2785,6 +2878,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   @Override
   public TransactionContext preAppendTransaction(final TransactionContext trx) throws IOException {
+    // The last line of defence of the exclusive window (issue #7438), at the point that fixes the log order. Not airtight:
+    // an operation that registers between this read and the append still lets a stalled entry through, which takes a
+    // request stalled for longer than the drain grace AND an operation starting in the same instant. In detail: an entry of
+    // another node that was accepted before the operation began, and was slow enough to reach the append after it did
+    // (a long pause, a backed-up client queue) - which is also why the drain wait can afford to stop counting a
+    // reservation that stayed unconfirmed past its grace - must not enter the log now. Refused like the expired
+    // reservation below, at the cost of one Ratis pending-write permit, for a window only a stalled request opens.
+    if (trx.getStateMachineContext() instanceof AppendedEntry appended && !appended.originatedLocally()
+        && databasesExclusiveOnLeader.containsKey(appended.decoded().databaseName())) {
+      pageVersions.release(appended.decoded().databaseName(), appended.pages(), appended.decoded().walData());
+      // Logged because each of these costs a Ratis pending-write permit (see startTransaction): a leak, if this window
+      // turns out to be wider than assumed, must be diagnosable.
+      LogManager.instance().log(this, Level.WARNING,
+          "Refusing to append tx %d of another node on database '%s': the leader began an exclusive operation on it after "
+              + "the entry was accepted", peekWalTransactionId(appended.decoded().walData()), appended.decoded().databaseName());
+      final NeedRetryException refusal = exclusiveOperationRefusal(appended.decoded().databaseName());
+      throw new StateMachineException(refusal.getMessage(), refusal, false);
+    }
     if (trx.getStateMachineContext() instanceof AppendedEntry appended
         && !pageVersions.confirmAppended(appended.decoded().databaseName(), appended.pages(), appended.entryId())) {
       // The entry was delayed between its reservation and this append for longer than the ledger trusts an
@@ -2929,6 +3040,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
       final PageVersionLedger.Pages pages) {
+    // INVARIANT (issue #7438): applying an entry takes NO database lock. A leader DDL waits for the reservations of
+    // entries in flight to be applied while it holds the database write lock (beginLeaderExclusive); an apply path that
+    // took the read lock would make every DDL spend its whole drain budget and then be refused.
     final String databaseName = decoded.databaseName();
     // A transaction this node originated is recognised by its own bytes: the registered transaction carries the WAL
     // it shipped, and an entry is claimed only when it carries the same. No origin marker, client id or context is
