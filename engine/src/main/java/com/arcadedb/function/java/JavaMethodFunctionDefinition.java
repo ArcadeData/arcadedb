@@ -60,6 +60,9 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
       long.class, Set.of(float.class, double.class), //
       float.class, Set.of(double.class));
 
+  private static final Comparator<Method> OVERLOAD_ORDER = Comparator.<Method>comparingInt(Method::getParameterCount)
+      .thenComparing(m -> Arrays.toString(m.getParameterTypes()));
+
   private final List<Method> methods;
   private final Object       instance;
 
@@ -109,9 +112,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     this.instance = instanceFor(instance, methods);
     // Sorted so which overload names an error message (getName(), or the "expected/received" and ambiguity
     // messages) is deterministic, rather than depending on the JVM's unspecified getDeclaredMethods() order.
-    this.methods = methods.stream()
-        .sorted(Comparator.<Method>comparingInt(Method::getParameterCount).thenComparing(m -> Arrays.toString(m.getParameterTypes())))
-        .toList();
+    this.methods = methods.stream().sorted(OVERLOAD_ORDER).toList();
   }
 
   /**
@@ -157,13 +158,50 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
       return invoke(only, args);
     }
 
-    final List<Method> candidates = candidatesByParameterCount(received);
+    final List<Method> candidates = candidatesByParameterCount(methods, received);
     if (candidates.isEmpty())
       throw new FunctionExecutionException(
           "Error on executing function '" + getName() + "': none of the " + methods.size() + " overloads accepts " + received + " parameter(s)");
 
-    final Method method = candidates.size() == 1 ? candidates.get(0) : disambiguateByArgumentType(candidates, args);
+    final Method method = candidates.size() == 1 ? candidates.get(0) : disambiguateByArgumentType(getName(), candidates, args);
     return invoke(method, args);
+  }
+
+  /**
+   * Selects the overload a call with {@code args} binds to, applying the same applicability, primitive-width
+   * specificity and ambiguity rules {@link #execute(Object...)} applies among several overloads, so a dispatcher that
+   * invokes the method itself (the {@code java} query engine, issue #7880) resolves a call exactly as a registered
+   * function does. Unlike {@link #execute(Object...)}'s single-method fast path, the argument types are checked even
+   * when only one overload has a matching parameter count: the caller learns about a mismatch here rather than from
+   * {@link Method#invoke}.
+   *
+   * @param name      the function name the error messages report
+   * @param overloads the public methods sharing that name; bridge and synthetic methods must already be filtered out,
+   *                  since a bridge accepts the same arguments as the method it bridges and would make every call
+   *                  ambiguous
+   * @param args      the arguments of the call, passed flat for a varargs method
+   *
+   * @return the selected method, or {@code null} when no overload accepts {@code args.length} arguments
+   *
+   * @throws FunctionExecutionException when some overload accepts the argument count but none accepts the argument
+   *                                    types, or when more than one does and none is the most specific
+   */
+  public static Method selectOverload(final String name, final List<Method> overloads, final Object[] args) {
+    final List<Method> candidates = candidatesByParameterCount(overloads, args.length);
+    if (candidates.isEmpty())
+      return null;
+    // Same order the constructor gives its overloads, so the ones an error message lists do not depend on the
+    // caller's (typically Class.getMethods()'s unspecified) order.
+    candidates.sort(OVERLOAD_ORDER);
+    return disambiguateByArgumentType(name, candidates, args);
+  }
+
+  /**
+   * The argument array {@link Method#invoke} expects for {@code method}: {@code args} unchanged for a fixed-arity
+   * method, or with the trailing flat arguments packed into the vararg array for a varargs one.
+   */
+  public static Object[] toInvokeArguments(final Method method, final Object[] args) {
+    return toInvokeArgs(method, args);
   }
 
   private Object invoke(final Method method, final Object[] args) {
@@ -221,7 +259,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * {@link #disambiguateByArgumentType} gets the chance to fall back to a type-compatible varargs overload when the
    * fixed-arity one does not actually accept the arguments' runtime types.
    */
-  private List<Method> candidatesByParameterCount(final int received) {
+  private static List<Method> candidatesByParameterCount(final List<Method> methods, final int received) {
     final List<Method> candidates = new ArrayList<>();
     for (final Method m : methods) {
       if (m.isVarArgs()) {
@@ -238,21 +276,21 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
    * mirroring how {@code javac} only falls back to varargs (its resolution phase 3) once no fixed-arity applicable
    * method exists - rather than ranking by parameter-type specificity in general (see the class Javadoc).
    */
-  private Method disambiguateByArgumentType(final List<Method> candidates, final Object[] args) {
+  private static Method disambiguateByArgumentType(final String name, final List<Method> candidates, final Object[] args) {
     final List<Method> fixedArity = new ArrayList<>();
     final List<Method> varArgs = new ArrayList<>();
     for (final Method m : candidates)
       (m.isVarArgs() ? varArgs : fixedArity).add(m);
 
-    Method match = matchByType(candidates, fixedArity, args);
+    Method match = matchByType(name, candidates, fixedArity, args);
     if (match == null)
-      match = matchByType(candidates, varArgs, args);
+      match = matchByType(name, candidates, varArgs, args);
     if (match == null)
-      throw noMatchingOverloadException(candidates, args);
+      throw noMatchingOverloadException(name, candidates, args);
     return match;
   }
 
-  private Method matchByType(final List<Method> allCandidates, final List<Method> pool, final Object[] args) {
+  private static Method matchByType(final String name, final List<Method> allCandidates, final List<Method> pool, final Object[] args) {
     Method match = null;
     List<Method> applicable = null;
     for (final Method m : pool) {
@@ -273,7 +311,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
     final Method mostSpecific = mostSpecific(applicable, args);
     if (mostSpecific == null)
-      throw ambiguousOverloadException(allCandidates, args);
+      throw ambiguousOverloadException(name, allCandidates, args);
     return mostSpecific;
   }
 
@@ -403,14 +441,14 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     return null;
   }
 
-  private FunctionExecutionException noMatchingOverloadException(final List<Method> candidates, final Object[] args) {
+  private static FunctionExecutionException noMatchingOverloadException(final String name, final List<Method> candidates, final Object[] args) {
     return new FunctionExecutionException(
-        "Error on executing function '" + getName() + "': none of " + candidates + " accepts argument type(s) [" + describeArgumentTypes(args) + "]");
+        "Error on executing function '" + name + "': none of " + candidates + " accepts argument type(s) [" + describeArgumentTypes(args) + "]");
   }
 
-  private FunctionExecutionException ambiguousOverloadException(final List<Method> candidates, final Object[] args) {
+  private static FunctionExecutionException ambiguousOverloadException(final String name, final List<Method> candidates, final Object[] args) {
     return new FunctionExecutionException(
-        "Error on executing function '" + getName() + "': cannot resolve which overload to call among " + candidates
+        "Error on executing function '" + name + "': cannot resolve which overload to call among " + candidates
             + " for argument type(s) [" + describeArgumentTypes(args) + "]");
   }
 

@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.function.java.JavaMethodFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -32,9 +33,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.Parameter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -138,10 +140,10 @@ public class JavaQueryEngine implements QueryEngine {
 
         final Class<?> impl = Class.forName(parts[0]);
 
-        final Object[] parameterArray = new Object[parameters.length];
+        final Object[] args = parameters != null ? parameters : new Object[0];
 
         // LOOK FOR THE RIGHT METHOD TO INVOKE
-        final Method rightMethod = searchMethod(parts, impl, parameterArray, parameters);
+        final Method rightMethod = searchMethod(impl, parts[1], args);
 
         if (rightMethod == null)
           throw new NoSuchMethodException(
@@ -150,7 +152,7 @@ public class JavaQueryEngine implements QueryEngine {
 
         final Object instance = Modifier.isStatic(rightMethod.getModifiers()) ? null : impl.getConstructor().newInstance();
 
-        final Object result = rightMethod.invoke(instance, parameterArray);
+        final Object result = rightMethod.invoke(instance, JavaMethodFunctionDefinition.toInvokeArguments(rightMethod, args));
 
         final InternalResultSet resultSet;
         if (result instanceof ResultSet)
@@ -179,71 +181,29 @@ public class JavaQueryEngine implements QueryEngine {
 
   }
 
-  private Method searchMethod(final String[] parts, final Class<?> impl, final Object[] parameterArray, final Object[] parameters) {
-    Method rightMethod = null;
-    for (final Method method : impl.getMethods()) {
-      if (method.getName().equals(parts[1])) {
-        if (method.getParameterCount() == parameters.length) {
+  /**
+   * The public method of {@code impl} named {@code methodName} that a call with {@code parameters} binds to, or
+   * {@code null} when no method of that name accepts that many arguments. The choice among overloads is delegated to
+   * {@link JavaMethodFunctionDefinition#selectOverload}, so this engine and a registered Java function library resolve
+   * the same call to the same method (issue #7880): every overload is considered rather than the first one
+   * {@link Class#getMethods()} happens to list, a reference parameter accepts an argument that is an instance of it,
+   * a primitive one a boxed argument that unboxes and widens into it, and an argument no overload accepts, or several
+   * accept equally, is refused with a message saying so.
+   * <p>
+   * Bridge and synthetic methods are left out, as {@code JavaClassFunctionLibraryDefinition} does: the bridge javac
+   * emits for a generic interface method accepts the same arguments as the method it bridges, and would make the
+   * call ambiguous.
+   */
+  private static Method searchMethod(final Class<?> impl, final String methodName, final Object[] parameters) {
+    final List<Method> overloads = new ArrayList<>();
+    for (final Method method : impl.getMethods())
+      if (method.getName().equals(methodName) && !method.isBridge() && !method.isSynthetic())
+        overloads.add(method);
 
-          // RESET PARAMETER ARRAY
-          Arrays.fill(parameterArray, null);
+    if (overloads.isEmpty())
+      return null;
 
-          boolean allParamsMatch = true;
-          final Parameter[] methodParameters = method.getParameters();
-          for (int i = 0; i < methodParameters.length; i++) {
-            final Object parameterValue = parameters[i];
-            if (parameterValue == null)
-              continue;
-
-            final Parameter methodParameter = methodParameters[i];
-
-            parameterArray[i] = parameterValue;
-
-            final Class<?> methodParameterType = methodParameter.getType();
-            final Class<?> parameterValueClass = parameterValue.getClass();
-
-            if (!parameterValueClass.isAssignableFrom(methodParameterType)) {
-              if (methodParameterType.isPrimitive()) {
-                // CHECK FOR AUTOBOXING
-                if (methodParameterType.equals(Integer.TYPE)) {
-                  if (!parameterValueClass.equals(Integer.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Long.TYPE)) {
-                  if (!parameterValueClass.equals(Long.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Float.TYPE)) {
-                  if (!parameterValueClass.equals(Float.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Double.TYPE)) {
-                  if (!parameterValueClass.equals(Double.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Byte.TYPE)) {
-                  if (!parameterValueClass.equals(Byte.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Character.TYPE)) {
-                  if (!parameterValueClass.equals(Character.class))
-                    allParamsMatch = false;
-                } else if (methodParameterType.equals(Short.TYPE)) {
-                  if (!parameterValueClass.equals(Short.class))
-                    allParamsMatch = false;
-                }
-              }
-            } else
-              allParamsMatch = false;
-
-            if (!allParamsMatch)
-              break;
-          }
-
-          if (allParamsMatch)
-            rightMethod = method;
-
-          break;
-        }
-      }
-    }
-
-    return rightMethod;
+    return JavaMethodFunctionDefinition.selectOverload(impl.getName() + "::" + methodName, overloads, parameters);
   }
 
   @Override
