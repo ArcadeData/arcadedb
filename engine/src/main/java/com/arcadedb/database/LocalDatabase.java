@@ -1390,7 +1390,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Throwable cause) {
     final RID rid = record.getIdentity();
     try {
-      bucket.deleteRecord(rid, false);
+      bucket.retractRecord(rid);
     } catch (final Exception e) {
       cause.addSuppressed(e);
       transaction.setRollbackOnly(
@@ -1582,6 +1582,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // #7149: false means this transaction has already deleted the record, so there is nothing to write and
           // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
           // after-update events from firing for a write that never happened.
+          // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
+          final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
           if (!tx.addUpdatedRecord(record))
             return null;
 
@@ -1603,7 +1605,25 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // for the diff) ONLY when an index actually changed: otherwise the previous diff source
               // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
               // that touch only non-indexed properties pay no snapshot cost at all.
-              final Document refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
+              // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
+              // the caller was already told was refused, discarding every row that was accepted.
+              final TransactionIndexContext indexChanges = tx.getIndexChanges();
+              indexChanges.armRecordUndo();
+              final Document refreshedSnapshot;
+              try {
+                refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              } catch (final RuntimeException | Error e) {
+                indexChanges.undoRecordChanges();
+                // The deferred write must not reach the commit either: it would store the refused values in a body
+                // no index entry describes. A record already queued by an earlier update keeps its queue entry,
+                // because the earlier update's indexed state is still what the index holds.
+                if (!alreadyQueued)
+                  tx.removeRecordFromCache(rid);
+                throw e;
+              } finally {
+                indexChanges.disarmRecordUndo();
+              }
               if (refreshedSnapshot != null)
                 tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
             }

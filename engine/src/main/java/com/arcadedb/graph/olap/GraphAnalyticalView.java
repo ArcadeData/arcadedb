@@ -37,6 +37,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -45,6 +46,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -252,6 +254,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /** Single volatile reference for all mutable CSR state — ensures atomic visibility to readers. */
   private volatile Snapshot          snapshot;
+  /** Edge type name -> the concrete slices that answer it, valid for one schema generation (issue #8426). */
+  private volatile EdgeTypeExpansions edgeTypeExpansions;
   private volatile Status            status    = Status.NOT_BUILT;
   private volatile CountDownLatch    readyLatch = new CountDownLatch(1);
   private volatile Throwable         buildError;
@@ -961,13 +965,123 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         return true; // built without filter = all types
       // Check if explicit types cover all edge types in the schema
       for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof EdgeType && !containsType(edgeTypes, dt.getName()))
+        if (dt instanceof EdgeType && !coversEdgeTypeByFilter(dt))
           return false;
       return true;
     }
     if (edgeTypes == null)
       return true; // we include all edge types
-    return containsType(edgeTypes, edgeTypeName);
+    if (containsType(edgeTypes, edgeTypeName))
+      return true;
+    final DocumentType type = database.getSchema().getTypeOrNull(edgeTypeName);
+    return type != null && coversEdgeTypeByFilter(type);
+  }
+
+  /**
+   * Whether the filter this view was built with materializes {@code type}: the type is listed, or one of its
+   * super-types is, because a type brings its sub-types along, as it does on the record path (issue #8426).
+   */
+  private boolean coversEdgeTypeByFilter(final DocumentType type) {
+    if (edgeTypes == null || containsType(edgeTypes, type.getName()))
+      return true;
+    for (final String listed : edgeTypes)
+      if (type.instanceOf(listed))
+        return true;
+    return false;
+  }
+
+  /**
+   * The concrete edge types that answer a requested one: the type itself and every materialized sub-type. The view
+   * keeps one slice per CONCRETE type (issue #8426), so a lookup of {@code K} with {@code KC EXTENDS K} has to read
+   * both slices, exactly as a query for {@code K} reads both types' buckets on the record path.
+   *
+   * @return {@code requested} itself when none of its types has a sub-type to add, else a new array with each type
+   * followed by the sub-types it brought, without duplicates. Callers must not modify the result.
+   */
+  public String[] resolveEdgeTypes(final String... requested) {
+    if (requested == null || requested.length == 0)
+      return requested;
+    if (requested.length == 1)
+      return expandEdgeType(requested[0]);
+
+    boolean expanded = false;
+    for (final String type : requested)
+      if (expandEdgeType(type).length > 1) {
+        expanded = true;
+        break;
+      }
+    if (!expanded)
+      return requested;
+
+    final Set<String> resolved = new LinkedHashSet<>();
+    for (final String type : requested)
+      resolved.addAll(Arrays.asList(expandEdgeType(type)));
+    return resolved.toArray(new String[0]);
+  }
+
+  private String[] expandEdgeType(final String edgeType) {
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final long serial = schema.getTypesChangeSerial();
+    EdgeTypeExpansions cache = edgeTypeExpansions;
+    if (cache == null || cache.serial != serial) {
+      cache = new EdgeTypeExpansions(serial);
+      edgeTypeExpansions = cache;
+    }
+    String[] expanded = cache.byName.get(edgeType);
+    if (expanded == null) {
+      expanded = computeEdgeTypeExpansion(edgeType);
+      cache.byName.put(edgeType, expanded);
+    }
+    return expanded;
+  }
+
+  private String[] computeEdgeTypeExpansion(final String edgeType) {
+    final DocumentType type = database.getSchema().getTypeOrNull(edgeType);
+    if (type == null || type.getSubTypes().isEmpty())
+      return new String[] { edgeType };
+
+    final Set<String> family = new LinkedHashSet<>();
+    CSRBuilder.collectTypeFamily(type, family);
+    final List<String> served = new ArrayList<>(family.size());
+    for (final String name : family) {
+      // The requested type is always asked, even by a caller the view does not cover; a sub-type only when the view
+      // materializes it
+      if (name.equals(type.getName())) {
+        served.add(edgeType);
+        continue;
+      }
+      final DocumentType subType = database.getSchema().getTypeOrNull(name);
+      if (subType != null && coversEdgeTypeByFilter(subType))
+        served.add(name);
+    }
+    return served.toArray(new String[0]);
+  }
+
+  /** The edge types a schema generation's expansions were computed for. */
+  private static final class EdgeTypeExpansions {
+    final long                       serial;
+    final ConcurrentMap<String, String[]> byName = new ConcurrentHashMap<>();
+
+    EdgeTypeExpansions(final long serial) {
+      this.serial = serial;
+    }
+  }
+
+  /**
+   * Every edge type this snapshot can answer for with no type given: the ones it holds a base slice for and the ones
+   * whose edges exist only in the overlay because the type had none when the view was built (issue #8426). Enumerating
+   * the slices alone made those edges invisible to an untyped hop.
+   */
+  private static Collection<String> allEdgeTypes(final Snapshot snap) {
+    final DeltaOverlay ov = snap.overlay;
+    if (ov == null)
+      return snap.csrPerType.keySet();
+    final Set<String> added = ov.getAddedEdgeTypes();
+    if (added.isEmpty() || snap.csrPerType.keySet().containsAll(added))
+      return snap.csrPerType.keySet();
+    final Set<String> all = new LinkedHashSet<>(snap.csrPerType.keySet());
+    all.addAll(added);
+    return all;
   }
 
   private static boolean containsType(final String[] types, final String typeName) {
@@ -984,6 +1098,19 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   @Override
   public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+    final String[] resolved = expandEdgeType(edgeType);
+    if (resolved.length > 1) {
+      // A type with sub-types: the degree is the sum over their slices
+      final int[] slice = new int[degrees.length];
+      Arrays.fill(degrees, 0);
+      for (final String concrete : resolved) {
+        getDegrees(slice, direction, concrete);
+        for (int v = 0; v < degrees.length; v++)
+          degrees[v] += slice[v];
+      }
+      return;
+    }
+
     final Snapshot snap = checkBuilt();
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
     final DeltaOverlay ov = snap.overlay;
@@ -1027,8 +1154,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
-  public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     // Cannot provide zero-copy view when overlay is active (delta edges modify topology)
     if (hasActiveOverlay(snap))
@@ -1187,34 +1315,39 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns the edge count for a node in the given direction, optionally filtered by edge types.
    * Mirrors {@code Vertex.countEdges(DIRECTION, String...)}.
    */
-  public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public long countEdges(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
+    long total = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
-      long total = 0;
-      for (final String edgeType : edgeTypes) {
-        final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
-        if (csr != null)
-          total += countDirectional(snap, csr, nodeId, direction, edgeType);
-        else {
-          // No base CSR but overlay may have edges for this type. Nothing to subtract here: the overlay's
-          // deleted counts are an exclusion budget spent against a base CSR run, and there is no base run
-          // for this type. An edge added and then deleted within the same window is withdrawn from the
-          // added index by DeltaOverlay.merge() rather than masked (issue #6775), so what is left is
-          // already the live set.
-          final DeltaOverlay ov = snap.overlay;
-          if (ov != null) {
-            if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
-              total += ov.getAddedOutNeighbors(nodeId, edgeType).length;
-            if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
-              total += ov.getAddedInNeighbors(nodeId, edgeType).length;
-          }
-        }
-      }
+      for (final String edgeType : edgeTypes)
+        total += countEdgesOfType(snap, nodeId, direction, edgeType);
       return total;
     }
+    for (final String edgeType : allEdgeTypes(snap))
+      total += countEdgesOfType(snap, nodeId, direction, edgeType);
+    return total;
+  }
+
+  private long countEdgesOfType(final Snapshot snap, final int nodeId, final Vertex.DIRECTION direction,
+      final String edgeType) {
+    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
+    if (csr != null)
+      return countDirectional(snap, csr, nodeId, direction, edgeType);
+
+    // No base CSR but overlay may have edges for this type. Nothing to subtract here: the overlay's
+    // deleted counts are an exclusion budget spent against a base CSR run, and there is no base run
+    // for this type. An edge added and then deleted within the same window is withdrawn from the
+    // added index by DeltaOverlay.merge() rather than masked (issue #6775), so what is left is
+    // already the live set.
     long total = 0;
-    for (final var entry : snap.csrPerType.entrySet())
-      total += countDirectional(snap, entry.getValue(), nodeId, direction, entry.getKey());
+    final DeltaOverlay ov = snap.overlay;
+    if (ov != null) {
+      if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH)
+        total += ov.getAddedOutNeighbors(nodeId, edgeType).length;
+      if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH)
+        total += ov.getAddedInNeighbors(nodeId, edgeType).length;
+    }
     return total;
   }
 
@@ -1224,8 +1357,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Returns dense node IDs of connected vertices in the given direction, optionally filtered by edge types.
    * Mirrors {@code Vertex.getVertices(DIRECTION, String...)}.
    */
-  public int[] getVertices(final int nodeId, final Vertex.DIRECTION direction, final String... edgeTypes) {
+  public int[] getVertices(final int nodeId, final Vertex.DIRECTION direction, final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
 
     if (edgeTypes != null && edgeTypes.length == 1) {
       final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeTypes[0]);
@@ -1252,8 +1386,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         }
       }
     } else {
-      for (final var entry : snap.csrPerType.entrySet()) {
-        final int[] neighbors = getNeighborsFromCSR(snap, entry.getValue(), nodeId, direction, entry.getKey());
+      for (final String et : allEdgeTypes(snap)) {
+        final int[] neighbors = getNeighborsFromCSR(snap, snap.csrPerType.get(et), nodeId, direction, et);
         if (neighbors.length > 0) {
           segments.add(neighbors);
           totalLen += neighbors.length;
@@ -1296,15 +1430,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * O(log(degree)) using binary search on sorted CSR.
    */
   public boolean isConnectedTo(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
-      final String... edgeTypes) {
+      final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
         if (isConnectedForType(snap, nodeA, nodeB, direction, edgeType))
           return true;
       return false;
     }
-    for (final String edgeType : snap.csrPerType.keySet())
+    for (final String edgeType : allEdgeTypes(snap))
       if (isConnectedForType(snap, nodeA, nodeB, direction, edgeType))
         return true;
     return false;
@@ -1325,11 +1460,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   @Override
   public long countEdgesBetween(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
-      final String... edgeTypes) {
+      final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     long total = 0;
     final Iterable<String> types = edgeTypes != null && edgeTypes.length > 0 ?
-        Arrays.asList(edgeTypes) : snap.csrPerType.keySet();
+        Arrays.asList(edgeTypes) : allEdgeTypes(snap);
     for (final String edgeType : types) {
       final long forType = countBetweenForType(snap, nodeA, nodeB, direction, edgeType);
       if (forType < 0)
@@ -1360,6 +1496,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public double getMeanEdgesPerConnectedPair(final String edgeType) {
     final Snapshot snap = checkBuilt();
     if (snap.overlay != null)
+      return MULTIPLICITY_UNKNOWN;
+    // A type answers for its sub-types too, whose slices this measures one at a time: say unknown rather than guess
+    if (expandEdgeType(edgeType).length > 1)
       return MULTIPLICITY_UNKNOWN;
 
     final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
@@ -1394,14 +1533,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * Counts common neighbors between two nodes, optionally filtered by edge types.
    */
   public int countCommonNeighbors(final int nodeA, final int nodeB, final Vertex.DIRECTION direction,
-      final String... edgeTypes) {
+      final String... requestedEdgeTypes) {
     final Snapshot snap = checkBuilt();
+    final String[] edgeTypes = resolveEdgeTypes(requestedEdgeTypes);
     int total = 0;
     if (edgeTypes != null && edgeTypes.length > 0) {
       for (final String edgeType : edgeTypes)
         total += countCommonForType(snap, nodeA, nodeB, direction, edgeType);
     } else {
-      for (final String edgeType : snap.csrPerType.keySet())
+      for (final String edgeType : allEdgeTypes(snap))
         total += countCommonForType(snap, nodeA, nodeB, direction, edgeType);
     }
     return total;
@@ -1496,7 +1636,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public Set<String> getEdgeTypes() {
     final Snapshot snap = checkBuilt();
-    return Collections.unmodifiableSet(snap.csrPerType.keySet());
+    final Collection<String> all = allEdgeTypes(snap);
+    return Collections.unmodifiableSet(all instanceof Set<String> set ? set : new LinkedHashSet<>(all));
   }
 
   public NodeIdMapping getNodeMapping() {
@@ -1566,8 +1707,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   public int getEdgeCount(final String edgeType) {
     final Snapshot snap = checkBuilt();
-    final CSRAdjacencyIndex csr = snap.csrPerType.get(edgeType);
-    return csr != null ? csr.getEdgeCount() : 0;
+    int total = 0;
+    for (final String concrete : expandEdgeType(edgeType)) {
+      final CSRAdjacencyIndex csr = snap.csrPerType.get(concrete);
+      if (csr != null)
+        total += csr.getEdgeCount();
+    }
+    return total;
   }
 
   public String getName() {
@@ -1743,7 +1889,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   @Override
   public String[] getMaterializedEdgeTypes() {
     final Snapshot snap = this.snapshot;
-    return snap == null ? null : snap.csrPerType.keySet().toArray(new String[0]);
+    return snap == null ? null : allEdgeTypes(snap).toArray(new String[0]);
   }
 
   /**
@@ -1779,6 +1925,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public boolean hasEdgeProperty(final String edgeType, final String propertyName) {
     final Snapshot snap = this.snapshot;
     if (snap == null || snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
+      return false;
+    // The columns are per slice: a type with sub-types spans several, which a caller cannot be handed as one
+    if (expandEdgeType(edgeType).length > 1)
       return false;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
     return edgeColStore != null && edgeColStore.getColumn(propertyName) != null;
@@ -1822,6 +1971,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     final Snapshot snap = checkBuilt();
     if (snap.edgeColumnStores == null || hasStaleEdgeColumns(snap, edgeType))
+      return null;
+    // Per slice, like hasEdgeProperty(): a type with sub-types cannot be served as one, the caller reads the records
+    if (expandEdgeType(edgeType).length > 1)
       return null;
     final ColumnStore edgeColStore = snap.edgeColumnStores.get(edgeType);
     if (edgeColStore == null)
