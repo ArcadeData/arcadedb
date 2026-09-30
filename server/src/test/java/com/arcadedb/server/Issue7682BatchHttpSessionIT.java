@@ -24,9 +24,15 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpSessionManager;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -199,6 +205,80 @@ class Issue7682BatchHttpSessionIT extends BaseGraphServerTest {
     } finally {
       rollback(rootAuth(), sessionId);
     }
+  }
+
+  /**
+   * The one observable effect of running under the session's lock: while a load is in flight, every other request of
+   * that session waits for it, and gives up with 503 once {@code HttpSession}'s lock wait (5s) runs out. A second load
+   * refused that way also takes the path where the lock was never obtained and the load never began, which declines
+   * its upload rather than reading it (code review on PR #8729).
+   * <p>
+   * The first load is held open over a raw socket with a chunked body - the JDK client does not surface an HTTP/1.1
+   * response before its request body is complete. {@code vertexBatchSize=1} on the streaming encoding commits the
+   * first vertex and writes its progress line as soon as the second record is read, so the status line arriving is
+   * the proof that the load is running, and therefore holds the lock, before anything else is sent.
+   */
+  @Test
+  @Tag("slow")
+  void otherRequestsOfTheSessionWaitForARunningLoadAndARefusedLoadLoadsNothing() throws Exception {
+    seed();
+
+    final String sessionId = beginSession(rootAuth());
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("127.0.0.1", getServerHttpPort(0)), 10_000);
+      socket.setSoTimeout(30_000);
+      final OutputStream out = socket.getOutputStream();
+      final BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+
+      out.write(("POST /api/v1/batch/" + getDatabaseName() + "?vertexBatchSize=1 HTTP/1.1\r\n"
+          + "Host: 127.0.0.1\r\n"
+          + "Authorization: " + rootAuth() + "\r\n"
+          + HttpSessionManager.ARCADEDB_SESSION_ID + ": " + sessionId + "\r\n"
+          + "Content-Type: " + NDJSON + "\r\n"
+          + "Accept: " + NDJSON + "\r\n"
+          + "Transfer-Encoding: chunked\r\n"
+          + "Connection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+      writeChunk(out, vertices(1, 2));
+
+      assertThat(in.readLine()).as("the held load must be running before the rest is sent").contains(" 200 ");
+
+      final HttpResponse<String> secondLoad = batch(rootAuth(), sessionId, vertices(100, 3), false);
+      assertThat(secondLoad.statusCode())
+          .as("a second load of the same session cannot take its lock while the first runs: %s", secondLoad.body())
+          .isEqualTo(503);
+
+      final HttpResponse<String> commitDuringLoad = post("/commit/" + getDatabaseName(), rootAuth(), sessionId, "",
+          "application/json");
+      assertThat(commitDuringLoad.statusCode())
+          .as("nor can the session's own commit: %s", commitDuringLoad.body())
+          .isEqualTo(503);
+
+      // End the body; the held load then completes and writes its terminal line.
+      out.write("0\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+      out.flush();
+      final StringBuilder rest = new StringBuilder();
+      for (String line = in.readLine(); line != null; line = in.readLine())
+        rest.append(line).append('\n');
+      assertThat(rest.toString()).as("the held load completes once its body ends").contains("\"summary\"");
+
+      assertThat(countVertices(rootAuth(), null))
+          .as("only the held load's vertices are in: the refused one never began")
+          .isEqualTo(2);
+
+      final HttpResponse<String> committed = post("/commit/" + getDatabaseName(), rootAuth(), sessionId, "",
+          "application/json");
+      assertThat(committed.statusCode()).as("the session outlived all of it: %s", committed.body()).isEqualTo(204);
+    } finally {
+      rollback(rootAuth(), sessionId);
+    }
+  }
+
+  private static void writeChunk(final OutputStream out, final String text) throws IOException {
+    final byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+    out.write((Integer.toHexString(bytes.length) + "\r\n").getBytes(StandardCharsets.UTF_8));
+    out.write(bytes);
+    out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+    out.flush();
   }
 
   /**

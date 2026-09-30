@@ -238,7 +238,7 @@ import java.util.logging.Level;
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
   private static final int        VERTEX_BATCH_SIZE     = 10_000;
-  private static final HttpString SESSION_ID_HEADER     = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
+  private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
   /** Value of the {@code phase} field of a progress line while vertices are being committed. */
   private static final String     VERTEX_PHASE          = "vertices";
   /** Value of the {@code phase} field of a progress line while edges are being accepted. */
@@ -430,7 +430,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * <p>
    * For the same reason a failed load does not roll the session's transaction back: nothing the load did was part
    * of it, so the failure says nothing about the state of the caller's work. That is the
-   * {@code rollbackOnFailure = false} half of {@code HttpSession.execute(user, callback, rollbackOnFailure)}, the answer the {@code /ts} routes give for the same reason (issue #7734).
+   * {@code rollbackOnFailure = false} half of {@code HttpSession.execute(user, callback, rollbackOnFailure)}, the
+   * answer the {@code /ts} routes give for the same reason (issue #7734).
+   * <p>
+   * The lock is held for the WHOLE load, which for a large upload is minutes rather than milliseconds. Every other
+   * request of the session - a command, a second load, its own {@code /commit} or {@code /rollback} - waits for it
+   * and gives up with 503 once the session's lock wait runs out, exactly as it would behind a long command. A client
+   * that loads inside a session must therefore not overlap other requests of that session with the load.
    * <p>
    * On a follower the forward to the leader runs under the local session's lock too, and the relayed request
    * carries no session id: sessions are node-local, the leader has never heard of this one, and the load does not

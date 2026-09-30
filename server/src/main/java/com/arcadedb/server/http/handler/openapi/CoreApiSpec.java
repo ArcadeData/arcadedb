@@ -97,7 +97,11 @@ public class CoreApiSpec implements OpenApiContributor {
       It does NOT put the loaded records in that transaction. The load commits every 'commitEvery' records \
       whatever you have open, so the records are readable by everyone before you commit anything and rolling \
       the transaction back does not remove them; a failed load does not roll it back either. Records the \
-      transaction wrote but has not committed are not visible to the load.""";
+      transaction wrote but has not committed are not visible to the load.
+
+      The load holds the session's lock until it ends. Other calls of the same session, including its commit \
+      and rollback, wait for it and fail with 503 if it outlasts the session's lock wait, so do not overlap \
+      them with a load.""";
 
   private static final String BEGIN_SESSION_REQUEST_DESCRIPTION = """
       Normally omitted: 'beginTransaction' opens a new transaction and returns its own session id. \
