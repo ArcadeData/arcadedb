@@ -874,7 +874,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /** With the default 10 s quorum timeout, one warning per minute per stalled committer after the first. */
   private static final int PUBLICATION_WAIT_WARN_EVERY_CYCLES = 6;
 
-  /** Best effort: waits for the page the leader refused this replica on to reach, locally, the version the cluster is at. */
   /**
    * The index to state on the entry (issue #8686): the position the transaction began at, or {@code -1} to state none when
    * there is none to state or a peer could not read the section. Every peer is asked, this node's own build being covered
@@ -898,6 +897,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
   }
 
+  /** Best effort: waits for the page the leader refused this replica on to reach, locally, the version the cluster is at. */
   private void awaitPageVersion(final ReplicatedPageConflictException conflict) {
     final RaftHAServer raft = raftHAServer;
     if (raft == null || conflict.getClusterVersion() < 0)

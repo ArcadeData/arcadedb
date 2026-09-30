@@ -57,10 +57,12 @@ import java.util.List;
  * in one method both acquirers call, is the other half - two independent sorts would agree today and could drift
  * apart in exactly the way the two independent schema walks did.
  *
+ * <p>
+ * The full order: types by name; within a type its lifecycle lock (issue #7475) first, then its shards by index.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class TimeSeriesShardOrder {
-  // The order is: types by name; for each type its lifecycle lock (issue #7475) and only then its shards by index.
 
   /** One shard, with the type and index that name it, in global lock order. */
   record ShardSlot(String typeName, int shardIndex, TimeSeriesShard shard) {

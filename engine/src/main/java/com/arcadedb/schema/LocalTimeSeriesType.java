@@ -75,7 +75,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    * {@code TimeSeriesShard} and there is no shard until {@link #initEngine()} has succeeded - which is exactly the
    * state the HA sealed-store repair runs in. This lock belongs to the TYPE, so it outlives every engine the type
    * ever has: the pause and the install lock take it BEFORE they look at the engine, and the repair that replaces
-   * a missing engine holds its write half across the file move and {@link #initEngine()}.
+   * a missing engine holds its write half across the file move and {@link #initEngine()}. Not a general engine guard: schema
+   * reload and snapshot install create and close engines without it.
    */
   private final ReadWriteLock engineLifecycleLock = new ReentrantReadWriteLock();
 
