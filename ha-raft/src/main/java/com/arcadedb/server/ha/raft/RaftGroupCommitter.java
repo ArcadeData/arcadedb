@@ -570,7 +570,8 @@ class RaftGroupCommitter {
             if (isClientClosed(e))
               clientClosedDetected = true;
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum watch failed after MAJORITY commit: " + e.getMessage(), e, reply.getLogIndex()));
+                "ALL quorum watch failed after MAJORITY commit at logIndex=" + reply.getLogIndex() + ": " + e.getMessage(), e,
+                reply.getLogIndex()));
             continue;
           }
         }

@@ -278,17 +278,50 @@ class Issue6965LocalCommitHandshakeTest {
     verify(proxied, never()).rollback();
   }
 
-  /** Issue #8781: a MAJORITY-committed exception that lost its index still leaves the pages to a live state machine. */
+  /**
+   * Issue #8781: a MAJORITY-committed exception that lost its index still leaves the pages to a live state machine, and
+   * waits for the local commit index rather than releasing the commit locks at once (#5503).
+   */
   @Test
   void aMajorityCommittedUnclaimedEntryWithoutAnIndexIsNeverPublishedWhileTheStateMachineLives() {
     when(broker.replicateTransaction(anyString(), any(), any()))
         .thenThrow(new MajorityCommittedAllFailedException("ALL quorum not reached"));
+    when(raftServer.getCommitIndex()).thenReturn(11L);
 
     assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, true, stateMachine))
         .isInstanceOf(MajorityCommittedAllFailedException.class);
 
+    verify(raftServer).waitForAppliedIndex(DB_NAME, 11L);
     verify(tx, never()).commit2ndPhase(any());
     verify(tx).reset();
+  }
+
+  /**
+   * Issue #8781, replica variant: a forwarded commit the leader answers MAJORITY-committed is rebuilt here from the
+   * message, and this replica's state machine applies the entry from the leader's log. Publishing on the committing
+   * thread as well folded the record delta twice; the replica only waits for the entry and releases.
+   */
+  @Test
+  void aReplicaNeverPublishesAForwardedMajorityCommittedEntry() {
+    when(broker.replicateTransaction(anyString(), any(), any()))
+        .thenThrow(new MajorityCommittedAllFailedException("ALL quorum not reached after MAJORITY commit at logIndex=9"));
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, false, null))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    verify(raftServer).waitForAppliedIndex(DB_NAME, 9L);
+    verify(tx, never()).commit2ndPhase(any());
+    verify(tx).reset();
+  }
+
+  /** The index survives the hop to a follower: the message every leader-side constructor call writes carries it. */
+  @Test
+  void theLogIndexIsReadBackFromTheMessage() {
+    assertThat(new MajorityCommittedAllFailedException("ALL quorum not reached after MAJORITY commit at logIndex=42").getLogIndex())
+        .isEqualTo(42L);
+    assertThat(new MajorityCommittedAllFailedException("ALL quorum watch failed after MAJORITY commit at logIndex=5: boom",
+        new RuntimeException()).getLogIndex()).isEqualTo(5L);
+    assertThat(new MajorityCommittedAllFailedException("ALL quorum not reached").getLogIndex()).isEqualTo(-1L);
   }
 
   /** Issue #8781: a closed state machine applies nothing more, so the committing thread publishes. */

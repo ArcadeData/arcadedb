@@ -757,13 +757,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), preparedAt) :
           broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
-      // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide and this leader's state
-      // machine has applied it (the MAJORITY acknowledgement follows the local apply), so the local commit is completed
-      // before the failure is reported, to prevent a permanent divergence of the leader.
+      // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide, so the local commit is
+      // completed before the failure is reported, to prevent a permanent divergence of this node. The MAJORITY
+      // acknowledgement follows an apply, but not necessarily THIS node's: a replica's, or a deposed leader's, apply
+      // thread may still be behind the entry (issue #8781).
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; completing the local commit to prevent leader divergence: db=%s",
           getName());
-      concludeAfterMajorityCommit(local, stateMachine, payload, e.getLogIndex());
+      concludeAfterMajorityCommit(local, leader, stateMachine, payload, e.getLogIndex());
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait timed out before we
@@ -892,10 +893,28 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * The entry's index, or when the exception lost it this node's current Raft commit index, the closest bound it has: the
+   * wait then covers at least every entry this node already knows committed, rather than releasing the commit locks on
+   * a page cache the apply may still be about to advance (#5503).
+   */
+  private long committedLogIndexOrCommitIndex(final long committedLogIndex) {
+    if (committedLogIndex > 0)
+      return committedLogIndex;
+    final RaftHAServer raft = raftHAServer;
+    final long commitIndex = raft != null ? raft.getCommitIndex() : -1L;
+    LogManager.instance().log(this, Level.WARNING,
+        "MAJORITY-committed transaction on database '%s' carries no log index; waiting for the local commit index %d instead",
+        getName(), commitIndex);
+    return commitIndex;
+  }
+
+  /**
    * Whether {@code stateMachine} still applies entries on this node: not closed, not replaced by a Ratis restart, and
    * no shutdown requested. Only when it does not can the committing thread publish an acknowledged entry itself
    * without racing an apply of the same entry (issue #8781).
    */
+  // Evaluated once: a state machine closing right after it answers live leaves the transaction released unpublished
+  // after the bounded wait, which the log replay on restart covers, since a shutdown is what closes it.
   private boolean isLive(final ArcadeStateMachine stateMachine) {
     final RaftHAServer raft = raftHAServer;
     return raft != null && !raft.isShutdownRequested() && raft.getStateMachine() == stateMachine && !stateMachine.isClosed();
@@ -1052,16 +1071,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Completes the local commit after a MAJORITY commit whose ALL-quorum watch failed. The caller reports the watch
    * failure itself, so a local failure here is logged and recovered from (reconcile, step down) rather than surfaced.
    */
-  private void concludeAfterMajorityCommit(final LocalCommit local, final ArcadeStateMachine stateMachine,
+  private void concludeAfterMajorityCommit(final LocalCommit local, final boolean leader, final ArcadeStateMachine stateMachine,
       final ReplicationPayload payload, final long committedLogIndex) {
     try {
-      // Same rule as the acknowledged path: a registration the apply thread never claimed is applied from its WAL bytes
-      // by a live state machine (issue #8781), so this thread only waits and releases; it publishes only when no state
-      // machine is left to do it.
+      // Same rule as the acknowledged path (issue #8781): an entry nobody claimed is applied from its WAL bytes by this
+      // node's state machine - always on a replica, on a leader while its state machine lives - so this thread only
+      // waits and releases; it publishes only when no state machine is left to do it.
       if (local != null && !stateMachine.withdrawLocalCommit(local))
         concludeLocalCommit(local, payload);
-      else if (local != null && isLive(stateMachine))
-        awaitLocalApplyAndRelease(payload, committedLogIndex);
+      else if (!leader || (local != null && isLive(stateMachine)))
+        awaitLocalApplyAndRelease(payload, committedLogIndexOrCommitIndex(committedLogIndex));
       else
         commitLocallyWithoutStateMachine(payload);
     } catch (final TransactionCommittedRemotelyException e) {

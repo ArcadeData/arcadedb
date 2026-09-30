@@ -22,6 +22,9 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Thrown by {@link RaftGroupCommitter} when the Raft MAJORITY quorum was committed (meaning
  * Ratis already called {@code applyTransaction()} on the leader with the origin-skip) but the
@@ -40,14 +43,17 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
  * remotely failure the HTTP layer answers it 409 "do not retry" instead.
  */
 public class MajorityCommittedAllFailedException extends TransactionCommittedRemotelyException {
+  private static final Pattern LOG_INDEX = Pattern.compile("logIndex=(\\d+)");
+
   private final long logIndex;
 
+  /** Also what a follower rebuilds the leader's exception with: the index is read back from the message. */
   public MajorityCommittedAllFailedException(final String message) {
-    this(message, null, -1L);
+    this(message, null, parseLogIndex(message));
   }
 
   public MajorityCommittedAllFailedException(final String message, final Throwable cause) {
-    this(message, cause, -1L);
+    this(message, cause, parseLogIndex(message));
   }
 
   /** @param logIndex the Raft log index the entry committed at, or {@code -1} when unknown (e.g. rebuilt from a remote reply) */
@@ -59,5 +65,12 @@ public class MajorityCommittedAllFailedException extends TransactionCommittedRem
   /** The Raft log index the entry committed at, or {@code -1} when unknown. */
   public long getLogIndex() {
     return logIndex;
+  }
+
+  private static long parseLogIndex(final String message) {
+    if (message == null)
+      return -1L;
+    final Matcher matcher = LOG_INDEX.matcher(message);
+    return matcher.find() ? Long.parseLong(matcher.group(1)) : -1L;
   }
 }
