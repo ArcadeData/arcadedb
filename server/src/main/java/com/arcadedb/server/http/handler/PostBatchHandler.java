@@ -1472,6 +1472,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return bytesRead;
     }
 
+    /** The cap this body enforces, {@code <= 0} when uncapped. */
+    long getMaxBodySize() {
+      return maxBodySize;
+    }
+
     /** Whether the parser reached the end of the request body. */
     boolean isEndOfBody() {
       return endOfBody;
@@ -1909,30 +1914,40 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .toString());
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within deadlineMs - the failure #7526/#7542 were
-      // filed about: previously nothing bounded this wait at all.
+      // filed about: previously nothing bounded this wait at all. The body may have been cut by our own cap first.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
           .toString());
     } catch (final Exception e) {
-      // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException,
-      // so ask the stream, and rethrow so sendMappedErrorResponse answers the same 413 the leader would.
-      final RequestTooBigException tooBig = body.refusedOverCap();
-      if (tooBig != null) {
-        // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
-        LogManager.instance().log(this, Level.WARNING,
-            "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
-                + "exceeded '%s' (currently %,d bytes) on this node. Raise that setting or split the payload; the "
-                + "leader's log reports what it loaded before the relay was cut", null, databaseName,
-            body.getBytesRead(), GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
-            httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
-        throw tooBig;
-      }
+      // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503, new JSONObject()
           .put("error", "Error forwarding batch to leader: " + e.getMessage())
           .toString());
     }
+  }
+
+  /**
+   * Rethrows the refusal of a forwarded body that this node's own cap cut off mid-relay (issue #8161), so
+   * sendMappedErrorResponse answers the same 413 the leader would rather than a leader-blaming 503/504. The stream
+   * is asked, not the exception, because the JDK client reports the refusal only as the cause of a plain
+   * IOException. Connect failures need no check: the body is not read before the connection is up.
+   */
+  private void rethrowIfRefusedOverCap(final CountingInputStream body, final String databaseName)
+      throws RequestTooBigException {
+    final RequestTooBigException tooBig = body.refusedOverCap();
+    if (tooBig == null)
+      return;
+    // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
+    LogManager.instance().log(this, Level.WARNING,
+        "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
+            + "exceeded '%s' (%,d bytes) on this node. Raise that setting or split the payload; the leader's log "
+            + "reports what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
+        GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(), body.getMaxBodySize());
+    throw tooBig;
   }
 
   /**
