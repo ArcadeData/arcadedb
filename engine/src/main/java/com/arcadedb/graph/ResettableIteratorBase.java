@@ -33,6 +33,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   private         int              neighborBucketId = -1;
   private         long             neighborPosition = -1;
   private         boolean          neighborFiltered = false;
+  private         ChainCycleGuard  cycleGuard;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -69,6 +70,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   @Override
   public void reset() {
     this.currentContainer = initialContainer;
+    cycleGuard = null;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
     browsed = 0;
   }
@@ -82,6 +84,9 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    * {@link VertexIterator}, {@link RIDIterator} and {@link IteratorFilterBase} all call this instead of hopping
    * {@code currentContainer} directly.
    * <p>
+   * A longer cycle (A to B to A) ends the walk the same way, detected by a {@link ChainCycleGuard} created on the first
+   * hop (#8713).
+   * <p>
    * On such a chain the corruption ENDS the walk silently, matching every other consumer of this guard: none of
    * them logs, so a self-loop is reported by {@code CHECK DATABASE} - which is what a corrupted database calls for
    * a diagnosis - rather than by an ordinary traversal.
@@ -92,10 +97,16 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
    */
   protected final EdgeSegment moveToPreviousChunk() {
     final RID currentIdentity = currentContainer.getIdentity();
+    if (cycleGuard == null)
+      cycleGuard = new ChainCycleGuard(initialContainer.getIdentity());
     currentContainer = currentContainer.getPrevious();
-    if (currentContainer != null && currentIdentity != null && currentIdentity.equals(currentContainer.getIdentity()))
-      // THE CHUNK'S "previous" POINTER NAMES ITSELF: STOP INSTEAD OF LOOPING FOREVER
-      currentContainer = null;
+    if (currentContainer != null) {
+      final RID previousIdentity = currentContainer.getIdentity();
+      if (currentIdentity != null && currentIdentity.equals(previousIdentity)
+          // THE CHUNK'S "previous" POINTER NAMES ITSELF, OR THE CHAIN CLOSES ON A CHUNK ALREADY WALKED: STOP INSTEAD OF LOOPING FOREVER
+          || previousIdentity != null && cycleGuard.revisits(previousIdentity))
+        currentContainer = null;
+    }
     return currentContainer;
   }
 
@@ -106,6 +117,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
     final EdgeSegment savedContainer = currentContainer;
     final int savedCurrentPosition = currentPosition.get();
     final int savedBrowsed = browsed;
+    final ChainCycleGuard savedGuard = cycleGuard == null ? null : cycleGuard.copy();
 
     try {
       while (hasNext()) {
@@ -117,6 +129,7 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
       currentContainer = savedContainer;
       currentPosition.set(savedCurrentPosition);
       browsed = savedBrowsed;
+      cycleGuard = savedGuard;
     }
 
     return total;

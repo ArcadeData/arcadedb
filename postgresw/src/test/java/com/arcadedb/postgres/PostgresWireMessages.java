@@ -108,12 +108,19 @@ final class PostgresWireMessages {
   }
 
   static void sendExecute(final DataOutputStream out, final String portalName) throws Exception {
+    sendExecute(out, portalName, 0);
+  }
+
+  /**
+   * @param maxRows the Execute message's int32 row limit, 0 meaning no limit
+   */
+  static void sendExecute(final DataOutputStream out, final String portalName, final int maxRows) throws Exception {
     final ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeCString(body, portalName);
-    body.write(0);
-    body.write(0);
-    body.write(0);
-    body.write(0); // int32 row limit = 0 (no limit)
+    body.write(maxRows >>> 24);
+    body.write(maxRows >>> 16);
+    body.write(maxRows >>> 8);
+    body.write(maxRows);
     sendMessage(out, 'E', body);
   }
 

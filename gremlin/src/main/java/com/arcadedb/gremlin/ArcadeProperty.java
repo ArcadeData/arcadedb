@@ -72,6 +72,8 @@ public class ArcadeProperty<T> implements Property<T> {
     this.graph.tx().readWrite();
 
     final MutableDocument mutableElement = element.baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
     mutableElement.remove(key);
     mutableElement.save();
     if (mutableElement != element.baseElement)

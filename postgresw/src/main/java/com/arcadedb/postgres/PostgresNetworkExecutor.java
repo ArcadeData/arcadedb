@@ -791,9 +791,11 @@ public class PostgresNetworkExecutor extends Thread {
           writeCommandComplete("COPY", rows);
         }
       } else {
-        if (portal.showName != null)
-          // SHOW answers the value as it stands at THIS Execute, as PostgreSQL does, not the one fixed at Parse
-          portal.cachedResultSet = showResultSet(portal.showName);
+        if (portal.showName != null && portal.resultCursor == 0)
+          // SHOW answers the value as it stands at THIS Execute, as PostgreSQL does, not the one fixed at Parse. Only
+          // until its first row has gone out: a fetch-size cursor continuing a suspended SHOW ALL must keep slicing
+          // the answer it started on, and a drained one must stay drained (issue #8708)
+          portal.fullResultSet = showResultSet(portal.showName);
         if (!portal.executed) {
           final long engineStart = System.nanoTime();
           final ResultSet resultSet = runPortalQuery(portal);
@@ -883,9 +885,8 @@ public class PostgresNetworkExecutor extends Thread {
           // rather than before them: PortalSuspended when this slice stopped short of fullResultSet with the
           // row-limit reached, CommandComplete once the portal is fully drained - tagged with resultCursor,
           // the running total across every slice this portal has sent (matching PostgreSQL's own convention),
-          // when this portal is the paginated fullResultSet-backed kind; a portal whose cachedResultSet was
-          // set directly (a synthetic single-row answer - SHOW/catalog/etc.) never touches resultCursor, so it
-          // keeps reporting its own size exactly as before this fix.
+          // when this portal is the paginated fullResultSet-backed kind. Every portal that produces rows is that
+          // kind, including the ones answered at Parse (SHOW, system and catalog answers, issue #8708).
           if (portal.suspended)
             portalSuspendedResponse();
           else
@@ -3066,8 +3067,10 @@ public class PostgresNetworkExecutor extends Thread {
         // value again, since a BEGIN ISOLATION or a SET between Parse and Execute changes it
         portal.showName = portal.query.substring(5);
         portal.executed = true;
-        portal.cachedResultSet = showResultSet(portal.showName);
-        portal.columns = getColumns(portal.cachedResultSet);
+        // Held as the portal's full result, so the one slicing path in executeCommand honours the Execute row limit
+        // for SHOW ALL as for any other multi-row answer (issue #8708)
+        portal.fullResultSet = showResultSet(portal.showName);
+        portal.columns = getColumns(portal.fullResultSet);
 
       } else if (PostgresCopyStatement.isCopy(portal.query)) {
         // COPY ... TO STDOUT (issue #7188): the Arrow ADBC driver sends it through Parse/Bind/Describe/Execute
@@ -3095,7 +3098,8 @@ public class PostgresNetworkExecutor extends Thread {
           portal.catalogQuery = true;
         } else if (catalogAnswer != null) {
           portal.executed = true;
-          portal.cachedResultSet = catalogAnswer.rows();
+          // Sliced by the Execute row limit exactly like the same catalog query with bound parameters (issue #8708)
+          portal.fullResultSet = catalogAnswer.rows();
           portal.columns = catalogAnswer.columns();
         } else {
           switch (portal.language) {
@@ -3986,8 +3990,8 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void createResultSet(final PostgresPortal portal, final Object... elements) {
     portal.executed = true;
-    portal.cachedResultSet = createResultSet(elements);
-    portal.columns = getColumns(portal.cachedResultSet);
+    portal.fullResultSet = createResultSet(elements);
+    portal.columns = getColumns(portal.fullResultSet);
   }
 
   private List<Result> createResultSet(final Object... elements) {

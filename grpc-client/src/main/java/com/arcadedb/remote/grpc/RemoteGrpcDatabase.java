@@ -456,7 +456,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             throw new TransactionException("Transaction was not committed on the server: " + response.getMessage());
           }
         } catch (StatusRuntimeException | StatusException e) {
-          handleGrpcException(e);
+          // UNAVAILABLE ON COMMIT IS AN UNKNOWN OUTCOME, NOT A RETRYABLE REFUSAL (#8711)
+          throw GrpcClientErrorMapper.toCommitException(e);
         } finally {
           transactionId = null;
           setSessionId(null);
