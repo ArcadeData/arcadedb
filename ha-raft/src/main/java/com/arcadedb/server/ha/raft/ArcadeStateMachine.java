@@ -485,6 +485,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, Integer> databasesBeingReplaced = new ConcurrentHashMap<>();
 
+  /**
+   * The databases on which this node, as leader, is running an operation that must not interleave with a replica's
+   * transaction: a DDL (issue #7438), or the drop or reinstall of the database. Counted rather than flagged, since
+   * operations on one database nest and overlap. See {@link #beginLeaderExclusive}.
+   */
+  private final ConcurrentHashMap<String, Integer> databasesExclusiveOnLeader = new ConcurrentHashMap<>();
+
   // Wall-clock of the END of the last leadership hand-off attempted by handOffLeadershipWhileReplacingDatabase(); 0 =
   // none yet. Throttles the retry of a hand-off that failed, so a cluster with no eligible peer is not put through an
   // election on every health tick. Measured from the end, not the start (issue #8556): an attempt can outlast the
@@ -1273,6 +1280,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Database '" + databaseName + "' is being replaced with a copy from another node, so the leader cannot "
               + "validate the transaction against it right now. Please retry"));
 
+    // Not accepted while this leader runs a DDL, a drop or a reinstall on the database (issue #7438). A DDL publishes its
+    // pages locally BEFORE its SCHEMA_ENTRY is appended, so an entry validated against the pre-DDL version in between
+    // claims the same next version as the DDL's embedded WAL and the followers would splice the two; the write lock that
+    // excludes the leader's own writers says nothing about a replica's. Only entries of other nodes: the leader's own
+    // writers are already excluded by that lock. The check is repeated after the reservation below.
+    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName))
+      return context.build().setException(exclusiveOperationRefusal(databaseName));
+
     final PageVersionLedger.EntryId entryId = new PageVersionLedger.EntryId(request.getClientId(), request.getCallId());
     // Decoded once: the same page list serves the validation here, the confirmation at append and the release at apply.
     final PageVersionLedger.Pages pages;
@@ -1296,7 +1311,63 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(e);
     }
 
+    // The second half of the check above, which alone leaves a window: an entry can pass it just before the operation
+    // registers and reserve just after. Registration happens BEFORE the operation waits for the reservations in flight
+    // (beginLeaderExclusive), so an entry either sees the registration here and backs out, or its reservation is one the
+    // operation waits for. Neither order lets it slip in unseen.
+    if (!isLocalOrigin && databaseName != null && databasesExclusiveOnLeader.containsKey(databaseName)) {
+      pageVersions.release(databaseName, pages, decoded.walData());
+      return context.build().setException(exclusiveOperationRefusal(databaseName));
+    }
+
     return context.setStateMachineContext(new AppendedEntry(isLocalOrigin, decoded, entryId, pages)).build();
+  }
+
+  private static NeedRetryException exclusiveOperationRefusal(final String databaseName) {
+    return new NeedRetryException("Database '" + databaseName + "' is running a schema change, or being dropped or "
+        + "reinstalled, on the leader, so the leader cannot accept a transaction on it right now. Please retry");
+  }
+
+  /**
+   * Makes this leader exclusive on the database for the duration of a DDL, a drop or a reinstall (issue #7438): from
+   * here until the matching {@link #endLeaderExclusive}, transaction entries of other nodes for it are refused with a
+   * retryable error, and the call itself returns only once the entries the leader had already accepted are applied.
+   * <p>
+   * The order is what makes it work: the database is registered first, so nothing new is accepted, and only then does
+   * the call wait for the reservations of the entries that were. Once it returns, every page the log has given a
+   * version to is on this node, and nothing can be given one until the operation ends - so the DDL's own pages are
+   * published against the versions the followers hold, and its {@code SCHEMA_ENTRY} takes the next place in the log
+   * with no other entry claiming those versions.
+   * <p>
+   * The wait is bounded by {@code drainTimeoutMs}: an entry that cannot be applied must not hold the caller, which is
+   * usually holding the database write lock, for ever. The registration stays either way. Never throws; an
+   * interruption ends the wait, keeps the registration and re-sets the interrupt flag.
+   *
+   * @return {@code true} when nothing was left in flight, {@code false} when the wait gave up
+   */
+  boolean beginLeaderExclusive(final String databaseName, final long drainTimeoutMs) {
+    databasesExclusiveOnLeader.merge(databaseName, 1, Integer::sum);
+    final long deadline = System.currentTimeMillis() + drainTimeoutMs;
+    while (pageVersions.liveReservations(databaseName) > 0) {
+      if (System.currentTimeMillis() >= deadline) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' still has %d page version(s) reserved by entries not applied yet after %d ms; the schema change "
+                + "or database operation goes ahead", databaseName, pageVersions.liveReservations(databaseName), drainTimeoutMs);
+        return false;
+      }
+      try {
+        Thread.sleep(2);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Ends one registration taken by {@link #beginLeaderExclusive}. */
+  void endLeaderExclusive(final String databaseName) {
+    databasesExclusiveOnLeader.computeIfPresent(databaseName, (name, count) -> count <= 1 ? null : count - 1);
   }
 
   /**
