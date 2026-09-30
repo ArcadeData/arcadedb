@@ -126,8 +126,8 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
 
   @Test
   void writeDuringIterationDoesNotChangeTheScanThatAlreadyStarted() {
-    // A scan is decided at its first pull and reads the pages committed at that point, like a cursor that is
-    // insensitive to later writes: what the transaction writes while it drains is not fed back into it
+    // A scan is decided at its first pull, and its workers read committed pages: what the transaction writes while it
+    // drains is not fed back into it (no statement snapshot, though: a foreign commit can reach pages read later)
     database.begin();
     try {
       long rows = 0;

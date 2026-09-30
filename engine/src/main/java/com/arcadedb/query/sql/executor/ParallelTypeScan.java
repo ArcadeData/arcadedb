@@ -167,8 +167,8 @@ final class ParallelTypeScan {
    * there is not enough to share.
    * <p>
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
-   * those writes back into a scan already running: like a cursor insensitive to later writes, it reads the pages
-   * committed when it started.
+   * those writes back into a scan already running, whose workers read committed pages. This is not a statement
+   * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
