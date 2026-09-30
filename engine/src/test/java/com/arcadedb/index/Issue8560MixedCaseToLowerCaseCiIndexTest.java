@@ -103,6 +103,13 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
   }
 
   @Test
+  void parameterizedRangeAnswersWhatTheScanAnswers() {
+    // A bound parameter cannot be judged at plan time, so the range is evaluated without the index: same rows either way
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= :p", Map.of("p", "C"))).containsExactlyInAnyOrder("John", "MARY", "anne", "Bob");
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= :p", Map.of("p", "c"))).containsExactlyInAnyOrder("John", "MARY");
+  }
+
+  @Test
   void rangeOperatorsAgreeWithTheSubqueryForm() {
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'A' AND name.toLowerCase() < 'C'")).isEmpty();
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'a' AND name.toLowerCase() < 'c'")).containsExactlyInAnyOrder("anne", "Bob");

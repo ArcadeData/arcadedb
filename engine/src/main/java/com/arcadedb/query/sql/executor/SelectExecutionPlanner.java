@@ -4606,7 +4606,7 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
-          if (ciCollation && isLowerCaseRewrite(singleExp, info)) {
+          if (ciCollation && needsLowerCaseResidual(singleExp, info)) {
             if (lowerCaseRewrites == null)
               lowerCaseRewrites = new ArrayList<>(2);
             lowerCaseRewrites.add(singleExp);
@@ -4628,7 +4628,7 @@ public class SelectExecutionPlanner {
                   || next instanceof BinaryCondition other && BinaryCondition.isLowerCaseLiteral(other.getRight(), context))) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
-                if (ciCollation && isLowerCaseRewrite(next, info)) {
+                if (ciCollation && needsLowerCaseResidual(next, info)) {
                   if (lowerCaseRewrites == null)
                     lowerCaseRewrites = new ArrayList<>(2);
                   lowerCaseRewrites.add(next);
@@ -4666,6 +4666,30 @@ public class SelectExecutionPlanner {
     }
 
     return null;
+  }
+
+  /**
+   * True when a condition answered through {@code field.toLowerCase()} must still be checked on what the index returns:
+   * an equality or IN whose operand is not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is
+   * index-aware only with lower-case literal bounds, and an operand that is its own lower-case form is probed as written,
+   * so neither needs the check (issue #8560).
+   */
+  private static boolean needsLowerCaseResidual(final BooleanExpression expression, final IndexSearchInfo info) {
+    if (!isLowerCaseRewrite(expression, info))
+      return false;
+    final CommandContext context = info.getContext();
+    if (expression instanceof BinaryCondition condition)
+      return condition.getOperator() instanceof EqualsCompareOperator && !BinaryCondition.isLowerCaseLiteral(condition.getRight(), context);
+    if (expression instanceof InCondition in) {
+      final MathExpression right = in.getRightMathExpression();
+      if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+        return true;
+      for (final Object value : values)
+        if (!(value instanceof String string) || !string.equals(string.toLowerCase(Locale.ROOT)))
+          return true;
+      return false;
+    }
+    return false;
   }
 
   /**

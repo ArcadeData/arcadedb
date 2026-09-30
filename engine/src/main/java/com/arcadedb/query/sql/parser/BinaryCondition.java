@@ -364,18 +364,18 @@ public class BinaryCondition extends BooleanExpression {
       }
     }
   }
-  /**
-   * Checks if an expression matches the pattern: field.toLowerCase() — a base identifier
-   * followed by a single toLowerCase() method call with no further chaining.
-   * <p>
-   * Package-private so {@link BetweenCondition} can reuse it for the same CI-index optimization on ranges.
-   */
   /** True when {@code expression} is a literal string that is its own lower-case form. */
   public static boolean isLowerCaseLiteral(final Expression expression, final CommandContext context) {
     return expression.isLiteral() && expression.execute((Result) null, context) instanceof final String string
         && string.equals(string.toLowerCase(Locale.ROOT));
   }
 
+  /**
+   * Checks if an expression matches the pattern: field.toLowerCase() — a base identifier
+   * followed by a single toLowerCase() method call with no further chaining.
+   * <p>
+   * Public so {@link BetweenCondition}, {@link InCondition} and the planner can reuse it for the same CI-index optimization.
+   */
   public static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
     if (expr == null || expr.getMathExpression() == null)
       return false;

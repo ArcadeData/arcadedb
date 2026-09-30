@@ -85,16 +85,29 @@ public final class DistinctNumericKey {
     // Lists and maps are equal under Cypher's = when their elements are, so [1] and [1.0] share a key (issue #8561). A lazy
     // range is left alone: walking it would materialise what it exists not to, and its elements are all Longs already
     if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
-      final List<Object> key = new ArrayList<>(list.size());
-      for (final Object element : list)
-        key.add(canonicalize(element));
-      return key;
+      // Copied only when an element changes: the usual list of strings or already canonical numbers is its own key
+      List<Object> key = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object element = list.get(i);
+        final Object canonical = canonicalize(element);
+        if (key == null && canonical != element) {
+          key = new ArrayList<>(list);
+        }
+        if (key != null)
+          key.set(i, canonical);
+      }
+      return key != null ? key : value;
     }
     if (value instanceof Map<?, ?> map) {
-      final Map<Object, Object> key = new HashMap<>(Math.max(4, map.size() * 2));
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        key.put(entry.getKey(), canonicalize(entry.getValue()));
-      return key;
+      Map<Object, Object> key = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object canonical = canonicalize(entry.getValue());
+        if (key == null && canonical != entry.getValue())
+          key = new HashMap<>(map);
+        if (key != null)
+          key.put(entry.getKey(), canonical);
+      }
+      return key != null ? key : value;
     }
 
     if (value instanceof Identifiable identifiable) {

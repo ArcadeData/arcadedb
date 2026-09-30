@@ -1293,6 +1293,8 @@ public class PostgresNetworkExecutor extends Thread {
     return parameters;
   }
 
+  private static final int MAX_STATEMENT_PARAMETERS = 65535;
+
   /**
    * The answer to a catalog query: the rows to send, and the columns to announce them under. The columns are
    * carried rather than inferred from the rows so that an answer with no rows in it still describes itself,
@@ -1695,8 +1697,6 @@ public class PostgresNetworkExecutor extends Thread {
    * but a shape whose resolver needs a value to recognise it declines the query while the parameters are unbound, so it is
    * asked again with a placeholder for each of them: only the columns are kept, never the rows of that probe (issue #8562).
    */
-  private static final int MAX_STATEMENT_PARAMETERS = 65535;
-
   private Map<String, PostgresType> describeCatalogColumns(final String query) {
     CatalogAnswer answer = handleCatalogQuery(query);
     if (answer != null && !answer.columns().isEmpty())
