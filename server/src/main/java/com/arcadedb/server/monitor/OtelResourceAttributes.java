@@ -85,7 +85,7 @@ public final class OtelResourceAttributes {
   /**
    * Parses the {@code key1=value1,key2=value2} format of {@code OTEL_RESOURCE_ATTRIBUTES}. Values are percent-decoded
    * as the specification requires; an entry with no {@code =} or an empty key is skipped rather than failing the
-   * plugin, and a value whose percent-encoding is malformed is kept as written.
+   * plugin, and a value whose percent-encoding is malformed, or decodes to bytes that are not UTF-8, is kept as written.
    */
   static Map<String, String> parseResourceAttributes(final String raw) {
     final Map<String, String> attributes = new LinkedHashMap<>();
@@ -110,7 +110,12 @@ public final class OtelResourceAttributes {
     try {
       // URLDecoder is form decoding, which also turns '+' into a space; the specification asks for percent-decoding
       // only, so a literal '+' is protected first.
-      return URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
+      final String decoded = URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
+      // URLDecoder does not throw on bytes that are not valid UTF-8 (e.g. %FF): it substitutes U+FFFD. Keep the raw
+      // value instead, the same way a malformed escape is kept, rather than report a silently mangled one.
+      if (decoded.indexOf('\uFFFD') >= 0 && value.indexOf('\uFFFD') < 0)
+        return value;
+      return decoded;
     } catch (final IllegalArgumentException e) {
       return value;
     }

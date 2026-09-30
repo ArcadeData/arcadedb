@@ -114,7 +114,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * probes. It is a plain context entry, never a key value: key values become span attributes and meter tags, and the
    * raw path is client-controlled.
    */
-  public static final String                OBSERVATION_REQUEST_PATH = "arcadedb.http.request.path";
+  public static final String OBSERVATION_REQUEST_PATH = "arcadedb.http.request.path";
   // Request body parsed as a top-level JSON array (issue #5415). A JSON array is a legitimate request body,
   // but it is not a JSONObject, so it cannot travel in the `payload` argument of execute(). It is parsed
   // once by the shared request pipeline and attached here, where a handler reads it back with

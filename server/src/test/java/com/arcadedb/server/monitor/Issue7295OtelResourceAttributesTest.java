@@ -91,12 +91,13 @@ class Issue7295OtelResourceAttributesTest {
   @Test
   void resourceAttributeValuesArePercentDecodedAndMalformedEntriesSkipped() {
     final Map<String, String> attributes = OtelResourceAttributes.parseResourceAttributes(
-        "team=graph%20db,plus=a+b,broken=%zz,noequals,=novalue,,k8s.pod.name=arcadedb-0");
+        "team=graph%20db,plus=a+b,broken=%zz,notutf8=a%FFb,noequals,=novalue,,k8s.pod.name=arcadedb-0");
 
     assertThat(attributes).containsExactly(
         Map.entry("team", "graph db"),
         Map.entry("plus", "a+b"),
         Map.entry("broken", "%zz"),
+        Map.entry("notutf8", "a%FFb"),
         Map.entry("k8s.pod.name", "arcadedb-0"));
   }
 }

@@ -1532,7 +1532,7 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_TRACING_EXCLUDED_PATHS("arcadedb.serverMetrics.tracing.excludedPaths", SCOPE.SERVER, """
       Comma-separated HTTP request paths that never produce a trace span, matched exactly against the request path \
-      (query string excluded). The default leaves out the readiness and health probes, which a container \
+      (query string excluded, one trailing slash ignored, no wildcards). The default leaves out the readiness and health probes, which a container \
       orchestrator or load balancer calls every few seconds and which would otherwise flood the trace backend \
       with noise (issue #7295). Set it to an empty string to trace every request. Read when the tracing plugin \
       starts.""", String.class, "/api/v1/ready,/api/v1/health"),

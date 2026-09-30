@@ -239,19 +239,33 @@ public class TracingPlugin implements ServerPlugin {
 
   /**
    * Parses {@link GlobalConfiguration#SERVER_METRICS_TRACING_EXCLUDED_PATHS} into an array scanned on every traced
-   * request: blank entries are dropped, so an empty setting traces everything.
+   * request: blank entries are dropped, so an empty setting traces everything, and a trailing {@code /} is removed so
+   * {@code /api/v1/ready/} in the setting means the same as {@code /api/v1/ready}.
    */
   static String[] excludedPaths(final ContextConfiguration configuration) {
     final String raw = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_TRACING_EXCLUDED_PATHS);
     if (raw == null || raw.isBlank())
       return new String[0];
-    return Arrays.stream(raw.split(",")).map(String::trim).filter(p -> !p.isEmpty()).distinct().toArray(String[]::new);
+    return Arrays.stream(raw.split(",")).map(String::trim).filter(p -> !p.isEmpty()).map(TracingPlugin::withoutTrailingSlash)
+        .distinct().toArray(String[]::new);
+  }
+
+  /**
+   * Drops one trailing {@code /} (never from the root path itself), so a request for {@code /api/v1/ready/} matches the
+   * {@code /api/v1/ready} entry.
+   */
+  static String withoutTrailingSlash(final String path) {
+    return path.length() > 1 && path.charAt(path.length() - 1) == '/' ? path.substring(0, path.length() - 1) : path;
   }
 
   /**
    * Leaves the HTTP requests whose raw path is one of the excluded paths untraced: returning {@code false} makes the
    * registry hand out the no-op Observation, so no span, no scope and no child span is created for a readiness or
    * health probe. Like the handler, it cannot be removed from the registry, so {@link #stopService()} deactivates it.
+   * <p>
+   * The predicate is registry-wide: it applies to any Observation whose context carries
+   * {@link AbstractServerHttpHandler#OBSERVATION_REQUEST_PATH}. Today only the HTTP request Observation sets it; a future
+   * Observation that sets it too is subject to the exclusion list as well.
    */
   private static final class ExcludedPathsPredicate implements ObservationPredicate {
     private final String[]      excludedPaths;
@@ -269,9 +283,10 @@ public class TracingPlugin implements ServerPlugin {
     public boolean test(final String name, final Observation.Context context) {
       if (!active.get())
         return true;
-      final Object path = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
-      if (path == null)
+      final Object requestPath = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
+      if (!(requestPath instanceof String))
         return true;
+      final String path = withoutTrailingSlash((String) requestPath);
       for (final String excluded : excludedPaths)
         if (excluded.equals(path))
           return false;

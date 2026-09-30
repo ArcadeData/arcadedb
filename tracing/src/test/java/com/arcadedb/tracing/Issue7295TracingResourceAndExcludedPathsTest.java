@@ -77,6 +77,9 @@ class Issue7295TracingResourceAndExcludedPathsTest {
       });
       httpObservation(registry, "/api/v1/health").observe(() -> {
       });
+      // A trailing slash does not smuggle a probe past the exclusion.
+      httpObservation(registry, "/api/v1/ready/").observe(() -> {
+      });
       assertThat(exporter.getFinishedSpanItems()).as("probe requests must not produce spans").isEmpty();
 
       httpObservation(registry, "/api/v1/query/graph").observe(() -> {
@@ -90,7 +93,7 @@ class Issue7295TracingResourceAndExcludedPathsTest {
   @Test
   void excludedPathsAreConfigurableAndAnEmptySettingTracesEverything() {
     final ContextConfiguration custom = new ContextConfiguration();
-    custom.setValue(GlobalConfiguration.SERVER_METRICS_TRACING_EXCLUDED_PATHS, " /prometheus , ,/api/v1/ready");
+    custom.setValue(GlobalConfiguration.SERVER_METRICS_TRACING_EXCLUDED_PATHS, " /prometheus/ , ,/api/v1/ready, /api/v1/ready/");
     assertThat(TracingPlugin.excludedPaths(custom)).containsExactly("/prometheus", "/api/v1/ready");
 
     final ContextConfiguration none = new ContextConfiguration();
