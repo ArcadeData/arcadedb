@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
@@ -342,8 +343,7 @@ public class CypherOptimizer {
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
       variable = rangeScan.getVariable();
       label = rangeScan.getLabel();
-    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator
-        && labelScan.getWhereFilter() == null) {
+    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator) {
       variable = labelScan.getVariable();
       label = labelScan.getLabel();
     } else
@@ -366,11 +366,6 @@ public class CypherOptimizer {
     }
 
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
-      // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700). An index the
-      // schema no longer offers cannot give an order either
-      final TypeIndex scanIndex = type.getPolymorphicIndexByProperties(rangeScan.getIndexProperties());
-      if (scanIndex == null || (scanIndex.getMetadata() != null && scanIndex.getMetadata().hasAnyCaseInsensitive()))
-        return null;
       final List<String> indexProperties = rangeScan.getIndexProperties();
       if (orderedProperties.size() > indexProperties.size()
           || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
@@ -380,24 +375,66 @@ public class CypherOptimizer {
       return rootOperator;
     }
 
-    // A whole label: nothing may filter it, the index must hold every non-null key, and the null keys it leaves out
-    // come last, so only ascending
-    if (!ascending || orderedProperties.size() != 1 || !logicalPlan.getWhereFilters().isEmpty()
-        || statement.getWhereClause() != null || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
+    // A whole label: nothing may filter it but the exclusion of the null keys, and the index must hold every non-null key
+    if (orderedProperties.size() != 1 || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
       return null;
-    for (final MatchClause matchClause : statement.getMatchClauses())
-      if (matchClause.hasWhereClause())
-        return null;
     final String property = orderedProperties.getFirst();
-    final TypeIndex index = type.getPolymorphicIndexByProperties(property);
-    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
-        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
-        || (index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive()))
+    final boolean excludesNulls = onlyExcludesNullKeys(logicalPlan, variable, property);
+    if (!excludesNulls && ((NodeByLabelScan) anchorOperator).getWhereFilter() != null)
       return null;
+    final TypeIndex index = type.getPolymorphicIndexByProperties(property);
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE)
+      return null;
+
+    final boolean nullKeysInIndex = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
+    final Property schemaProperty = type.getPolymorphicPropertyIfExists(property);
+    // MANDATORY makes the vertex carry the property and NOTNULL its value: NOTNULL alone leaves a vertex that never sets it,
+    // and such a vertex is not in the index either (issue #8701)
+    final boolean everyVertexHasAKey = schemaProperty.isMandatory() && schemaProperty.isNotNull();
+
+    final NodeIndexRangeScan.NullKeys nullKeys;
+    if (everyVertexHasAKey)
+      nullKeys = NodeIndexRangeScan.NullKeys.NONE;
+    else if (excludesNulls)
+      nullKeys = nullKeysInIndex ? NodeIndexRangeScan.NullKeys.SKIPPED_IN_INDEX : NodeIndexRangeScan.NullKeys.NONE;
+    else if (nullKeysInIndex)
+      nullKeys = NodeIndexRangeScan.NullKeys.PLACED_FROM_INDEX;
+    else if (ascending)
+      // The index holds no null key and the null keys sort last: the vertices with none follow the index entries. Descending
+      // they would come first, and only a scan of the label finds them
+      nullKeys = NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL;
+    else
+      return null;
+
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
         index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
-    scan.setIndexOrder(true, true);
+    scan.setIndexOrder(ascending, nullKeys);
     return scan;
+  }
+
+  /**
+   * Whether the only conditions the statement puts on the matched nodes are {@code variable.property IS NOT NULL}, joined
+   * by AND: what the index, which holds no null key unless it has NULL_STRATEGY INDEX, already answers. A statement with no
+   * WHERE at all is not that, it does not exclude anything.
+   */
+  private static boolean onlyExcludesNullKeys(final LogicalPlan logicalPlan, final String variable, final String property) {
+    if (logicalPlan.getWhereFilters().isEmpty())
+      return false;
+    for (final WhereClause whereClause : logicalPlan.getWhereFilters())
+      if (!isNotNullOn(whereClause.getConditionExpression(), variable, property))
+        return false;
+    return true;
+  }
+
+  private static boolean isNotNullOn(final BooleanExpression expression, final String variable, final String property) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return isNotNullOn(wrapper.getBooleanExpression(), variable, property);
+    if (expression instanceof LogicalExpression logical)
+      return logical.getOperator() == LogicalExpression.Operator.AND && isNotNullOn(logical.getLeft(), variable, property)
+          && isNotNullOn(logical.getRight(), variable, property);
+    return expression instanceof IsNullExpression isNull && isNull.isNot()
+        && isNull.getExpression() instanceof PropertyAccessExpression access && variable.equals(access.getVariableName())
+        && property.equals(access.getPropertyName());
   }
 
   /**

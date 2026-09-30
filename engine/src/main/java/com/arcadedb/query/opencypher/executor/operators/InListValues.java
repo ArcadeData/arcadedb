@@ -46,6 +46,13 @@ public final class InListValues {
 
   @Override
   public String toString() {
-    return "IN " + values;
+    // The text of each element, not the element: an EXPLAIN printed the list as object identities (issue #8723)
+    final StringBuilder text = new StringBuilder("IN [");
+    for (int i = 0; i < values.size(); i++) {
+      if (i > 0)
+        text.append(", ");
+      text.append(values.get(i).getText());
+    }
+    return text.append(']').toString();
   }
 }

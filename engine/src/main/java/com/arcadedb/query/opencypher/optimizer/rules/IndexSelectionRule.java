@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionSc
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexUnionSeek;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
@@ -150,6 +151,17 @@ public class IndexSelectionRule implements OptimizationRule {
 
     // For conjunction labels (n:A:B) use the composite type name
     final String labelToUse = Labels.getCompositeTypeName(labels);
+
+    if (anchor.isUnionIndexSeek()) {
+      // An OR of index-served predicates (issue #8723): one seek per disjunct, de-duplicated
+      final int seekCount = anchor.getUnionIndexSeeks().size();
+      final List<NodeIndexSeek> seeks = new ArrayList<>(seekCount);
+      for (final AnchorSelection.UnionIndexSeek branch : anchor.getUnionIndexSeeks())
+        seeks.add(new NodeIndexSeek(anchor.getVariable(), labelToUse, branch.propertyName(), branch.value(),
+            branch.index().getIndexName(), branch.index().getPropertyNames(), branch.keyValues(),
+            anchor.getEstimatedCost() / seekCount, Math.max(1, anchor.getEstimatedCardinality() / seekCount)));
+      return new NodeIndexUnionSeek(anchor.getVariable(), seeks, anchor.getEstimatedCost(), anchor.getEstimatedCardinality());
+    }
 
     if (anchor.useIndex()) {
       if (anchor.isRangeScan()) {
