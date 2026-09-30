@@ -71,9 +71,9 @@ public class GetServerHandler extends AbstractServerHttpHandler {
                                                 .put("serverName", httpServer.getServer().getServerName())
                                                 .put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final String supportId = httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SUPPORT_ID);
-    if (supportId != null && !supportId.isEmpty())
-      response.put("supportId", supportId);
+    final String instanceId = httpServer.getServer().getInstanceId();
+    if (instanceId != null)
+      response.put("instanceId", instanceId);
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 

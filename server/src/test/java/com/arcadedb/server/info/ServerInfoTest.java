@@ -18,10 +18,14 @@
  */
 package com.arcadedb.server.info;
 
-import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.InstanceId;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.InstanceIdResolver;
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,15 +60,11 @@ class ServerInfoTest extends BaseGraphServerTest {
   }
 
   @Test
-  void supportIdIsOmittedWhenNotConfiguredAndReportedWhenSet() {
-    final String id = "123e4567-e89b-12d3-a456-426614174000";
-    assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).has("supportId")).isFalse();
+  void instanceIdIsReportedAndPersistedInTheConfigDirectory() throws Exception {
+    final String id = ServerInfo.toJSON(getServer(0), db -> true, false).getString("instanceId");
 
-    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_ID, id);
-    try {
-      assertThat(ServerInfo.toJSON(getServer(0), db -> true, false).getString("supportId")).isEqualTo(id);
-    } finally {
-      getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_ID, "");
-    }
+    assertThat(InstanceId.isValid(id)).isTrue();
+    assertThat(id).isEqualTo(getServer(0).getInstanceId());
+    assertThat(Files.readString(Path.of(getServer(0).getConfigPath(), InstanceIdResolver.FILE_NAME)).trim()).isEqualTo(id);
   }
 }
