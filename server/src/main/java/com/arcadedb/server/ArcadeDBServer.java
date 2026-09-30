@@ -450,6 +450,9 @@ public class ArcadeDBServer {
 
     status = STATUS.STARTING;
 
+    // A (re)start has not been held by the security-convergence gate yet (issue #8446).
+    securityConvergenceGate.reset();
+
     // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
     awaitingHAWrapper = isHARequested();
 

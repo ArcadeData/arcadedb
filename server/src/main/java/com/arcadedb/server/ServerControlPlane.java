@@ -577,17 +577,26 @@ public class ServerControlPlane {
     // the operator then re-added - as the give-up line tells them to - must be held again, and report its own
     // give-up, rather than inherit a window the previous join already spent. Only a join index that moves FORWARD
     // counts, so a reading that reports none cannot restart the bound.
-    if (joinIndex > gate.joinIndex) {
-      gate.joinIndex = joinIndex;
-      gate.windowOpenedAt = 0L;
-      gate.giveUpLogged = false;
-    }
+    // Shared by the HTTP and gRPC surfaces (issue #8446), so the transition is made once, under the gate's monitor
+    // (double-checked: the lock is taken only when the join moves), and the new index is published LAST: a probe that
+    // reads it is guaranteed to see the cleared window, so no window it then opens is zeroed behind its back.
+    if (joinIndex > gate.joinIndex)
+      synchronized (gate) {
+        if (joinIndex > gate.joinIndex) {
+          gate.windowOpenedAt = 0L;
+          gate.giveUpLogged = false;
+          gate.joinIndex = joinIndex;
+        }
+      }
 
     if (unconverged.isEmpty()) {
       // Converged on an armed reading, or on an unarmed one that reports an install (issue #8432): forget the
       // window. A disarmed reading without an install never gets here (see above), and that is not a detail -
       // resetting on it would restart the bound on every blip of the Raft server, and a node whose HA layer is
       // flapping would never reach the give-up branch at all. The bound has to be a bound.
+      // Not under the gate's monitor (issue #8446): this runs on every converged probe of both surfaces. A reading
+      // that converges at the instant another surface's reading expires the window can clear the give-up flag that
+      // one just set, so a flapping signal may log the give-up twice; a duplicate log line is the whole cost.
       gate.windowOpenedAt = 0L;
       gate.giveUpLogged = false;
       return new SecurityConvergenceStatus(false, List.of(), armed, joinIndex, 0L, false, false, null);
@@ -600,8 +609,7 @@ public class ServerControlPlane {
       // pull a node that has been READY for hours out of the Service because it once led an election.
       if (!gate.giveUpLogged)
         gate.windowOpenedAt = 0L;
-      if (gate.leaderLoggedFor != joinIndex) {
-        gate.leaderLoggedFor = joinIndex;
+      if (gate.claimLeaderLog(joinIndex))
         LogManager.instance().log(this, Level.WARNING,
             "This node leads the cluster while its security documents are still unconfirmed since %s: %s. Nobody can "
                 + "confirm them while it leads, so readiness is not held for them; its security catch-up asks the next "
@@ -609,7 +617,6 @@ public class ServerControlPlane {
                 + "this node may hold a user dropped, a group narrowed or a token revoked while it was away",
             armed ? "it was added to the cluster" : "its snapshot install at index " + joinIndex,
             String.join(", ", unconverged));
-      }
       return new SecurityConvergenceStatus(false, unconverged, armed, joinIndex, gate.windowOpenedAt, gate.giveUpLogged, true,
           null);
     }
@@ -623,10 +630,7 @@ public class ServerControlPlane {
           "Cluster security documents have not reached this node yet: " + String.join(", ", unconverged)
               + ". It is a cluster member enforcing its own copy of them");
 
-    if (!gate.giveUpLogged) {
-      gate.gaveUpDocuments = unconverged;
-      gate.gaveUpArmed = armed;
-      gate.giveUpLogged = true;
+    if (gate.claimGiveUp(unconverged, armed)) {
       if (!armed)
         // A static member (issue #8465): it was never admitted, so 'connect cluster' is not its remedy. What asks the
         // leader again is its own catch-up - on the next leader change, or once per start - or an admission route.
@@ -678,7 +682,7 @@ public class ServerControlPlane {
   }
 
   /** The server's own convergence window, or this instance's when the server has none (a stub in a unit test). */
-  private SecurityConvergenceGate gate() {
+  SecurityConvergenceGate gate() {
     final SecurityConvergenceGate shared = server.getSecurityConvergenceGate();
     return shared != null ? shared : ownGate;
   }
