@@ -20,6 +20,8 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
@@ -167,6 +169,63 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     verify(resp, never()).onCompleted();
   }
 
+  @Test
+  void streamQueryRejectingAnUnauthorizedCallerOnARealTransactionSendsOneTerminalEvenWhenItThrows() {
+    final String txId = beginTransaction();
+    final ServerCallStreamObserver<QueryResult> resp = readyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    // A real transaction id with the wrong password: refused by resolveAuthorizedTransaction's own catch, not by
+    // the unknown-transaction branch the test above drives.
+    final DatabaseCredentials wrongPassword = DatabaseCredentials.newBuilder().setUsername("root")
+        .setPassword(DEFAULT_PASSWORD_FOR_TESTS + "-wrong").build();
+    assertThatCode(() -> service.streamQuery(
+        streamQuery().setCredentials(wrongPassword).setTransaction(txRef(txId)).build(), resp))
+        .doesNotThrowAnyException();
+
+    final ArgumentCaptor<Throwable> error = ArgumentCaptor.forClass(Throwable.class);
+    verify(resp, times(1)).onError(error.capture());
+    assertThat(error.getValue()).isInstanceOf(StatusRuntimeException.class);
+    assertThat(((StatusRuntimeException) error.getValue()).getStatus().getCode()).isNotEqualTo(Status.Code.NOT_FOUND);
+    verify(resp, never()).onCompleted();
+  }
+
+  @Test
+  void streamQueryInsideATransactionWriteTimeoutSendsOneTerminalEvenWhenItThrows() {
+    final String txId = beginTransaction();
+    shortenStreamWriteTimeout();
+    final ServerCallStreamObserver<QueryResult> resp = neverReadyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    assertThatCode(() -> service.streamQuery(streamQuery().setTransaction(txRef(txId)).build(), resp))
+        .doesNotThrowAnyException();
+
+    final ArgumentCaptor<Throwable> error = ArgumentCaptor.forClass(Throwable.class);
+    verify(resp, times(1)).onError(error.capture());
+    assertThat(error.getValue()).hasMessageContaining("DEADLINE_EXCEEDED");
+    verify(resp, never()).onCompleted();
+  }
+
+  /**
+   * A DEADLINE_EXCEEDED terminal that throws something other than a StatusRuntimeException (the "call already
+   * closed" IllegalStateException) must not skip the transaction outcome the request asked for: begin + commit
+   * still commits, so the handler thread is not left holding an open transaction.
+   */
+  @Test
+  void streamQueryWriteTimeoutStillAppliesTheRequestedCommitWhenItsTerminalThrows() {
+    shortenStreamWriteTimeout();
+    final ServerCallStreamObserver<QueryResult> resp = neverReadyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    final TransactionContext beginAndCommit = TransactionContext.newBuilder().setBegin(true).setCommit(true).build();
+    assertThatCode(() -> service.streamQuery(streamQuery().setTransaction(beginAndCommit).build(), resp))
+        .doesNotThrowAnyException();
+
+    verify(resp, times(1)).onError(any());
+    // Transactions are thread-bound and the inline path ran on this thread against the server's database.
+    assertThat(getServer(0).getDatabase(getDatabaseName()).isTransactionActive()).isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // timeSeriesQuery
   // ---------------------------------------------------------------------------------------------------------------
@@ -283,6 +342,7 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     doAnswer(invocation -> {
       if (fired.compareAndSet(false, true)) {
         caller.interrupt();
+        // Only keeps the executor busy, so Future.get() is still waiting (and throws) when the interrupt lands.
         Thread.sleep(500);
       }
       return null;

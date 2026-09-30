@@ -2086,10 +2086,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
-    // Issue #7887: set on this (the sending) thread immediately before every terminal call inside the try, so the
-    // catch below never sends a second terminal when the first one threw - a concurrent client cancel closing the
-    // call under onCompleted()/onError() is the #6756 shape. `cancelled` cannot stand in for it: it is set
-    // asynchronously by the cancel handler and is not ordered against this thread.
+    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one
+    // (#7887). `cancelled` cannot do this: the cancel handler sets it asynchronously.
     boolean terminated = false;
 
     ProtocolContext.set("grpc");
@@ -2163,8 +2161,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
                       + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
                   .asRuntimeException());
-            } catch (final RuntimeException ignore) {
+            } catch (final RuntimeException e) {
               // transport may have closed concurrently; the terminal is already moot
+              LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e.getMessage());
             }
           }
           return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
@@ -2201,9 +2200,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
                     + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
                 .asRuntimeException());
-          } catch (final RuntimeException ignore) {
-            // transport may have closed concurrently (IllegalStateException "call already closed" included); the
-            // terminal is already moot, and the transaction outcome below must still be applied
+          } catch (final RuntimeException e) {
+            // transport may have closed concurrently ("call already closed" included): the terminal is moot, and
+            // the transaction outcome below must still be applied
+            LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e.getMessage());
           }
         }
         if (hasTx) {
@@ -3542,9 +3542,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
     call.setOnCancelHandler(() -> cancelled.set(true));
-    // Issue #7887: set on the sending thread immediately before every terminal inside the try, so a terminal that
-    // throws is never followed by a second one from the catch. Same role, and same reason `cancelled` cannot play
-    // it, as in streamQuery.
+    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one
+    // (#7887). `cancelled` cannot do this: the cancel handler sets it asynchronously.
     boolean terminated = false;
 
     ProtocolContext.set("grpc");
