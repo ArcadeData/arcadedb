@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -40,6 +41,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -332,11 +334,11 @@ public class DeleteStep extends AbstractExecutionStep {
     for (final DeferredDeleteTarget entry : others) {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
-        if (entry.detach() || hasNoEdges(v)) {
+        if (entry.detach() || hasNoEdges(context, v)) {
           if (entry.detach())
             // DETACH removes connected relationships; count each one not already deleted so
             // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deleted`).
-            for (final Edge edge : collectConnectedEdges(v))
+            for (final Edge edge : collectConnectedEdges(context, v))
               deleteObjectStatic(edge, deleted, stats);
           try {
             v.delete();
@@ -362,22 +364,23 @@ public class DeleteStep extends AbstractExecutionStep {
     batch.clear();
   }
 
-  private static boolean hasNoEdges(final Vertex v) {
+  private static boolean hasNoEdges(final CommandContext context, final Vertex v) {
     try {
-      return v.countEdges(Vertex.DIRECTION.BOTH) == 0L;
+      // THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE IS NOT STORED ON THE VERTEX: ASKED THROUGH THE LOOKUP (ISSUE #8676)
+      return IncomingEdgeLookup.countEdges(context, v, Vertex.DIRECTION.BOTH) == 0L;
     } catch (final RecordNotFoundException ignored) {
       // vertex was already removed by the batch flush - treat as isolated
       return true;
     }
   }
 
-  private static List<Edge> collectConnectedEdges(final Vertex v) {
+  private static List<Edge> collectConnectedEdges(final CommandContext context, final Vertex v) {
     final List<Edge> edges = new ArrayList<>();
     try {
       for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT))
         edges.add(e);
-      for (final Edge e : v.getEdges(Vertex.DIRECTION.IN))
-        edges.add(e);
+      for (final Iterator<Edge> it = IncomingEdgeLookup.getEdges(context, v, Vertex.DIRECTION.IN); it.hasNext(); )
+        edges.add(it.next());
     } catch (final RecordNotFoundException ignored) {
       // vertex was already removed by the batch flush - return what was collected so far
     }
@@ -577,7 +580,7 @@ public class DeleteStep extends AbstractExecutionStep {
     } else {
       // Non-DETACH DELETE: check for connected edges
       if (vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() ||
-          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext())
+          IncomingEdgeLookup.getEdges(context, vertex, Vertex.DIRECTION.IN).hasNext())
         throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
@@ -602,9 +605,11 @@ public class DeleteStep extends AbstractExecutionStep {
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
-    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+    for (final Iterator<Edge> it = IncomingEdgeLookup.getEdges(context, vertex, Vertex.DIRECTION.IN); it.hasNext(); ) {
+      final Edge edge = it.next();
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
+    }
 
     final QueryStatistics stats = context.getStatistics();
     for (final Edge edge : edgesToDelete) {
