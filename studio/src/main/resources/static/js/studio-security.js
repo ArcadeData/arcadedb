@@ -4,9 +4,9 @@
 // panel opening and GET /api/v1/cluster answering, the gate treats the cluster as ready and Create stays
 // enabled. That window is deliberate and not a bug to be "fixed" into a loading spinner: an unknown answer
 // gates nothing ANYWHERE in this feature - a follower, a standalone server and a not-yet-loaded status are
-// one case - and the leader's own 409, rendered by clusterCapabilityRefusal(), is the authority that cannot
-// be raced. Blocking the form on a status that may never arrive would disable Create on every standalone
-// server (PR #7939 review).
+// one case, and so is a peer a follower's own probe got no answer from (issue #8540) - and the leader's own 409,
+// rendered by clusterCapabilityRefusal(), is the authority that cannot be raced. Blocking the form on a status
+// that may never arrive would disable Create on every standalone server (PR #7939 review).
 var securityInitialized = false;
 var usersLoaded = false;
 var usersDataTable = null;
@@ -76,9 +76,10 @@ function refreshSecurityClusterReadiness(callback) {
  * The capability gap that blocks `capability`, or null when nothing does.
  *
  * Delegates the decision to studio-cluster.js so the Cluster page's banner and this gate cannot drift apart. Every
- * node probes its peers since issue #7549, so the answer is the same whether Studio is served by the leader or by a
- * follower (issue #8055); an unclustered server and a cluster that is fully upgraded both produce nothing to
- * report and nothing disabled.
+ * node probes its peers since issue #7549, so a peer that answered without the capability is reported the same
+ * whether Studio is served by the leader or by a follower (issue #8055); a peer a follower got no answer from is
+ * reported as unverified and gates nothing (issue #8540), see securityCapabilityBlocks(). An unclustered server
+ * and a cluster that is fully upgraded both produce nothing to report and nothing disabled.
  */
 function securityCapabilityGap(capability) {
   if (typeof clusterSecurityCapabilityGaps !== "function") return null;
@@ -88,14 +89,32 @@ function securityCapabilityGap(capability) {
   return null;
 }
 
+/**
+ * Whether `gap` takes the create/save controls away. Only a peer that is MISSING the capability does: a peer this
+ * follower merely got no answer from is this node's view, not the leader's, and the leader may accept the change
+ * (issue #8540) - its 409 remains the authority and is rendered by clusterCapabilityRefusal().
+ */
+function securityCapabilityBlocks(gap) {
+  return gap != null && gap.ready === false;
+}
+
 /** The warning an operator reads in place of the 409 they would otherwise have discovered by pressing the button. */
 function securityCapabilityBanner(gap) {
   if (!gap) return "";
 
-  var peers = "";
-  for (var i = 0; i < gap.missing.length; i++) {
-    peers += "<li><b>" + escapeHtml(gap.missing[i].id) + "</b>: " + escapeHtml(gap.missing[i].reason) + "</li>";
-  }
+  var unverifiedNote = clusterCapabilityUnverifiedNote(gap);
+
+  if (gap.ready !== false)
+    return (
+      '<div class="alert alert-info py-2 px-3 mb-3" style="font-size:0.82rem;">' +
+      '<div><i class="fa fa-info-circle" style="margin-right:6px;"></i><b>This node could not verify every peer for ' +
+      escapeHtml(gap.what) +
+      ".</b></div>" +
+      unverifiedNote +
+      "</div>"
+    );
+
+  var peers = clusterCapabilityPeerList(gap.missing);
 
   return (
     '<div class="alert alert-warning py-2 px-3 mb-3" style="font-size:0.82rem;">' +
@@ -110,6 +129,7 @@ function securityCapabilityBanner(gap) {
     "</ul>" +
     "<div>Finish the rolling upgrade - or restore contact with those peers - and reissue the change; it succeeds " +
     "unchanged, with no sequencing by hand.</div>" +
+    unverifiedNote +
     "</div>"
   );
 }
@@ -130,10 +150,12 @@ function renderSecurityCapabilityGate() {
     var gate = gates[i];
     var gap = securityCapabilityGap(gate.capability);
 
+    var blocks = securityCapabilityBlocks(gap);
+
     $(gate.banner).html(securityCapabilityBanner(gap));
     $(gate.button)
-      .prop("disabled", gap != null)
-      .attr("title", gap ? "The cluster is not ready: " + gap.missing.length + " peer(s) have not finished upgrading" : null);
+      .prop("disabled", blocks)
+      .attr("title", blocks ? "The cluster is not ready: " + gap.missing.length + " peer(s) have not finished upgrading" : null);
   }
 }
 
@@ -147,7 +169,7 @@ function renderSecurityCapabilityGate() {
 function applyGroupModalCapabilityGate() {
   var gap = securityCapabilityGap("security-groups-entry");
   $("#groupModalCapabilityGate").html(securityCapabilityBanner(gap));
-  $("#groupModalSaveBtn").prop("disabled", gap != null);
+  $("#groupModalSaveBtn").prop("disabled", securityCapabilityBlocks(gap));
 }
 
 /**
