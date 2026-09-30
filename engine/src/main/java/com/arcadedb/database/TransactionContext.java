@@ -1919,6 +1919,9 @@ public class TransactionContext implements Transaction {
    * True when this transaction has written nothing yet and pins nothing it reads (issue #8775): no page, record,
    * deletion or index change is pending, and the isolation level is READ_COMMITTED, which caches no page it reads. What
    * it sees is then exactly what the committed pages hold, so a reader on another thread sees the same.
+   * <p>
+   * The fields it checks are pinned by {@code TransactionContextReadOnlyViewFieldsTest}, which fails on any field added
+   * to the transaction without being classified.
    */
   public boolean isReadOnlyView() {
     // hasChanges() covers the pages and the index entries; the rest is state a write registers before or without
