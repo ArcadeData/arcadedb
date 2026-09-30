@@ -2420,8 +2420,7 @@ public class LocalSchema implements Schema {
         // Force save even if transaction is active - this is the last chance to save
         LogManager.instance().log(this, Level.INFO, "Saving dirty schema configuration before close");
         final long capturedGeneration = dirtyGeneration.get();
-        versionSerial.incrementAndGet();
-        update(toJSON());
+        writeNextGeneration();
         savedGeneration = capturedGeneration;
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error saving schema configuration during close: %s", e,
@@ -3834,9 +3833,7 @@ public class LocalSchema implements Schema {
 
     try {
       LogManager.instance().log(this, Level.FINE, "Saving schema configuration to file - versionSerial = %s ", versionSerial);
-      versionSerial.incrementAndGet();
-
-      update(toJSON());
+      writeNextGeneration();
 
       savedGeneration = capturedGeneration;
 
@@ -3849,6 +3846,17 @@ public class LocalSchema implements Schema {
     // security file-access map so runtime-created files are covered immediately, instead of chronically falling through
     // the "allow by default" path in ServerSecurityDatabaseUser.requestAccessOnFile() (which also floods the logs).
     updateSecurity();
+  }
+
+  /**
+   * Writes the current schema to disk as the next generation. The version is carried in the document only:
+   * {@link #update(JSONObject)} publishes it to {@code versionSerial} once the bytes are on disk, so a failed write leaves
+   * the in-memory version equal to the one the file holds instead of a generation ahead of it (issue #7604).
+   */
+  private synchronized void writeNextGeneration() throws IOException {
+    final JSONObject json = toJSON();
+    json.put("schemaVersion", versionSerial.get() + 1);
+    update(json);
   }
 
   public synchronized JSONObject toJSON() {
