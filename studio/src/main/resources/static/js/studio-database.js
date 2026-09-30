@@ -2232,10 +2232,7 @@ function loadSavedQuery(index) {
 function executeSavedQuery(index) {
   let queries = getSavedQueries();
   let q = queries[index];
-  if (!q) return;
-  executeCommand(q.l, q.c);
-  // executeCommand SWITCHES THE LANGUAGE BUT NOT THE SYNTAX MODE: KEEP THE HIGHLIGHTING IN STEP WITH IT
-  editor.setOption("mode", getEditorMode());
+  if (q) executeCommand(q.l, q.c);
 }
 
 function deleteSavedQuery(index) {
@@ -2357,7 +2354,10 @@ function loadHistoryEntry(index) {
   let queryHistory = getQueryHistory();
   let q = queryHistory[index];
   if (!q) return;
-  if (q.l) $("#inputLanguage").val(q.l);
+  if (q.l) {
+    $("#inputLanguage").val(q.l);
+    editor.setOption("mode", getEditorMode());
+  }
   editor.setValue(q.c || "");
   globalActivateTab("tab-query");
   editor.focus();
@@ -3154,8 +3154,12 @@ function countRecords(typeName) {
 function executeCommand(language, query) {
   globalResultset = null;
 
-  if (language != null) $("#inputLanguage").val(language);
-  else language = $("#inputLanguage").val();
+  if (language != null) {
+    $("#inputLanguage").val(language);
+    // KEEP THE SYNTAX HIGHLIGHTING IN STEP WITH THE LANGUAGE THE CALLER FORCED (ISSUE #7049)
+    editor.setOption("mode", getEditorMode());
+  } else
+    language = $("#inputLanguage").val();
 
   if (query != null) editor.setValue(query);
   else {

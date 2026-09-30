@@ -1008,13 +1008,15 @@ body.col-resizing * {
 .saved-query-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
+/* THE PADDING GIVES EACH ICON A FINGER-SIZED HIT AREA, SO A TAP ON "RUN" CANNOT LAND ON "DELETE" */
 .saved-query-name .saved-query-delete,
 .saved-query-name .saved-query-run {
   opacity: 0;
   font-size: 0.7rem;
+  padding: 4px 6px;
   cursor: pointer;
   transition: opacity 0.15s;
 }

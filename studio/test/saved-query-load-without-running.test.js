@@ -65,6 +65,11 @@ function globalStorageLoad(key) {
 
 function globalStorageSave() {}
 
+// THE HISTORY PANEL READS ITS OWN STORE; THE SAVED LIST DOUBLES AS ITS CONTENT HERE
+function getQueryHistory() {
+  return storedQueries;
+}
+
 function getEditorMode() {
   return "mode-for-" + languageValue;
 }
@@ -73,10 +78,12 @@ function globalActivateTab(tab) {
   activatedTab = tab;
 }
 
-function executeCommand(language, query) {
-  // LIKE THE REAL ONE: IT SWITCHES THE LANGUAGE DROPDOWN, NOT THE EDITOR'S SYNTAX MODE
-  if (language != null) languageValue = language;
-  executed.push({ language: language, query: query });
+// THE REAL executeCommand IS EVALUATED BELOW. IT READS THE DATABASE RIGHT AFTER LOADING THE LANGUAGE AND THE QUERY, AND
+// RETURNS WHEN THERE IS NONE: RECORDING WHAT IS LOADED AT THAT POINT CAPTURES "IT WAS ASKED TO RUN THIS" WITHOUT STUBBING
+// THE WHOLE AJAX PIPELINE BEHIND IT
+function getCurrentDatabase() {
+  executed.push({ language: languageValue, query: editor.value });
+  return "";
 }
 
 function $(selector) {
@@ -102,6 +109,8 @@ eval(extractFn(src, "getSavedQueries"));
 eval(extractFn(src, "populateSavedQueriesPanel"));
 eval(extractFn(src, "loadSavedQuery"));
 eval(extractFn(src, "executeSavedQuery"));
+eval(extractFn(src, "loadHistoryEntry"));
+eval(extractFn(src, "executeCommand"));
 
 beforeEach(() => {
   storedQueries = [
@@ -177,8 +186,35 @@ test("running a saved query from its play button also switches the editor's synt
   assert.equal(editor.mode, "mode-for-cypher", "the dropdown says cypher, so the highlighting must follow");
 });
 
+test("a caller forcing a language through executeCommand also switches the editor's syntax mode", () => {
+  languageValue = "cypher";
+  editor.mode = "mode-for-cypher";
+  executeCommand("sql", "select from Person");
+  assert.equal(languageValue, "sql");
+  assert.equal(editor.mode, "mode-for-sql", "the type sidebar actions force SQL, so the highlighting must follow");
+});
+
+test("running the editor content with no forced language leaves the syntax mode alone", () => {
+  languageValue = "cypher";
+  editor.mode = "mode-for-cypher";
+  editor.value = "MATCH (n) RETURN n";
+  editor.getSelection = function () {
+    return "";
+  };
+  executeCommand();
+  assert.equal(editor.mode, "mode-for-cypher");
+});
+
 test("running a stale index executes nothing", () => {
   executeSavedQuery(5);
   assert.equal(executed.length, 0);
   assert.equal(editor.mode, null);
+});
+
+test("loading a history entry also switches the editor's syntax mode to the entry's language", () => {
+  loadHistoryEntry(1);
+  assert.equal(languageValue, "cypher");
+  assert.equal(editor.mode, "mode-for-cypher", "a cypher history entry must not stay highlighted as SQL");
+  assert.equal(editor.value, "MATCH (a)-[:FRIEND]->(b) RETURN b");
+  assert.equal(executed.length, 0);
 });
