@@ -39,8 +39,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -296,6 +298,20 @@ class Issue6965LocalCommitHandshakeTest {
     verify(tx).reset();
   }
 
+  /** Issue #8781: with neither the entry's index nor a commit index, a replica still never publishes. */
+  @Test
+  void aReplicaWithoutAnyIndexStillNeverPublishes() {
+    when(broker.replicateTransaction(anyString(), any(), any()))
+        .thenThrow(new MajorityCommittedAllFailedException("ALL quorum not reached"));
+    when(raftServer.getCommitIndex()).thenReturn(-1L);
+
+    assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, false, null))
+        .isInstanceOf(MajorityCommittedAllFailedException.class);
+
+    verify(tx, never()).commit2ndPhase(any());
+    verify(tx).reset();
+  }
+
   /**
    * Issue #8781, replica variant: a forwarded commit the leader answers MAJORITY-committed is rebuilt here from the
    * message, and this replica's state machine applies the entry from the leader's log. Publishing on the committing
@@ -322,11 +338,28 @@ class Issue6965LocalCommitHandshakeTest {
     assertThat(new MajorityCommittedAllFailedException("ALL quorum watch failed after MAJORITY commit at logIndex=5: boom",
         new RuntimeException()).getLogIndex()).isEqualTo(5L);
     assertThat(new MajorityCommittedAllFailedException("ALL quorum not reached").getLogIndex()).isEqualTo(-1L);
+    // A garbled remote message must not turn the "committed, do not retry" signal into a NumberFormatException.
+    assertThat(new MajorityCommittedAllFailedException("at logIndex=99999999999999999999999").getLogIndex()).isEqualTo(
+        999999999999999999L);
   }
 
   /** Issue #8781: a closed state machine applies nothing more, so the committing thread publishes. */
   @Test
   void anUnclaimedEntryIsPublishedByTheCommittingThreadWhenTheStateMachineIsClosed() {
+    final ArcadeStateMachine closed = spy(stateMachine);
+    doReturn(true).when(closed).isClosed();
+    when(raftServer.getStateMachine()).thenReturn(closed);
+    when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(7L);
+
+    database.replicateAndCommitLocally(payload, true, closed);
+
+    verify(tx).commit2ndPhase(any());
+    verify(tx, never()).reset();
+  }
+
+  /** Issue #8781: a shutdown in progress stops the state machine applying, so the committing thread publishes. */
+  @Test
+  void anUnclaimedEntryIsPublishedByTheCommittingThreadWhenAShutdownIsRequested() {
     when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(7L);
     when(raftServer.isShutdownRequested()).thenReturn(true);
 

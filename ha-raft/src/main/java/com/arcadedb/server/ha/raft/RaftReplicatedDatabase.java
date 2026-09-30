@@ -902,9 +902,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       return committedLogIndex;
     final RaftHAServer raft = raftHAServer;
     final long commitIndex = raft != null ? raft.getCommitIndex() : -1L;
-    LogManager.instance().log(this, Level.WARNING,
-        "MAJORITY-committed transaction on database '%s' carries no log index; waiting for the local commit index %d instead",
-        getName(), commitIndex);
+    if (commitIndex > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "MAJORITY-committed transaction on database '%s' carries no log index; waiting for the local commit index %d instead",
+          getName(), commitIndex);
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "MAJORITY-committed transaction on database '%s' carries no log index and the local commit index is unknown; "
+              + "releasing its commit locks without waiting for the local apply", getName());
     return commitIndex;
   }
 
@@ -912,9 +917,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Whether {@code stateMachine} still applies entries on this node: not closed, not replaced by a Ratis restart, and
    * no shutdown requested. Only when it does not can the committing thread publish an acknowledged entry itself
    * without racing an apply of the same entry (issue #8781).
+   * <p>
+   * Evaluated once: a state machine closing right after it answers live leaves the transaction released unpublished
+   * after the bounded wait, which the log replay on restart covers, since a shutdown is what closes it.
    */
-  // Evaluated once: a state machine closing right after it answers live leaves the transaction released unpublished
-  // after the bounded wait, which the log replay on restart covers, since a shutdown is what closes it.
   private boolean isLive(final ArcadeStateMachine stateMachine) {
     final RaftHAServer raft = raftHAServer;
     return raft != null && !raft.isShutdownRequested() && raft.getStateMachine() == stateMachine && !stateMachine.isClosed();
