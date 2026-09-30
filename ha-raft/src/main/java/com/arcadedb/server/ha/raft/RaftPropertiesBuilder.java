@@ -37,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -185,9 +186,12 @@ class RaftPropertiesBuilder {
    * keep, since an election timeout that is too short costs spurious elections and one that is too long only costs a
    * slower failover. Lowering both is how a shorter timeout is asked for.
    */
+  private static final Set<Long> WARNED_ELECTION_WINDOWS = ConcurrentHashMap.newKeySet();
+
   static int effectiveElectionTimeoutMaxMs(final int minMs, final int maxMs) {
     final int effective = electionTimeoutMaxFor(minMs, maxMs);
-    if (effective != maxMs)
+    // Once per distinct pair: build() runs again on every in-place Ratis restart, and the same warning each time buries others
+    if (effective != maxMs && WARNED_ELECTION_WINDOWS.add(((long) minMs << 32) | (maxMs & 0xFFFFFFFFL)))
       logWidenedElectionTimeoutMax(minMs, maxMs, effective);
     return effective;
   }
