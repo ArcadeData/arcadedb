@@ -944,7 +944,8 @@ public enum GlobalConfiguration {
       """
       Enable parallel scanning of multiple buckets during full table scans. \
       When true, each bucket is scanned in a separate thread for improved throughput on multi-core systems. \
-      Not used inside a transaction that has written something or uses REPEATABLE_READ""",
+      Not used inside a transaction that has written something or uses REPEATABLE_READ. A scan already started is not \
+      affected by what its transaction writes afterwards: it reads committed pages""",
       Boolean.class, true),
 
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,

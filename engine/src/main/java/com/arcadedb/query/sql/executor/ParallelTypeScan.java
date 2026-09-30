@@ -45,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -98,6 +99,9 @@ final class ParallelTypeScan {
   // holds at least 1024 of them. Loading a record by its address costs more than reading it in a page scan, so a unit
   // of entries is smaller than the records of a unit of pages.
   private static final int ENTRIES_PER_UNIT_PAGE = 32;
+  // HOW LONG THE CALLER WAITS FOR A WORKER TO START A UNIT BEFORE IT TAKES THE UNIT FOR A DEDICATED READER (#8775)
+  private static final long DEDICATED_READER_GRACE_MS = 50;
+  private static final AtomicLong READER_IDS = new AtomicLong();
   // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
   private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
@@ -118,6 +122,8 @@ final class ParallelTypeScan {
   // saturated pool a consumer slow to reach its first poll is already on the clock.
   private volatile long                    lastConsumed;
   private          int                     consumerUnit;
+  // WHEN THE CONSUMER STARTED WAITING FOR A UNIT NO WORKER HAD STARTED, 0 WHEN IT IS NOT (#8775)
+  private          long                    unitWaitSince;
   private          List<Result>            consumerBatch;
   private          int                     consumerBatchIndex;
   // THE UNIT THE CONSUMER SCANS ITSELF, BECAUSE NO WORKER HAD TAKEN IT WHEN IT GOT THERE (#8594), OR NULL
@@ -494,7 +500,8 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          if (nextUnit.get() == consumerUnit && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+          if (nextUnit.get() == consumerUnit && callerMayClaimNow() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+            unitWaitSince = 0;
             if (database.isTransactionActive()) {
               // INSIDE A TRANSACTION THE CALLER DOES NOT READ THE UNIT: IT WOULD SEE THE TRANSACTION'S WRITES, AND THE WORKERS'
               // UNITS NEVER DO (#8775). A THREAD OF ITS OWN READS IT FROM COMMITTED PAGES, INTO THE UNIT'S BOUNDED CHANNEL
@@ -522,6 +529,7 @@ final class ParallelTypeScan {
             throw new CommandExecutionException("Parallel scan failed", failure);
           if (polled == END_OF_UNIT) {
             channels[consumerUnit] = null;
+            unitWaitSince = 0;
             ++consumerUnit;
           } else if (polled != null) {
             consumerBatch = polled;
@@ -567,7 +575,14 @@ final class ParallelTypeScan {
         try {
           initWorkerThread();
           while (true) {
-            final int index = claimed.take();
+            // A BOUNDED WAIT, NOT A take(): A RESULT SET ABANDONED WHILE THE READER IS IDLE WOULD OTHERWISE KEEP ITS THREAD FOR EVER
+            final Integer next = claimed.poll(1, TimeUnit.SECONDS);
+            if (next == null) {
+              if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs)
+                return;
+              continue;
+            }
+            final int index = next;
             final Unit unit = units.get(index);
             final AbstractExecutionStep step = stepFor(unit, readerContext);
             try {
@@ -585,12 +600,28 @@ final class ParallelTypeScan {
         } finally {
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
-      }, "ArcadeDB-parallel-scan-unit-reader");
+      }, "ArcadeDB-parallel-scan-unit-reader-" + READER_IDS.incrementAndGet());
       reader.setDaemon(true);
       dedicatedReader = reader;
       reader.start();
     }
     readerUnits.add(unitIndex);
+  }
+
+  /**
+   * Whether the caller may claim the unit it needs now. Outside a transaction it scans the unit itself, which costs
+   * nothing, so at once. Inside one it costs a reader thread, so it first gives the workers a moment to start: right
+   * after the scan is submitted none has run yet, and that is not saturation.
+   */
+  private boolean callerMayClaimNow() {
+    if (!database.isTransactionActive())
+      return true;
+    final long now = System.currentTimeMillis();
+    if (unitWaitSince == 0) {
+      unitWaitSince = now;
+      return false;
+    }
+    return now - unitWaitSince >= DEDICATED_READER_GRACE_MS;
   }
 
   private void stopDedicatedReader() {
