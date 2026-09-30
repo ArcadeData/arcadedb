@@ -502,7 +502,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
                   resolvedUpperBound != null ? new Object[] { resolvedUpperBound } : null, resolvedUpperInclusive,
                   resolvedLowerBound != null ? new Object[] { resolvedLowerBound } : null, resolvedLowerInclusive);
         if (resolvedLowerBound == null && resolvedUpperBound == null)
-          return rangeIndex.iterator(true);
+          // Past the null keys that lead an index holding them, when they are not read here: the first row is then the first value
+          return nullKeys == NullKeys.SKIPPED_IN_INDEX || nullKeys == NullKeys.PLACED_FROM_INDEX ?
+              rangeIndex.iterator(true, new Object[] { null }, false) : rangeIndex.iterator(true);
         if (resolvedUpperBound == null)
           return rangeIndex.iterator(true, new Object[] { resolvedLowerBound }, resolvedLowerInclusive);
         return rangeIndex.range(true,
