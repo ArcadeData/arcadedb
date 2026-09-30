@@ -62,6 +62,10 @@ class EveryHttpHandlerIsConstructedTest {
   /** The package holds far more handlers than this; below it the scan has silently lost its root. */
   private static final int EXPECTED_MINIMUM_HANDLERS = 30;
 
+  /** Comments and string/char literals, matched left to right so a {@code //} inside a string is not a comment. */
+  private static final Pattern NOT_CODE = Pattern.compile(
+      "//[^\\n]*|/\\*.*?\\*/|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'", Pattern.DOTALL);
+
   private static final Pattern CONSTRUCTION = Pattern.compile(
       "\\bnew\\s+(\\w+Handler)\\s*\\(|\\b(\\w+Handler)::new\\b|\\bextends\\s+(\\w+Handler)\\b");
 
@@ -89,7 +93,8 @@ class EveryHttpHandlerIsConstructedTest {
       for (final Path file : files.filter(p -> p.getFileName().toString().endsWith("Handler.java")).toList()) {
         final String name = file.getFileName().toString().replace(".java", "");
         final String source = Files.readString(file, StandardCharsets.UTF_8);
-        if (Pattern.compile("\\bpublic\\s+class\\s+" + name + "\\b").matcher(source).find())
+        // Abstract bases are skipped: only a class that can be instantiated has to be.
+        if (Pattern.compile("^\\s*(?:public\\s+)?(?:final\\s+)?class\\s+" + name + "\\b", Pattern.MULTILINE).matcher(source).find())
           handlers.add(name);
       }
     }
@@ -100,7 +105,8 @@ class EveryHttpHandlerIsConstructedTest {
   private static Set<String> constructedHandlers(final Map<String, String> sources) {
     final Set<String> constructed = new HashSet<>();
     for (final Map.Entry<String, String> entry : sources.entrySet()) {
-      final Matcher use = CONSTRUCTION.matcher(entry.getValue());
+      // A "new FooHandler(" in a comment or a string literal constructs nothing.
+      final Matcher use = CONSTRUCTION.matcher(NOT_CODE.matcher(entry.getValue()).replaceAll(" "));
       while (use.find()) {
         final String handler = use.group(1) != null ? use.group(1) : use.group(2) != null ? use.group(2) : use.group(3);
         if (!entry.getKey().endsWith("/" + handler + ".java"))
