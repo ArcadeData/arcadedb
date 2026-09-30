@@ -60,6 +60,7 @@ import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.support.SupportService;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.ServerPathUtils;
@@ -228,6 +229,7 @@ public class ArcadeDBServer {
   private volatile    ServerSecurity                        security;
   private volatile    HttpServer                            httpServer;
   private             AiConfiguration                       aiConfiguration;
+  private             SupportService                        supportService;
   private             ServerQueryProfiler                   queryProfiler;
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
@@ -540,6 +542,9 @@ public class ArcadeDBServer {
     // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
     aiConfiguration = new AiConfiguration(Paths.get(serverConfigPath));
     aiConfiguration.load();
+
+    // SUPPORT (registration with the ArcadeData customer portal, redacted diagnostics bundles): inactive until registered
+    supportService = new SupportService(this, Paths.get(serverConfigPath));
 
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
@@ -1111,6 +1116,12 @@ public class ArcadeDBServer {
       serverMonitor = null;
     }
 
+    // The previews of the support bundle are temporary files: deleted on shutdown
+    if (supportService != null) {
+      CodeUtils.executeIgnoringExceptions(supportService::close, "Error on stopping the support service", false);
+      supportService = null;
+    }
+
     // Stop plugins managed by PluginManager first
     if (pluginManager != null)
       pluginManager.stopPlugins();
@@ -1640,6 +1651,10 @@ public class ArcadeDBServer {
 
   public AiConfiguration getAiConfiguration() {
     return aiConfiguration;
+  }
+
+  public SupportService getSupportService() {
+    return supportService;
   }
 
   public ServerQueryProfiler getQueryProfiler() {
