@@ -176,8 +176,14 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
       schema.createBucket("standalone");
 
       assertThat(schema.existsBucket("standalone")).isTrue();
-      assertStandaloneBucketVisible(schema, "standalone");
+      // getBuckets() first: createBucket() invalidated the cache and nothing else has rebuilt it, so the listing
+      // alone has to come from a reload that sees the standalone bucket.
+      assertThat(schema.getBuckets().stream().map(Bucket::getName)).contains("standalone");
+      assertThat(schema.getBucketByNameIfExists("standalone")).isNotNull();
+      assertThat(schema.getBucketByName("standalone").getName()).isEqualTo("standalone");
     }
+
+    assertStandaloneBucketVisible("standalone");
   }
 
   /**
@@ -191,9 +197,7 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
       database.command("sql", "CREATE BUCKET sqlStandalone");
     }
 
-    try (final RemoteDatabase database = newDatabase()) {
-      assertStandaloneBucketVisible(database.getSchema(), "sqlStandalone");
-    }
+    assertStandaloneBucketVisible("sqlStandalone");
   }
 
   /**
@@ -210,18 +214,30 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
     }
 
     try (final RemoteDatabase database = newDatabase()) {
-      final Schema schema = database.getSchema();
-      assertThat(schema.existsBucket("detached")).isTrue();
-      assertStandaloneBucketVisible(schema, "detached");
-      // The type's own bucket keeps coming from the same cache.
-      assertThat(schema.getBucketByName("Holder_0").getName()).isEqualTo("Holder_0");
+      assertThat(database.getSchema().existsBucket("detached")).isTrue();
+    }
+    assertStandaloneBucketVisible("detached");
+
+    // The type's own bucket keeps coming from the same cache.
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByName("Holder_0").getName()).isEqualTo("Holder_0");
     }
   }
 
-  private static void assertStandaloneBucketVisible(final Schema schema, final String bucketName) {
-    assertThat(schema.getBucketByNameIfExists(bucketName)).isNotNull();
-    assertThat(schema.getBucketByName(bucketName).getName()).isEqualTo(bucketName);
-    assertThat(schema.getBuckets().stream().map(Bucket::getName)).contains(bucketName);
+  /**
+   * Checks each cached reader on its own fresh connection, so each one answers from a cold {@code reload()} rather
+   * than from a cache another reader's reload-on-miss already rebuilt.
+   */
+  private void assertStandaloneBucketVisible(final String bucketName) {
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBuckets().stream().map(Bucket::getName)).contains(bucketName);
+    }
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByNameIfExists(bucketName)).isNotNull();
+    }
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByName(bucketName).getName()).isEqualTo(bucketName);
+    }
   }
 
   private RemoteDatabase newDatabase() {
