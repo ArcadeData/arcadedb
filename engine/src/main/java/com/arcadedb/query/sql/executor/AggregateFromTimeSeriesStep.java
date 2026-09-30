@@ -95,6 +95,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           // THE ROWS OF THE ANSWER ARE HELD IN HEAP LIKE THOSE OF ANY OTHER IN-HEAP OPERATION, SO THEY ARE BOUNDED BY THE SAME
           // CAP: CARRIED INTO THE SCAN, WHICH STOPS ONCE PAST IT, RATHER THAN CHECKED ON A RESULT ALREADY BUILT (ISSUE #7476)
           final OperationHeapLimit limit = OperationHeapLimit.of(context, "buckets", "time series aggregation");
+          // A NON-POSITIVE CAP MEANS NO LIMIT, WHICH IS ALSO WHAT A CEILING OF 0 MEANS TO THE ENGINE
           final int ceiling = (int) Math.min(Math.max(limit.getMaxElements(), 0L), Integer.MAX_VALUE);
           final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter,
               aggregationMetrics, ceiling);
