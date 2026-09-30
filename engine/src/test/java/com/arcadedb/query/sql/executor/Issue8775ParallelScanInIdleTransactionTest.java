@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.Vertex;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -96,8 +97,8 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
     database.getSchema().buildEdgeType().withName("OneWay").withBidirectional(false).create();
     database.begin();
     try {
-      final var c = database.iterateType("E", false).next().asVertex();
-      final var d = database.iterateType("E", false).next().asVertex();
+      final Vertex c = database.iterateType("E", false).next().asVertex();
+      final Vertex d = database.iterateType("E", false).next().asVertex();
       assertThat(sqlPlan()).contains("(parallel)");
       c.newEdge("Link", d).save();
       assertThat(sqlPlan()).doesNotContain("(parallel)");
@@ -106,9 +107,39 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
     }
     database.begin();
     try {
-      final var c = database.iterateType("E", false).next().asVertex();
-      final var d = database.iterateType("E", false).next().asVertex();
+      final Vertex c = database.iterateType("E", false).next().asVertex();
+      final Vertex d = database.iterateType("E", false).next().asVertex();
       c.newEdge("OneWay", d).save();
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void transactionThatAppendedEdgesWithMergeEnabledStaysSequential() {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE, true);
+    database.getSchema().createEdgeType("Merged");
+    database.begin();
+    try {
+      final Vertex c = database.iterateType("E", false).next().asVertex();
+      final Vertex d = database.iterateType("E", false).next().asVertex();
+      assertThat(sqlPlan()).contains("(parallel)");
+      c.newEdge("Merged", d).save();
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void transactionThatCreatedALightweightEdgeStaysSequential() {
+    database.getSchema().buildEdgeType().withName("Light").withLightweight(true).withBidirectional(false).create();
+    database.begin();
+    try {
+      final Vertex c = database.iterateType("E", false).next().asVertex();
+      final Vertex d = database.iterateType("E", false).next().asVertex();
+      c.newEdge("Light", d).save();
       assertThat(sqlPlan()).doesNotContain("(parallel)");
     } finally {
       database.rollback();
