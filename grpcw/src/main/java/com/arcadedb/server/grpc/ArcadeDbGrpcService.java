@@ -2086,8 +2086,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
-    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one
-    // (#7887). `cancelled` cannot do this: the cancel handler sets it asynchronously.
+    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one.
+    // `cancelled` cannot do this: the cancel handler sets it asynchronously.
     boolean terminated = false;
 
     ProtocolContext.set("grpc");
@@ -2163,7 +2163,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   .asRuntimeException());
             } catch (final RuntimeException e) {
               // transport may have closed concurrently; the terminal is already moot
-              LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e.getMessage());
+              LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e, e.getMessage());
             }
           }
           return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
@@ -2203,7 +2203,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           } catch (final RuntimeException e) {
             // transport may have closed concurrently ("call already closed" included): the terminal is moot, and
             // the transaction outcome below must still be applied
-            LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e.getMessage());
+            LogManager.instance().log(this, Level.FINE, "Stream query DEADLINE_EXCEEDED terminal failed: %s", e, e.getMessage());
           }
         }
         if (hasTx) {
@@ -2251,10 +2251,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       if (terminated)
-        // A terminal was already sent (or attempted) and the call is over from the client's side: never send a
-        // second one on a closed call (issue #7887).
+        // A terminal was already sent (or attempted): never send a second one on a closed call.
         LogManager.instance().log(this, Level.FINE,
-            "Stream query already terminated when a later step failed (client cancelled?): %s", e.getMessage());
+            "Stream query already terminated when a later step failed (client cancelled?): %s", e, e.getMessage());
       else if (!cancelled.get())
         // GrpcErrorMapper both classifies the failure (a SQL syntax error, a missing type, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
@@ -3542,8 +3541,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
     call.setOnCancelHandler(() -> cancelled.set(true));
-    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one
-    // (#7887). `cancelled` cannot do this: the cancel handler sets it asynchronously.
+    // Set right before every terminal in the try, so a terminal that throws is never followed by a second one.
+    // `cancelled` cannot do this: the cancel handler sets it asynchronously.
     boolean terminated = false;
 
     ProtocolContext.set("grpc");
@@ -3592,7 +3591,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (final Exception e) {
       if (terminated)
         LogManager.instance().log(this, Level.FINE,
-            "TimeSeriesQuery already terminated when its terminal failed (client cancelled?): %s", e.getMessage());
+            "TimeSeriesQuery already terminated when its terminal failed (client cancelled?): %s", e, e.getMessage());
       else if (!cancelled.get())
         resp.onError(mapError(e, "TimeSeriesQuery"));
     } finally {

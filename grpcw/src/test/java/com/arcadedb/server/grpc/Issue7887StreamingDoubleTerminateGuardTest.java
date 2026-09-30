@@ -73,7 +73,7 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     for (int i = 0; i < 5; i++)
       executeCommand("INSERT INTO " + VERTEX_TYPE + " SET k = " + i);
 
-    executeCommand("CREATE TIMESERIES TYPE " + TS_TYPE + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    executeCommand("CREATE TIMESERIES TYPE " + TS_TYPE + " IF NOT EXISTS TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
     final TimeSeriesWriteRequest.Builder write = TimeSeriesWriteRequest.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setType(TS_TYPE);
     for (int i = 0; i < 5; i++)
@@ -279,6 +279,22 @@ public class Issue7887StreamingDoubleTerminateGuardTest extends BaseGraphServerT
     doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
 
     assertThatCode(() -> service.timeSeriesQuery(timeSeriesQuery().build(), resp)).doesNotThrowAnyException();
+
+    final ArgumentCaptor<Throwable> error = ArgumentCaptor.forClass(Throwable.class);
+    verify(resp, times(1)).onError(error.capture());
+    assertThat(error.getValue()).hasMessageContaining("DEADLINE_EXCEEDED");
+    verify(resp, never()).onCompleted();
+  }
+
+  @Test
+  void timeSeriesQueryInsideATransactionWriteTimeoutSendsOneTerminalEvenWhenItThrows() {
+    final String txId = beginTransaction();
+    shortenStreamWriteTimeout();
+    final ServerCallStreamObserver<TimeSeriesQueryResult> resp = neverReadyObserver();
+    doThrow(new IllegalStateException("call already closed")).when(resp).onError(any());
+
+    assertThatCode(() -> service.timeSeriesQuery(timeSeriesQuery().setTransaction(txRef(txId)).build(), resp))
+        .doesNotThrowAnyException();
 
     final ArgumentCaptor<Throwable> error = ArgumentCaptor.forClass(Throwable.class);
     verify(resp, times(1)).onError(error.capture());
