@@ -257,6 +257,93 @@ class Issue7888IntrospectionLeafAliasTest extends AbstractGraphQLTest {
     });
   }
 
+  @Test
+  void selectedFieldsAndOfTypeThatDoNotApplyArePresentAndNull() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Result scalar = single(database, "{ __type(name: \"String\") { name fields { name } ofType { name } } }");
+      assertThat(scalar.getPropertyNames()).containsExactlyInAnyOrder("name", "fields", "ofType");
+      assertThat(scalar.<Object>getProperty("fields")).isNull();
+      assertThat(scalar.<Object>getProperty("ofType")).isNull();
+
+      final Result object = single(database, "{ __type(name: \"Book\") { ofType { name } } }");
+      assertThat(object.getPropertyNames()).containsExactly("ofType");
+      assertThat(object.<Object>getProperty("ofType")).isNull();
+
+      // Author.wrote is [Book]: a LIST has no fields of its own
+      final Result author = single(database, "{ __type(name: \"Author\") { fields { name type { kind fields { name } } } } }");
+      Result wrote = null;
+      for (final Result field : author.<List<Result>>getProperty("fields"))
+        if ("wrote".equals(field.getProperty("name")))
+          wrote = field;
+      assertThat(wrote).isNotNull();
+      final Result list = wrote.getProperty("type");
+      assertThat(list.getPropertyNames()).containsExactlyInAnyOrder("kind", "fields");
+      assertThat(list.<String>getProperty("kind")).isEqualTo("LIST");
+      assertThat(list.<Object>getProperty("fields")).isNull();
+      return null;
+    });
+  }
+
+  @Test
+  void typeInfoWithoutSelectionSetKeepsTheDefaultShape() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      // `type` written without braces: the historical name + kind (+ ofType chain of a wrapper)
+      final Result record = single(database, "{ __type(name: \"Author\") { fields { name type } } }");
+      for (final Result field : record.<List<Result>>getProperty("fields")) {
+        final Result type = field.getProperty("type");
+        if ("wrote".equals(field.getProperty("name"))) {
+          assertThat(type.getPropertyNames()).containsExactlyInAnyOrder("name", "kind", "ofType");
+          assertThat(type.<String>getProperty("kind")).isEqualTo("LIST");
+          final Result ofType = type.getProperty("ofType");
+          assertThat(ofType.getPropertyNames()).containsExactlyInAnyOrder("name", "kind");
+          assertThat(ofType.<String>getProperty("name")).isEqualTo("Book");
+          assertThat(ofType.<String>getProperty("kind")).isEqualTo("OBJECT");
+        } else {
+          assertThat(type.getPropertyNames()).containsExactlyInAnyOrder("name", "kind");
+          assertThat(type.<String>getProperty("kind")).isEqualTo("SCALAR");
+        }
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void fragmentOnAnotherTypeContributesNothing() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Result record = single(database, "{ __type(name: \"Book\") { n: name ... on __Field { k: kind } } }");
+      assertThat(record.getPropertyNames()).containsExactly("n");
+
+      final Result fields = single(database, "{ __type(name: \"Book\") { fields { fn: name ... on __Type { k: kind } } } }");
+      for (final Result field : fields.<List<Result>>getProperty("fields"))
+        assertThat(field.getPropertyNames()).containsExactly("fn");
+      return null;
+    });
+  }
+
+  @Test
+  void skipAndIncludeOnIntrospectionLeaves() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      final Result type = single(database, "{ __type(name: \"Book\") { n: name k: kind @skip(if: true) t: __typename @include(if: true) } }");
+      assertThat(type.getPropertyNames()).containsExactlyInAnyOrder("n", "t");
+
+      final Result fields = single(database,
+          "{ __type(name: \"Book\") { fields { fn: name @include(if: false) type { n: name @skip(if: false) k: kind @include(if: false) } } } }");
+      for (final Result field : fields.<List<Result>>getProperty("fields")) {
+        assertThat(field.getPropertyNames()).containsExactly("type");
+        assertThat(field.<Result>getProperty("type").getPropertyNames()).containsExactly("n");
+      }
+      return null;
+    });
+  }
+
   private static Result single(final Database database, final String query) {
     try (final ResultSet resultSet = database.query("graphql", query)) {
       assertThat(resultSet.hasNext()).isTrue();
