@@ -91,7 +91,8 @@ class Issue7573AiChatStreamIsSchematizedTest {
     final List<Object> kinds = new ArrayList<>(
         ((Schema<?>) eventSchema().getProperties().get("type")).getEnum());
 
-    assertThat(kinds).containsExactly("tool_start", "tool_end", "done");
+    // 'error' ends a stream cut short after it started (issue #8642).
+    assertThat(kinds).containsExactly("tool_start", "tool_end", "done", "error");
     assertThat(kinds)
         .as("'session' and 'tool_call' are the gateway's events: AiChatHandler consumes both and they never "
             + "reach the caller, so naming them here sends a client author waiting for events that never arrive")
@@ -106,7 +107,7 @@ class Issue7573AiChatStreamIsSchematizedTest {
   @Test
   void everyFieldTheHandlerWritesIsDeclared() {
     assertThat(eventSchema().getProperties().keySet())
-        .containsExactlyInAnyOrder("type", "tool", "args", "error", "response", "commands", "chatId");
+        .containsExactlyInAnyOrder("type", "tool", "args", "error", "response", "commands", "chatId", "code");
   }
 
   /**
