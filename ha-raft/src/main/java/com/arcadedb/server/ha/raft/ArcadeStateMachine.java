@@ -1304,7 +1304,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return context.build().setException(exclusiveOperationRefusal(databaseName));
     }
 
-    // Not accepted when it was prepared before the last schema change this node applied (issue #8686). It is valid against the
+    // Not accepted when it was prepared before the last schema change this node applied (issue #8686). The position is recorded at
+    // APPLY time, and the window between a DDL's append and its apply is closed by the leader-exclusive registration above, which
+    // spans the whole DDL; a snapshot install records none, so nothing is refused until the next schema change (as before). It is valid against the
     // page versions - it comes after the change in the log - but its WAL was built against the schema the originator held,
     // so it carries no page changes for an index the change created, and every node would apply it as it stands and leave the
     // record out of that index. Refused BEFORE the reservation below, like the checks above, so it costs Ratis nothing and
@@ -1360,16 +1362,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Whether applying {@code decoded} changes what a transaction is prepared against (issue #8686): a schema document or
-   * delta, or a change to the set of files. A WAL-only entry, a TimeSeries sealed-store entry and the non-final slices of a
-   * split schema change do not: the last one only delivers pages and the change is published by the final slice.
+   * Whether {@code decoded} publishes a schema document or delta (issue #8686): what a transaction prepared under the old
+   * schema can be stale against, such as an index it does not maintain. Deliberately NOT a files-only entry (an LSM index
+   * compaction swapping files) nor a WAL-only or sealed-store one: those change no schema and are frequent under load, and
+   * refusing every in-flight replica transaction at each of them would fail callers that do not retry. The non-final
+   * slices of a split schema change only deliver pages; the final one publishes.
    */
   // @VisibleForTesting
   static boolean changesSchema(final RaftLogEntryCodec.DecodedEntry decoded) {
     if (decoded.type() != RaftLogEntryType.SCHEMA_ENTRY || decoded.moreChunksFollow())
       return false;
-    return decoded.schemaDelta() != null || (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
-        || !isEmptyMap(decoded.filesToAdd()) || !isEmptyMap(decoded.filesToRemove());
+    return decoded.schemaDelta() != null || (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
   }
 
   /** Records that a schema-changing entry was applied at {@code index}; the position only moves forward. */
@@ -4103,6 +4106,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
             .formatted(SEALED_INSTALL_LOCK_TIMEOUT_MS, tsType.getName()));
       Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
       tsType.initEngine();
+    } catch (final TimeoutException e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, but the type "
+              + "stayed locked (a backup or snapshot in flight?), so it was not installed: %s", e, tsType.getName(), shardIndex,
+          decodedDbName(db), e.getMessage());
+      return false;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.SEVERE,

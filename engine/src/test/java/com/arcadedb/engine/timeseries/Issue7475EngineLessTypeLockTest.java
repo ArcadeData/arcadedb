@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7475: a sealed-store repair on a type whose engine never loaded was excluded by neither
@@ -183,9 +185,9 @@ class Issue7475EngineLessTypeLockTest extends TestHelper {
     engineLessType();
 
     try (final TimeSeriesCompactionPause pause = TimeSeriesCompactionPause.acquire(database, 30_000L)) {
-      org.assertj.core.api.Assertions.assertThatThrownBy(() -> TimeSeriesSealedInstallLock.acquire(database,
+      assertThatThrownBy(() -> TimeSeriesSealedInstallLock.acquire(database,
           List.of(new TimeSeriesSealedInstallLock.ShardRef("Reading", 0)), 200L))
-          .isInstanceOf(com.arcadedb.exception.TimeoutException.class).hasMessageContaining("Reading");
+          .isInstanceOf(TimeoutException.class).hasMessageContaining("Reading");
     }
 
     try (final TimeSeriesSealedInstallLock lock = TimeSeriesSealedInstallLock.acquire(database,
