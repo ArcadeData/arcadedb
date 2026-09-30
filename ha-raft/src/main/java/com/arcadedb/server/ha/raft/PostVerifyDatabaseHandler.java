@@ -53,6 +53,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -97,6 +98,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * bounded, so a longer wait means something is stuck.
    */
   private static final long    COMPACTION_PAUSE_TIMEOUT_MS = 60_000L;
+  /**
+   * Test seam (issue #7634): runs on the verifying thread once the local checksums are being read, with the window they
+   * are read from, or {@code null} on the flush-suspension fallback.
+   */
+  static volatile Consumer<PageSnapshot> whileChecksummingForTesting;
   /** Valid database name: alphanumeric, underscore, hyphen, dot. No path traversal sequences. */
   static final         Pattern VALID_DATABASE_NAME     = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_\\-.]*");
 
@@ -470,16 +476,18 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * sealed store this node could not read leaves its answer silently short of one, and a leader comparing only
    * its own checksum keys would report that as agreement.
    *
+   * <p>
+   * The LISTING is a separate step, {@link #listSealedStores}, because on the window path it has to be taken in the
+   * same read-locked frame as the window's t0 while the bytes are read after that lock is released (issue #7634).
+   *
+   * @param sealedFiles the listing {@link #listSealedStores} returned; {@code null} when the directory could not be
+   *                    listed
+   *
    * @return {@code false} when the directory could not be listed or any sealed store could not be read, so the
    * caller can say the answer does not cover them rather than implying it does
    */
   private static boolean collectSealedStores(final JSONObject checksums, final JSONArray files,
-      final DatabaseInternal db) {
-    final File directory = new File(db.getDatabasePath());
-    // listSealedFiles turns an unreadable directory into an EMPTY array, which reads exactly like "this database
-    // has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant
-    // keeps that distinction while still listing the directory ONCE (code review on PR #7474).
-    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(directory);
+      final DatabaseInternal db, final File[] sealedFiles) {
     if (sealedFiles == null) {
       LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
           "Could not list the database directory of '%s' to checksum its TimeSeries sealed stores", null, db.getName());
@@ -502,6 +510,17 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         complete = false;
       }
     return complete;
+  }
+
+  /**
+   * Lists the TimeSeries sealed stores of {@code db}, or returns {@code null} when the directory cannot be listed.
+   * <p>
+   * {@code listSealedFiles} turns an unreadable directory into an EMPTY array, which reads exactly like "this database
+   * has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant keeps
+   * that distinction while still listing the directory ONCE (code review on PR #7474).
+   */
+  private static File[] listSealedStores(final DatabaseInternal db) {
+    return TimeSeriesSealedStore.listSealedFilesOrNull(new File(db.getDatabasePath()));
   }
 
   /** One sealed store's checksum and the number of bytes it was computed over. */
@@ -614,18 +633,19 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
   private boolean computeLocalChecksums(final DatabaseInternal db, final JSONObject localChecksums,
       final JSONArray localFiles, final boolean compactionPaused) {
-    final boolean[] sealedStoresCovered = { compactionPaused };
-    db.executeInReadLock(() -> {
-      // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
-      // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
-      // DURATION AND POSTPONED INDEX COMPACTION WITH THEM. THE CHECKSUM IS BYTE-FOR-BYTE THE SAME VALUE, SO A PEER
-      // STILL ON THE FALLBACK PATH COMPARES EQUAL
-      if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+    // #6075: CRC THE FILES THROUGH A POINT-IN-TIME SNAPSHOT INSTEAD OF FREEZING THEM WITH A FLUSH SUSPENSION. A
+    // VERIFY OF A LARGE DATABASE READS EVERY BYTE OF EVERY FILE, SO THE OLD PATH THROTTLED WRITERS FOR ITS WHOLE
+    // DURATION AND POSTPONED INDEX COMPACTION WITH THEM. THE CHECKSUM IS BYTE-FOR-BYTE THE SAME VALUE, SO A PEER
+    // STILL ON THE FALLBACK PATH COMPARES EQUAL
+    if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+      final WindowImage image = openWindowImage(db, compactionPaused);
+      if (image != null) {
         // COLLECTED ASIDE AND MERGED ONLY ON SUCCESS: A WINDOW INVALIDATED HALFWAY THROUGH MUST NOT LEAVE THE
         // RESPONSE HOLDING A MIX OF SNAPSHOT AND FALLBACK CHECKSUMS
         final JSONObject snapshotChecksums = new JSONObject();
         final JSONArray snapshotFiles = new JSONArray();
-        try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
+        try (final PageSnapshot snapshot = image.snapshot()) {
+          runChecksummingHook(snapshot);
           for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
             try {
               // #7955: AN INDEX COMPACTION IN FLIGHT HAS A REGISTERED temp_* COMPONENT FILE, SO THE WINDOW CARRIES
@@ -645,22 +665,29 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
               // collectSealedStores (#7338)
             }
 
-          if (compactionPaused)
-            sealedStoresCovered[0] = collectSealedStores(snapshotChecksums, snapshotFiles, db);
+          final boolean sealedStoresCovered =
+              compactionPaused && collectSealedStores(snapshotChecksums, snapshotFiles, db, image.sealedFiles());
 
           for (final String name : snapshotChecksums.keySet())
             localChecksums.put(name, snapshotChecksums.getLong(name));
           for (int i = 0; i < snapshotFiles.length(); i++)
             localFiles.put(snapshotFiles.getJSONObject(i));
-          return null;
+          return sealedStoresCovered;
         } catch (final PageSnapshotException e) {
           LogManager.instance().log(this, Level.WARNING,
               "Point-in-time snapshot unusable for the verify of database '%s' (%s): falling back to suspending the page flush",
               null, db.getName(), e.getMessage());
         }
       }
+    }
 
+    // THE FALLBACK KEEPS THE READ LOCK OVER THE WHOLE READ (#7634): THE PAGE IMAGE IS THE LIVE ON-DISK ONE, HELD STILL
+    // BY THE REFCOUNTED FLUSH SUSPENSION RATHER THAN BY A POINT IN TIME, SO THE SET OF FILES AND SEALED STORES HAS TO
+    // BE PINNED FOR AS LONG AS IT IS READ - THERE IS NO t0 TO CAPTURE IT AT
+    final boolean[] sealedStoresCovered = { compactionPaused };
+    db.executeInReadLock(() -> {
       db.getPageManager().suspendFlushAndExecute(db, () -> {
+        runChecksummingHook(null);
         for (final var file : db.getFileManager().getFiles())
           if (file != null && !PaginatedComponent.isTemporaryFileName(file.getFileName())) {
             try {
@@ -675,10 +702,64 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
             }
           }
         if (compactionPaused)
-          sealedStoresCovered[0] = collectSealedStores(localChecksums, localFiles, db);
+          sealedStoresCovered[0] = collectSealedStores(localChecksums, localFiles, db, listSealedStores(db));
       });
       return null;
     });
     return sealedStoresCovered[0];
+  }
+
+  /**
+   * The image one verify reads on the window path: the point-in-time page window, and the TimeSeries sealed stores as
+   * they were listed in the same read-locked frame as its t0. {@code sealedFiles} is {@code null} when the compaction
+   * pause was not held (the sealed stores are then left out of the answer) or when the directory could not be listed.
+   */
+  private record WindowImage(PageSnapshot snapshot, File[] sealedFiles) {
+  }
+
+  /**
+   * Opens the window and lists the sealed stores under ONE database read lock, and releases it before a single byte
+   * is CRC'd (issue #7634, the verify's twin of #6114 and #7456/#7671).
+   * <p>
+   * The read lock used to be held around the whole verify, and a verify CRCs every byte of every file, so it blocked
+   * the node's DDL - {@code CREATE TYPE}, {@code DROP TYPE}, {@code CREATE INDEX} - for as long as the verify ran. On
+   * this path the page bytes come from the window and nothing else, so the lock has nothing to protect while they are
+   * read. What it still protects is the pairing of the window with the sealed-store LISTING: a sealed store is not a
+   * registered page file, so the window cannot carry it, and {@code TimeSeriesCompactionPause} excludes a compaction,
+   * not a {@code CREATE}/{@code DROP} of a TimeSeries type. Listing inside the frame keeps the answer's sealed set the
+   * t0 one. A store listed here and deleted before it is read is REPORTED as not covered by
+   * {@link #collectSealedStores}, never silently dropped.
+   *
+   * @return the image, or {@code null} when the window could not be opened and the caller must fall back
+   */
+  private WindowImage openWindowImage(final DatabaseInternal db, final boolean compactionPaused) {
+    try {
+      return db.executeInReadLock(() -> {
+        final PageSnapshot window = db.getPageManager().openSnapshot(db);
+        try {
+          return new WindowImage(window, compactionPaused ? listSealedStores(db) : null);
+        } catch (final RuntimeException e) {
+          // A WINDOW THAT NEVER REACHES THE CALLER IS NEVER CLOSED BY IT. SUPPRESSED RATHER THAN REPLACED: THE
+          // EXCEPTION THAT GOT US HERE IS THE ONE THAT SAYS WHAT WENT WRONG
+          try {
+            window.close();
+          } catch (final RuntimeException closeFailure) {
+            e.addSuppressed(closeFailure);
+          }
+          throw e;
+        }
+      });
+    } catch (final PageSnapshotException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Point-in-time snapshot unusable for the verify of database '%s' (%s): falling back to suspending the page flush",
+          null, db.getName(), e.getMessage());
+      return null;
+    }
+  }
+
+  private static void runChecksummingHook(final PageSnapshot snapshot) {
+    final Consumer<PageSnapshot> hook = whileChecksummingForTesting;
+    if (hook != null)
+      hook.accept(snapshot);
   }
 }
