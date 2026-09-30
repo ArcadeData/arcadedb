@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8686: a TX_ENTRY carries the Raft log index its originator had applied when it prepared the transaction, as
@@ -90,7 +91,7 @@ class Issue8686TxPreparedAtIndexCodecTest {
         RaftLogEntryCodec.encodeTxEntry("db", WAL, Collections.emptyMap()),
         new byte[] { 0, 20, 't', 'x', '-', 'p', 'r', 'e', 'p', 'a', 'r', 'e', 'd', '-', 'a', 't', '-', 'i', 'n', 'd', 'e', 'x', 1, 2 });
 
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(entry))
+    assertThatThrownBy(() -> RaftLogEntryCodec.decode(entry))
         .isInstanceOf(RaftLogEntryDecodeException.class);
   }
 }

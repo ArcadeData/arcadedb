@@ -6255,6 +6255,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return missing;
   }
 
+  private static final long TX_PREPARED_AT_CAPABILITY_TTL_MS = 1_000L;
+  private volatile long     txPreparedAtCapabilityCheckedAt;
+  private volatile boolean  txPreparedAtCapable;
+
+  /**
+   * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Answered
+   * from a value refreshed at most once per second: it is asked on every commit, and {@link #allPeersSupport} builds a list of
+   * the peers per call. A peer that stops advertising is noticed within the TTL, which is far inside the capability monitor's own
+   * refresh period.
+   */
+  public boolean canStateTxPreparedAt() {
+    final long now = System.currentTimeMillis();
+    if (now - txPreparedAtCapabilityCheckedAt > TX_PREPARED_AT_CAPABILITY_TTL_MS) {
+      txPreparedAtCapable = allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX);
+      txPreparedAtCapabilityCheckedAt = now;
+    }
+    return txPreparedAtCapable;
+  }
+
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
   public boolean isTxSchemaCheckEnabled() {
     return configuration.getValueAsBoolean(GlobalConfiguration.HA_TX_SCHEMA_CHECK);

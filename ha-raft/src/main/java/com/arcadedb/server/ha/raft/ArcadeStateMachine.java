@@ -1313,7 +1313,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // leaks no permit; the originator waits for the change to be applied and retries under the new schema.
     // Only for entries of OTHER nodes: a DDL runs on the leader, so a transaction of the leader's own that contains one (a
     // CREATE TYPE followed by an INSERT in one transaction) prepared its later records under the new schema although it began
-    // before it, and would be refused for a change it made itself.
+    // before it, and would be refused for a change it made itself. A leader transaction left open across a DDL of another thread
+    // is not covered: out of scope here, and the same as on a standalone database.
     if (!isLocalOrigin && databaseName != null && decoded.txPreparedAtIndex() >= 0) {
       final AtomicLong schemaChangeIndex = lastSchemaChangeIndex.get(databaseName);
       final long schemaChanged = schemaChangeIndex != null ? schemaChangeIndex.get() : -1L;
