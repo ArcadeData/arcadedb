@@ -307,7 +307,7 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
           // but it must not break the scan itself
           try {
             row.getRecord().get().asDocument().modify().set("touched", true).save();
-          } catch (final RuntimeException expected) {
+          } catch (final RuntimeException ignored) {
             // a deleted record cannot be saved again
           }
         }

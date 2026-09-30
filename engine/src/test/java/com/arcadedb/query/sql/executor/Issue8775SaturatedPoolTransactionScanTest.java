@@ -180,7 +180,7 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
         while (watching.get()) {
           peakReaders.accumulateAndGet(liveReaders(), Math::max);
           try {
-            Thread.sleep(1);
+            Thread.sleep(5);
           } catch (final InterruptedException e) {
             return;
           }
@@ -201,7 +201,7 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
         // one reader serves every unit the caller claims: the threads do not pile up with the units
         watching.set(false);
         watcher.join();
-        assertThat(peakReaders.get()).as("the reader path must have been used").isBetween(1L, 1L);
+        assertThat(peakReaders.get()).as("the reader path must have been used").isEqualTo(1L);
         return rows;
       } finally {
         watching.set(false);

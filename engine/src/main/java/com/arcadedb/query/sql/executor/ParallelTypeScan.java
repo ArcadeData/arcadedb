@@ -638,7 +638,8 @@ final class ParallelTypeScan {
    * after the scan is submitted none has run yet, and that is not saturation.
    */
   private boolean callerMayClaimNow() {
-    // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST
+    // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST. THE READER THEN
+    // TAKES THEM ONE AFTER THE OTHER, EVEN IF THE POOL RECOVERS: A SIMPLE RULE OVER A FASTER SCAN IN A RARE CASE
     if (!database.isTransactionActive() || readerUnits != null)
       return true;
     // THE SIDE EFFECT ON unitWaitSince IS DELIBERATE: THE FIRST CALL STARTS THE GRACE, THE LATER ONES MEASURE IT
