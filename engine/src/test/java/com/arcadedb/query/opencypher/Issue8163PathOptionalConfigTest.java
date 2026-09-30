@@ -49,7 +49,7 @@ class Issue8163PathOptionalConfigTest extends TestHelper {
       assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2L);
     }
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:N {id: 1}) CALL path.spanningTree(n) YIELD path RETURN count(path) AS c")) {
-      assertThat(((Number) rs.next().getProperty("c")).longValue()).isGreaterThanOrEqualTo(1L);
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2L);
     }
   }
 }

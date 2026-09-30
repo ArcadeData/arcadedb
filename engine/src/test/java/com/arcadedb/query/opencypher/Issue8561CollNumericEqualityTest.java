@@ -60,6 +60,24 @@ class Issue8561CollNumericEqualityTest extends TestHelper {
   }
 
   @Test
+  void rangeIndexOfAcceptsAnIntegralFloat() {
+    assertThat(((Number) one("RETURN coll.indexOf(range(1, 5), 2.0) AS r")).longValue()).isEqualTo(1L);
+    assertThat(((Number) one("RETURN coll.indexOf(range(1, 5), 2.5) AS r")).longValue()).isEqualTo(-1L);
+  }
+
+  @Test
+  void distinctAndGroupByFollowNestedCypherEquality() {
+    try (final ResultSet rs = database.query("opencypher", "UNWIND [[1], [1.0], [2]] AS x RETURN count(DISTINCT x) AS r")) {
+      assertThat(((Number) rs.next().getProperty("r")).longValue()).isEqualTo(2L);
+    }
+    try (final ResultSet rs = database.query("opencypher", "UNWIND [[1], [1.0], [2]] AS x RETURN x, count(*) AS c ORDER BY c DESC")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
   void unionCollapsesNumericTwins() {
     assertThat((List<?>) one("RETURN coll.union([1], [1.0, 2]) AS r")).hasSize(2);
   }
