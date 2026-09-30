@@ -20,7 +20,6 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.util.ArrayList;
@@ -68,10 +67,12 @@ import java.util.concurrent.locks.Lock;
  */
 public final class TimeSeriesCompactionPause implements AutoCloseable {
   private final List<Lock> held;
+  private final int        pausedShards;
   private       boolean    released;
 
-  private TimeSeriesCompactionPause(final List<Lock> held) {
+  private TimeSeriesCompactionPause(final List<Lock> held, final int pausedShards) {
     this.held = held;
+    this.pausedShards = pausedShards;
   }
 
   /**
@@ -90,17 +91,22 @@ public final class TimeSeriesCompactionPause implements AutoCloseable {
   public static TimeSeriesCompactionPause acquire(final Database database, final long timeoutMs) {
     final List<Lock> acquired = new ArrayList<>();
     final long deadline = System.currentTimeMillis() + timeoutMs;
+    int shards = 0;
     try {
       // The shared order, NOT this thread's own walk of the schema: {@link TimeSeriesShardOrder} explains why a
       // walk of getTypes() is not a total order two concurrent acquirers can be held to.
-      for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database)) {
-        final Lock lock = slot.shard().getCompactionLock().readLock();
-        final long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-          throw new TimeoutException(
-              "Timeout of %dms expired while pausing the compaction of TimeSeries type '%s' shard %d".formatted(
-                  timeoutMs, slot.typeName(), slot.shardIndex()));
-        acquired.add(lock);
+      for (final LocalTimeSeriesType tsType : TimeSeriesShardOrder.typesOf(database)) {
+        // The type's own lock first, engine or no engine (issue #7475): it is the only thing a type whose engine
+        // never loaded can be excluded through, and it is what the repair that creates the engine holds.
+        lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().readLock(), deadline, timeoutMs, tsType.getName(), -1);
+
+        // Read only NOW: with the lifecycle lock held the engine cannot appear or go away underneath the walk, so
+        // a repair that finished while this thread waited is covered shard by shard rather than by the type alone.
+        for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.shardsOf(tsType)) {
+          lockOrTimeOut(acquired, slot.shard().getCompactionLock().readLock(), deadline, timeoutMs, slot.typeName(),
+              slot.shardIndex());
+          shards++;
+        }
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -110,12 +116,25 @@ public final class TimeSeriesCompactionPause implements AutoCloseable {
       release(acquired);
       throw e;
     }
-    return new TimeSeriesCompactionPause(acquired);
+    return new TimeSeriesCompactionPause(acquired, shards);
   }
 
-  /** How many shards this pause is holding. Zero when the database has no TimeSeries type. */
+  private static void lockOrTimeOut(final List<Lock> acquired, final Lock lock, final long deadline, final long timeoutMs,
+      final String typeName, final int shardIndex) throws InterruptedException {
+    final long remaining = deadline - System.currentTimeMillis();
+    if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
+      throw new TimeoutException(
+          "Timeout of %dms expired while pausing the compaction of TimeSeries type '%s'%s".formatted(timeoutMs, typeName,
+              shardIndex < 0 ? "" : " shard " + shardIndex));
+    acquired.add(lock);
+  }
+
+  /**
+   * How many shards this pause is holding. Zero when the database has no TimeSeries type, and for a type whose
+   * engine never loaded, which is covered through its lifecycle lock instead (issue #7475).
+   */
   public int getPausedShards() {
-    return held.size();
+    return pausedShards;
   }
 
   /**

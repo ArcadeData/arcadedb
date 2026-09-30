@@ -83,12 +83,24 @@ public final class PeerCapabilities {
   public static final String SECURITY_API_TOKENS_ENTRY = "security-api-tokens-entry";
 
   /**
+   * This node reads the {@code tx-prepared-at-index} extension section of {@code TX_ENTRY} and refuses a transaction
+   * prepared before the last schema change it applied (issue #8686).
+   * <p>
+   * The section itself is framed, so a build with the extension framing (issue #7138) skips it; a build older than that
+   * halts on any trailing bytes, which is why a writer emits it only when every peer advertises this token. The
+   * token is also what says the LEADER understands the section: an entry stating an index that a leader without the
+   * check accepts is harmless, but an originator has no other way to know its transaction will be checked, and the
+   * retry that follows a refusal only exists on builds that know the refusal.
+   */
+  public static final String TX_PREPARED_AT_INDEX = "tx-prepared-at-index";
+
+  /**
    * Everything this build can decode. Immutable, and deliberately a whitelist written out by hand rather than
    * derived from anything: a capability is a promise about the wire format, and the only thing that can make it
    * true is a human having checked that the decoder is present.
    */
   public static final Set<String> LOCAL = Set.of(SCHEMA_DELTA, SECURITY_PRECONDITION, SECURITY_GROUPS_ENTRY,
-      SECURITY_API_TOKENS_ENTRY);
+      SECURITY_API_TOKENS_ENTRY, TX_PREPARED_AT_INDEX);
 
   private PeerCapabilities() {
     // utility class

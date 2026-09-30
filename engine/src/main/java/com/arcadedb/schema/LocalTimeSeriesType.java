@@ -35,6 +35,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 
 /**
@@ -66,6 +68,16 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    * absent engine.
    */
   private volatile String engineUnavailableReason;
+  /**
+   * The lock that stands in for the shard compaction locks while there is no engine to own them (issue #7475). A
+   * shard's {@code compactionLock} is what {@code TimeSeriesCompactionPause} (read side) and
+   * {@code TimeSeriesSealedInstallLock} (write side) exclude each other through, but it lives on
+   * {@code TimeSeriesShard} and there is no shard until {@link #initEngine()} has succeeded - which is exactly the
+   * state the HA sealed-store repair runs in. This lock belongs to the TYPE, so it outlives every engine the type
+   * ever has: the pause and the install lock take it BEFORE they look at the engine, and the repair that replaces
+   * a missing engine holds its write half across the file move and {@link #initEngine()}.
+   */
+  private final ReadWriteLock engineLifecycleLock = new ReentrantReadWriteLock();
 
   public LocalTimeSeriesType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -146,6 +158,15 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    */
   synchronized void markEngineUnavailable(final String reason) {
     this.engineUnavailableReason = reason != null ? reason : "unknown error";
+  }
+
+  /**
+   * The lock that excludes a copy of the database from the creation of this type's engine, see the field. Locking
+   * protocol: always acquired BEFORE any of the type's shard compaction locks, never while holding one, and in
+   * type-name order across types ({@code TimeSeriesShardOrder}).
+   */
+  public ReadWriteLock getEngineLifecycleLock() {
+    return engineLifecycleLock;
   }
 
   public boolean isEngineAvailable() {

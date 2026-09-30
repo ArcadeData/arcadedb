@@ -53,6 +53,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -273,6 +274,17 @@ public class TransactionContext implements Transaction {
   // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
   // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
+  // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
+  // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
+  private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
+  private       long                                 beginSequence         = -1;
+  /**
+   * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
+   * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
+   * begun by any other route reads as "unknown" and is never held to a schema it was not prepared under.
+   */
+  private       long                                 replicationBasePosition = -1L;
+  private       boolean                              staleReadCheck;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -357,16 +369,19 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    replicationBasePosition = -1L;
     // Also in reset(): a context is reused across transactions, and whichever of the two runs first must move it on;
     // moving it twice only skips a transaction number, which nothing compares but for equality
     if (unidirectionalEdgeChanges != null)
       unidirectionalEdgeChanges.transactionEnded();
+    beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
     slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_PAGE_SLOT_MERGE);
+    staleReadCheck = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_STALE_READ_CHECK);
     slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES);
     slotRebaseTrackedBytes = 0;
 
@@ -379,6 +394,10 @@ public class TransactionContext implements Transaction {
     newPages = new LinkedHashMap<>(16);
   }
 
+  /**
+   * Commits this transaction. It does not save a pending schema change: {@link LocalDatabase#commit()} does, once this
+   * context has left the stack (#8635), so a commit has to go through it rather than call this directly.
+   */
   @Override
   public Binary commit() {
     if (status == STATUS.INACTIVE)
@@ -394,9 +413,6 @@ public class TransactionContext implements Transaction {
       commit2ndPhase(phase1);
     } else
       resetAndFireCallbacks();
-
-    if (database.getSchema().getEmbedded().isDirty())
-      database.getSchema().getEmbedded().saveConfiguration();
 
     return phase1 != null ? phase1.result : null;
   }
@@ -874,6 +890,36 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * The identity of this transaction among every transaction begun in this JVM (issue #8610), or -1 when it is not
+   * active. A vertex read inside a transaction remembers it, which is what tells a read made in THIS transaction from a
+   * vertex held across transactions.
+   */
+  public long getBeginSequence() {
+    return isActive() ? beginSequence : -1;
+  }
+
+  /**
+   * The position of the replication log this node had applied when the transaction began, or {@code -1} when unknown
+   * (issue #8686). A transaction stages its index changes as its records are saved, against the schema this node holds
+   * at that moment, so the position at begin is a lower bound of the schema the whole transaction was prepared under.
+   */
+  public long getReplicationBasePosition() {
+    return replicationBasePosition;
+  }
+
+  public void setReplicationBasePosition(final long replicationBasePosition) {
+    this.replicationBasePosition = replicationBasePosition;
+  }
+
+  /**
+   * Whether a property write on a record read in this transaction is refused when a concurrent transaction committed a
+   * change to that record since the read ({@link GlobalConfiguration#TX_STALE_READ_CHECK}, issue #8610).
+   */
+  public boolean isStaleReadCheck() {
+    return staleReadCheck;
+  }
+
   public void assureIsActive() {
     if (!isActive())
       throw new TransactionException("Transaction not begun");
@@ -939,6 +985,13 @@ public class TransactionContext implements Transaction {
     if (deletedRecordsInTx.contains(rid))
       return false;
 
+    // #8610: modify() reloaded this record because a concurrent transaction committed a change to it after this
+    // transaction read it; assigning properties now would write values computed from the older read over that change. A
+    // change to a vertex edge lists only (edge creation) assigns no property and goes through.
+    if (record instanceof MutableDocument document && document.isBasedOnStaleRead() && document.arePropertiesAssigned())
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction after it was "
+          + "read in this transaction. Please retry the operation");
+
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
     if (updatedRecords.put(record.getIdentity(), record) == null) {
@@ -968,11 +1021,6 @@ public class TransactionContext implements Transaction {
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
     return true;
-  }
-
-  /** Whether {@link #addUpdatedRecord(Record)} has already queued a deferred write for this RID in this transaction. */
-  public boolean isUpdateQueued(final RID rid) {
-    return updatedRecords != null && updatedRecords.containsKey(rid);
   }
 
   /**
