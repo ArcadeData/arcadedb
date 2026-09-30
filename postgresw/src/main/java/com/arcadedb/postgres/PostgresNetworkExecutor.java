@@ -1611,8 +1611,7 @@ public class PostgresNetworkExecutor extends Thread {
     // A write WITH a RETURN returns rows, and its RETURN names them. Never the textual FROM fallback below: a write has
     // no FROM target of its own to read the columns from, and a " FROM " inside a sub-select it carries would name the
     // columns of that sub-select's type (issue #8562)
-    if (parsed instanceof InsertStatement || parsed instanceof UpdateStatement || parsed instanceof DeleteStatement
-        || parsed instanceof CreateVertexStatement)
+    if (parsed instanceof InsertStatement || parsed instanceof UpdateStatement || parsed instanceof DeleteStatement)
       return getColumnsFromWriteReturn(parsed);
 
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
@@ -1652,8 +1651,6 @@ public class PostgresNetworkExecutor extends Thread {
     switch (statement) {
     case InsertStatement insert:
       return getColumnsFromReturn(insert.getTargetType(), insert.getReturnStatement());
-    case CreateVertexStatement createVertex:
-      return getColumnsFromReturn(createVertex.getTargetType(), createVertex.getReturnStatement());
     case UpdateStatement update: {
       if (update.getReturnProjection() != null) {
         final FromItem item = update.getTarget() != null ? update.getTarget().getItem() : null;
@@ -1712,6 +1709,8 @@ public class PostgresNetworkExecutor extends Thread {
       try {
         answer = handleCatalogQuery(query, probe);
       } catch (final RuntimeException e) {
+        if (DEBUG)
+          LogManager.instance().log(this, Level.INFO, "PSQL: cannot name the columns of catalog query '%s': %s", query, e.getMessage());
         return null;
       }
       if (answer != null && !answer.columns().isEmpty())
