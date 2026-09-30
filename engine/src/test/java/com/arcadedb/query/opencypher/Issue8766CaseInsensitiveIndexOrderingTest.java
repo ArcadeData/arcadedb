@@ -20,9 +20,9 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -77,8 +77,12 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
   }
 
   private List<Object> column(final String language, final String query) {
+    return column(language, query, Map.of());
+  }
+
+  private List<Object> column(final String language, final String query, final Map<String, Object> params) {
     final List<Object> result = new ArrayList<>();
-    try (final ResultSet rs = database.query(language, query)) {
+    try (final ResultSet rs = database.query(language, query, params)) {
       while (rs.hasNext())
         result.add(rs.next().getProperty("s"));
     }
@@ -132,7 +136,7 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
   }
 
   @Test
-  void aPlanBuiltBeforeTheIndexWasFoldedStaysCorrect() {
+  void aQueryStaysCorrectAfterItsIndexIsRecreatedFolded() {
     database.command("sql", "CREATE VERTEX TYPE Late");
     database.command("sql", "CREATE PROPERTY Late.s STRING");
     database.command("sql", "CREATE INDEX ON Late (s) NOTUNIQUE");
@@ -149,17 +153,15 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
 
   @Test
   void parameterizedRangeFollowsTheValues() {
-    final List<Object> expected = new ArrayList<>();
-    try (final ResultSet rs = database.query("opencypher", "MATCH (c:Nx) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a"))) {
-      while (rs.hasNext())
-        expected.add(rs.next().getProperty("s"));
-    }
-    final List<Object> actual = new ArrayList<>();
-    try (final ResultSet rs = database.query("opencypher", "MATCH (c:Ci) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a"))) {
-      while (rs.hasNext())
-        actual.add(rs.next().getProperty("s"));
-    }
-    assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+    final List<Object> expected = column("opencypher", "MATCH (c:Nx) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a"));
+    assertThat(column("opencypher", "MATCH (c:Ci) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a")))
+        .containsExactlyInAnyOrderElementsOf(expected);
+  }
+
+  @Test
+  void cypherMinAndMaxReturnARecordValue() {
+    sameAnswer("opencypher", "MATCH (c:%T) RETURN max(c.s) AS s", true);
+    sameAnswer("opencypher", "MATCH (c:%T) RETURN min(c.s) AS s", true);
   }
 
   @Test
