@@ -118,7 +118,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",
-          "{ __type(name: \"Author\") { name fields { name type { name kind } } } }")) {
+          "{ __type(name: \"Author\") { name fields { name type { name kind ofType { name kind } } } } }")) {
         assertThat(resultSet.hasNext()).isTrue();
         final Result record = resultSet.next();
 
@@ -130,7 +130,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
         // Check that field type info is present. A wrapping type (LIST here, for "wrote": [Book])
         // carries no name of its own per the introspection schema (#7116); only a named
-        // OBJECT/SCALAR does.
+        // OBJECT/SCALAR does. ofType is selected explicitly: an unselected leaf is not returned (#7888).
         for (final Result field : fields) {
           assertThat(field.<String>getProperty("name")).isNotNull();
           final Result type = field.getProperty("type");
