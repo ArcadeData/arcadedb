@@ -485,7 +485,9 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          if (nextUnit.get() == consumerUnit && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+          // NOT ONCE THE TRANSACTION IT RUNS IN HAS WRITTEN SINCE (#8775): THE CALLER READS THROUGH THAT TRANSACTION AND WOULD
+          // SEE ITS CHANGES IN THE UNITS IT TAKES, WHILE THE WORKERS' UNITS NEVER DO. IT WAITS FOR ITS WORKER INSTEAD
+          if (nextUnit.get() == consumerUnit && callerMayScan() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             channels[consumerUnit] = null;
             if (consumerContext == null)
               consumerContext = workerContext(context);
@@ -532,6 +534,11 @@ final class ParallelTypeScan {
         ParallelTypeScan.this.close();
       }
     };
+  }
+
+  /** Whether the caller reads what the workers read: it runs outside a transaction, or in one that has written nothing. */
+  private boolean callerMayScan() {
+    return !database.isTransactionActive() || database.getTransaction().isReadOnlyView();
   }
 
   private void startProducers(final CommandContext context) {

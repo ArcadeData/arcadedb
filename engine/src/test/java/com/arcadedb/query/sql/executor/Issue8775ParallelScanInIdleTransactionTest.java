@@ -148,6 +148,30 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void callerDoesNotScanUnitsItselfOnceTheTransactionHasWritten() {
+    // Units the caller would claim read through the transaction and would see its writes, unlike the workers' units:
+    // every row of a scan must come from the same view, so a transaction that wrote since the first pull leaves all
+    // the units to the workers
+    database.begin();
+    try {
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          rows++;
+          // tombstone every record the scan returns that the workers have not yet read: none may be skipped
+          if (rows == 1)
+            database.command("sql", "UPDATE E SET grp = 7 WHERE grp = 5");
+          assertThat(row.<Integer>getProperty("grp")).isEqualTo(5);
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
     final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
     final long parallelUpdated = updatedIn(update, true);
