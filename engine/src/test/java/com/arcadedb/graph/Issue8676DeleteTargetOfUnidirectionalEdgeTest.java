@@ -121,14 +121,18 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   void typeTooLargeToIndexInHeapIsScannedForTheVertexAlone() {
     createSchema(false);
     createPair("U8");
+    // A CAP OF ONE ELEMENT IS EXCEEDED BY THE SECOND EDGE OF THE TYPE
+    database.transaction(() -> database.newVertex("V8").set("n", "c").save().asVertex().newEdge("U8", b));
     final long cap = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    final long fallbacksBefore = IncomingEdgeLookup.getFallbackScans();
     try {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(1L);
       database.transaction(() -> b.asVertex().delete());
+      assertThat(IncomingEdgeLookup.getFallbackScans() - fallbacksBefore).as("the streaming scan answered").isEqualTo(1L);
     } finally {
       GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(cap);
     }
-    assertEdgeGone("U8");
+    assertThat(database.countType("U8", false)).isZero();
   }
 
   @Test
