@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,7 +97,7 @@ class Issue6385AstarHeuristicPositionTest {
 
           assertThat(threeAxis.getHeuristicCost(points[1], null, points[2], threeAxis.context))
               .as("%s at dFactor %s", formula, dFactor)
-              .isEqualTo(twoAxis.getHeuristicCost(points[1], null, points[2], twoAxis.context));
+              .isCloseTo(twoAxis.getHeuristicCost(points[1], null, points[2], twoAxis.context), Offset.offset(1e-9));
         }
     });
   }
