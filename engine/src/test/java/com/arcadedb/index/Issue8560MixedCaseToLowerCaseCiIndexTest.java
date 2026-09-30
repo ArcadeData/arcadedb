@@ -62,6 +62,15 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
   }
 
   @Test
+  void lowerCaseLiteralsStillUseTheIndex() {
+    for (final String query : List.of("SELECT name FROM P WHERE name.toLowerCase() = 'john'",
+        "SELECT name FROM P WHERE name.toLowerCase() IN ['john','mary']",
+        "SELECT name FROM P WHERE name.toLowerCase() BETWEEN 'a' AND 'c'",
+        "SELECT name FROM P WHERE name.toLowerCase() >= 'a'"))
+      assertThat(database.query("sql", "EXPLAIN " + query).getExecutionPlan().get().prettyPrint(0, 3)).as(query).contains("FETCH FROM INDEX");
+  }
+
+  @Test
   void unsatisfiableEqualityReturnsNothing() {
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() = 'JOHN'")).isEmpty();
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() = :n", Map.of("n", "JOHN"))).isEmpty();

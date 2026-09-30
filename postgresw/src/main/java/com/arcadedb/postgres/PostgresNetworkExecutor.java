@@ -139,6 +139,8 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** PostgreSQL itself caps a statement at 65535 parameters. */
+  private static final int                                            MAX_STATEMENT_PARAMETERS = 65535;
   /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
   private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
       "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
@@ -1292,8 +1294,6 @@ public class PostgresNetworkExecutor extends Thread {
 
     return parameters;
   }
-
-  private static final int MAX_STATEMENT_PARAMETERS = 65535;
 
   /**
    * The answer to a catalog query: the rows to send, and the columns to announce them under. The columns are
