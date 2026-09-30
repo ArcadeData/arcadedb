@@ -399,13 +399,16 @@ class SupportEndpointsTest extends BaseGraphServerTest {
       assertThat(byName.get("logs.zip").getInt("redactions")).isEqualTo(3);
       assertThat(byName.get("logs.zip").getJSONArray("entries").length()).isEqualTo(1);
       assertThat(json.getJSONObject("window").getString("from")).isNotEmpty();
-      assertThat(json.getString("githubSummary")).contains("IllegalStateException");
+      // The public GitHub text names the exception class and its count, never its message (it may carry record data or SQL)
+      assertThat(json.getString("githubSummary")).contains("IllegalStateException").doesNotContain("boom");
 
       final Resp download = call("POST", "/api/v1/server/support/bundle", new JSONObject().put("previewId", json.getString("previewId")).toString());
       final Map<String, String> zip = unzip(download.bytes());
       assertThat(zip).containsKeys("logs/arcadedb.log", "summary.json");
       assertThat(zip.get("logs/arcadedb.log")).doesNotContain("SuperSecret1").doesNotContain("pw123").doesNotContain("token=abc")
           .contains("rootPassword=***").contains("admin:***@host").doesNotContain("way before");
+      // ... while the summary sent to the portal keeps the (redacted) message
+      assertThat(zip.get("summary.json")).contains("boom");
     } finally {
       Files.deleteIfExists(logDirectory.resolve("arcadedb.log"));
       Files.deleteIfExists(logDirectory);
@@ -674,6 +677,42 @@ class SupportEndpointsTest extends BaseGraphServerTest {
       assertKeyNeverServed();
     } finally {
       getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_URL, portal.url());
+    }
+  }
+
+  @Test
+  void onlyOnePreviewIsBuiltAtATime() throws Exception {
+    final java.util.concurrent.CountDownLatch scanning = new java.util.concurrent.CountDownLatch(1);
+    final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    service().setLogFiles(() -> {
+      scanning.countDown();
+      try {
+        release.await(30, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return List.of();
+    });
+    final String logs = new JSONObject().put("includeLogs", true).put("includeDiagnostics", false)
+        .put("window", new JSONObject().put("preset", "10m")).toString();
+    final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      final java.util.concurrent.Future<Resp> first = pool.submit(() -> call("POST", "/api/v1/server/support/preview", logs));
+      assertThat(scanning.await(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+      // A second scan while the first is running is refused, not queued
+      final Resp second = call("POST", "/api/v1/server/support/preview", logs);
+      assertThat(second.status()).isEqualTo(409);
+      assertThat(second.json().getString("error")).isEqualTo("preview_busy");
+
+      release.countDown();
+      assertThat(first.get(30, java.util.concurrent.TimeUnit.SECONDS).status()).isEqualTo(200);
+      // and the slot is free again afterwards
+      assertThat(call("POST", "/api/v1/server/support/preview", new JSONObject().put("includeDiagnostics", true).toString()).status())
+          .isEqualTo(200);
+    } finally {
+      release.countDown();
+      pool.shutdownNow();
     }
   }
 

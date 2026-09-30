@@ -143,7 +143,8 @@ public class SupportDiagnostics {
       if (defaultText.contains("${") && !jvm && !env && !file)
         continue;
 
-      final String source = jvm ? "jvm" : env ? "env" : file ? "file" : "jvm";
+      // Set some other way (programmatically, or a default that changed with another setting): say so rather than guess
+      final String source = jvm ? "jvm" : env ? "env" : file ? "file" : "unknown";
 
       if (cfg.isHidden()) {
         // The name says it is set; the value is never read into the bundle

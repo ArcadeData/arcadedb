@@ -62,6 +62,8 @@ public class SupportPortalClient {
 
   public static final long CALL_TIMEOUT_MS   = 30_000L;
   public static final long UPLOAD_TIMEOUT_MS = 20 * 60_000L;
+  /** The most of a portal response that is read: the portal is trusted, this is cheap insurance against an unbounded body. */
+  public static final long MAX_RESPONSE_BYTES = 16L * 1024 * 1024;
 
   private static final SecureRandom RANDOM = new SecureRandom();
   /** A workspace key as the portal issues it: {@code wsk_} and 43 URL-safe base64 characters. */
@@ -71,6 +73,7 @@ public class SupportPortalClient {
   private final String                            instanceId;
   private final String                            baseUrl;
   private final long                              retryDelayMs;
+  private       long                              maxResponseBytes = MAX_RESPONSE_BYTES;
 
   /** One part of a multipart body: bytes held in memory (small) or a file streamed from disk. */
   record Part(String name, String filename, String contentType, byte[] bytes, Path file) {
@@ -93,6 +96,11 @@ public class SupportPortalClient {
     this.instanceId = instanceId;
     this.baseUrl = registration.getPortalUrl();
     this.retryDelayMs = retryDelayMs;
+  }
+
+  /** For tests: the most of a response that is read. */
+  void setMaxResponseBytes(final long maxResponseBytes) {
+    this.maxResponseBytes = maxResponseBytes;
   }
 
   public String whoami() {
@@ -195,10 +203,13 @@ public class SupportPortalClient {
 
       final HttpResponse<String> response;
       try {
-        response = BoundedHttpExchange.send(HTTP_CLIENT, builder.build(), HttpResponse.BodyHandlers.ofString(), timeoutMs);
+        response = BoundedHttpExchange.send(HTTP_CLIENT, builder.build(), info -> new LimitedStringBody(maxResponseBytes), timeoutMs);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new SupportPortalException("portal_unreachable", 0, "The request to the portal was interrupted", 0);
+      } catch (final ResponseTooLargeException e) {
+        // Not transient and not a connection problem: the portal sent more than this server reads
+        throw new SupportPortalException("portal_error", 0, e.getMessage(), 0);
       } catch (final ConnectException | HttpConnectTimeoutException e) {
         // A request that never connected was not processed: it is safe to retry it whatever the method
         last = unreachable(e);
@@ -332,6 +343,64 @@ public class SupportPortalClient {
   }
 
   /** A multipart/form-data body whose files are read from disk while the request is sent. */
+  /** The portal answered with more bytes than {@link #MAX_RESPONSE_BYTES}. */
+  static final class ResponseTooLargeException extends IOException {
+    ResponseTooLargeException(final long max) {
+      super("The support portal answered with more than " + (max >> 10) + " KB, which this server does not read");
+    }
+  }
+
+  /** The body as a UTF-8 string, cancelled as soon as it exceeds the limit. */
+  static final class LimitedStringBody implements HttpResponse.BodySubscriber<String> {
+    private final long                                                max;
+    private final java.io.ByteArrayOutputStream                       out    = new java.io.ByteArrayOutputStream();
+    private final java.util.concurrent.CompletableFuture<String>      result = new java.util.concurrent.CompletableFuture<>();
+    private       java.util.concurrent.Flow.Subscription              subscription;
+    private       long                                                size;
+
+    LimitedStringBody(final long max) {
+      this.max = max;
+    }
+
+    @Override
+    public java.util.concurrent.CompletionStage<String> getBody() {
+      return result;
+    }
+
+    @Override
+    public void onSubscribe(final java.util.concurrent.Flow.Subscription subscription) {
+      this.subscription = subscription;
+      subscription.request(Long.MAX_VALUE);
+    }
+
+    @Override
+    public void onNext(final List<java.nio.ByteBuffer> buffers) {
+      if (result.isDone())
+        return;
+      for (final java.nio.ByteBuffer buffer : buffers) {
+        size += buffer.remaining();
+        if (size > max) {
+          subscription.cancel();
+          result.completeExceptionally(new ResponseTooLargeException(max));
+          return;
+        }
+        final byte[] chunk = new byte[buffer.remaining()];
+        buffer.get(chunk);
+        out.write(chunk, 0, chunk.length);
+      }
+    }
+
+    @Override
+    public void onError(final Throwable throwable) {
+      result.completeExceptionally(throwable);
+    }
+
+    @Override
+    public void onComplete() {
+      result.complete(out.toString(StandardCharsets.UTF_8));
+    }
+  }
+
   static final class Multipart {
     private static final byte[] CRLF = "\r\n".getBytes(StandardCharsets.US_ASCII);
 

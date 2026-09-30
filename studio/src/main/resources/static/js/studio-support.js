@@ -479,7 +479,7 @@ function supportCollectFormHtml(prefix, withTitle) {
     prefix +
     'Threads"><label class="form-check-label" style="font-size: 0.86rem;" for="' +
     prefix +
-    'Threads">Thread dump (all threads with their stacks: useful for hangs and slowness)</label></div>';
+    'Threads">Thread dump (all threads with their stacks: useful for hangs and slowness; it briefly pauses the JVM, longer on a busy server with many threads)</label></div>';
   html +=
     '<button class="btn btn-sm btn-outline-primary" id="' +
     prefix +
@@ -588,7 +588,7 @@ function supportPreview(prefix) {
     .done(function (text) {
       var description = supportParse(text) || {};
       supportPreviews[prefix] = { id: description.previewId, description: description };
-      $("#" + prefix + "Preview").html(supportPreviewHtml(description));
+      $("#" + prefix + "Preview").html(supportPreviewHtml(description, prefix));
       supportUpdateSendState(prefix);
     })
     .fail(function (jqXHR) {
@@ -601,7 +601,7 @@ function supportPreview(prefix) {
     });
 }
 
-function supportPreviewHtml(d) {
+function supportPreviewHtml(d, prefix) {
   var html = "";
   var files = d.files || [];
   if (files.length) {
@@ -651,6 +651,13 @@ function supportPreviewHtml(d) {
       supportEsc(w) +
       "</div>";
   });
+  // The public GitHub path: the text that goes into the prefilled issue is shown here, before the click, exactly as it will be
+  if (prefix === "spPublic" && d.githubSummary)
+    html +=
+      '<div class="mt-2"><div class="support-hint"><b>This text is added to the public GitHub issue</b> (the logs are not: attach the downloaded bundle by hand, after reading it):</div>' +
+      '<pre class="support-mono" style="white-space: pre-wrap; font-size: 0.8rem; max-height: 14rem; overflow: auto; margin: 0.25rem 0 0;">' +
+      supportEsc(d.githubSummary) +
+      "</pre></div>";
   html +=
     '<div class="support-hint mt-2"><i class="fa fa-lock"></i> Exactly these files are what is sent or downloaded. Passwords, tokens, keys, credentials in URLs and PEM blocks are masked before they are written; ' +
     "the masking cannot recognise free-text secrets, query text, host names, IP addresses or user names in the logs, so review the content. " +

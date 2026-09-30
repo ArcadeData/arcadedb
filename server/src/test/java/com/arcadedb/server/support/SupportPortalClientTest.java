@@ -333,6 +333,20 @@ class SupportPortalClientTest {
   }
 
   @Test
+  void aResponseLargerThanTheLimitIsRefusedNotBuffered() {
+    portal.handler = r -> new MockPortal.Response(200, "{\"pad\":\"" + "x".repeat(5000) + "\"}");
+    final SupportPortalClient client = client();
+    client.setMaxResponseBytes(1000);
+    final SupportPortalException e = catchPortal(client::whoami);
+    assertThat(e.getCode()).isEqualTo("portal_error");
+    assertThat(e.getMessage()).contains("more than").doesNotContain(MockPortal.KEY);
+
+    // and a response within the limit is read whole
+    client.setMaxResponseBytes(100_000);
+    assertThat(client.whoami()).hasSizeGreaterThan(5000);
+  }
+
+  @Test
   void theClientKeyAndAnythingShapedLikeOneIsStillMaskedInAResponse() {
     final String other = "wsk_" + "A".repeat(43);
     portal.handler = r -> new MockPortal.Response(200, "{\"echo\":\"" + MockPortal.KEY + "\",\"other\":\"" + other + "\"}");

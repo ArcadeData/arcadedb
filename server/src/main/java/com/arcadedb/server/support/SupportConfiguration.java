@@ -130,19 +130,32 @@ public class SupportConfiguration {
     if (clientId.isEmpty() || key.isEmpty())
       return null;
 
-    // An explicit setting wins over the file even when it names the default portal (an operator overriding a test URL that
-    // was registered in support.json); only an unset setting lets the file decide
-    final boolean settingExplicit = !settingUrl.isEmpty() && (!settingUrl.equals(DEFAULT_PORTAL_URL)
-        || configuration.hasValue(GlobalConfiguration.SUPPORT_URL.getKey()) || GlobalConfiguration.SUPPORT_URL.isChanged());
-    final String url = settingExplicit ? settingUrl : file.getString("portalUrl", DEFAULT_PORTAL_URL);
+    final String url = isUrlSettingExplicit(settingUrl) ? settingUrl : file.getString("portalUrl", DEFAULT_PORTAL_URL);
 
     return new Registration(stripTrailingSlash(url), clientId, key, file.getString("registeredAt", ""),
         !settingId.isEmpty() && !settingKey.isEmpty());
   }
 
+  /**
+   * Whether the operator set {@code arcadedb.support.url}. The precedence of the portal URL is: the setting when it is set
+   * (even to the default portal, which overrides a different URL registered earlier in {@code support.json}), else the URL
+   * in the file, else the default portal.
+   */
+  private boolean isUrlSettingExplicit(final String settingUrl) {
+    if (settingUrl.isEmpty())
+      return false;
+    // A value that differs from the default can only have been set; one equal to it is explicit only if somebody supplied it
+    return !settingUrl.equals(DEFAULT_PORTAL_URL) || configuration.hasValue(GlobalConfiguration.SUPPORT_URL.getKey())
+        || GlobalConfiguration.SUPPORT_URL.isChanged();
+  }
+
   /** The portal URL to use, also when the server is not registered yet (the registration form calls it first). */
   public synchronized String getPortalUrl() {
-    final Registration registration = get();
+    return getPortalUrl(get());
+  }
+
+  /** As {@link #getPortalUrl()} for a registration the caller has just read, which saves reading the file again. */
+  public synchronized String getPortalUrl(final Registration registration) {
     if (registration != null)
       return registration.getPortalUrl();
     final String settingUrl = trim(configuration.getValueAsString(GlobalConfiguration.SUPPORT_URL));

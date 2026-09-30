@@ -24,7 +24,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -65,6 +64,11 @@ import java.util.zip.ZipOutputStream;
  * <p>
  * <b>Size</b>: the zip is written to a file, never held in the heap. When it grows over the cap the collection stops with an
  * error asking to narrow the window: nothing is ever truncated silently.
+ * <p>
+ * <b>Long lines</b>: a line is cut to {@link #MAX_LINE_CHARS} characters when it is read (see {@link SupportLineReader}), and the
+ * redactor runs on the cut line, so a line longer than that is never held whole in the heap. A {@code password=...} that starts
+ * before the cut is still masked (the value is cut with the line); a keyword split exactly at the boundary is kept as a
+ * fragment, which names nothing usable. The preview warns with the number of lines cut.
  */
 public class SupportLogCollector {
   public static final long DEFAULT_MAX_ZIP_BYTES = 100L * 1024 * 1024;
@@ -234,9 +238,10 @@ public class SupportLogCollector {
         boolean include = false;
         long sinceCheck = 0;
 
-        try (final BufferedReader reader = new BufferedReader(new InputStreamReader(open(file), StandardCharsets.UTF_8), 1 << 16)) {
+        try (final InputStreamReader input = new InputStreamReader(open(file), StandardCharsets.UTF_8)) {
+          final SupportLineReader reader = new SupportLineReader(input, MAX_LINE_CHARS, truncated);
           String line;
-          while ((line = readLine(reader, truncated)) != null) {
+          while ((line = reader.readLine()) != null) {
             final long key = parseKey(line, zone);
             if (key >= 0) {
               session.resetBlock();
@@ -309,40 +314,6 @@ public class SupportLogCollector {
       throw tooLarge(maxZipBytes);
     }
     return new Result(stats, warnings, totalLines, totalRedactions, zipBytes, summary.finish(window));
-  }
-
-  /**
-   * Like {@link BufferedReader#readLine()} but keeps at most {@link #MAX_LINE_CHARS} characters of a line: the rest is read
-   * and dropped, and the line says so. {@code truncated[0]} counts the lines cut.
-   */
-  static String readLine(final BufferedReader reader, final int[] truncated) throws IOException {
-    final StringBuilder line = new StringBuilder();
-    boolean any = false;
-    long dropped = 0;
-    int c;
-    while ((c = reader.read()) != -1) {
-      any = true;
-      if (c == '\n')
-        break;
-      if (c == '\r') {
-        reader.mark(1);
-        final int next = reader.read();
-        if (next != '\n' && next != -1)
-          reader.reset();
-        break;
-      }
-      if (line.length() < MAX_LINE_CHARS)
-        line.append((char) c);
-      else
-        dropped++;
-    }
-    if (!any)
-      return null;
-    if (dropped > 0) {
-      line.append(" ...[").append(dropped).append(" characters cut]");
-      truncated[0]++;
-    }
-    return line.toString();
   }
 
   private static void checkCap(final CountingOutputStream counting, final long maxZipBytes) {
