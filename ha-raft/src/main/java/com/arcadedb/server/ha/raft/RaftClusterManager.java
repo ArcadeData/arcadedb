@@ -135,21 +135,59 @@ class RaftClusterManager {
    * {@code POST /api/v1/cluster/peer}, whose payload has no priority to pass.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
+    addPeer(newPeer, name, null);
+  }
+
+  /**
+   * {@link #addPeer(RaftPeer, String)} for a peer whose HTTP address was DECLARED by the caller - the
+   * {@code host:raftPort:httpPort} or {@code http:} field of a {@code connect cluster} target (issue #8330).
+   * <p>
+   * A declared address is written <b>before</b> the membership change is submitted, not after it returns. The
+   * configuration entry that change commits is what schedules the leader's security seed
+   * ({@link MembershipSecuritySeeder}), and the seed's group and API-token entries pass the #7511 capability gate
+   * only once the new peer has answered a capability probe sent to the address this map holds for it. Written
+   * after the commit, the seed raced it; and the address written in between was the derived
+   * {@code raftPort + offset} guess, which on a cluster whose ports are not in step names a socket nobody listens
+   * on, so every probe of the seed's retry budget failed and the admission answered 503 for a peer that was up.
+   * <p>
+   * If the change does not commit, the previous entry is put back (or none left), so a failed join does not leave
+   * an address behind for a peer that never became a member. Without a declared address the derived one is
+   * written after the commit exactly as before.
+   *
+   * @param declaredHttpAddress the {@code host:port} the caller declared for the peer's HTTP listener, or
+   *                            {@code null} to derive one
+   */
+  void addPeer(final RaftPeer newPeer, final String name, final String declaredHttpAddress) {
     final String peerId = newPeer.getId().toString();
     final String address = newPeer.getAddress();
+    final Map<RaftPeerId, String> httpAddresses = raftHAServer.getHttpAddresses();
+
+    final String previousHttpAddress = declaredHttpAddress != null
+        ? httpAddresses.put(newPeer.getId(), declaredHttpAddress)
+        : null;
 
     // Mode.ADD atomically appends this single peer to the CURRENT committed configuration, so two
     // near-simultaneous adds cannot clobber each other. A full setConfiguration(getLivePeers()+peer)
     // is read-modify-write last-write-wins and silently drops one of two concurrent adds (issue #4795),
     // which is exactly why the K8s auto-join path already uses Mode.ADD (see KubernetesAutoJoin).
-    setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
-        "The peer answered a connection but the Raft membership change did not commit: Ratis holds a Mode.ADD"
-            + " uncommitted until the new peer has caught up with the leader's log. Check that the server at "
-            + address + " is running as part of this cluster - same cluster name and cluster token - and is"
-            + " not still replaying its own log.");
+    try {
+      setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
+          "The peer answered a connection but the Raft membership change did not commit: Ratis holds a Mode.ADD"
+              + " uncommitted until the new peer has caught up with the leader's log. Check that the server at "
+              + address + " is running as part of this cluster - same cluster name and cluster token - and is"
+              + " not still replaying its own log.");
+    } catch (final RuntimeException | Error e) {
+      if (declaredHttpAddress != null) {
+        if (previousHttpAddress != null)
+          httpAddresses.put(newPeer.getId(), previousHttpAddress);
+        else
+          httpAddresses.remove(newPeer.getId(), declaredHttpAddress);
+      }
+      throw e;
+    }
 
     final int colonIdx = address.lastIndexOf(':');
-    if (colonIdx > 0) {
+    if (declaredHttpAddress == null && colonIdx > 0) {
       final String host = address.substring(0, colonIdx);
       try {
         final int raftPort = Integer.parseInt(address.substring(colonIdx + 1));

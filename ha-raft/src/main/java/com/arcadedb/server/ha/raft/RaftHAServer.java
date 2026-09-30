@@ -4247,10 +4247,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * object is also the one holding the {@link ContextConfiguration} the probe's budget comes from.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
+    addPeer(newPeer, name, null);
+  }
+
+  /**
+   * {@link #addPeer(RaftPeer, String)} with the HTTP address the caller declared for the peer, which
+   * {@link RaftClusterManager#addPeer(RaftPeer, String, String)} puts in place before the membership change commits
+   * so the security seed that commit triggers probes the right listener (issue #8330).
+   */
+  void addPeer(final RaftPeer newPeer, final String name, final String declaredHttpAddress) {
     ensureNotSelf(localPeerId, getLocalRaftAddress(), newPeer);
     ensureNoDuplicateAddress(getLivePeers(), newPeer);
     ensurePeerReachable(newPeer);
-    clusterManager.addPeer(newPeer, name);
+    clusterManager.addPeer(newPeer, name, declaredHttpAddress);
   }
 
   /**

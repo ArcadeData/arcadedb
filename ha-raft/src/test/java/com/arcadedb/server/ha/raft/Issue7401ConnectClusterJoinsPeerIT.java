@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.awaitility.Awaitility;
@@ -83,12 +84,12 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     dropFromConfigurationAndRestart(leader, rejoining);
 
-    final Response response = serverCommand(leader, "connect cluster " + raftAddressOf(rejoining));
+    final Response response = serverCommand(leader, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
     assertThat(peerIds(leader)).contains(peerIdForIndex(rejoining)).hasSize(getServerCount());
 
-    final Response again = serverCommand(leader, "connect cluster " + raftAddressOf(rejoining));
+    final Response again = serverCommand(leader, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(again.status()).as("body: %s", again.body()).isEqualTo(200);
     assertThat(peerIds(leader)).hasSize(getServerCount());
@@ -110,7 +111,7 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     dropFromConfigurationAndRestart(leader, rejoining);
 
-    final Response response = serverCommand(follower, "connect cluster " + raftAddressOf(rejoining));
+    final Response response = serverCommand(follower, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
     assertThat(peerIds(leader)).as("the leader's committed configuration").contains(peerIdForIndex(rejoining));
@@ -146,24 +147,47 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
     final RaftHAServer leaderRaft = getRaftPlugin(leader).getRaftHAServer();
     assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount());
 
+    // Issue #8330. Back on the HTTP port this node already owned, the way BaseGraphServerTest.endTest restarts one,
+    // rather than on whatever the range scan binds first: a restart re-scanning from the bottom of the range can land
+    // on a port BaseRaftHATest.skipShadowedHttpPorts had steered the fixture past, and every other node's map would
+    // name the old one anyway.
+    final int boundHttpPort = getServerHttpPort(rejoining);
+    getServer(rejoining).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, boundHttpPort);
+
     getServer(rejoining).stop();
     leaderRaft.removePeer(peerIdForIndex(rejoining), true);
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(leaderRaft.getLivePeers()).hasSize(getServerCount() - 1));
 
     getServer(rejoining).start();
+    assertThat(getServerHttpPort(rejoining)).as("the restarted node's HTTP port").isEqualTo(boundHttpPort);
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(getRaftPlugin(rejoining)).isNotNull());
     assertThat(peerIds(leader)).doesNotContain(peerIdForIndex(rejoining));
+
+    // Issue #8330. removePeer ran in-process on the leader, and RaftClusterManager.removePeer drops the peer's
+    // HTTP address from the map of the node that ran it - an address every other node still holds from its
+    // server list. The restarted node also rebuilt its map from the fixture's pre-start hints. Put back what the
+    // fixture's own startServers() establishes, so the leader's security seed - whose group and API-token
+    // entries pass the #7511 capability gate only once this peer answers a probe - dials the port the peer
+    // actually bound. Without it the probe went to a derived or withheld address and the verb answered 503
+    // with failedSeeds [groups, API tokens] for a peer that was up.
+    patchHttpAddresses();
   }
 
   /**
-   * The Raft address of a fixture server, recovered from its peer id. The two are the same string with
-   * one character changed, which is the rule this verb relies on - so deriving one from the other here
-   * keeps the test from hardcoding a port the base class owns.
+   * The address {@code connect cluster} is given for a fixture server: its Raft address, recovered from its peer
+   * id, plus the HTTP port it actually bound.
+   * <p>
+   * The HTTP port is declared rather than left for the verb to derive (issue #8330). The fixture's Raft ports are
+   * allocated free ports and its HTTP ports come from the default range, so the two do not move in step, and the
+   * derived {@code raftPort + offset} address names a socket nobody listens on - which is exactly the cluster an
+   * operator is told to declare the {@code http} port for. The Raft half is the peer id with one character changed,
+   * which is the rule this verb relies on, so deriving one from the other keeps the test from hardcoding a port the
+   * base class owns.
    */
-  private String raftAddressOf(final int serverIndex) {
-    return peerIdForIndex(serverIndex).replace('_', ':');
+  private String joinAddressOf(final int serverIndex) {
+    return peerIdForIndex(serverIndex).replace('_', ':') + ":" + getServerHttpPort(serverIndex);
   }
 
   private List<String> peerIds(final int serverIndex) {
@@ -175,7 +199,7 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
   }
 
   private Response serverCommand(final int serverIndex, final String command) throws Exception {
-    final int port = getServer(serverIndex).getHttpServer().getPort();
+    final int port = getServerHttpPort(serverIndex);
     final HttpURLConnection conn = (HttpURLConnection) new URI(
         "http://localhost:" + port + "/api/v1/server").toURL().openConnection();
     conn.setRequestMethod("POST");
