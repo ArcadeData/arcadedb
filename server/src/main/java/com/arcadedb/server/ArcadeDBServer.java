@@ -209,6 +209,7 @@ public class ArcadeDBServer {
   // Issue #7415: resolved once, in the constructor, from arcadedb.server.configDirectory. Every server-side reader
   // and writer of a configuration file goes through getConfigPath() rather than appending "/config" to the root.
   private             String                                serverConfigPath;
+  private volatile    String                                instanceId;
   // volatile: written by the HA plugin during startPlugins(AFTER_HTTP_ON), i.e. after httpServer.startService()
   // has begun accepting requests. Undertow worker threads reading these (readiness/cluster handlers, getDatabase's
   // HA wrapping) need a happens-before with those writes, otherwise under the JMM they may observe null indefinitely.
@@ -463,10 +464,6 @@ public class ArcadeDBServer {
     // Discover plugins from lib/plugins directory
     pluginManager.discoverPlugins();
 
-    final String supportId = configuration.getValueAsString(GlobalConfiguration.SUPPORT_ID);
-    if (supportId != null && !supportId.isEmpty())
-      LogManager.instance().log(this, Level.INFO, "Support id: %s", supportId);
-
     LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server in %s mode with plugins %s ...",
         configuration.getValueAsString(GlobalConfiguration.SERVER_MODE),
         pluginManager != null && !pluginManager.getPluginNames().isEmpty() ?
@@ -518,6 +515,9 @@ public class ArcadeDBServer {
     security.startService();
 
     createDirectories();
+
+    instanceId = InstanceIdResolver.resolve(configuration, Paths.get(serverConfigPath));
+    LogManager.instance().log(this, Level.INFO, "Instance id: %s", instanceId);
 
     loadDatabases(false);
 
@@ -1648,6 +1648,13 @@ public class ArcadeDBServer {
     if (replicationLifecycleEventsEnabled)
       for (final ReplicationCallback c : testEventListeners)
         c.onEvent(type, object, this);
+  }
+
+  /**
+   * The instance id reported to support (see {@link InstanceIdResolver}), or null until the server has started.
+   */
+  public String getInstanceId() {
+    return instanceId;
   }
 
   public String getRootPath() {
