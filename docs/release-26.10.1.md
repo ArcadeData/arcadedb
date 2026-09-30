@@ -102,6 +102,12 @@ actionable message rather than a generic failure. Note that a server in a contai
 published port typically sees the container network's gateway as the peer, not loopback, so a Studio opened on
 `http://localhost:2480` against the Docker image is refused too.
 
+**HA clusters.** A mint sent to a follower is forwarded to the leader (#8109), and the leader applies the same
+check to that hop, because the token travels back over it in plaintext. On a cluster whose nodes reach each
+other over plain HTTP on different hosts, a mint through a follower is therefore refused with 412 even when
+the client itself connected over HTTPS. Enable HTTPS between the cluster nodes, send the mint to the leader
+directly, or opt out as below.
+
 **How to migrate**, in order of preference:
 
 - serve the HTTP API over TLS, or mint from the server host itself;
@@ -109,6 +115,10 @@ published port typically sees the container network's gateway as the peer, not l
   (literal IPs or CIDR ranges, #7804) so its `X-Forwarded-Proto: https` is believed;
 - to keep the previous behaviour, set `arcadedb.server.apiTokenRequireSecureTransport=false`. The mint is then
   allowed and logged at WARNING.
+
+The trusted-proxy list (#7804) and the Studio rendering of the 412 ship in this same release as the new
+default, so there is no earlier release in which the proxy list can be configured ahead of the flip: set it
+before, or together with, the upgrade.
 
 ## Improvements
 
