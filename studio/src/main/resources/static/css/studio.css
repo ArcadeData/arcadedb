@@ -1005,15 +1005,30 @@ body.col-resizing * {
   justify-content: space-between;
 }
 
-.saved-query-name .saved-query-delete {
+.saved-query-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saved-query-name .saved-query-delete,
+.saved-query-name .saved-query-run {
   opacity: 0;
-  color: #cc4444;
   font-size: 0.7rem;
   cursor: pointer;
   transition: opacity 0.15s;
 }
 
-.saved-query-entry:hover .saved-query-delete {
+.saved-query-name .saved-query-delete {
+  color: #cc4444;
+}
+
+.saved-query-name .saved-query-run {
+  color: var(--color-brand);
+}
+
+.saved-query-entry:hover .saved-query-delete,
+.saved-query-entry:hover .saved-query-run {
   opacity: 1;
 }
 
