@@ -35,9 +35,8 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
-import java.util.Queue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -127,7 +126,8 @@ final class ParallelTypeScan {
   private          CommandContext          consumerContext;
   private final    AtomicInteger           nextUnit = new AtomicInteger();
   // THE THREADS READING THE UNITS THE CALLER CLAIMED INSIDE A TRANSACTION (#8775): close() STOPS THEM
-  private final    Queue<Thread>           dedicatedReaders = new ConcurrentLinkedQueue<>();
+  private          BlockingQueue<Integer>  readerUnits;
+  private volatile Thread                  dedicatedReader;
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
     this.database = database;
@@ -470,8 +470,10 @@ final class ParallelTypeScan {
           }
           consumerBatch = null;
 
-          if (consumerUnit >= channels.length)
+          if (consumerUnit >= channels.length) {
+            stopDedicatedReader();
             return false;
+          }
 
           if (consumerStep != null) {
             // A UNIT THE CONSUMER SCANS ITSELF: ITS ROWS NEED NO CHANNEL. AN EMPTY BATCH (ALL FILTERED AWAY) LOOPS
@@ -548,35 +550,53 @@ final class ParallelTypeScan {
   }
 
   /**
-   * Reads the unit {@code unitIndex}, which the caller claimed because no worker had started it (#8594), on a thread of
-   * its own: a thread with no transaction reads committed pages only, as the workers do, and the rows go through the
-   * unit's bounded channel like a worker's. Not the producer pool, which may be held by other result sets for good and
-   * is the very thing this path must not depend on. At most one runs per scan: the caller claims the next unit only
-   * once it has consumed the previous one.
+   * Hands the unit {@code unitIndex}, which the caller claimed because no worker had started it (#8594), to a reader
+   * thread of this scan's own: a thread with no transaction reads committed pages only, as the workers do, and the rows
+   * go through the unit's bounded channel like a worker's. Not the producer pool, which may be held by other result
+   * sets for good and is the very thing this path must not depend on. One reader serves every unit the caller claims,
+   * one after the other (it claims the next only once it has consumed the previous one), and it is created on the first.
    */
   private void startDedicatedReader(final CommandContext context, final int unitIndex) {
-    final Unit unit = units.get(unitIndex);
-    final CommandContext readerContext = workerContext(context);
-    final long maxBatchBytes = maxBatchBytes();
-    final long abandonedTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
-    final Thread reader = new Thread(() -> {
-      try {
-        initWorkerThread();
-        final AbstractExecutionStep step = stepFor(unit, readerContext);
+    if (readerUnits == null) {
+      readerUnits = new LinkedBlockingQueue<>();
+      final CommandContext readerContext = workerContext(context);
+      final long maxBatchBytes = maxBatchBytes();
+      final long abandonedTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
+      final BlockingQueue<Integer> claimed = readerUnits;
+      final Thread reader = new Thread(() -> {
         try {
-          produceUnit(step, readerContext, channels[unitIndex], maxBatchBytes, abandonedTimeoutMs);
+          initWorkerThread();
+          while (true) {
+            final int index = claimed.take();
+            final Unit unit = units.get(index);
+            final AbstractExecutionStep step = stepFor(unit, readerContext);
+            try {
+              if (!produceUnit(step, readerContext, channels[index], maxBatchBytes, abandonedTimeoutMs))
+                return;
+            } finally {
+              chargeProfile(unit, step, readerContext);
+            }
+          }
+        } catch (final InterruptedException e) {
+          // THE SCAN IS OVER OR CLOSED: EXPECTED
+          Thread.currentThread().interrupt();
+        } catch (final Throwable e) {
+          recordFailure(e);
         } finally {
-          chargeProfile(unit, step, readerContext);
+          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
-      } catch (final Throwable e) {
-        recordFailure(e);
-      } finally {
-        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
-      }
-    }, "ArcadeDB-parallel-scan-unit-reader");
-    reader.setDaemon(true);
-    dedicatedReaders.add(reader);
-    reader.start();
+      }, "ArcadeDB-parallel-scan-unit-reader");
+      reader.setDaemon(true);
+      dedicatedReader = reader;
+      reader.start();
+    }
+    readerUnits.add(unitIndex);
+  }
+
+  private void stopDedicatedReader() {
+    final Thread reader = dedicatedReader;
+    if (reader != null)
+      reader.interrupt();
   }
 
   private void startProducers(final CommandContext context) {
@@ -673,8 +693,7 @@ final class ParallelTypeScan {
     if (futures != null)
       for (final Future<?> f : futures)
         f.cancel(true);
-    for (final Thread reader : dedicatedReaders)
-      reader.interrupt();
+    stopDedicatedReader();
 
     // A UNIT THE CONSUMER WAS SCANNING ITSELF: A COPY IS THIS SCAN'S TO CLOSE, A WHOLE TEMPLATE IS ITS OWNING STEP'S
     final AbstractExecutionStep step = consumerStep;

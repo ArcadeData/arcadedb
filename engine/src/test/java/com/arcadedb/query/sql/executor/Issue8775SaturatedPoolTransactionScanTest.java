@@ -63,6 +63,10 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
     assertThat(scanWhilePoolIsHeld(true)).isEqualTo(RECORDS);
   }
 
+  private static long liveReaders() {
+    return Thread.getAllStackTraces().keySet().stream().filter(t -> t.getName().equals("ArcadeDB-parallel-scan-unit-reader") && t.isAlive()).count();
+  }
+
   private long scanWhilePoolIsHeld(final boolean writeAfterFirstRow) throws Exception {
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
     final List<ResultSet> abandoned = new ArrayList<>();
@@ -82,13 +86,18 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
       database.begin();
       try {
         long rows = 0;
+        long maxReaders = 0;
         try (final ResultSet rs = database.query("sql", "SELECT FROM Rating")) {
           while (rs.hasNext()) {
             rs.next();
             if (rows++ == 0 && writeAfterFirstRow)
               database.newDocument("Rating").set("id", -1).save();
+            if (rows % 1_000 == 0)
+              maxReaders = Math.max(maxReaders, liveReaders());
           }
         }
+        // one reader serves every unit the caller claims: the threads do not pile up with the units
+        assertThat(maxReaders).isLessThanOrEqualTo(1);
         return rows;
       } finally {
         database.rollback();
