@@ -154,6 +154,16 @@ public class ArcadeDBServer {
       "The request failed. Check the server log for the details";
 
   /**
+   * What the keys segment of a duplicated-key answer carries when {@link #isProductionMode()} holds. The key VALUES
+   * are the customer's stored data, unlike the exception class, the index name and the RID, which are schema and
+   * addressing metadata a driver needs to rebuild a typed {@code DuplicatedKeyException} (issue #7760). A
+   * placeholder rather than an empty segment, so the pipe-separated {@code exceptionArgs} keeps its three parts for
+   * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer,
+   * which is omitted instead) must both apply it, or the setting means one thing on each surface.
+   */
+  public static final String                                CONCEALED_DUPLICATED_KEYS            = "[concealed]";
+
+  /**
    * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
    * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
    * this command restores straight into the final directory, so there is no temporary directory to swap in, and

@@ -163,8 +163,6 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_SHORT:
       case BinaryTypes.TYPE_BYTE:
       case BinaryTypes.TYPE_LONG:
-      case BinaryTypes.TYPE_DATETIME:
-      case BinaryTypes.TYPE_DATE:
       case BinaryTypes.TYPE_DECIMAL:
       case BinaryTypes.TYPE_FLOAT:
       case BinaryTypes.TYPE_DOUBLE:
@@ -178,6 +176,15 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_STRING:
         return Integer.compare(v1, Boolean.parseBoolean((String) value2) ? 1 : 0);
 
+      case BinaryTypes.TYPE_DATE:
+      case BinaryTypes.TYPE_DATETIME:
+      case BinaryTypes.TYPE_DATETIME_SECOND:
+      case BinaryTypes.TYPE_DATETIME_MICROS:
+      case BinaryTypes.TYPE_DATETIME_NANOS:
+        // A boolean is not a point in time: refused here exactly as the temporal arm below refuses it, so both
+        // directions agree (issue #7754).
+        throw unsupportedPair(type1, type2);
+
       default:
         return -1;
       }
@@ -187,11 +194,11 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS: {
-      // KNOWN GAP, issue #7754: a BOOLEAN value2 reaches here and dateTimeToTimestampInferringStringPrecision has
-      // no case for it, so the null it answers NPEs on unboxing - while the reverse direction, BOOLEAN as type1,
-      // maps it to 1/0 and answers. Deliberately not patched in passing: whether that comparison should mean
-      // anything at all is the actual question, and whichever way it is settled BOTH directions have to implement
-      // it, or the comparator stops being antisymmetric (the failure mode of #5900, #5947 and #6997).
+      // A BOOLEAN operand has no timestamp meaning and dateTimeToTimestampInferringStringPrecision has no case for
+      // it (it answered null, which NPE'd on unboxing). The BOOLEAN arm above refuses the reverse pair the same way,
+      // so both directions agree (issue #7754).
+      if (type2 == BinaryTypes.TYPE_BOOLEAN || value2 instanceof Boolean)
+        throw unsupportedPair(type1, type2);
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
       final long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
       final long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
@@ -284,7 +291,11 @@ public class BinaryComparator {
 
     }
 
-    throw new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
+    throw unsupportedPair(type1, type2);
+  }
+
+  private static IllegalArgumentException unsupportedPair(final byte type1, final byte type2) {
+    return new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
   }
 
   /**
