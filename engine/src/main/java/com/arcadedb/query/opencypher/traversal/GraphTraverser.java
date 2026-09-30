@@ -20,12 +20,14 @@ package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.Collections;
@@ -59,6 +61,12 @@ public abstract class GraphTraverser {
    * edge-list entry holds, without loading its record (issue #8537).
    */
   protected boolean edgesUnread;
+  /**
+   * The query this traversal runs for, whose lookup answers the incoming side of the unidirectional edge types
+   * (issue #8625). Null walks the adjacency lists only.
+   */
+  protected CommandContext context;
+  private   Boolean        incomingLookup;
 
   /**
    * Creates a graph traverser with specified parameters.
@@ -121,7 +129,9 @@ public abstract class GraphTraverser {
    */
   protected Iterable<Edge> getEdges(final Vertex vertex) {
     final Iterator<Edge> edges;
-    if (edgesUnread && vertex instanceof VertexInternal internal)
+    if (isIncomingLookupNeeded(vertex))
+      edges = IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), relationshipTypes);
+    else if (edgesUnread && vertex instanceof VertexInternal internal)
       edges = ((DatabaseInternal) internal.getDatabase()).getGraphEngine()
           .getEdgesKnowingEndpoints(internal, direction.toArcadeDirection(), relationshipTypes);
     else if (relationshipTypes == null || relationshipTypes.length == 0)
@@ -145,6 +155,11 @@ public abstract class GraphTraverser {
    * @return iterable of connected vertices
    */
   protected Iterable<Vertex> getNextVertices(final Vertex vertex) {
+    if (isIncomingLookupNeeded(vertex)) {
+      final Iterator<Vertex> vertices = IncomingEdgeLookup.getVertices(context, vertex, direction.toArcadeDirection(),
+          relationshipTypes);
+      return () -> vertices;
+    }
     if (relationshipTypes == null || relationshipTypes.length == 0) {
       return vertex.getVertices(direction.toArcadeDirection());
     } else {
@@ -222,6 +237,29 @@ public abstract class GraphTraverser {
   public GraphTraverser withEdgesUnread(final boolean edgesUnread) {
     this.edgesUnread = edgesUnread;
     return this;
+  }
+
+  /**
+   * Attaches the query this traversal runs for (see {@link #context}). Traversers that delegate to a nested traverser
+   * must forward it.
+   *
+   * @return this traverser, for chaining at the construction site
+   */
+  public GraphTraverser withContext(final CommandContext context) {
+    this.context = context;
+    this.incomingLookup = null;
+    return this;
+  }
+
+  private boolean isIncomingLookupNeeded(final Vertex vertex) {
+    if (context == null)
+      return false;
+    Boolean needed = incomingLookup;
+    if (needed == null) {
+      needed = IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), direction.toArcadeDirection(), relationshipTypes);
+      incomingLookup = needed;
+    }
+    return needed;
   }
 
   /**

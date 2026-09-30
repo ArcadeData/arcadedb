@@ -38,7 +38,7 @@ final class NoNetworkMarkerReconciler extends DatabaseReconciler {
   }
 
   @Override
-  LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+  LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) {
     return new LeaderDatabaseQuery.BootstrapState(List.of(), marker);
   }

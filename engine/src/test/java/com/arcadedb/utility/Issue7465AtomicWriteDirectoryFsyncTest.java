@@ -81,6 +81,29 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
     assertThat(Files.readString(source)).as("the source must never be moved aside").isEqualTo("generation-1");
   }
 
+  /**
+   * Issue #8635: the schema save publishes schema.prev.json and then schema.json into the same directory, and the
+   * second publication's directory fsync makes both renames durable. The copy can therefore leave the fsync to it,
+   * which halves the device flushes of every schema change, and the pair still forces the directory exactly once.
+   */
+  @Test
+  void atomicCopyLeavesTheDirectoryFsyncToACallerThatForcesItNext() throws Exception {
+    final Path source = tempDir.resolve("schema.json");
+    final Path target = tempDir.resolve("schema.prev.json");
+    Files.writeString(source, "generation-1");
+
+    assertThat(countDirectoryOpens(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile(), false))).isZero();
+    assertThat(Files.readString(target)).isEqualTo("generation-1");
+    assertThat(Files.readString(source)).as("the source must never be moved aside").isEqualTo("generation-1");
+
+    assertThat(countDirectoryOpens(() -> {
+      FileUtils.atomicCopyFile(source.toFile(), target.toFile(), false);
+      FileUtils.atomicWriteFile(source.toFile(), "generation-2");
+    })).isEqualTo(isWindows() ? 0 : 1);
+    assertThat(Files.readString(target)).isEqualTo("generation-1");
+    assertThat(Files.readString(source)).isEqualTo("generation-2");
+  }
+
   @Test
   void forcingADirectorySucceedsOnEveryPlatformThatCan() {
     // Linux and macOS - where CI and every supported server deployment run - open a directory as a channel and

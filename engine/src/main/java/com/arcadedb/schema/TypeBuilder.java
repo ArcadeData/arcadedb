@@ -203,7 +203,6 @@ public class TypeBuilder<T> {
         for (LocalDocumentType sup : superTypes)
           c.addSuperType(sup);
 
-      schema.saveConfiguration();
       schema.updateSecurity();
 
       return c;

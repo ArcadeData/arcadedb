@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
@@ -344,9 +345,8 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       final Vertex from = nodes[hop];
       final String[] types = relationshipTypes[hop];
 
-      final Iterator<Edge> candidates = types != null ?
-          from.getEdges(direction.toArcadeDirection(), types).iterator() :
-          from.getEdges(direction.toArcadeDirection()).iterator();
+      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+      final Iterator<Edge> candidates = IncomingEdgeLookup.getEdges(context, from, direction.toArcadeDirection(), types);
 
       while (candidates.hasNext()) {
         guard.check();

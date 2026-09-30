@@ -238,14 +238,14 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
       }
     };
     reconciler.setServer(server);
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(downloadsOf(DB_NAME)).isEqualTo(1);
     assertThat(liveCount(DB_NAME)).isEqualTo(SNAPSHOT_COUNT);
@@ -267,7 +267,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     closeLocally(DB_NAME);
 
     final DatabaseReconciler.ReconcileFromLeaderResult result = markerOnlyReconciler().reconcileDatabasesFromLeader(
-        leaderAddress, null, null, -1L);
+        "leader", leaderAddress, null, null, -1L);
 
     assertThat(result.notInstalled()).as("the closed copy nobody refreshed is reported, not thrown").containsExactly(DB_NAME);
     assertThat(result.leaderSnapshotTermIndex()).isEqualTo(MARKER);
@@ -290,20 +290,20 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) throws IOException {
         throw new IOException("listing timed out");
       }
 
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), MARKER);
       }
     };
     reconciler.setServer(server);
 
-    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader(leaderAddress,
+    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader("leader", leaderAddress,
         null, null, -1L);
     assertThat(result.notInstalled()).containsExactly(DB_NAME);
     assertThat(liveCount(OTHER_DB)).isEqualTo(SNAPSHOT_COUNT);
@@ -326,9 +326,11 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   @Test
   void theLegacyRefreshStillFailsTheInstallForARegisteredDatabaseTheLeaderCannotServe() {
     server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
+    // A 404 would now be the leader not holding it, which keeps the copy as LEADER_MISSING (issue #8588); a 503 says nothing
+    // about whether it holds it, so the install still has to be re-driven
     leaderFails(DB_NAME);
 
-    assertThatThrownBy(() -> markerOnlyReconciler().reconcileDatabasesFromLeader(leaderAddress, null, null, -1L))
+    assertThatThrownBy(() -> markerOnlyReconciler().reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L))
         .as("Ratis must re-drive the install for a database this node serves")
         .isInstanceOf(IOException.class);
     assertThat(liveCount(DB_NAME)).isEqualTo(LIVE_COUNT);
@@ -346,8 +348,8 @@ class Issue8464ResyncCoversClosedDatabaseTest {
     // No context at all: the leader answers 404 for DB_NAME, which is registered here
 
     final DatabaseReconciler reconciler = markerOnlyReconciler();
-    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader(leaderAddress,
-        null, null, -1L);
+    final DatabaseReconciler.ReconcileFromLeaderResult result = reconciler.reconcileDatabasesFromLeader("leader",
+        leaderAddress, null, null, -1L);
 
     assertThat(result.leaderMissing()).as("reported instead of thrown").containsExactly(DB_NAME);
     assertThat(result.notInstalled()).isEmpty();
@@ -366,14 +368,14 @@ class Issue8464ResyncCoversClosedDatabaseTest {
 
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
       }
     };
     reconciler.setServer(server);
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(reconciler.getAcquireStatus(DB_NAME)).isNotNull();
     assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
@@ -428,7 +430,7 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   private DatabaseReconciler markerOnlyReconciler() {
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), MARKER);
       }

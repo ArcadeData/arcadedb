@@ -41,8 +41,8 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 
@@ -64,12 +64,26 @@ public class TransactionManager {
   private final List<WALFile>                inactiveWALFilePool = Collections.synchronizedList(new ArrayList<>());
   private final String                       logContext;
   private final Timer                        task;
-  private       CountDownLatch               taskExecuting       = new CountDownLatch(0);
   private final AtomicLong                   transactionIds      = new AtomicLong();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Object> fileIdsLockManager  = new LockManager<>();
   private final AtomicLong                   statsPagesWritten   = new AtomicLong();
   private final AtomicLong                   statsBytesWritten   = new AtomicLong();
+  /**
+   * Serializes the housekeeping pass (rotation and retirement of WAL files) against the code that replaces or
+   * retires the pool outside the commit path: recovery ({@link #checkIntegrity()}), {@link #close} and
+   * {@link #kill}. The timer only TRIES it and skips the tick when it is busy, so a long recovery never queues passes
+   * behind it. An ordinary commit never takes it: it only reads the pool reference.
+   */
+  private final ReentrantLock                walMaintenanceLock  = new ReentrantLock();
+  // Guarded by walMaintenanceLock: once set by close()/kill(), no housekeeping pass runs on this instance again.
+  private       boolean                      housekeepingStopped;
+  /**
+   * Set when an exception escaped a replay: the WAL files it left behind are the only record of transactions it did
+   * not apply, and the pool slots still name their paths, so {@link #close} preserves them even when its caller asked
+   * for a clean close. Only a drop may delete them.
+   */
+  private volatile boolean                   recoveryInputUnreplayed;
   /**
    * True once this open has reconstructed {@link #getLastTransactionId()} from real evidence - either the marker
    * persisted at a previous clean close, or WAL replay - rather than falling through to the "no transaction has
@@ -131,20 +145,10 @@ public class TransactionManager {
               return;
             }
 
-            if (activeWALFilePool != null) {
-              taskExecuting = new CountDownLatch(1);
-              try {
-                if (logContext != null)
-                  LogManager.instance().setContext(logContext);
+            if (logContext != null)
+              LogManager.instance().setContext(logContext);
 
-                checkWALFiles();
-                // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped, so a power
-                // loss cannot lose pages that were only write()'n to the OS cache (issue #4509).
-                cleanWALFiles(true, false, true);
-              } finally {
-                taskExecuting.countDown();
-              }
-            }
+            runWALHousekeeping();
           } catch (Throwable e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on transaction manager task", e);
           } finally {
@@ -159,6 +163,49 @@ public class TransactionManager {
 
   public void close(final boolean drop) {
     close(drop, false);
+  }
+
+  /**
+   * One pass of the periodic WAL housekeeping: rotates the files past {@link #MAX_LOG_FILE_SIZE} and drops the retired
+   * ones whose pages all reached the disk. Package-visible so tests can drive a pass deterministically instead of
+   * waiting for the timer. Skipped, not queued, while recovery, {@link #close} or {@link #kill} owns the pool: the
+   * next tick retries, and after a close or kill there is nothing left to do.
+   */
+  void runWALHousekeeping() {
+    if (!walMaintenanceLock.tryLock())
+      return;
+    try {
+      if (housekeepingStopped || activeWALFilePool == null)
+        return;
+
+      checkWALFiles();
+      // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped, so a power loss cannot lose pages
+      // that were only write()'n to the OS cache (issue #4509).
+      cleanWALFiles(true, false, true);
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+  }
+
+  /**
+   * Cancels the housekeeping timer and waits for a pass already running to finish. Waiting on the lock rather than on
+   * a flag the pass raises itself closes the window in which a tick had passed its "is the database open" check but
+   * had not yet announced itself: that pass then ran concurrently with the pool retirement below, and could rotate a
+   * brand-new WAL file into a slot this close had already emptied.
+   * <p>
+   * Recovery holds the same lock for the whole replay, so a close or kill from another thread (a shutdown hook, a test
+   * teardown) now waits for a running recovery to finish instead of retiring the pool under it.
+   */
+  private void stopHousekeeping() {
+    if (task != null)
+      task.cancel();
+
+    walMaintenanceLock.lock();
+    try {
+      housekeepingStopped = true;
+    } finally {
+      walMaintenanceLock.unlock();
+    }
   }
 
   /**
@@ -178,15 +225,7 @@ public class TransactionManager {
    *     the next open replays them).
    */
   public boolean close(final boolean drop, final boolean preserveWalFiles) {
-    if (task != null)
-      task.cancel();
-
-    try {
-      taskExecuting.await();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      // IGNORE IT
-    }
+    stopHousekeeping();
 
     fileIdsLockManager.close();
 
@@ -221,7 +260,7 @@ public class TransactionManager {
           pendingAcks = true;
           break;
         }
-    final boolean preserve = preserveWalFiles || (!drop && pendingAcks);
+    final boolean preserve = preserveWalFiles || (!drop && (pendingAcks || recoveryInputUnreplayed));
 
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
@@ -243,7 +282,9 @@ public class TransactionManager {
       // above; leave them (and the caller leaves the lock file) so the next open runs recovery and replays.
       LogManager.instance().log(this, Level.SEVERE,
           "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
-          null, database.getName(), preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
+          null, database.getName(), recoveryInputUnreplayed ?
+              "a replay of this WAL did not complete" :
+              preserveWalFiles ? "caller requested preservation" : "unacked WAL pages");
     } else {
       // DELETE ALL THE WAL FILES AT OS-LEVEL. By this point every file THIS instance's own pool tracked
       // has already been dropped one by one above; anything a directory scan still finds here is, under
@@ -388,9 +429,9 @@ public class TransactionManager {
    * #8139: the per-reopen lines are throttled (see {@code ChannelReopenLog}), so a recovery scan on an interrupted
    * thread reports how many channel reopens it went through once, when the scan is over.
    */
-  private void reportRecoveryReopens() {
+  private void reportRecoveryReopens(final WALFile[] recoveryFiles) {
     long reopens = 0;
-    for (final WALFile file : activeWALFilePool)
+    for (final WALFile file : recoveryFiles)
       if (file != null)
         reopens += file.getReopenCount();
     if (reopens > 0)
@@ -398,8 +439,37 @@ public class TransactionManager {
           "Recovery of database '%s' reopened WAL channels closed by a thread interrupt %d times", null, database, reopens);
   }
 
+  /**
+   * Replays the WAL files an unclean shutdown left behind, then gives this instance a fresh pool.
+   * <p>
+   * The files under replay are held in a private array and are never published as {@link #activeWALFilePool}. That
+   * pool is what the housekeeping timer rotates and retires, and a reopened file has no pending flush
+   * acknowledgements, which to the timer means "every page reached the disk, drop it". Adopting the replay input
+   * into the pool let a tick during a long recovery rotate a file past {@link #MAX_LOG_FILE_SIZE} and delete it: the
+   * loop then read the next transaction from the empty replacement, took it for the end of the log and finished
+   * "successfully" without replaying the rest, and a tick after a failed replay deleted the input the next open
+   * needed. The recovery also runs under {@link #walMaintenanceLock}, so no pass can observe the pool half replaced.
+   * <p>
+   * Only a replay that has applied every transaction lets its input go. It drops the files once the replayed pages are
+   * fsynced, and when that fsync fails (#8626) it retires them into the inactive pool instead, where the housekeeping
+   * pass drops them after a later fsync succeeds: by then there is nothing left in them to replay.
+   */
   public void checkIntegrity() {
+    walMaintenanceLock.lock();
+    try {
+      recoverWALFiles();
+    } finally {
+      walMaintenanceLock.unlock();
+    }
+  }
+
+  private void recoverWALFiles() {
     LogManager.instance().log(this, Level.WARNING, "Started recovery of database '%s'", null, database);
+    boolean completed = false;
+    // Set once the input is dropped, moved aside as .corrupt or retired into the inactive pool: no longer this replay's.
+    boolean inputReleased = false;
+    boolean walKeptForFsync = false;
+    WALFile[] recoveryFiles = null;
 
     try {
       // OPEN EXISTENT WAL FILES
@@ -408,24 +478,29 @@ public class TransactionManager {
 
       if (walFiles == null || walFiles.length == 0) {
         LogManager.instance().log(this, Level.WARNING, "Recovery not possible because no WAL files were found");
+        completed = true;
         return;
       }
 
-      if (activeWALFilePool != null && activeWALFilePool.length > 0) {
+      // The files of the pool this instance opened are in the scan above and are replayed with the rest. Closing them
+      // (a slot can be empty when its file could not be created) leaves the pool with nothing any writer or any
+      // housekeeping pass can use until createWALFilePool() below replaces it.
+      if (activeWALFilePool != null)
         for (final WALFile file : activeWALFilePool) {
+          if (file == null)
+            continue;
           try {
             file.close();
           } catch (final IOException e) {
             // IGNORE IT
           }
         }
-      }
 
-      activeWALFilePool = new WALFile[walFiles.length];
+      recoveryFiles = new WALFile[walFiles.length];
       boolean foreignlyLockedFileDetected = false;
       for (int i = 0; i < walFiles.length; ++i) {
         try {
-          activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.separator + walFiles[i].getName());
+          recoveryFiles[i] = openWALFileForRecovery(database.getDatabasePath() + File.separator + walFiles[i].getName());
         } catch (final FileNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e,
               database.getDatabasePath() + walFiles[i].getName());
@@ -436,10 +511,10 @@ public class TransactionManager {
         // unclean shutdown - nothing else should still have them open. One that is anyway means another
         // process/instance is sharing this directory right now, and replaying WAL it may be concurrently
         // appending to or rotating is exactly the corruption this issue is about.
-        if (!activeWALFilePool[i].acquiredLock()) {
+        if (!recoveryFiles[i].acquiredLock()) {
           LogManager.instance().log(this, Level.SEVERE,
               "Recovery aborted for database '%s': WAL file '%s' is still open by another process or database "
-                  + "instance", null, database, activeWALFilePool[i]);
+                  + "instance", null, database, recoveryFiles[i]);
           foreignlyLockedFileDetected = true;
         }
       }
@@ -454,7 +529,7 @@ public class TransactionManager {
         // letting the open proceed: createWALFilePool() giving this instance a fresh, safe-looking pool
         // would not stop it from also writing brand-new transactions to the very data files the other,
         // still-unaccounted-for instance is presently mutating - the corruption this whole issue is about.
-        for (final WALFile file : activeWALFilePool) {
+        for (final WALFile file : recoveryFiles) {
           if (file == null)
             continue;
           try {
@@ -468,13 +543,13 @@ public class TransactionManager {
                 + "is writing to its WAL files");
       }
 
-      if (activeWALFilePool.length > 0) {
+      if (recoveryFiles.length > 0) {
         long lastTxId = -1;
         boolean walGapDetected = false;
 
-        final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[activeWALFilePool.length];
-        for (int i = 0; i < activeWALFilePool.length; ++i) {
-          final WALFile file = activeWALFilePool[i];
+        final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
+        for (int i = 0; i < recoveryFiles.length; ++i) {
+          final WALFile file = recoveryFiles[i];
           // A slot whose WALFile constructor threw FileNotFoundException above never got one (pre-existing
           // gap, found in review on #7502): nothing left to replay from it, but leaving it null unguarded
           // crashed this loop with an unrelated NullPointerException instead of just skipping it.
@@ -522,7 +597,7 @@ public class TransactionManager {
             break;
           }
 
-          final WALFile walFile = activeWALFilePool[lowerTx];
+          final WALFile walFile = recoveryFiles[lowerTx];
           final long nextPos = walPositions[lowerTx].endPositionInLog;
           final WALFile.WALTransaction nextTx = walFile.getTransaction(nextPos);
           if (nextTx == null && walFile.findNextValidTransactionPosition(nextPos) >= 0) {
@@ -537,7 +612,7 @@ public class TransactionManager {
           walPositions[lowerTx] = nextTx;
         }
 
-        reportRecoveryReopens();
+        reportRecoveryReopens(recoveryFiles);
 
         // Only update the next-tx counter if recovery actually applied a transaction. When
         // lastTxId is still -1 the counter must keep the persistedLastTxId value loaded by the
@@ -553,9 +628,9 @@ public class TransactionManager {
           // #8626: THE REPLAY WROTE ITS PAGES STRAIGHT TO THE FILES, SO THEY ARE IN THE OS PAGE CACHE ONLY: FORCE THEM
           // BEFORE THE WAL THAT IS THEIR ONLY DURABLE COPY GOES AWAY, EXACTLY AS A CLEAN CLOSE AND A WAL ROTATION DO.
           // DROPPING IT FIRST LEFT A WINDOW, UP TO THE NEXT CLEAN CLOSE, WHERE A POWER LOSS LOST THE RECOVERED DATA
-          if (database.getFileManager().syncFiles()) {
+          if (syncReplayedDataFiles()) {
             // REMOVE ALL WAL FILES
-            for (final WALFile file : activeWALFilePool) {
+            for (final WALFile file : recoveryFiles) {
               if (file == null)
                 continue;
               try {
@@ -572,11 +647,14 @@ public class TransactionManager {
             LogManager.instance().log(this, Level.SEVERE,
                 "Cannot fsync the data files of database '%s' after recovery: keeping its WAL files until an fsync succeeds",
                 null, database);
-            for (final WALFile file : activeWALFilePool)
+            // Replayed in full, so from here the files belong to the housekeeping pass, which drops them once an fsync
+            // succeeds: they stay open and locked like any other retired WAL file.
+            for (final WALFile file : recoveryFiles)
               if (file != null) {
                 file.setActive(false);
                 inactiveWALFilePool.add(file);
               }
+            walKeptForFsync = true;
           }
         } else {
           // Close WAL files without deleting: preserve for manual inspection after gap detection.
@@ -584,7 +662,7 @@ public class TransactionManager {
           // active WAL (appending new transactions after the corrupt content) nor re-scan and re-abort on
           // it at every recovery. Recovery is aborted for ALL the files (no further transaction will ever
           // be replayed from them), so all of them are moved aside.
-          for (final WALFile file : activeWALFilePool) {
+          for (final WALFile file : recoveryFiles) {
             if (file == null)
               continue;
             try {
@@ -612,12 +690,53 @@ public class TransactionManager {
               "WAL files for database '%s' have been preserved in '%s' with the '.corrupt' extension for manual inspection.",
               null, database, database.getDatabasePath());
         }
+        inputReleased = true;
         createWALFilePool();
         database.getPageManager().removeAllReadPagesOfDatabase(database);
+        completed = !walGapDetected;
       }
+    } catch (final RuntimeException | Error e) {
+      // A failure after the input was released (creating the new pool, say) leaves nothing unreplayed to protect.
+      if (!inputReleased)
+        recoveryInputUnreplayed = true;
+      throw e;
     } finally {
-      LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
+      // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
+      // not deleted, so the next open replays it again.
+      if (recoveryFiles != null && !inputReleased)
+        for (final WALFile file : recoveryFiles)
+          if (file != null && file.isOpen())
+            try {
+              file.close();
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
+            }
+
+      if (!completed)
+        LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' did not complete", null, database);
+      else if (walKeptForFsync)
+        LogManager.instance().log(this, Level.WARNING,
+            "Recovery of database '%s' completed, its WAL files are kept until an fsync of the data files succeeds", null,
+            database);
+      else
+        LogManager.instance().log(this, Level.WARNING, "Recovery of database '%s' completed", null, database);
     }
+  }
+
+  /**
+   * Forces the pages the replay wrote straight to the data files before the WAL that is their only durable copy goes
+   * away (#8626). Package-visible so a test can fail it without breaking a real data file.
+   */
+  boolean syncReplayedDataFiles() {
+    return database.getFileManager().syncFiles();
+  }
+
+  /**
+   * Opens one WAL file for replay. Package-visible so a test can fail or instrument the first read of a real replay
+   * without replacing the recovery loop.
+   */
+  WALFile openWALFileForRecovery(final String path) throws FileNotFoundException {
+    return new WALFile(path);
   }
 
   /**
@@ -1064,19 +1183,9 @@ public class TransactionManager {
   }
 
   public void kill() {
-    if (task != null) {
-      task.cancel();
-      task.purge();
-    }
+    stopHousekeeping();
 
     fileIdsLockManager.close();
-
-    try {
-      taskExecuting.await();
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      // IGNORE IT
-    }
 
     if (activeWALFilePool != null) {
       for (int i = 0; i < activeWALFilePool.length; ++i) {

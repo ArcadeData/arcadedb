@@ -123,9 +123,9 @@ public class CypherOptimizer {
   private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
   private static final double DEFAULT_FILTER_SELECTIVITY      = 0.5;
   /** The key types whose index order is the order Cypher sorts their values in. */
-  private static final Set<Type> INDEX_ORDERED_KEY_TYPES = EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG,
-      Type.FLOAT, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
-      Type.DATETIME_MICROS, Type.DATETIME_NANOS);
+  public static final Set<Type> INDEX_ORDERED_KEY_TYPES = Collections.unmodifiableSet(
+      EnumSet.of(Type.BYTE, Type.SHORT, Type.INTEGER, Type.LONG, Type.DOUBLE, Type.DECIMAL, Type.STRING, Type.BOOLEAN, Type.DATE, Type.DATETIME, Type.DATETIME_SECOND,
+      Type.DATETIME_MICROS, Type.DATETIME_NANOS));
 
   private final DatabaseInternal    database;
   private final CypherStatement     statement;
@@ -1153,26 +1153,14 @@ public class CypherOptimizer {
     final boolean targetIsBound = boundVariables.contains(targetVariable);
 
     if (targetIsBound && !sourceIsBound) {
-      // Anchor is the target, need to reverse direction.
-      // However, unidirectional edges don't store incoming links, so reverse traversal
-      // (IN direction) at a vertex returns nothing. For unidirectional edges, skip the swap
-      // and use ExpandInto semantics instead (the downstream ExpandIntoRule will handle it).
-      boolean canReverse = true;
-      for (final String et : edgeTypes)
-        if (database.getSchema().existsType(et)
-            && database.getSchema().getType(et) instanceof EdgeType edgeType
-            && !edgeType.isBidirectional()) {
-          canReverse = false;
-          break;
-        }
-      if (canReverse) {
-        // Swap source and target
-        final String temp = sourceVariable;
-        sourceVariable = targetVariable;
-        targetVariable = temp;
-        // Reverse direction
-        direction = reverseDirection(direction);
-      }
+      // Anchor is the target: walk the hop from it, in the reverse direction. Over an edge type declared unidirectional
+      // that reads the incoming side no vertex stores, which the expansion answers through the query's lookup (issue
+      // #8625); the anchor selection prefers an anchor that avoids it, so this is only reached when none does. Keeping
+      // the written direction instead would expand from a variable nothing has bound yet.
+      final String temp = sourceVariable;
+      sourceVariable = targetVariable;
+      targetVariable = temp;
+      direction = reverseDirection(direction);
     }
 
     // Estimate cost and cardinality for this expansion

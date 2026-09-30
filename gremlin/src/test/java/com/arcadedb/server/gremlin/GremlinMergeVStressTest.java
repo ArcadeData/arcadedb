@@ -74,7 +74,7 @@ class GremlinMergeVStressTest extends AbstractGremlinServerIT {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    final Cluster cluster = Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182)
+    final Cluster cluster = Cluster.build().enableSsl(false).addContactPoint("localhost").port(getGremlinPort())
         .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer).create();
 
     final Client client = cluster.connect();

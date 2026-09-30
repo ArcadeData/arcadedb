@@ -204,10 +204,12 @@ public class ArcadeDBServer {
   private final       ObservationRegistry                   observationRegistry                  = ObservationRegistry.create();
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
+  private final       SecurityConvergenceGate               securityConvergenceGate = new SecurityConvergenceGate();
   private             String                                serverRootPath;
   // Issue #7415: resolved once, in the constructor, from arcadedb.server.configDirectory. Every server-side reader
   // and writer of a configuration file goes through getConfigPath() rather than appending "/config" to the root.
   private             String                                serverConfigPath;
+  private volatile    String                                instanceId;
   // volatile: written by the HA plugin during startPlugins(AFTER_HTTP_ON), i.e. after httpServer.startService()
   // has begun accepting requests. Undertow worker threads reading these (readiness/cluster handlers, getDatabase's
   // HA wrapping) need a happens-before with those writes, otherwise under the JMM they may observe null indefinitely.
@@ -513,6 +515,9 @@ public class ArcadeDBServer {
     security.startService();
 
     createDirectories();
+
+    instanceId = InstanceIdResolver.resolve(configuration, Paths.get(serverConfigPath));
+    LogManager.instance().log(this, Level.INFO, "Instance id: %s", instanceId);
 
     loadDatabases(false);
 
@@ -1492,6 +1497,14 @@ public class ArcadeDBServer {
     return hostAddress;
   }
 
+  /**
+   * The one security-convergence window of this server, shared by every {@link ServerControlPlane} built on it (issue
+   * #8555).
+   */
+  SecurityConvergenceGate getSecurityConvergenceGate() {
+    return securityConvergenceGate;
+  }
+
   public HAServerPlugin getHA() {
     return haServer;
   }
@@ -1635,6 +1648,13 @@ public class ArcadeDBServer {
     if (replicationLifecycleEventsEnabled)
       for (final ReplicationCallback c : testEventListeners)
         c.onEvent(type, object, this);
+  }
+
+  /**
+   * The instance id reported to support (see {@link InstanceIdResolver}), or null until the server has started.
+   */
+  public String getInstanceId() {
+    return instanceId;
   }
 
   public String getRootPath() {

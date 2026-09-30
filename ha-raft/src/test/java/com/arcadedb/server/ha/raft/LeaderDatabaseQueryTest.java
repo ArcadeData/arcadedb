@@ -22,6 +22,7 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link LeaderDatabaseQuery} endpoint/scheme selection (issue #4727) and response parsing (issue
@@ -68,19 +69,20 @@ class LeaderDatabaseQueryTest {
   // ---- response parsing (issue #8360) ----
 
   @Test
-  void parsesDatabasesAndSnapshotTermIndexWhenPresent() {
+  void parsesDatabasesAndSnapshotTermIndexWhenPresent() throws Exception {
     final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody("""
-        {"databases":[{"name":"heimdall","fingerprint":"abc","lastTxId":42}],"snapshotTerm":7,"snapshotIndex":39707283}""");
+        {"databases":[{"name":"heimdall","fingerprint":"abc","lastTxId":42}],"snapshotTerm":7,"snapshotIndex":39707283}""",
+        null, URL);
 
     assertThat(state.databases()).containsExactly(new LeaderDatabaseQuery.DatabaseInfo("heimdall", 42L));
     assertThat(state.snapshotTermIndex()).isEqualTo(TermIndex.valueOf(7L, 39707283L));
   }
 
   @Test
-  void snapshotTermIndexIsNullWhenThePeerHasNoSnapshotYet() {
+  void snapshotTermIndexIsNullWhenThePeerHasNoSnapshotYet() throws Exception {
     final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody(
         """
-        {"databases":[]}""");
+        {"databases":[]}""", null, URL);
 
     assertThat(state.databases()).isEmpty();
     assertThat(state.snapshotTermIndex())
@@ -89,12 +91,51 @@ class LeaderDatabaseQueryTest {
   }
 
   @Test
-  void snapshotTermDefaultsToZeroWhenOmittedButIndexIsPresent() {
+  void snapshotTermDefaultsToZeroWhenOmittedButIndexIsPresent() throws Exception {
     // Defensive: a well-formed peer never sends an index without its term, but the parser must not throw on it.
     final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody(
         """
-        {"databases":[],"snapshotIndex":100}""");
+        {"databases":[],"snapshotIndex":100}""", null, URL);
 
     assertThat(state.snapshotTermIndex()).isEqualTo(TermIndex.valueOf(0L, 100L));
+  }
+
+  // ---- the answer must be written by the peer it was meant for (issue #8658) ----
+
+  private static final String URL = "http://leader:2480/api/v1/cluster/bootstrap-state";
+
+  @Test
+  void anAnswerWrittenByTheExpectedPeerIsAccepted() throws Exception {
+    final LeaderDatabaseQuery.BootstrapState state = LeaderDatabaseQuery.parseBody(
+        """
+        {"peerId":"arcade-1","databases":[{"name":"db","fingerprint":"f","lastTxId":1}],"snapshotTerm":2,"snapshotIndex":9}""",
+        "arcade-1", URL);
+
+    assertThat(state.databases()).hasSize(1);
+    assertThat(state.snapshotTermIndex()).isEqualTo(TermIndex.valueOf(2L, 9L));
+  }
+
+  @Test
+  void anAnswerWrittenByAnotherNodeIsRefused() {
+    assertThatThrownBy(() -> LeaderDatabaseQuery.parseBody(
+        """
+        {"peerId":"arcade-2","databases":[{"name":"db","fingerprint":"f","lastTxId":1}]}""", "arcade-1", URL))
+        .isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class)
+        .hasMessageContaining("arcade-1")
+        .hasMessageContaining("arcade-2");
+  }
+
+  @Test
+  void anAnswerThatNamesNoPeerIsRefused() {
+    assertThatThrownBy(() -> LeaderDatabaseQuery.parseBody("""
+        {"databases":[]}""", "arcade-1", URL))
+        .isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class)
+        .hasMessageContaining("names no peer");
+  }
+
+  @Test
+  void noExpectedPeerAcceptsAnyAnswer() throws Exception {
+    assertThat(LeaderDatabaseQuery.parseBody("""
+        {"peerId":"whoever","databases":[]}""", null, URL).databases()).isEmpty();
   }
 }

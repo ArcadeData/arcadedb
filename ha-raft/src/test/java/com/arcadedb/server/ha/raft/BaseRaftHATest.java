@@ -28,11 +28,16 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.utility.FileUtils;
 
+import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.IntPredicate;
@@ -293,9 +298,23 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   @Override
   protected void startServers() {
     super.startServers();
-    // Patch every server's httpAddresses map with the ports the HTTP server actually bound to.
-    // This corrects stale values from getServerAddresses() when dynamic port assignment shifted
-    // any server away from its expected port (e.g. port already taken by another process).
+    // Normally a no-op by now: waitAllReplicasAreConnected() already patched. Kept for a subclass that overrides that
+    // wait without calling this class's version.
+    patchPeerHttpAddressesWithBoundPorts();
+  }
+
+  /**
+   * Patches every server's httpAddresses map with the ports the HTTP servers actually bound to. This corrects the
+   * stale hints of {@link #getServerAddresses()} when dynamic port assignment shifted a server away from its expected
+   * port (e.g. port already taken by another process).
+   * <p>
+   * Runs as soon as the last server has started, from {@link #waitAllReplicasAreConnected()}, and not only once
+   * {@code super.startServers()} has returned: that return comes after the bootstrap election has settled, and the
+   * election probes every peer at its hinted address. With {@code 2480 + i} held by another process the probe reached
+   * that process, or a neighbour of this cluster, and the election chose its source from their state
+   * (issue #8548).
+   */
+  protected void patchPeerHttpAddressesWithBoundPorts() {
     for (int i = 0; i < getServerCount(); i++) {
       final RaftHAPlugin plugin = getRaftPlugin(i);
       if (plugin == null || plugin.getRaftHAServer() == null)
@@ -421,6 +440,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
   @Override
   protected void waitAllReplicasAreConnected() {
+    // Every server is up: give each one the HTTP ports its peers really bound before the bootstrap election, which
+    // runs once a leader is elected, probes them (issue #8548).
+    patchPeerHttpAddressesWithBoundPorts();
+
     // Wait for a Raft leader to be elected
     final long startMs = System.currentTimeMillis();
     final long deadline = startMs + LEADER_ELECTION_TIMEOUT_MS;
@@ -926,5 +949,47 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
       // "%s" with the report as the argument, not the report as the format string: `what` is caller-supplied
       // and a stray % in it would turn the instrument into a formatting error instead of a report.
       LogManager.instance().log(requester, Level.WARNING, "%s", report);
+  }
+
+  /**
+   * The index of the last entry in {@code server}'s Raft log, committed or not, so an entry still in flight is not
+   * missed by a later {@link #securityEntriesInLogAfter(RaftHAServer, long)}.
+   */
+  protected static long lastRaftLogIndex(final RaftHAServer server) throws Exception {
+    return server.getRaftDivision().getRaftLog().getLastEntryTermIndex().getIndex();
+  }
+
+  /**
+   * The security entries (users, groups, API tokens) in {@code server}'s Raft log after {@code afterIndex}, up to its
+   * last entry, as {@code "index:TYPE"}.
+   * <p>
+   * The way to tell "the leader seeded the security documents" apart from "the leader wrote nothing" (issue #8455):
+   * the raw applied index cannot, because the cluster commits entries of its own in the same window, and an index
+   * that moved by one says nothing about which kind of entry moved it.
+   * <p>
+   * Read {@code afterIndex} once the cluster is quiet on the security front: a startup seed still in flight when it is
+   * read lands after it and is reported here too. That fails loudly (a false red), never silently.
+   */
+  protected static List<String> securityEntriesInLogAfter(final RaftHAServer server, final long afterIndex)
+      throws Exception {
+    final RaftLog log = server.getRaftDivision().getRaftLog();
+    final long last = log.getLastEntryTermIndex().getIndex();
+    final List<String> found = new ArrayList<>();
+    for (long i = afterIndex + 1; i <= last; i++) {
+      final LogEntryProto entry = log.get(i);
+      if (entry == null)
+        throw new IllegalStateException(
+            "Raft log entry " + i + " of the scanned range (" + afterIndex + ", " + last + "] is no longer readable (purged?)");
+      if (!entry.hasStateMachineLogEntry())
+        continue;
+      final ByteString data = entry.getStateMachineLogEntry().getLogData();
+      if (data.isEmpty())
+        continue;
+      final RaftLogEntryType type = RaftLogEntryType.fromId(data.byteAt(0));
+      // By name, so a security entry type added later is caught without anyone remembering to list it here.
+      if (type != null && type.name().startsWith("SECURITY_"))
+        found.add(i + ":" + type);
+    }
+    return found;
   }
 }

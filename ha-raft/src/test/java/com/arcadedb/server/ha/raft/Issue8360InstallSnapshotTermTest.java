@@ -180,7 +180,7 @@ class Issue8360InstallSnapshotTermTest {
     }
 
     @Override
-    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
         final String clusterToken, final long installedBoundaryIndex) {
       return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }

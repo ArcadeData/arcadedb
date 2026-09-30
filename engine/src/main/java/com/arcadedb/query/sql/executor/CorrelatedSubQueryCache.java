@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.SimpleNode;
@@ -490,6 +491,12 @@ public final class CorrelatedSubQueryCache {
     public CommandContext getParent() {
       escape();
       return outer.getParent();
+    }
+
+    /** The outer query's lookup: not a read of its state, so it neither escapes nor is recorded (issue #8625). */
+    @Override
+    public IncomingEdgeLookup getIncomingEdgeLookup() {
+      return outer.getIncomingEdgeLookup();
     }
 
     /** The outer query's tracker: not a read of its state, so it neither escapes nor is recorded (issue #8591). */

@@ -105,4 +105,48 @@ public class QueryHelper {
     }
     return sb.toString();
   }
+
+  /**
+   * A string that sorts after every string starting with {@code prefix}: the prefix with its last code point that can be
+   * bumped replaced by the next one, so {@code [prefix, successor)} holds every key that starts with the prefix, and
+   * nothing that sorts before it, whether an index orders its string keys by UTF-16 unit or by UTF-8 byte (issue #8666).
+   * <p>
+   * Two consecutive code points sort the same way in both orders, but the step from U+D7FF (to a surrogate), from U+FFFF
+   * (to a supplementary character, which UTF-16 sorts below it) and from U+10FFFF (to nothing) does not stay inside one
+   * order. A code point that cannot be bumped, or a lone surrogate, is dropped and the one before it bumped instead: the
+   * range only grows, which a caller that keeps the original predicate as a filter never notices.
+   *
+   * @return the exclusive upper bound, or null when nothing bounds the range from above: an empty prefix, or one made of
+   * such code points alone
+   */
+  public static String prefixSuccessor(final String prefix) {
+    int end = prefix.length();
+    while (end > 0) {
+      final int codePoint = prefix.codePointBefore(end);
+      final int start = end - Character.charCount(codePoint);
+      if (!(codePoint >= 0xD800 && codePoint <= 0xDFFF) && codePoint != 0xD7FF && codePoint != 0xFFFF && codePoint != Character.MAX_CODE_POINT)
+        return prefix.substring(0, start) + new String(Character.toChars(codePoint + 1));
+      end = start;
+    }
+    return null;
+  }
+
+  /**
+   * The characters every match of a {@code LIKE} pattern starts with: those before the first wildcard, read the way
+   * {@link #convertForRegExp(String)} reads them ({@code \%} and {@code \?} are the literal characters, a backslash
+   * before anything else is a literal backslash). Empty when the pattern opens with a wildcard.
+   */
+  public static String likeLiteralPrefix(final String pattern) {
+    final StringBuilder prefix = new StringBuilder();
+    for (int i = 0; i < pattern.length(); i++) {
+      final char c = pattern.charAt(i);
+      if (c == WILDCARD_ANY || c == WILDCARD_ANYCHAR)
+        break;
+      if (c == '\\' && i + 1 < pattern.length() && (pattern.charAt(i + 1) == WILDCARD_ANY || pattern.charAt(i + 1) == WILDCARD_ANYCHAR))
+        prefix.append(pattern.charAt(++i));
+      else
+        prefix.append(c);
+    }
+    return prefix.toString();
+  }
 }

@@ -78,11 +78,8 @@ class CypherPlanCacheInvalidationTest {
       database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})");
     });
 
-    // put()'s invalidation guard (issue #6671) is millisecond-timestamped: a query planned in the very same
-    // millisecond as a preceding invalidation (here, the implicit "Foo" type creation above) is correctly not
-    // cached. Sleeping past the millisecond boundary before each post-invalidation query, exactly like
-    // ExecutionPlanCacheTest does for the SQL cache, keeps these assertions about "was it cached" deterministic.
-    Thread.sleep(2);
+    // No pause after an invalidation: put()'s guard (issue #6671) counts invalidations rather than timestamping them,
+    // so a query planned in the same millisecond as the schema change before it is cached as well (#8635).
 
     // Populate the plan cache with a node-returning query (its plan depends on the current schema).
     assertThat(matchRows(Q)).isEqualTo(2L);
@@ -92,7 +89,6 @@ class CypherPlanCacheInvalidationTest {
     database.getSchema().getType("Foo").createProperty("x", Type.INTEGER);
     assertThat(database.getCypherPlanCache().size()).as("plan cache flushed after CREATE PROPERTY").isEqualTo(0);
 
-    Thread.sleep(2);
     assertThat(matchRows(Q)).isEqualTo(2L);
     assertThat(database.getCypherPlanCache().size()).isGreaterThan(0);
 
@@ -101,7 +97,6 @@ class CypherPlanCacheInvalidationTest {
     assertThat(database.getCypherPlanCache().size()).as("plan cache flushed after CREATE INDEX").isEqualTo(0);
 
     // Re-plan now can use the index; result must still be correct.
-    Thread.sleep(2);
     assertThat(matchRows(Q)).isEqualTo(2L);
     assertThat(database.getCypherPlanCache().size()).isGreaterThan(0);
 
@@ -111,30 +106,24 @@ class CypherPlanCacheInvalidationTest {
     assertThat(database.getCypherPlanCache().size()).as("plan cache flushed after DROP INDEX").isEqualTo(0);
 
     // Result stays correct with the fresh (scan-based) plan.
-    Thread.sleep(2);
     assertThat(matchRows(Q)).isEqualTo(2L);
   }
 
   /**
    * Issue #6671: {@code CypherPlanCache.put()} used to have no invalidation guard at all - unlike the SQL execution
-   * plan cache, which at least attempted (non-atomically) to check {@code getLastInvalidation() < planningStart}
+   * plan cache, which at least attempted (non-atomically) to check its last invalidation against the planning start
    * before inserting. A {@code DROP INDEX}/{@code ALTER TYPE}/create-index landing while a Cypher query was being
    * planned could therefore always be cached right back in, regardless of timing, leaving a {@code NodeIndexSeek}
    * plan cached against a dropped index. This test reproduces the exact interleaving deterministically (no real
-   * threads): capture {@code planningStart}, invalidate the cache (standing in for the concurrent DDL), then attempt
-   * to cache a plan built at that {@code planningStart} - the fixed, single-lock {@code put(query, plan,
-   * planningStart)} must refuse it.
+   * threads): capture {@code planningEpoch}, invalidate the cache (standing in for the concurrent DDL), then attempt
+   * to cache a plan built at that {@code planningEpoch} - the fixed, single-lock {@code put(query, plan,
+   * planningEpoch)} must refuse it.
    */
   @Test
   void planBuiltBeforeAConcurrentInvalidationIsNeverCached() throws Exception {
     database.transaction(() -> {
       database.command("cypher", "CREATE (a:Foo {x:1})-[:REL]->(b:Foo {x:2}), (c:Foo {x:1})-[:REL]->(d:Foo {x:2})");
     });
-
-    // The implicit "Foo" type creation above already invalidated the cache once; sleep past that millisecond
-    // boundary so the warm-up query below is unambiguously planned afterwards (see the comment in
-    // planCacheIsFlushedOnSchemaChange for why put()'s millisecond-timestamped guard needs this).
-    Thread.sleep(2);
 
     // Warm the cache once to obtain a real, valid PhysicalPlan instance to fight over.
     assertThat(matchRows(Q)).isEqualTo(2L);
@@ -143,20 +132,20 @@ class CypherPlanCacheInvalidationTest {
     assertThat(plan).isNotNull();
 
     // Planning "began" here, before the concurrent DDL below invalidates the cache.
-    final long planningStart = System.currentTimeMillis();
+    final long planningEpoch = database.getCypherPlanCache().getInvalidationEpoch();
 
     // Stand in for a concurrent DDL landing on another thread while planning was in flight.
     database.getCypherPlanCache().invalidate();
     assertThat(database.getCypherPlanCache().contains(Q)).isFalse();
 
-    // The plan was built against planningStart, which is now older than the invalidation: it must be rejected.
-    database.getCypherPlanCache().put(Q, plan, planningStart);
+    // The plan was built at planningEpoch, which the invalidation has moved past: it must be rejected.
+    database.getCypherPlanCache().put(Q, plan, planningEpoch);
     assertThat(database.getCypherPlanCache().contains(Q))
         .as("a plan built before a concurrent invalidation must never be cached").isFalse();
 
     // A plan whose planning genuinely started after the invalidation must still be cached normally.
-    final long freshPlanningStart = System.currentTimeMillis() + 1;
-    database.getCypherPlanCache().put(Q, plan, freshPlanningStart);
+    final long freshPlanningEpoch = database.getCypherPlanCache().getInvalidationEpoch();
+    database.getCypherPlanCache().put(Q, plan, freshPlanningEpoch);
     assertThat(database.getCypherPlanCache().contains(Q)).as("a plan planned after the invalidation must be cached").isTrue();
   }
 }
