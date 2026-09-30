@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
+import com.arcadedb.server.monitor.OtelResourceAttributes;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
@@ -37,10 +39,13 @@ import io.micrometer.tracing.otel.bridge.OtelPropagator;
 import io.micrometer.tracing.otel.bridge.OtelTracer;
 import io.micrometer.tracing.propagation.Propagator;
 import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
 import io.opentelemetry.context.propagation.ContextPropagators;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.SpanProcessor;
 import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
@@ -48,6 +53,8 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import io.opentelemetry.sdk.trace.samplers.Sampler;
 
+import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -63,6 +70,7 @@ public class TracingPlugin implements ServerPlugin {
   private boolean                       enabled;
   private String                        endpoint;
   private double                        samplingRate;
+  private String                        serviceName;
   private SdkTracerProvider             tracerProvider;
   private DeactivatableObservationHandler attachedHandler;
 
@@ -95,9 +103,13 @@ public class TracingPlugin implements ServerPlugin {
     // endpoint must degrade gracefully (tracing disabled) rather than fail server startup.
     try {
       final SpanExporter exporter = OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
-      attach(server.getObservationRegistry(), BatchSpanProcessor.builder(exporter).build(), samplingRate);
+      final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration);
+      serviceName = resourceAttributes.get(OtelResourceAttributes.SERVICE_NAME);
+      attach(server.getObservationRegistry(), BatchSpanProcessor.builder(exporter).build(), samplingRate,
+          resource(resourceAttributes), excludedPaths(configuration));
     } catch (final Exception e) {
       enabled = false;
+      serviceName = null;
       if (tracerProvider != null) {
         tracerProvider.close();
         tracerProvider = null;
@@ -111,11 +123,13 @@ public class TracingPlugin implements ServerPlugin {
   public void startService() {
     if (enabled)
       LogManager.instance()
-          .log(this, Level.INFO, "OpenTelemetry tracing enabled (endpoint=%s, samplingRate=%s)", endpoint, samplingRate);
+          .log(this, Level.INFO, "OpenTelemetry tracing enabled (endpoint=%s, samplingRate=%s, serviceName=%s)", endpoint,
+              samplingRate, serviceName);
   }
 
   @Override
   public void stopService() {
+    serviceName = null;
     // Deactivate the handler BEFORE closing the provider: the ObservationRegistry has no
     // remove-handler API, so the handler stays registered, but once deactivated it is a no-op and
     // never touches the closed tracer provider.
@@ -138,10 +152,13 @@ public class TracingPlugin implements ServerPlugin {
   /**
    * Builds an OTel tracer feeding {@code processor} and registers a first-matching composite handler
    * on the registry: the propagating receiver handler claims contexts carrying an inbound
-   * {@code traceparent} (continuing the upstream trace); everything else opens a fresh span.
+   * {@code traceparent} (continuing the upstream trace); everything else opens a fresh span. The HTTP requests whose
+   * path is in {@code excludedPaths} are declined by the tracing handler, so they get no span (issue #7295).
    */
-  private void attach(final ObservationRegistry registry, final SpanProcessor processor, final double samplingRate) {
+  private void attach(final ObservationRegistry registry, final SpanProcessor processor, final double samplingRate,
+      final Resource resource, final String[] excludedPaths) {
     tracerProvider = SdkTracerProvider.builder()
+        .setResource(resource)
         .addSpanProcessor(processor)
         .setSampler(Sampler.parentBased(samplingRate >= 1.0 ?
             Sampler.alwaysOn() :
@@ -161,7 +178,7 @@ public class TracingPlugin implements ServerPlugin {
 
     attachedHandler = new DeactivatableObservationHandler(new ObservationHandler.FirstMatchingCompositeObservationHandler(
         new PropagatingReceiverTracingObservationHandler<>(tracer, propagator),
-        new DefaultTracingObservationHandler(tracer)));
+        new DefaultTracingObservationHandler(tracer)), excludedPaths);
     registry.observationConfig().observationHandler(attachedHandler);
 
     // Expose the active trace context to the core logger (issue #4466) without the core taking an
@@ -187,7 +204,49 @@ public class TracingPlugin implements ServerPlugin {
    * supplied exporter, so tests can assert spans immediately without a background flush.
    */
   void attachForTest(final ObservationRegistry registry, final SpanExporter exporter) {
-    attach(registry, SimpleSpanProcessor.create(exporter), 1.0);
+    attachForTest(registry, exporter, new ContextConfiguration(), Map.of());
+  }
+
+  /**
+   * Test seam: as {@link #attachForTest(ObservationRegistry, SpanExporter)}, resolving the resource and the excluded
+   * paths the way {@link #configure} does, from {@code configuration} and a stand-in for the process environment.
+   */
+  void attachForTest(final ObservationRegistry registry, final SpanExporter exporter, final ContextConfiguration configuration,
+      final Map<String, String> environment) {
+    attach(registry, SimpleSpanProcessor.create(exporter), 1.0, resource(OtelResourceAttributes.resolve(configuration, environment)),
+        excludedPaths(configuration));
+  }
+
+  /**
+   * The SDK default resource ({@code telemetry.sdk.*}, and {@code service.name=unknown_service:java}) overridden by the
+   * resolved attributes, which always carry a real {@code service.name} (issue #7295).
+   */
+  static Resource resource(final Map<String, String> attributes) {
+    final AttributesBuilder builder = Attributes.builder();
+    for (final Map.Entry<String, String> entry : attributes.entrySet())
+      builder.put(entry.getKey(), entry.getValue());
+    return Resource.getDefault().merge(Resource.create(builder.build()));
+  }
+
+  /**
+   * Parses {@link GlobalConfiguration#SERVER_METRICS_TRACING_EXCLUDED_PATHS} into an array scanned on every traced
+   * request: blank entries are dropped, so an empty setting traces everything, and a trailing {@code /} is removed so
+   * {@code /api/v1/ready/} in the setting means the same as {@code /api/v1/ready}.
+   */
+  static String[] excludedPaths(final ContextConfiguration configuration) {
+    final String raw = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_TRACING_EXCLUDED_PATHS);
+    if (raw == null || raw.isBlank())
+      return new String[0];
+    return Arrays.stream(raw.split(",")).map(String::trim).filter(p -> !p.isEmpty()).map(TracingPlugin::withoutTrailingSlash)
+        .distinct().toArray(String[]::new);
+  }
+
+  /**
+   * Drops one trailing {@code /} (never from the root path itself), so a request for {@code /api/v1/ready/} matches the
+   * {@code /api/v1/ready} entry.
+   */
+  static String withoutTrailingSlash(final String path) {
+    return path.length() > 1 && path.charAt(path.length() - 1) == '/' ? path.substring(0, path.length() - 1) : path;
   }
 
   /**
@@ -195,13 +254,32 @@ public class TracingPlugin implements ServerPlugin {
    * {@link ObservationRegistry} offers no API to remove a handler, so once the plugin stops this
    * gates every callback to a no-op - preventing the (now closed) tracer provider from being used by
    * later Observations.
+   * <p>
+   * It also declines the HTTP requests whose raw path ({@link AbstractServerHttpHandler#OBSERVATION_REQUEST_PATH}) is
+   * one of the excluded paths (issue #7295): the readiness and health probes get no span, while the Observation itself
+   * stays alive for any other handler registered on the server. {@code supportsContext} is asked once, when the
+   * Observation is created, and the context supplier has already stored the path by then.
    */
   private static final class DeactivatableObservationHandler implements ObservationHandler<Observation.Context> {
     private final ObservationHandler<Observation.Context> delegate;
+    private final String[]                                excludedPaths;
     private final AtomicBoolean                                                     active = new AtomicBoolean(true);
 
-    private DeactivatableObservationHandler(final ObservationHandler<Observation.Context> delegate) {
+    private DeactivatableObservationHandler(final ObservationHandler<Observation.Context> delegate, final String[] excludedPaths) {
       this.delegate = delegate;
+      this.excludedPaths = excludedPaths;
+    }
+
+    private boolean isExcluded(final Observation.Context context) {
+      if (excludedPaths.length == 0)
+        return false;
+      if (!(context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH) instanceof String requestPath))
+        return false;
+      final String path = withoutTrailingSlash(requestPath);
+      for (final String excluded : excludedPaths)
+        if (excluded.equals(path))
+          return true;
+      return false;
     }
 
     private void deactivate() {
@@ -210,7 +288,7 @@ public class TracingPlugin implements ServerPlugin {
 
     @Override
     public boolean supportsContext(final Observation.Context context) {
-      return active.get() && delegate.supportsContext(context);
+      return active.get() && !isExcluded(context) && delegate.supportsContext(context);
     }
 
     @Override
