@@ -897,8 +897,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (raft == null || conflict.getSchemaIndex() < 0)
       return;
     try {
-      raft.awaitApplied(() -> raft.getTrustedAppliedIndex(getName()) >= conflict.getSchemaIndex(),
-          Math.min(raft.getQuorumTimeout(), CONFLICT_CATCH_UP_TIMEOUT_MS));
+      if (!raft.awaitApplied(() -> raft.getTrustedAppliedIndex(getName()) >= conflict.getSchemaIndex(),
+          Math.min(raft.getQuorumTimeout(), CONFLICT_CATCH_UP_TIMEOUT_MS)))
+        HALog.log(this, HALog.DETAILED, "Timed out waiting to apply the schema change at index %d on database '%s'; the retry may be refused again",
+            conflict.getSchemaIndex(), getName());
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }

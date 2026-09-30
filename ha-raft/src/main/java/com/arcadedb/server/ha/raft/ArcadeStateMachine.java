@@ -4097,7 +4097,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // The move and the engine creation are one step a copy of the database must not straddle (issue #7475): with no
     // engine there is no shard compaction lock for TimeSeriesCompactionPause to exclude this through, so the type's
     // own lifecycle lock stands in for it. Already held when the entry's install lock named this type - it is
-    // reentrant - and taken here for the callers that reach the repair without one.
+    // reentrant, and the repair is only reached for types the entry names - and taken here for callers without one. A timeout
+    // returns false, which the caller turns into SealedStoreNotInstalledException: the entry is refused, not consumed (issue #8070).
     final Lock lifecycleLock = tsType.getEngineLifecycleLock().writeLock();
     boolean locked = false;
     try {
