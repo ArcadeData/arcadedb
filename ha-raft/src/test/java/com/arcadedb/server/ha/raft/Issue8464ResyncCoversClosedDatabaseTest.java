@@ -322,7 +322,9 @@ class Issue8464ResyncCoversClosedDatabaseTest {
   @Test
   void theLegacyRefreshStillFailsTheInstallForARegisteredDatabaseTheLeaderCannotServe() {
     server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
-    // No context at all: the leader answers 404 for DB_NAME, which is registered here
+    // A 404 would now be the leader not holding it, which keeps the copy as LEADER_MISSING (issue #8588); a 503 says nothing
+    // about whether it holds it, so the install still has to be re-driven
+    leaderFails(DB_NAME);
 
     assertThatThrownBy(() -> markerOnlyReconciler().reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L))
         .as("Ratis must re-drive the install for a database this node serves")

@@ -26,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -67,6 +68,8 @@ class Issue8592LeaveClusterHandOffTargetTest {
     when(raft.isLeader()).thenAnswer(invocation -> leader.get());
     when(raft.getClusterMonitor()).thenReturn(monitor);
     when(raft.getLivePeers()).thenReturn(List.of(peer(SELF, 0), peer(B, 0), peer(C, 0)));
+    // A mock answers an empty set, which reads as "no peer is reachable" (issue #8556)
+    when(raft.handoffReachablePeers()).thenReturn(Set.of(B.toString(), C.toString()));
   }
 
   /** The first configured peer is lagging (the shape a peer that went down takes): the leave hands off to the next. */

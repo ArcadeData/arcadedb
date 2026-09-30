@@ -1483,7 +1483,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
     final long divergedFollowerRecoveryDurationMs = effectiveDivergedFollowerRecoveryDurationMs(
         configuration.getValueAsLong(GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS),
-        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
+        RaftPropertiesBuilder.electionTimeoutMaxFor(configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
+            configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)));
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
         divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold, divergedFollowerRecoveryDurationMs);
     this.healthMonitor.start();
