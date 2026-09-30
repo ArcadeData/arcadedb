@@ -187,6 +187,8 @@ class Issue7438LeaderExclusiveWindowTest {
   @Test
   void anEntryThatSlipsPastTheFirstCheckIsBackedOutAfterItsReservation() throws Exception {
     final byte[] walData = prepareIncrement(db, counter);
+    // Depends on databaseFor being called between the first check and the reservation: reordering startTransaction
+    // breaks this test ON PURPOSE, because that order is what the second check exists for.
     final ArcadeStateMachine racing = new ArcadeStateMachine() {
       @Override
       DatabaseInternal databaseFor(final String databaseName) {

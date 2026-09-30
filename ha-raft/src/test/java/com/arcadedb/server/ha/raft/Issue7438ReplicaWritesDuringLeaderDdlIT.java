@@ -47,8 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("slow")
 class Issue7438ReplicaWritesDuringLeaderDdlIT extends BaseRaftHATest {
-  private static final String TYPE_NAME = "Issue7438Doc";
-  private static final int    SEED      = 3000;
+  private static final String TYPE_NAME        = "Issue7438Doc";
+  private static final int    SEED             = 3000;
   private static final int    MIN_ACKNOWLEDGED = 20;
 
   @Override
@@ -95,9 +95,19 @@ class Issue7438ReplicaWritesDuringLeaderDdlIT extends BaseRaftHATest {
         }
       });
 
-      // Several DDLs back to back, so the replica's writer meets the exclusive window more than once.
-      for (int round = 0; round < 3; round++)
-        leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, round == 0 ? "id" : "tag");
+      // DDLs back to back until the replica's writer has been refused at least once: a build that finishes without ever
+      // overlapping a replica write proves nothing, so the loop keeps opening windows (bounded) rather than assume one.
+      final long ddlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
+      int rounds = 0;
+      while (refused.get() == 0 && System.nanoTime() < ddlDeadline) {
+        final Index built = leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, "id");
+        leaderDb.getSchema().dropIndex(built.getName());
+        rounds++;
+      }
+      assertThat(refused.get()).as("replica inserts refused during %d leader DDL round(s)", rounds).isGreaterThan(0);
+      // The indexes that stay, so the final comparison has something to compare.
+      leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, "id");
+      leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, "tag");
       leaderDb.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, "id", "tag");
 
       // The window must have let inserts through as well as refused them, or the run proves nothing.
@@ -116,7 +126,7 @@ class Issue7438ReplicaWritesDuringLeaderDdlIT extends BaseRaftHATest {
     final long expected = SEED + acknowledged.get();
     // Every node holds the same records and, in every index, the same entries: two entries claiming one page version
     // spliced on apply, or a replica insert landing while the index is built, used to leave the nodes disagreeing.
-    // (An insert prepared by the replica before it applied the new index is a separate matter, see #7438's follow-up.)
+    // (An insert prepared by the replica before it applied the new index is a separate matter, see #8686.)
     final Database leaderCheck = getServerDatabase(leaderIndex, getDatabaseName());
     final Database replicaCheck = getServerDatabase(replicaIndex, getDatabaseName());
     awaitValue(expected, () -> replicaCheck.countType(TYPE_NAME, true));

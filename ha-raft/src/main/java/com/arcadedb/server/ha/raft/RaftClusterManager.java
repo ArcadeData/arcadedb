@@ -217,7 +217,14 @@ class RaftClusterManager {
    * @throws DuplicatePeerAddressException when another member already holds the address under a different id
    */
   private SetConfigurationRequest.Arguments buildAddArgs(final String peerId, final RaftPeer newPeer) {
-    final List<RaftPeer> currentPeers = new ArrayList<>(raftHAServer.getLivePeers());
+    // The COMMITTED configuration, never the declared server list getLivePeers() falls back to while the division cannot
+    // be read: a compare-and-set built from the declared list carries a precondition the leader may never match, so
+    // every attempt would be refused until the budget ran out. Mode.ADD never depended on the caller's view.
+    final Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+    if (committed == null)
+      throw new ConfigurationException("Failed to add peer " + peerId + ": this node cannot read the live Raft"
+          + " configuration right now (its Raft server is starting or restarting). Retry in a moment.");
+    final List<RaftPeer> currentPeers = new ArrayList<>(committed);
     for (final RaftPeer peer : currentPeers)
       if (peer.getId().toString().equals(peerId))
         return null; // already a member
