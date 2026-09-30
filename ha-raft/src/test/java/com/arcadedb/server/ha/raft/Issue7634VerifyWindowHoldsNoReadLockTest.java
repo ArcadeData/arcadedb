@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -235,12 +236,94 @@ class Issue7634VerifyWindowHoldsNoReadLockTest {
             .isFalse();
       } finally {
         PostVerifyDatabaseHandler.whileChecksummingForTesting = null;
+        // NOT ASSERTED: A FAILING RESTORE MUST NOT MASK THE ASSERTION ABOVE, AND tearDown() DELETES THE DIRECTORY ANYWAY
         if (moved.exists())
-          assertThat(moved.renameTo(sealed[0])).isTrue();
+          moved.renameTo(sealed[0]);
       }
       assertThat(removed.get()).as("the fixture must actually have removed the listed sealed store").isTrue();
       assertThat(checksums.keySet()).doesNotContain(sealed[0].getName());
     }
+  }
+
+  /**
+   * The other thing the removed lock used to exclude: a {@code close()} (or {@code DROP DATABASE}) landing while the
+   * window is read. It still cannot, but for a different reason: since #7458 a close waits for every open snapshot
+   * window to be released, without holding a lock. So the close parks until the verify is done, and the verify's
+   * answer is the full one.
+   */
+  @Test
+  void aCloseDuringTheWindowPassWaitsForTheVerify() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+
+    final Database database = createDatabase();
+    try {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final Set<String> sealedAtT0 = sealedFileNames(db);
+      final AtomicReference<Thread> closerThread = new AtomicReference<>();
+      final AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+      final AtomicReference<AssertionError> neverParked = new AtomicReference<>();
+      final AtomicBoolean closedInsideTheVerify = new AtomicBoolean(true);
+      PostVerifyDatabaseHandler.whileChecksummingForTesting = snapshot -> {
+        final Thread closer = new Thread(() -> {
+          try {
+            database.close();
+          } catch (final Throwable t) {
+            closeFailure.compareAndSet(null, t);
+          }
+        }, "issue7634-close");
+        closer.setDaemon(true);
+        closer.start();
+        closerThread.set(closer);
+        try {
+          awaitParkedIn(closer, "PageManager", "beginDatabaseClose");
+        } catch (final AssertionError e) {
+          neverParked.set(e);
+        }
+        closedInsideTheVerify.set(joined(closer, BLOCKED_PROBE_MS));
+      };
+
+      final JSONObject checksums = new JSONObject();
+      assertThat(handler.computeLocalChecksums(db, checksums, new JSONArray())).isTrue();
+
+      assertThat(neverParked.get()).isNull();
+      assertThat(closedInsideTheVerify.get()).as("the close must wait for the window the verify is reading").isFalse();
+      assertThat(joined(closerThread.get(), WAIT_MS)).as("the close must complete once the verify is done").isTrue();
+      assertThat(closeFailure.get()).isNull();
+      assertThat(checksums.keySet()).as("the verify's answer must be the full one").containsAll(sealedAtT0);
+      assertThat(checksums.keySet().stream().anyMatch(n -> !n.endsWith(TimeSeriesSealedStore.FILE_EXTENSION)))
+          .as("the page files must be in the answer too").isTrue();
+    } finally {
+      if (database.isOpen())
+        database.close();
+    }
+  }
+
+  /**
+   * The narrow case the close wait does not reach: a window that fails for its own reasons (shadow cap, I/O) is closed
+   * before the fallback runs, so a pending close can complete in between. Pinned here: the fallback then fails loudly
+   * on the closed database, rather than skipping every page file as "cannot be checksummed" and answering a checksum
+   * set silently short of all of them.
+   */
+  @Test
+  void aVerifyThatFallsBackOntoAClosedDatabaseFailsInsteadOfAnsweringShort() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(false);
+
+    final Database database = createDatabase();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.close();
+
+    final JSONObject checksums = new JSONObject();
+    Throwable failure = null;
+    try {
+      handler.computeLocalChecksums(db, checksums, new JSONArray());
+    } catch (final Throwable t) {
+      failure = t;
+    }
+
+    assertThat(failure)
+        .as("a verify of a closed database must fail, not answer a checksum set short of its page files")
+        .isInstanceOf(DatabaseIsClosedException.class);
+    assertThat(checksums.keySet()).as("nothing may have been put in the answer").isEmpty();
   }
 
   // ------------------------------------------------------------------------------------------------- HELPERS
@@ -265,6 +348,28 @@ class Issue7634VerifyWindowHoldsNoReadLockTest {
       Thread.currentThread().interrupt();
     }
     return !thread.isAlive();
+  }
+
+  /** Blocks until {@code thread} is waiting inside {@code className.methodName}, or fails. */
+  private static void awaitParkedIn(final Thread thread, final String className, final String methodName) {
+    final long deadline = System.currentTimeMillis() + WAIT_MS;
+    while (System.currentTimeMillis() < deadline) {
+      final Thread.State state = thread.getState();
+      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
+        for (final StackTraceElement frame : thread.getStackTrace())
+          if (frame.getClassName().endsWith(className) && methodName.equals(frame.getMethodName()))
+            return;
+      if (state == Thread.State.TERMINATED)
+        break;
+      try {
+        Thread.sleep(10);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    throw new AssertionError("thread '" + thread.getName() + "' never parked in " + className + "." + methodName
+        + " (state=" + thread.getState() + "); the block assertion that follows would have been vacuous");
   }
 
   /** Blocks until {@code thread} is parked acquiring a write lock, or fails. */
