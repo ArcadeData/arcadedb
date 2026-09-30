@@ -70,6 +70,7 @@ class RaftAtomicMembershipTest {
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
     when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
+    when(server.getCommittedPeersOrNull()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
     when(server.getHttpAddresses()).thenReturn(new HashMap<>());
     when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
 
@@ -99,6 +100,7 @@ class RaftAtomicMembershipTest {
     when(reply.isSuccess()).thenReturn(true);
     when(admin.setConfiguration(captor.capture())).thenReturn(reply);
     when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
+    when(server.getCommittedPeersOrNull()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
     when(server.getHttpAddresses()).thenReturn(new HashMap<>());
 
     new RaftClusterManager(server).removePeer("C");

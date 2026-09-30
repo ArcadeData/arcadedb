@@ -27,7 +27,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.SetConfigurationRequest;
-import org.apache.ratis.protocol.exceptions.ReconfigurationInProgressException;
+import org.apache.ratis.protocol.exceptions.SetConfigurationException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -72,13 +72,14 @@ class Issue7802ConcurrentAddSameAddressTest {
     when(server.getHttpAddresses()).thenReturn(new HashMap<>());
     when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
     when(server.getLivePeers()).thenAnswer(invocation -> List.copyOf(live));
+    when(server.getCommittedPeersOrNull()).thenAnswer(invocation -> List.copyOf(live));
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       attempts.incrementAndGet();
       // The other admin request commits first: the leader's configuration moves under this request's precondition.
       live.add(peer("X", "h4:2434"));
       final RaftClientReply reply = mock(RaftClientReply.class);
       when(reply.isSuccess()).thenReturn(false);
-      when(reply.getException()).thenReturn(new ReconfigurationInProgressException("configuration changed"));
+      when(reply.getException()).thenReturn(new SetConfigurationException("the current configuration does not match the request"));
       return reply;
     });
 
@@ -103,6 +104,7 @@ class Issue7802ConcurrentAddSameAddressTest {
     when(server.getHttpAddresses()).thenReturn(new HashMap<>());
     when(server.getRaftGroup()).thenReturn(RaftGroup.valueOf(RaftGroupId.randomId()));
     when(server.getLivePeers()).thenAnswer(invocation -> List.copyOf(live));
+    when(server.getCommittedPeersOrNull()).thenAnswer(invocation -> List.copyOf(live));
     when(admin.setConfiguration(any(SetConfigurationRequest.Arguments.class))).thenAnswer(invocation -> {
       final SetConfigurationRequest.Arguments args = invocation.getArgument(0);
       sent.add(args);
@@ -110,7 +112,7 @@ class Issue7802ConcurrentAddSameAddressTest {
       if (sent.size() == 1) {
         live.add(peer("X", "h4:2434")); // the other request wins the race
         when(reply.isSuccess()).thenReturn(false);
-        when(reply.getException()).thenReturn(new ReconfigurationInProgressException("configuration changed"));
+        when(reply.getException()).thenReturn(new SetConfigurationException("the current configuration does not match the request"));
       } else {
         live.clear();
         live.addAll(args.getServersInNewConf());
