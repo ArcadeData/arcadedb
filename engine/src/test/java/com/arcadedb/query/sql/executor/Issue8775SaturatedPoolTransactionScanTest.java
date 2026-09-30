@@ -105,6 +105,42 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
     }
   }
 
+  @Test
+  @Timeout(value = 120, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+  void scanPausedPastTheAbandonmentTimeoutFailsInsteadOfHanging() throws Exception {
+    database.getConfiguration().setValue(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT, 500L);
+    final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
+    final List<ResultSet> abandoned = new ArrayList<>();
+    try {
+      for (int i = 0; i < maxThreads; i++) {
+        final ResultSet rs = database.query("sql", "SELECT FROM Rating");
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+        abandoned.add(rs);
+      }
+      database.begin();
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Rating")) {
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+        // a pause longer than the timeout: the reader gives up, and the scan must fail rather than wait for it
+        Thread.sleep(3_000);
+        boolean failed = false;
+        try {
+          while (rs.hasNext())
+            rs.next();
+        } catch (final RuntimeException e) {
+          failed = true;
+        }
+        assertThat(failed).as("a scan whose reader gave up fails, it does not hang").isTrue();
+      } finally {
+        database.rollback();
+      }
+    } finally {
+      for (final ResultSet rs : abandoned)
+        rs.close();
+    }
+  }
+
   private static Set<Thread> readerThreads() {
     return Thread.getAllStackTraces().keySet().stream()
         .filter(t -> t.getName().startsWith("ArcadeDB-parallel-scan-unit-reader") && t.isAlive()).collect(Collectors.toSet());

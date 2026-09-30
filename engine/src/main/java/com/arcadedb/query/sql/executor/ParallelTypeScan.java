@@ -572,15 +572,20 @@ final class ParallelTypeScan {
       final long maxBatchBytes = maxBatchBytes();
       final long abandonedTimeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
       final BlockingQueue<Integer> claimed = readerUnits;
-      final Thread reader = new Thread(() -> {
+      final Thread reader = ParallelScanProducerPool.newDedicatedProducerThread(() -> {
         try {
           initWorkerThread();
           while (true) {
             // A BOUNDED WAIT, NOT A take(): A RESULT SET ABANDONED WHILE THE READER IS IDLE WOULD OTHERWISE KEEP ITS THREAD FOR EVER
             final Integer next = claimed.poll(1, TimeUnit.SECONDS);
             if (next == null) {
-              if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs)
+              if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs) {
+                // LIKE A WORKER: THE SCAN FAILS ON THE CONSUMER'S NEXT ACCESS, IT DOES NOT WAIT FOR A UNIT NOBODY READS ANY MORE
+                recordFailure(new CommandExecutionException(
+                    "Parallel scan abandoned: the result set was not consumed nor closed for more than " + abandonedTimeoutMs + " ms (see "
+                        + GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT.getKey() + ", 0 disables the timeout)"));
                 return;
+              }
               continue;
             }
             final int index = next;
@@ -602,7 +607,6 @@ final class ParallelTypeScan {
           DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
         }
       }, "ArcadeDB-parallel-scan-unit-reader-" + READER_IDS.incrementAndGet());
-      reader.setDaemon(true);
       dedicatedReader = reader;
       reader.start();
     }
@@ -618,6 +622,7 @@ final class ParallelTypeScan {
     // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST
     if (!database.isTransactionActive() || readerUnits != null)
       return true;
+    // THE SIDE EFFECT ON unitWaitSince IS DELIBERATE: THE FIRST CALL STARTS THE GRACE, THE LATER ONES MEASURE IT
     final long now = System.currentTimeMillis();
     if (unitWaitSince == 0) {
       unitWaitSince = now;

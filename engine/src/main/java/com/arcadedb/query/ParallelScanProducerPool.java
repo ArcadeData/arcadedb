@@ -90,6 +90,17 @@ public final class ParallelScanProducerPool extends DedicatedThreadPool {
     }
   }
 
+  /**
+   * A daemon thread of its own, outside the pool, that still counts as a producer for the nested-scan guard ({@code
+   * isAllowed} refuses a parallel scan planned on a {@link ProducerThread}, #4948). For the one reader of a scan that
+   * must progress whatever the pool holds (#8775): the pool cannot run it, since other result sets may hold every thread.
+   */
+  public static Thread newDedicatedProducerThread(final Runnable target, final String name) {
+    final Thread thread = new ProducerThread(target, name);
+    thread.setDaemon(true);
+    return thread;
+  }
+
   private ParallelScanProducerPool() {
     // 0 = auto-size to available cores (with a floor of DEFAULT_THREADS_FLOOR). An explicit positive value
     // wins, so an operator can cap the pool on very high core-count machines where (cores) blocking
