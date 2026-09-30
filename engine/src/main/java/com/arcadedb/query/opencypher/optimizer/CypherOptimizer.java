@@ -366,6 +366,11 @@ public class CypherOptimizer {
     }
 
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700). An index the
+      // schema no longer offers cannot give an order either
+      final TypeIndex scanIndex = type.getPolymorphicIndexByProperties(rangeScan.getIndexProperties());
+      if (scanIndex == null || (scanIndex.getMetadata() != null && scanIndex.getMetadata().hasAnyCaseInsensitive()))
+        return null;
       final List<String> indexProperties = rangeScan.getIndexProperties();
       if (orderedProperties.size() > indexProperties.size()
           || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
@@ -386,7 +391,8 @@ public class CypherOptimizer {
     final String property = orderedProperties.getFirst();
     final TypeIndex index = type.getPolymorphicIndexByProperties(property);
     if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
-        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
+        || (index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive()))
       return null;
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
         index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
