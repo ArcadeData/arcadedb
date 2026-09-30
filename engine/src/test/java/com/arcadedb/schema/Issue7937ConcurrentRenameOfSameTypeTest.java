@@ -66,6 +66,8 @@ class Issue7937ConcurrentRenameOfSameTypeTest extends TestHelper {
           type = database.getSchema().createVertexType(start, 1);
         else
           type = database.getSchema().createDocumentType(start, 1);
+        type.createProperty("id", Type.INTEGER);
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
         database.transaction(() -> {
           for (int i = 0; i < 10; i++)
             if (vertex)
@@ -99,6 +101,11 @@ class Issue7937ConcurrentRenameOfSameTypeTest extends TestHelper {
           assertThat(database.getSchema().getBucketByName(bucket.getName())).isSameAs(bucket);
           assertThat(bucket.getName()).startsWith(finalName + "_");
         }
+
+        // updateTypeName() is part of the racy section: the type's indexes must carry the final name too
+        assertThat(type.getAllIndexes(false)).isNotEmpty();
+        for (final var index : type.getAllIndexes(false))
+          assertThat(index.getName()).startsWith(finalName + "[");
 
         assertThat(database.countType(finalName, false)).isEqualTo(10L);
       }

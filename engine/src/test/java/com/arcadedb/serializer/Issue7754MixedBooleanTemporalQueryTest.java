@@ -27,8 +27,9 @@ import java.time.LocalDateTime;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7754 review follow-up: a schemaless column holding both a boolean and a timestamp must still be sortable and
- * filterable, because the refusal of the BOOLEAN-versus-timestamp pair must not turn into a query failure.
+ * Issue #7754: a schemaless column holding both a boolean and a timestamp must still be filterable, through SQL and
+ * through the native Select API, because refusing the BOOLEAN-versus-timestamp pair must read as "no match" and not
+ * fail the query.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -45,11 +46,20 @@ class Issue7754MixedBooleanTemporalQueryTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT FROM Mixed ORDER BY v")) {
       assertThat(rs.stream().count()).isEqualTo(3L);
     }
-    try (final ResultSet rs = database.query("sql", "SELECT FROM Mixed WHERE v > ?", LocalDateTime.of(2025, 1, 1, 0, 0))) {
-      assertThat(rs.stream().count()).isLessThanOrEqualTo(3L);
+
+    final LocalDateTime bound = LocalDateTime.of(2025, 1, 1, 0, 0);
+
+    // The timestamp row is the only one that answers; the booleans have no ordering against it and do not match
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Mixed WHERE v > ?", bound)) {
+      assertThat(rs.stream().map(r -> r.getProperty("v")).toList()).containsExactly(LocalDateTime.of(2026, 1, 1, 0, 0));
     }
-    try (final ResultSet rs = database.query("sql", "SELECT FROM Mixed WHERE v < true")) {
-      assertThat(rs.stream().count()).isLessThanOrEqualTo(3L);
+    // And a boolean bound matches no timestamp row: only the boolean rows can be below true
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Mixed WHERE v < ?", true)) {
+      assertThat(rs.stream().map(r -> r.getProperty("v")).toList()).containsExactly(false);
     }
+
+    // Native Select API, same column
+    assertThat(database.select().fromType("Mixed").where().property("v").gt().value(bound).documents().toList()).hasSize(1);
+    assertThat(database.select().fromType("Mixed").where().property("v").lt().value(true).documents().toList()).hasSize(1);
   }
 }

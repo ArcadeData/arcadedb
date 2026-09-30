@@ -609,7 +609,7 @@ public class BinaryComparator {
       // IllegalArgumentException and report "not comparable".
       if (a instanceof Boolean || b instanceof Boolean)
         throw new IllegalArgumentException(
-            "Comparison between " + a.getClass().getSimpleName() + " and " + b.getClass().getSimpleName() + " not supported");
+            "Comparison between " + a.getClass().getName() + " and " + b.getClass().getName() + " not supported");
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
     } else if (a.getClass() == b.getClass())

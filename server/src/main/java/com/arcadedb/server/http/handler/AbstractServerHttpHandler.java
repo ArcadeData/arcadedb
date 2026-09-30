@@ -2167,8 +2167,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
-   * and HA rely on them - except the duplicated-key VALUES inside {@code exceptionArgs}, which are stored data and
-   * are replaced by {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} (issue #7760). {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * and HA rely on them - except the duplicated-key VALUES inside {@code exceptionArgs}, which are stored data
+   * and are replaced by {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} (issue #7760). {@code development} and {@code test} keep the full verbose body to aid debugging.
    * <p>
    * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
    * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since

@@ -63,8 +63,11 @@ public class LocalDocumentType implements DocumentType {
    * holding the schema write lock across N such drains is the stall the engine keeps outside every lock. Two
    * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.rename()} calls
    * {@code super.rename()} - and again to roll back - inside its own critical section.
+   * <p>
+   * Lock hierarchy: this lock is taken BEFORE the database write lock, never after. No path may hold the database
+   * write lock and then call {@code rename()} (today only {@code ALTER TYPE} does, without holding it).
    */
-  protected final ReentrantLock renameLock = new ReentrantLock();
+  final ReentrantLock renameLock = new ReentrantLock();
 
   // Reassigned by rename() under the schema write lock (with a rollback assignment on failure) and read lock-free by
   // getName() and by instanceOf(String), which openCypher's Labels calls during query planning while holding no
