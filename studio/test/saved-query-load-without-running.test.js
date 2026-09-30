@@ -65,9 +65,10 @@ function globalStorageLoad(key) {
 
 function globalStorageSave() {}
 
-// THE HISTORY PANEL READS ITS OWN STORE; THE SAVED LIST DOUBLES AS ITS CONTENT HERE
+let historyEntries;
+
 function getQueryHistory() {
-  return storedQueries;
+  return historyEntries;
 }
 
 function getEditorMode() {
@@ -105,6 +106,7 @@ function $(selector) {
 }
 
 eval(extractFn(utilsSrc, "escapeHtml"));
+eval(extractFn(src, "setEditorLanguage"));
 eval(extractFn(src, "getSavedQueries"));
 eval(extractFn(src, "populateSavedQueriesPanel"));
 eval(extractFn(src, "loadSavedQuery"));
@@ -116,6 +118,10 @@ beforeEach(() => {
   storedQueries = [
     { name: "Wipe logs", l: "sql", c: "DELETE FROM Log", d: "db" },
     { name: "Friends", l: "cypher", c: "MATCH (a)-[:FRIEND]->(b) RETURN b", d: "db" },
+  ];
+  historyEntries = [
+    { l: "sql", c: "SELECT FROM Person", d: "db" },
+    { l: "gremlin", c: "g.V().limit(3)", d: "db" },
   ];
   languageValue = "sql";
   panelHtml = null;
@@ -213,8 +219,8 @@ test("running a stale index executes nothing", () => {
 
 test("loading a history entry also switches the editor's syntax mode to the entry's language", () => {
   loadHistoryEntry(1);
-  assert.equal(languageValue, "cypher");
-  assert.equal(editor.mode, "mode-for-cypher", "a cypher history entry must not stay highlighted as SQL");
-  assert.equal(editor.value, "MATCH (a)-[:FRIEND]->(b) RETURN b");
+  assert.equal(languageValue, "gremlin");
+  assert.equal(editor.mode, "mode-for-gremlin", "a gremlin history entry must not stay highlighted as SQL");
+  assert.equal(editor.value, "g.V().limit(3)");
   assert.equal(executed.length, 0);
 });

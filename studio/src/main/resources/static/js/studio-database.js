@@ -2143,6 +2143,13 @@ function refreshActiveSidebarPanel() {
   }
 }
 
+// SETS THE QUERY LANGUAGE AND SWITCHES THE EDITOR'S SYNTAX MODE WITH IT: SETTING THE DROPDOWN ALONE LEFT A CYPHER QUERY
+// HIGHLIGHTED AS SQL (AND VICE VERSA), BECAUSE A PROGRAMMATIC .val() DOES NOT FIRE THE DROPDOWN'S change HANDLER
+function setEditorLanguage(language) {
+  $("#inputLanguage").val(language);
+  editor.setOption("mode", getEditorMode());
+}
+
 // --- Saved Queries ---
 
 function getSavedQueries() {
@@ -2220,10 +2227,7 @@ function loadSavedQuery(index) {
   let queries = getSavedQueries();
   let q = queries[index];
   if (!q) return;
-  if (q.l) {
-    $("#inputLanguage").val(q.l);
-    editor.setOption("mode", getEditorMode());
-  }
+  if (q.l) setEditorLanguage(q.l);
   editor.setValue(q.c || "");
   globalActivateTab("tab-query");
   editor.focus();
@@ -2354,10 +2358,7 @@ function loadHistoryEntry(index) {
   let queryHistory = getQueryHistory();
   let q = queryHistory[index];
   if (!q) return;
-  if (q.l) {
-    $("#inputLanguage").val(q.l);
-    editor.setOption("mode", getEditorMode());
-  }
+  if (q.l) setEditorLanguage(q.l);
   editor.setValue(q.c || "");
   globalActivateTab("tab-query");
   editor.focus();
@@ -2954,10 +2955,7 @@ function pasteReferenceExample(code, lang) {
   let tmp = document.createElement("textarea");
   tmp.innerHTML = code;
   let decoded = tmp.value;
-  if (lang) {
-    $("#inputLanguage").val(lang);
-    editor.setOption("mode", getEditorMode());
-  }
+  if (lang) setEditorLanguage(lang);
   editor.setValue(decoded);
   editor.focus();
 }
@@ -3094,7 +3092,7 @@ function browseType(typeName) {
   let limit = parseInt($("#inputLimit").val()) || 100;
   let query = "select from " + quoteSqlName(typeName);
 
-  $("#inputLanguage").val("sql");
+  setEditorLanguage("sql");
   editor.setValue(query);
   globalActivateTab("tab-query");
 
@@ -3154,12 +3152,8 @@ function countRecords(typeName) {
 function executeCommand(language, query) {
   globalResultset = null;
 
-  if (language != null) {
-    $("#inputLanguage").val(language);
-    // KEEP THE SYNTAX HIGHLIGHTING IN STEP WITH THE LANGUAGE THE CALLER FORCED (ISSUE #7049)
-    editor.setOption("mode", getEditorMode());
-  } else
-    language = $("#inputLanguage").val();
+  if (language != null) setEditorLanguage(language);
+  else language = $("#inputLanguage").val();
 
   if (query != null) editor.setValue(query);
   else {
