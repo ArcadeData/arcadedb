@@ -2104,7 +2104,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // SCHEMA_ENTRY is appended, and the write lock keeps out this leader's own writers but not a replica's: an entry
     // accepted in between would claim the same page versions as the DDL's embedded WAL. Ended in the finally below,
     // after the final entry is committed and applied, which is when the log carries the DDL's versions itself.
-    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
+    ArcadeStateMachine exclusiveOn = null;
 
     // Set only once the session's FINAL entry has gone out. Everything an instalment shipped before that is
     // delivery-only, so leaving this false is what tells the finally block that the followers are holding an
@@ -2112,6 +2112,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     boolean published = false;
 
     try {
+      // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
+      exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
 
       // Capture file changes
@@ -2255,8 +2257,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private ArcadeStateMachine beginLeaderExclusive() {
     final ArcadeStateMachine stateMachine = stateMachineOrNull();
-    if (stateMachine != null)
-      stateMachine.beginLeaderExclusive(getName(), RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS);
+    if (stateMachine != null && !stateMachine.beginLeaderExclusive(getName(), RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS)) {
+      // Entries the log already gave page versions to are still not applied here: going ahead would publish this
+      // operation's pages over versions the followers have been told are taken, the corruption the window exists to
+      // prevent. Failing is the safe answer, and a retryable one - the entries apply or expire and the caller asks again.
+      stateMachine.endLeaderExclusive(getName());
+      throw new NeedRetryException("Database '" + getName() + "' still has replicated transactions in flight on the "
+          + "leader, so a schema change, drop or install cannot start safely right now. Please retry");
+    }
     return stateMachine;
   }
 

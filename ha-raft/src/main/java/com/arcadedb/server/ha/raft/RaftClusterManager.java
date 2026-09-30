@@ -199,6 +199,10 @@ class RaftClusterManager {
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
   }
 
+  /** How long {@link #buildAddArgs} waits for a configuration that cannot be read yet, in {@value #COMMITTED_PEERS_WAIT_MS} ms steps. */
+  private static final int  COMMITTED_PEERS_WAIT_ATTEMPTS = 50;
+  private static final long COMMITTED_PEERS_WAIT_MS       = 100L;
+
   /**
    * Builds the {@link SetConfigurationRequest.Mode#COMPARE_AND_SET} arguments for adding {@code newPeer}: the current
    * configuration as the precondition, and the same configuration plus the new peer as the target. Returns
@@ -220,10 +224,23 @@ class RaftClusterManager {
     // The COMMITTED configuration, never the declared server list getLivePeers() falls back to while the division cannot
     // be read: a compare-and-set built from the declared list carries a precondition the leader may never match, so
     // every attempt would be refused until the budget ran out. Mode.ADD never depended on the caller's view.
-    final Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+    Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+    // Unreadable for the moment an in-place restart re-initializes the division (issue #5271): waited out briefly, inside
+    // the retry budget's spirit, rather than handed back to the operator for a window that lasts a second or two.
+    for (int wait = 0; committed == null && wait < COMMITTED_PEERS_WAIT_ATTEMPTS; wait++) {
+      try {
+        Thread.sleep(COMMITTED_PEERS_WAIT_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      committed = raftHAServer.getCommittedPeersOrNull();
+    }
     if (committed == null)
       throw new ConfigurationException("Failed to add peer " + peerId + ": this node cannot read the live Raft"
           + " configuration right now (its Raft server is starting or restarting). Retry in a moment.");
+    // Voting peers only, so the new configuration carries no listeners; the cluster has none, and a future one would
+    // have to be carried across here or this add would silently drop it (Mode.ADD never touched them).
     final List<RaftPeer> currentPeers = new ArrayList<>(committed);
     for (final RaftPeer peer : currentPeers)
       if (peer.getId().toString().equals(peerId))

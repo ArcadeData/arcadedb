@@ -1375,7 +1375,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /** Ends one registration taken by {@link #beginLeaderExclusive}. */
   void endLeaderExclusive(final String databaseName) {
-    databasesExclusiveOnLeader.computeIfPresent(databaseName, (name, count) -> count <= 1 ? null : count - 1);
+    final boolean[] wasOpen = new boolean[1];
+    databasesExclusiveOnLeader.computeIfPresent(databaseName, (name, count) -> {
+      wasOpen[0] = true;
+      return count <= 1 ? null : count - 1;
+    });
+    if (!wasOpen[0])
+      LogManager.instance().log(this, Level.WARNING,
+          "Ended a leader exclusive window on database '%s' that was not open: an unbalanced begin/end", databaseName);
   }
 
   /**

@@ -73,6 +73,9 @@ final class PageVersionLedger {
    */
   static final long STALE_RESERVATION_MS = 3 * RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS;
 
+  /** How long a DDL waiting for the ledger to drain still counts an unconfirmed reservation, see {@link #liveReservations}. */
+  static final long UNCONFIRMED_DRAIN_GRACE_MS = 2_000L;
+
   private static final int WAL_TX_HEADER_SIZE   = 2 * Long.BYTES + 2 * Integer.BYTES;
   private static final int WAL_PAGE_HEADER_SIZE = 6 * Integer.BYTES;
 
@@ -291,9 +294,19 @@ final class PageVersionLedger {
       return 0;
     final long now = System.currentTimeMillis();
     int live = 0;
-    for (final Map.Entry<Long, Reservation> reserved : ledger.pages.entrySet())
-      if (!dropIfStale(ledger, reserved.getKey(), reserved.getValue(), now))
-        live++;
+    for (final Map.Entry<Long, Reservation> reserved : ledger.pages.entrySet()) {
+      final Reservation reservation = reserved.getValue();
+      if (dropIfStale(ledger, reserved.getKey(), reservation, now))
+        continue;
+      // A reservation the log has not confirmed yet is a request between its validation and its append, which takes
+      // milliseconds; one older than the grace is a request Ratis dropped, and waiting for it would make every DDL
+      // spend its whole budget until the stale sweep (three client timeouts) finally removes it. It is not removed
+      // here, only not waited for: were it to be appended after all, the entry is one the DDL's own version check
+      // refuses, as for any entry the exclusive window let through.
+      if (!reservation.appended && now - reservation.reservedAtMs > UNCONFIRMED_DRAIN_GRACE_MS)
+        continue;
+      live++;
+    }
     return live;
   }
 
