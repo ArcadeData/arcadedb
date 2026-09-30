@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.Vertex;
 import org.junit.jupiter.api.Test;
 
@@ -342,6 +343,41 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
         }
         assertThat(n).isEqualTo(3);
       }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void rowUpdatedDuringIterationComesBackAsCommitted() {
+    database.begin();
+    try {
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          if (rows++ == 0)
+            database.command("sql", "UPDATE E SET grp = 7 WHERE grp = 5");
+          // pinned: the scan hands out the committed content, never the transaction's update
+          assertThat(row.<Integer>getProperty("grp")).isEqualTo(5);
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void transactionThatOnlyReadKeepsItsParallelScan() {
+    database.begin();
+    try {
+      assertThat(((DatabaseInternal) database).getTransaction().isReadOnlyView()).isTrue();
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE id = 1")) {
+        assertThat(rs.hasNext()).isTrue();
+      }
+      assertThat(((DatabaseInternal) database).getTransaction().isReadOnlyView()).isTrue();
+      assertThat(sqlPlan()).contains("(parallel)");
     } finally {
       database.rollback();
     }

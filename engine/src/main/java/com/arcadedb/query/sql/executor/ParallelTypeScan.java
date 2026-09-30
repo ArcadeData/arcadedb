@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
@@ -507,6 +508,9 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
+          // A WORKER HAS TAKEN THE UNIT: THE GRACE OF THE NEXT ONE STARTS FROM ZERO
+          if (nextUnit.get() != consumerUnit)
+            unitWaitSince = 0;
           if (nextUnit.get() == consumerUnit && callerMayClaimNow() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             unitWaitSince = 0;
             if (database.isTransactionActive()) {
@@ -641,8 +645,12 @@ final class ParallelTypeScan {
   private boolean deletedByTransaction(final Result row) {
     if (!database.isTransactionActive())
       return false;
+    final TransactionContext transaction = database.getTransaction();
+    // NOTHING DELETED, THE COMMON CASE: NO LOOKUP, NO Optional
+    if (!transaction.hasDeletedRecords())
+      return false;
     final RID rid = row.getIdentity().orElse(null);
-    return rid != null && database.getTransaction().isDeletedInTransaction(rid);
+    return rid != null && transaction.isDeletedInTransaction(rid);
   }
 
   private void stopDedicatedReader() {

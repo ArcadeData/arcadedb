@@ -1931,6 +1931,11 @@ public class TransactionContext implements Transaction {
         && bucketRecordDelta.isEmpty() && newPageCounters.isEmpty();
   }
 
+  /** Whether this transaction has deleted a record: a cheap test for a reader that only needs to filter deleted ones. */
+  public boolean hasDeletedRecords() {
+    return !deletedRecordsInTx.isEmpty();
+  }
+
   public int getModifiedPages() {
     int result = 0;
     if (modifiedPages != null)
