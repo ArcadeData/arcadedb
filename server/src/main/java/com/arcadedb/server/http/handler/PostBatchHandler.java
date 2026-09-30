@@ -1255,8 +1255,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     private final long              maxBodySize;
     private       long              bytesRead;
     private       boolean           endOfBody;
-    /** The failure that ended this body, or {@code null} while it is still readable. */
-    private       IOException       bodyFailure;
+    /**
+     * The failure that ended this body, or {@code null} while it is still readable. Volatile because a forwarded
+     * body is read on the JDK client's publisher thread while the handler thread asks {@link #refusedOverCap()}
+     * afterwards (issue #8161): the completion behind {@code HttpClient.send} most likely orders the two already,
+     * but a body that is not thread-confined should not rely on a happens-before edge nothing here documents. The
+     * write is rare and a volatile read is a plain load on x86.
+     */
+    private volatile IOException    bodyFailure;
 
     /**
      * An UNCAPPED counter, for the callers that wrap a stream whose size is already bounded by something else -

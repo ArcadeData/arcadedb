@@ -38,10 +38,13 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -107,10 +110,18 @@ class Issue8161FollowerForwardBodyCapTest {
       final PostBatchHandler.CountingInputStream body = new PostBatchHandler.CountingInputStream(exchange,
           new ByteArrayInputStream(ndjson(BODY_BYTES)), CAP_BYTES);
 
-      assertThatThrownBy(() -> handler().forwardBatchToLeader(exchange, haPointingAt(leader.address()), "mydb",
-          rootUser(), "application/x-ndjson", body, streaming))
-          .isInstanceOf(RequestTooBigException.class)
+      final PostBatchHandler handler = handler();
+      final Throwable thrown = catchThrowable(() -> handler.forwardBatchToLeader(exchange,
+          haPointingAt(leader.address()), "mydb", rootUser(), "application/x-ndjson", body, streaming));
+      assertThat(thrown).isInstanceOf(RequestTooBigException.class)
           .hasMessageContaining(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+
+      // The user-visible contract, not just the intermediate step: the rethrown refusal goes through the same
+      // classification sendMappedErrorResponse sends from, and comes out as the leader's 413 naming the setting.
+      final AbstractServerHttpHandler.ErrorClassification classification = handler.classifyError(thrown);
+      assertThat(classification.status()).isEqualTo(413);
+      assertThat(classification.message()).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
+      assertThat(classification.exceptionArgs()).isEqualTo(String.valueOf(CAP_BYTES));
 
       assertThat(body.hasBodyFailed()).isTrue();
       assertThat(leader.acceptedConnections()).isGreaterThanOrEqualTo(1);
@@ -142,17 +153,21 @@ class Issue8161FollowerForwardBodyCapTest {
    * connection as soon as it has accepted it.
    */
   private static final class DrainingLeader implements AutoCloseable {
-    private final    ServerSocket serverSocket;
-    private final    Thread       acceptor;
-    private volatile int          accepted = 0;
+    private final ServerSocket  serverSocket;
+    private final Thread        acceptor;
+    private final AtomicInteger accepted = new AtomicInteger();
+    private final List<Socket>  sockets  = new CopyOnWriteArrayList<>();
 
     DrainingLeader(final boolean dropAfterAccept) throws IOException {
-      serverSocket = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
+      // The literal IPv4 loopback, not getLoopbackAddress(): under java.net.preferIPv6Addresses=true that one is
+      // ::1, and an unbracketed IPv6 literal followed by ":port" is not a URI the forwarder can build.
+      serverSocket = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
       acceptor = new Thread(() -> {
         while (!serverSocket.isClosed()) {
           try {
             final Socket socket = serverSocket.accept();
-            accepted++;
+            accepted.incrementAndGet();
+            sockets.add(socket);
             if (dropAfterAccept) {
               socket.close();
               continue;
@@ -183,7 +198,7 @@ class Issue8161FollowerForwardBodyCapTest {
     }
 
     int acceptedConnections() {
-      return accepted;
+      return accepted.get();
     }
 
     @Override
@@ -192,6 +207,13 @@ class Issue8161FollowerForwardBodyCapTest {
         serverSocket.close();
       } catch (final IOException ignored) {
         // best effort
+      }
+      for (final Socket socket : sockets) {
+        try {
+          socket.close();
+        } catch (final IOException ignored) {
+          // best effort
+        }
       }
     }
   }
