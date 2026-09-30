@@ -29,6 +29,7 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
@@ -120,6 +121,7 @@ import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.ForeachStep;
 import com.arcadedb.query.opencypher.executor.steps.GAVOneHopScanStep;
 import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.IndexMinMaxStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.LoadCSVStep;
@@ -151,9 +153,12 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
+import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -348,6 +353,7 @@ public class CypherExecutionPlan {
     context.setProfiling(profile != null);
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -466,6 +472,16 @@ public class CypherExecutionPlan {
           outerContext.isCommandDeadlinePartial());
   }
 
+  /**
+   * Makes a nested plan read the enclosing query's scans of the unidirectional edge types instead of taking its own:
+   * a correlated {@code COUNT { }} or {@code CALL { }} body runs once per outer row, each time on a context of its own,
+   * and would otherwise scan the type once per row (issue #8625).
+   */
+  private static void inheritIncomingEdgeLookup(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      context.setIncomingEdgeLookup(outerContext.getIncomingEdgeLookup());
+  }
+
   private boolean canUseOptimizedPhysicalPlan() {
     return physicalPlan != null && physicalPlan.getRootOperator() != null
         && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
@@ -546,6 +562,7 @@ public class CypherExecutionPlan {
     }
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
@@ -654,6 +671,7 @@ public class CypherExecutionPlan {
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
     inheritCommandDeadline(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
     if (countStep == null)
@@ -795,6 +813,7 @@ public class CypherExecutionPlan {
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
+    inheritIncomingEdgeLookup(context, outerContext);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
@@ -2434,17 +2453,13 @@ public class CypherExecutionPlan {
           final String targetVar = targetNode.getVariable();
           if (targetVar != null && stepBeforeMatch != null
               && (boundVariables.contains(targetVar) || matchVariables.contains(targetVar))) {
-            // Target IS bound - reverse the traversal for bidirectional edges only.
-            // Unidirectional edges don't store incoming links on the target vertex,
-            // so reverse traversal would return 0 results. In that case, keep the
-            // original direction and scan from the unbound source side.
-            final RelationshipPattern relCheck = pathPattern.getRelationship(0);
-            if (!isAnyEdgeTypeUnidirectional(relCheck.getTypes())) {
-              reversed = true;
-              sourceNode = targetNode;
-              sourceVar = targetVar;
-              sourceAlreadyBound = true;
-            }
+            // Target IS bound - reverse the traversal. Over an edge type declared unidirectional the reversed hop
+            // reads the incoming side no vertex stores, which the step answers through the query's lookup
+            // (issue #8625): one scan of the type instead of a scan of the source side for every bound target.
+            reversed = true;
+            sourceNode = targetNode;
+            sourceVar = targetVar;
+            sourceAlreadyBound = true;
           }
         }
 
@@ -2587,9 +2602,6 @@ public class CypherExecutionPlan {
                 false, effectiveTargetNode, pathPattern.getEffectivePathMode(), matchVariables,
                 clauseRelVariables, directionOverride, reversed, context);
           } else {
-            // Check if this hop requires IN traversal on a unidirectional edge.
-            // Unidirectional edges don't store incoming links, so we must restructure:
-            // instead of (bound)-[IN]->(target), scan target type and go (target)-[OUT]->(bound).
             // #6311: the names a hop must identity-check its target against are the ones the row already
             // carries when the hop RUNS: everything bound before this MATCH plus everything this MATCH has
             // bound so far (earlier comma-separated patterns, earlier hops). Snapshot them here rather than
@@ -2605,38 +2617,12 @@ public class CypherExecutionPlan {
             final Set<String> targetIdentityVars = new HashSet<>(boundVariables);
             targetIdentityVars.addAll(matchVariables);
 
-            final Direction effectiveDir = directionOverride != null ? directionOverride : relPattern.getDirection();
-            final boolean needsReverseOnUnidirectional = !reversed
-                && effectiveDir == Direction.IN
-                && (boundVariables.contains(effectiveSourceVar) || matchVariables.contains(effectiveSourceVar))
-                && isAnyEdgeTypeUnidirectional(relPattern.getTypes());
-
-            if (needsReverseOnUnidirectional) {
-              // Restructure: scan target type with MatchNodeStep, then traverse OUT to validate
-              // against the bound source. The bound source becomes the "target" of the relationship.
-              final Set<String> boundWithSource = new HashSet<>(targetIdentityVars);
-              boundWithSource.add(effectiveSourceVar);
-              final MatchNodeStep scanStep = new MatchNodeStep(effectiveTargetVar, effectiveTargetNode, context);
-              if (isOptional && matchChainStart == null) {
-                matchChainStart = scanStep;
-                currentStep = scanStep;
-              } else {
-                scanStep.setPrevious(currentStep);
-                currentStep = scanStep;
-              }
-              // Swap source/target and reverse direction: go OUT from scanned target to bound source
-              // reversePathOrder: this hop is walked from the pattern's right-hand node back to its left-hand
-              // one, so a named path has to be assembled the other way round (#7290).
-              nextStep = new MatchRelationshipStep(effectiveTargetVar, relVar, effectiveSourceVar, relPattern,
-                  pathVariable, sourceNode, boundWithSource, matchVariables, clauseRelVariables, Direction.OUT,
-                  true, context);
-            } else {
-              // Normal case: pass target node pattern for label filtering and bound variables for identity
-              // checking. The relationship-uniqueness scope is published once the clause is complete.
-              nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
-                  pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
-                  directionOverride, reversed, context);
-            }
+            // An IN hop over an edge type declared unidirectional reads the incoming side no vertex stores: the step
+            // answers it through the query's lookup (issue #8625), so the hop is walked as written. The
+            // relationship-uniqueness scope is published once the clause is complete.
+            nextStep = new MatchRelationshipStep(effectiveSourceVar, relVar, effectiveTargetVar, relPattern,
+                pathVariable, effectiveTargetNode, targetIdentityVars, matchVariables, clauseRelVariables,
+                directionOverride, reversed, context);
           }
 
           // Update source for next hop in multi-hop patterns
@@ -4997,11 +4983,8 @@ public class CypherExecutionPlan {
       countDirection = relDirection == Direction.OUT ? Vertex.DIRECTION.OUT
           : relDirection == Direction.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.BOTH;
     } else if (targetVar != null && (countArgVar == null || countArgVar.equals(sourceVar))) {
-      // Reverse: anchor=target, count source's edges (reverse direction)
-      // This requires reverse traversal (IN direction at the target vertex), which only
-      // works for bidirectional edges. Unidirectional edges don't store incoming links.
-      if (isAnyEdgeTypeUnidirectional(relPattern.getTypes()))
-        return null;
+      // Reverse: anchor=target, count source's edges (reverse direction). Over an edge type declared unidirectional
+      // that is the incoming side no vertex stores, which the step counts through the query's lookup (issue #8625)
       anchorVar = targetVar;
       anchorNode = targetNode;
       final Direction relDirection = relPattern.getDirection();
@@ -5041,7 +5024,10 @@ public class CypherExecutionPlan {
     // Try to find MatchNodeStep: walk back through MatchRelationshipStep if present
     if (nodeStep instanceof MatchRelationshipStep) {
       nodeStep = (AbstractExecutionStep) nodeStep.getPrev();
-      if (!(nodeStep instanceof MatchNodeStep))
+      // The step the counts replace the expansion on must be the one that binds the anchor, and nothing but it: a
+      // chain that also scans the counted side would count the anchor's edges once per row of that scan
+      if (!(nodeStep instanceof MatchNodeStep matchNode) || !anchorVar.equals(matchNode.getVariable())
+          || nodeStep.getPrev() instanceof MatchNodeStep)
         return null;
     }
     // For optimizer path: the physical operator wrapper already handles the full traversal,
@@ -5278,6 +5264,76 @@ public class CypherExecutionPlan {
 
     // All conditions met - create optimized TypeCountStep
     return new TypeCountStep(typeName, outputAlias, context);
+  }
+
+  /**
+   * Optimizes {@code MATCH (n:Label) RETURN min(n.prop)} (and {@code max}) into a read of one end of the index on the
+   * property (issue #8666), as SQL's {@code MIN FROM INDEX} does.
+   * <p>
+   * The shape is the type count's: one non-optional MATCH of one labelled node, no WHERE or property map, nothing but
+   * the RETURN, whose only item is the aggregate. On top of that the index has to hold exactly the values the aggregate
+   * looks at, in the order Cypher gives them:
+   * <ul>
+   *   <li>defined on the label itself, not inherited: a parent's index also holds the siblings' vertices;</li>
+   *   <li>on that property alone, ordered, and skipping the vertices with no value (with {@code NULL_STRATEGY INDEX} its
+   *   first entry can be a null, which {@code min} and {@code max} ignore);</li>
+   *   <li>case sensitive, on a key type whose index order is Cypher's ({@link CypherOptimizer#INDEX_ORDERED_KEY_TYPES},
+   *   the set the ORDER BY from an index already relies on).</li>
+   * </ul>
+   *
+   * @return the step, or null when the statement or the schema is not that shape, which leaves the aggregate to scan
+   */
+  private AbstractExecutionStep tryCreateIndexMinMaxOptimization(final CommandContext context) {
+    if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
+      return null;
+    final MatchClause matchClause = statement.getMatchClauses().getFirst();
+    if (matchClause.isOptional() || matchClause.hasWhereClause() || statement.getWhereClause() != null
+        || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
+      return null;
+    final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
+    if (!pathPattern.isSingleNode())
+      return null;
+    final NodePattern nodePattern = pathPattern.getFirstNode();
+    if (nodePattern.getVariable() == null || !nodePattern.hasLabels() || nodePattern.getLabels().size() != 1
+        || nodePattern.isLabelDisjunction() || nodePattern.hasProperties())
+      return null;
+
+    // The statement is the MATCH and the RETURN, nothing else (a write, a WITH or an UNWIND would be dropped)
+    if (!isMatchReturnOnlyStatement() || !statement.getWithClauses().isEmpty() || !statement.getUnwindClauses().isEmpty())
+      return null;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause == null || returnClause.isDistinct() || returnClause.getReturnItems().size() != 1)
+      return null;
+    final ReturnClause.ReturnItem returnItem = returnClause.getReturnItems().getFirst();
+    if (!(returnItem.getExpression() instanceof FunctionCallExpression function) || function.getArguments().size() != 1
+        || !(function.getArguments().getFirst() instanceof PropertyAccessExpression access)
+        || !nodePattern.getVariable().equals(access.getVariableName()))
+      return null;
+    final boolean max;
+    if ("max".equalsIgnoreCase(function.getFunctionName()))
+      max = true;
+    else if ("min".equalsIgnoreCase(function.getFunctionName()))
+      max = false;
+    else
+      return null;
+
+    final String typeName = nodePattern.getLabels().getFirst();
+    final String propertyName = access.getPropertyName();
+    final Schema schema = context.getDatabase().getSchema();
+    if (!schema.existsType(typeName) || !(schema.getType(typeName) instanceof VertexType type))
+      return null;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null || !CypherOptimizer.INDEX_ORDERED_KEY_TYPES.contains(property.getType()))
+      return null;
+
+    final TypeIndex index = type.getIndexByProperties(propertyName);
+    if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || index.getMetadata() == null
+        || index.getMetadata().isCaseInsensitive(0))
+      return null;
+
+    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
   }
 
   /**
@@ -6223,6 +6279,8 @@ public class CypherExecutionPlan {
     // The O(1) type counter answers "how many vertices carry this label", which is not a question a bound anchor
     // narrows: a seeded MATCH (q:Q) is one vertex tested against a label, not a count over the label.
     AbstractExecutionStep step = correlation.isCorrelated() ? null : tryCreateTypeCountOptimization(context, countRowsMode);
+    if (step == null && !countRowsMode && !correlation.isCorrelated())
+      step = tryCreateIndexMinMaxOptimization(context);
     if (step == null)
       step = tryOptimizeCountStar(context, countRowsMode, correlation);
     if (step == null)
@@ -6324,6 +6382,34 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Whether a relationship of the MATCH clauses may walk an edge type declared unidirectional: one of its types, one of
+   * their subtypes, or any type at all when it names none.
+   */
+  private boolean hasUnidirectionalRelationship(final Database db) {
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasPathPatterns())
+        for (final PathPattern path : match.getPathPatterns())
+          for (int i = 0; i < path.getRelationshipCount(); i++) {
+            final RelationshipPattern rel = path.getRelationship(i);
+            if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(),
+                rel.hasTypes() ? rel.getTypes().toArray(new String[0]) : null))
+              return true;
+          }
+    return false;
+  }
+
+  /** Whether every relationship of the MATCH clauses is written as an outgoing hop. */
+  private boolean allRelationshipsOutgoing() {
+    for (final MatchClause match : statement.getMatchClauses())
+      if (match.hasPathPatterns())
+        for (final PathPattern path : match.getPathPatterns())
+          for (int i = 0; i < path.getRelationshipCount(); i++)
+            if (path.getRelationship(i).getDirection() != Direction.OUT)
+              return false;
+    return true;
+  }
+
+  /**
    * Unified entry point: tries all count-push-down patterns and wraps the result in a CSRCountStep.
    */
   private AbstractExecutionStep tryOptimizeCountStar(final CommandContext context, final boolean countRowsMode,
@@ -6339,11 +6425,20 @@ public class CypherExecutionPlan {
     if (hasInlineNodePropertyOrDynamicLabel())
       return null;
 
+    // The operators read adjacency lists directly, in whichever direction their anchors call for: over an edge type
+    // declared unidirectional that can be the incoming side, which no vertex stores. The chain operator walks an
+    // uncorrelated chain from its first node in the written directions, so a chain of outgoing hops only reads what is
+    // stored and keeps the push-down; anything else is left to the ordinary pipeline, whose expansions answer the
+    // incoming side through the query's lookup (issue #8625)
+    final boolean unidirectional = hasUnidirectionalRelationship(context.getDatabase());
+    if (unidirectional && (correlation.isCorrelated() || !allRelationshipsOutgoing()))
+      return null;
+
     CountOp op = tryDetectChainCountStar(context.getDatabase(), correlation);
     // Only the chain operator can start its walk from an anchor the outer row bound. The star, triangle, pair-join
     // and anti-join ones all derive their anchor set from a label, so a correlated body is left to the ordinary
     // pipeline rather than answered over every vertex carrying that label (issue #5758).
-    if (op == null && !correlation.isCorrelated()) {
+    if (op == null && !correlation.isCorrelated() && !unidirectional) {
       op = tryDetectAntiJoinChainCountStar();
       if (op == null)
         op = tryDetectStarCountStar();

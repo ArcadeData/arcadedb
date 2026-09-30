@@ -46,12 +46,24 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli
  */
 public class ImmutableDocument extends BaseDocument {
+  // #8610: a read that went stale is kept as STALE_READ - id, in place of the id of the transaction it was read in (one
+  // field, not two), so the mark still names that transaction
+  private static final int STALE_READ = -2;
+
   /**
    * Version of the page this record's content was read from, when it was read straight from its own page by a scan
    * (issue #8312), -1 when unknown. It lets {@link #pinPageAndReloadIfStale()} skip the reload of a record whose page
    * has not changed since: same page version, same bytes.
    */
   private long contentPageVersion = -1;
+  // #8610: the transaction this record was read in (see readTransactionId()), -1 when unknown, or STALE_READ - that id
+  // once the reload modify() performs found the content changed since that read. The mark stays for the rest of that
+  // transaction: every later modify() of this instance gets the same page without reloading, so a value computed from
+  // the read before would otherwise slip through a second modify(). A later transaction reusing the instance holds it
+  // across transactions, and gets the silent refresh. An int, not a long: 8 more bytes pushed a vertex into a larger
+  // allocation size and cost ~10% of a vertex scan. Written without synchronization like the rest of the record state:
+  // an instance shared by threads can at worst gain or miss one retryable conflict.
+  private int readInTransaction = -1;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
@@ -196,8 +208,11 @@ public class ImmutableDocument extends BaseDocument {
       return;
     final BasePage page = database.getTransaction()
         .getPage(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize());
-    if (page.getVersion() != readFromVersion)
+    if (page.getVersion() != readFromVersion) {
+      final Binary readImage = buffer;
       reload();
+      onReloadedForModify(readImage);
+    }
   }
 
   /**
@@ -217,8 +232,78 @@ public class ImmutableDocument extends BaseDocument {
         .getPageToModify(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
             false);
     final long readFromVersion = contentPageVersion;
-    if (readFromVersion < 0 || buffer == null || page.getVersion() != readFromVersion)
+    if (readFromVersion < 0 || buffer == null || page.getVersion() != readFromVersion) {
+      final Binary readImage = buffer;
       reload();
+      onReloadedForModify(readImage);
+    }
+  }
+
+  /**
+   * Records the transaction this record was read in (issue #8610), so {@link #modify()} can tell a read made in the
+   * current transaction, which a property write may be computed from, from a record held across transactions, which it
+   * keeps refreshing silently. Set by the load paths that hold the transaction anyway; left unset (-1) elsewhere, where
+   * the refresh stays silent.
+   */
+  public void setReadInTransaction(final long transactionBeginSequence) {
+    this.readInTransaction = readTransactionId(transactionBeginSequence);
+  }
+
+  /**
+   * The id a record keeps of the transaction it was read in: the 30 low bits of its begin sequence, never negative,
+   * because a negative value means "unknown" (-1, which switches the check off) or a stale read ({@link #STALE_READ} - id,
+   * which the 30 bits keep inside an int). A plain int cast turned half of all sequences negative once 2^31 transactions
+   * had begun. The id repeats every 2^30 transactions, so a record held across exactly that many is taken for one read in
+   * the current transaction: the worst that can do is a retryable conflict, never a lost update.
+   *
+   * @param transactionBeginSequence {@link TransactionContext#getBeginSequence()}, -1 outside a transaction
+   */
+  static int readTransactionId(final long transactionBeginSequence) {
+    return transactionBeginSequence < 0 ? -1 : (int) (transactionBeginSequence & 0x3FFFFFFF);
+  }
+
+  /**
+   * #8610: called after {@code modify()} replaced the content with the latest committed one, with the content read
+   * before ({@code null} for a record loaded lazily). When that read was made in the current transaction and the content
+   * changed, the record {@code modify()} builds is marked, so a property write computed from the older read is refused at
+   * save ({@code TransactionContext.addUpdatedRecord}) instead of overwriting the concurrent change.
+   */
+  protected void onReloadedForModify(final Binary readImage) {
+    if (readImage == null || readInTransaction < 0)
+      return;
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    if (!tx.isStaleReadCheck() || readTransactionId(tx.getBeginSequence()) != readInTransaction)
+      return;
+    final Binary reloaded = buffer;
+    if (reloaded == null)
+      return;
+    final int offset = contentChangeOffset();
+    final int length = readImage.size() - offset;
+    if (length != reloaded.size() - offset || !readImage.isSameRegionAs(offset, reloaded, offset, length))
+      readInTransaction = STALE_READ - readInTransaction;
+  }
+
+  /**
+   * Where the content a write may be computed from starts: past the record type byte. A vertex starts it past its
+   * edge-list heads.
+   */
+  protected int contentChangeOffset() {
+    return Binary.BYTE_SERIALIZED_SIZE;
+  }
+
+  /**
+   * Marks {@code mutable}, the record {@code modify()} is handing back, as built on a read that went stale (issue #8610),
+   * when the reload found the content changed since.
+   */
+  protected <T extends MutableDocument> T markIfReadWentStale(final T mutable) {
+    if (readInTransaction <= STALE_READ) {
+      if (readTransactionId(((DatabaseInternal) database).getTransaction().getBeginSequence()) == STALE_READ - readInTransaction)
+        mutable.markBasedOnStaleRead();
+      else
+        // Marked in another transaction: this one holds the instance across transactions, and modify() reloaded it
+        readInTransaction = -1;
+    }
+    return mutable;
   }
 
   @Override
@@ -229,7 +314,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return new MutableDocument(database, type, rid, content.copyOfContent());
+    return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));
   }
 
   @Override

@@ -730,6 +730,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
+        schema.saveConfigurationBeforeCommit();
         final Binary result = current.getLastTransaction().commit();
         if (result != null) {
           stats.writeTx.incrementAndGet();
@@ -738,6 +739,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
+        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
+        schema.saveConfigurationAtTransactionEnd();
       }
 
       return null;
@@ -759,6 +762,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final TransactionException e) {
         // ALREADY ROLLED BACK
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -788,6 +793,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // ALREADY ROLLED BACK
         }
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -1080,6 +1087,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+        // #8610: recorded before the read events run, which may hand back another record
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(tx.getBeginSequence());
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1087,6 +1097,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+      if (record instanceof ImmutableDocument document)
+        document.setReadInTransaction(tx.getBeginSequence());
 
       return record;
     });
@@ -2170,7 +2182,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final String edgeType,
       final boolean bidirectional, final Object... properties) {
     if (!bidirectional && schema.getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
         createVertexIfNotExist, edgeType, properties);

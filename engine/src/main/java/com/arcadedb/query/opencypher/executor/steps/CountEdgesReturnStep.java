@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -38,6 +39,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -124,7 +126,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
             continue;
 
           final Vertex vertex = (Vertex) vertexObj;
-          final long count = countEdgesFiltered(vertex, provider, db);
+          final long count = countEdgesFiltered(vertex, provider, db, context);
 
           if (count == 0)
             continue; // MATCH semantics: no edges = no match
@@ -169,7 +171,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           continue;
 
         final Vertex vertex = (Vertex) vertexObj;
-        final long count = countEdgesFiltered(vertex, provider, db);
+        final long count = countEdgesFiltered(vertex, provider, db, context);
 
         if (count == 0)
           continue;
@@ -206,7 +208,8 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
    * Counts edges, optionally filtering by target vertex type.
    * Uses GAV/CSR when available for O(1) or O(degree) counting.
    */
-  private long countEdgesFiltered(final Vertex vertex, final GraphTraversalProvider provider, final Database db) {
+  private long countEdgesFiltered(final Vertex vertex, final GraphTraversalProvider provider, final Database db,
+      final CommandContext context) {
     if (targetLabel == null) {
       // No target filter — fast O(1) count
       if (provider != null) {
@@ -214,7 +217,8 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
         if (nodeId >= 0)
           return provider.countEdges(nodeId, direction, edgeTypes);
       }
-      return vertex.countEdges(direction, edgeTypes);
+      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+      return IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
     }
 
     // Target label specified — count only neighbors matching the label
@@ -245,8 +249,9 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
     // OLTP fallback with target filtering
     long count = 0;
-    for (final Vertex neighbor : vertex.getVertices(direction, edgeTypes)) {
-      if (Labels.hasLabel(neighbor, targetLabel))
+    for (final Iterator<Vertex> neighbors = IncomingEdgeLookup.getVertices(context, vertex, direction, edgeTypes);
+        neighbors.hasNext(); ) {
+      if (Labels.hasLabel(neighbors.next(), targetLabel))
         count++;
     }
     return count;

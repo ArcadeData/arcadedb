@@ -221,6 +221,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return arg instanceof VariableExpression varExpr && variable.equals(varExpr.getVariableName());
   }
 
+  /** The variable this step binds. */
+  public String getVariable() {
+    return variable;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final boolean hasInput = prev != null;

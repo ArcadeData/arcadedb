@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
@@ -171,7 +172,9 @@ public class ShortestPathExpression implements Expression {
     final Object[] params = ShortestPathStep.shortestPathArguments(startVertex, endVertex, direction, edgeTypeParam,
         bounds);
 
-    final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
+    // A pattern: the function answers the incoming side of the unidirectional types (issue #8625)
+    final List<RID> pathRids = IncomingEdgeLookup.walkingPattern(
+        () -> shortestPathFunction.execute(null, null, null, params, context));
 
     if (pathRids == null || pathRids.isEmpty())
       return allPaths ? new ArrayList<>() : null;

@@ -160,6 +160,8 @@ public class MaterializedViewRefresher {
           final MutableDocument doc = reused < previousSnapshot.size ?
               ((Document) database.lookupByRID(previousSnapshot.get(reused++), true)).modify() :
               database.newDocument(backingTypeName);
+          // The row comes from the defining query, not from the reused record: no stale-read refusal (#8610)
+          doc.clearBasedOnStaleRead();
           applyRow(doc, result);
           doc.save();
         }

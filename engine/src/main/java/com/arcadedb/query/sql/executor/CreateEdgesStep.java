@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableLightEdge;
 import com.arcadedb.graph.Vertex;
@@ -128,7 +129,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
                 if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;
                   currentBatch++;
-                  return new UpdatableResult(existingEdge.modify());
+                  return new UpdatableResult(forUpsert(existingEdge.modify()));
                 }
               }
             }
@@ -137,7 +138,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           final String target = targetBucket != null ? "bucket:" + targetBucket.getStringValue() : targetClass.getStringValue();
 
           if (unidirectional && context.getDatabase().getSchema().getType(target) instanceof EdgeType t && t.isBidirectional())
-            throw new CommandExecutionException("Cannot create unidirectional edge on a bidirectional edge type");
+            throw new CommandExecutionException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(target));
 
           final MutableEdge edge;
           if (edgeToUpdate != null) {
@@ -279,7 +280,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (isUpsert()) {
           final Edge existingEdge = getExistingEdge(currentFrom, currentTo);
           if (existingEdge != null) {
-            edgeToUpdate = existingEdge.modify();
+            edgeToUpdate = forUpsert(existingEdge.modify());
           }
         }
 
@@ -373,5 +374,14 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         unidirectional,
         ifNotExists,
         context);
+  }
+
+  /**
+   * The upsert writes the statement's own SET/CONTENT values, not values computed from the edge it found, so a commit
+   * landing in between leaves nothing to lose: no stale-read refusal (#8610).
+   */
+  private static MutableEdge forUpsert(final MutableEdge edge) {
+    edge.clearBasedOnStaleRead();
+    return edge;
   }
 }

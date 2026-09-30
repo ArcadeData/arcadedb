@@ -194,7 +194,7 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     server.getConfiguration().setValue(GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES, false);
     closeLocally(DB_NAME);
 
-    legacyReconciler().reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    legacyReconciler().reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(Files.exists(marker(DB_NAME))).isTrue();
     assertRefusedOnThisFollower(DB_NAME);
@@ -210,14 +210,14 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
     closeLocally(DB_NAME);
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchBootstrapState(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
       }
     };
     reconciler.setServer(server);
 
-    reconciler.reconcileDatabasesFromLeader(leaderAddress, null, null, -1L);
+    reconciler.reconcileDatabasesFromLeader("leader", leaderAddress, null, null, -1L);
 
     assertThat(reconciler.getAcquireStatus(DB_NAME).state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
     assertThat(Files.exists(marker(DB_NAME))).isTrue();
@@ -328,7 +328,7 @@ class Issue8589UnverifiedClosedCopyAfterResyncTest {
   private DatabaseReconciler legacyReconciler() {
     final DatabaseReconciler reconciler = new DatabaseReconciler() {
       @Override
-      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderHttpAddr, final String leaderHttpsAddr,
+      LeaderDatabaseQuery.BootstrapState fetchSnapshotMarker(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
           final String clusterToken) {
         return new LeaderDatabaseQuery.BootstrapState(List.of(), TermIndex.valueOf(3L, 40L));
       }

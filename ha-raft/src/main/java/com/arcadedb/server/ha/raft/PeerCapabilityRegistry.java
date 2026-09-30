@@ -83,7 +83,10 @@ public final class PeerCapabilityRegistry {
   static final long ADVERTISEMENT_TTL_MS = 4 * REFRESH_PERIOD_MS;
 
   /** One peer's last successful answer. */
-  public record Advertisement(Set<String> capabilities, String version, long observedAtMs) {
+  public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap) {
+    public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs) {
+      this(capabilities, version, observedAtMs, false);
+    }
   }
 
   /**
@@ -157,11 +160,21 @@ public final class PeerCapabilityRegistry {
    */
   public boolean record(final long generation, final String peerId, final Set<String> capabilities,
       final String version) {
+    return record(generation, peerId, capabilities, version, false);
+  }
+
+  /**
+   * As {@link #record(long, String, Set, String)}, also holding whether the peer reported a leader service gap
+   * (issue #8665). A change of that flag alone is not a transition to report here: it moves with the peer's state and
+   * is logged by the hand-off that reads it.
+   */
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version, final boolean serviceGap) {
     final Set<String> frozen = Set.copyOf(capabilities);
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
-      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong()));
+      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap));
       unknownReasons.remove(peerId);
       return !frozen.equals(lastReported.put(peerId, frozen));
     }
@@ -301,6 +314,24 @@ public final class PeerCapabilityRegistry {
     if (advertisement == null)
       return null;
     return clock.getAsLong() - advertisement.observedAtMs() <= ttlMs ? advertisement : null;
+  }
+
+  /**
+   * The peers whose last fresh answer says they hold a database they cannot serve (issue #8665). A peer with no fresh
+   * answer is NOT in it: unknown is treated as "no gap known", which is what a leader believed of every peer before
+   * the flag existed, and a peer that is down is screened by reachability, not by this.
+   */
+  public Set<String> peersWithServiceGap() {
+    Set<String> gapped = null;
+    for (final String peerId : advertisements.keySet()) {
+      final Advertisement advertisement = freshAdvertisementOf(peerId);
+      if (advertisement != null && advertisement.serviceGap()) {
+        if (gapped == null)
+          gapped = new LinkedHashSet<>();
+        gapped.add(peerId);
+      }
+    }
+    return gapped == null ? Collections.emptySet() : gapped;
   }
 
   /**

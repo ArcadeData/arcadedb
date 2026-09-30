@@ -30,6 +30,7 @@ import com.arcadedb.graph.EdgeToVertexIterable;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -97,6 +98,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     Vertex current;
     Vertex currentRight;
 
+    /** The query the function runs for, whose lookup answers the incoming side of unidirectional types (#8625). */
+    CommandContext commandContext;
+
     public Integer maxDepth;
     /**
      * option that decides whether or not to return the edge information
@@ -110,6 +114,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       final CommandContext context) {
 
     final ShortestPathContext shortestPathContext = new ShortestPathContext();
+    // THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE IS ANSWERED ONLY FOR A PATTERN (A CYPHER shortestPath()), AS FOR in()
+    shortestPathContext.commandContext = IncomingEdgeLookup.isWalkingPattern() ? context : null;
 
     Object source = params[0];
     if (MultiValue.isMultiValue(source)) {
@@ -311,18 +317,25 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction,
-      final String... types) {
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final CommandContext commandContext, final Vertex srcVertex,
+      final Vertex.DIRECTION direction, final String... types) {
     if (direction == Vertex.DIRECTION.BOTH) {
       final MultiIterator<Vertex> vertexIterator = new MultiIterator<>();
       final MultiIterator<Edge> edgeIterator = new MultiIterator<>();
-      final Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.OUT, types);
-      final Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.IN, types);
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(commandContext, srcVertex, Vertex.DIRECTION.OUT,
+          types);
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(commandContext, srcVertex, Vertex.DIRECTION.IN,
+          types);
       vertexIterator.addIterator(pair1.getFirst());
       vertexIterator.addIterator(pair2.getFirst());
       edgeIterator.addIterator(pair1.getSecond());
       edgeIterator.addIterator(pair2.getSecond());
       return new Pair<>(vertexIterator, edgeIterator);
+    } else if (IncomingEdgeLookup.isNeeded(commandContext, srcVertex.getDatabase(), direction, types)) {
+      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+      final List<Edge> edges = new ArrayList<>();
+      IncomingEdgeLookup.getEdges(commandContext, srcVertex, direction, types).forEachRemaining(edges::add);
+      return new Pair<>(new EdgeToVertexIterable(edges, direction), edges);
     } else {
       final Iterable<Edge> edges1 = srcVertex.getEdges(direction, types);
       final Iterable<Edge> edges2 = srcVertex.getEdges(direction, types);
@@ -340,8 +353,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction) {
-    return getVerticesAndEdges(srcVertex, direction, (String[]) null);
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final CommandContext commandContext, final Vertex srcVertex,
+      final Vertex.DIRECTION direction) {
+    return getVerticesAndEdges(commandContext, srcVertex, direction, (String[]) null);
   }
 
   public String getSyntax() {
@@ -387,7 +401,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         context.current = context.queueLeft.poll();
 
         final Iterable<Vertex> neighbors = getNeighborVertices(context.current, context.directionLeft,
-            context.edgeTypeParam, context.provider);
+            context.edgeTypeParam, context.provider, context.commandContext);
         for (final Vertex neighbor : neighbors) {
           final RID neighborIdentity = neighbor.getIdentity();
 
@@ -410,9 +424,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
         final Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
         if (context.edgeType == null) {
-          neighbors = getVerticesAndEdges(context.current, context.directionLeft);
+          neighbors = getVerticesAndEdges(context.commandContext, context.current, context.directionLeft);
         } else {
-          neighbors = getVerticesAndEdges(context.current, context.directionLeft, context.edgeTypeParam);
+          neighbors = getVerticesAndEdges(context.commandContext, context.current, context.directionLeft, context.edgeTypeParam);
         }
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
@@ -450,7 +464,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         context.currentRight = context.queueRight.poll();
 
         final Iterable<Vertex> neighbors = getNeighborVertices(context.currentRight, context.directionRight,
-            context.edgeTypeParam, context.provider);
+            context.edgeTypeParam, context.provider, context.commandContext);
         for (final Vertex neighbor : neighbors) {
           final RID neighborIdentity = neighbor.getIdentity();
 
@@ -474,9 +488,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
         final Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
         if (context.edgeType == null) {
-          neighbors = getVerticesAndEdges(context.currentRight, context.directionRight);
+          neighbors = getVerticesAndEdges(context.commandContext, context.currentRight, context.directionRight);
         } else {
-          neighbors = getVerticesAndEdges(context.currentRight, context.directionRight, context.edgeTypeParam);
+          neighbors = getVerticesAndEdges(context.commandContext, context.currentRight, context.directionRight, context.edgeTypeParam);
         }
 
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
@@ -509,13 +523,18 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   }
 
   private static Iterable<Vertex> getNeighborVertices(final Vertex vertex, final Vertex.DIRECTION direction,
-      final String[] edgeTypes, final GraphTraversalProvider provider) {
+      final String[] edgeTypes, final GraphTraversalProvider provider, final CommandContext commandContext) {
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertex.getIdentity());
       if (nodeId >= 0) {
         final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
         return new CSRVertexIterable(provider, neighborIds);
       }
+    }
+    if (IncomingEdgeLookup.isNeeded(commandContext, vertex.getDatabase(), direction, edgeTypes)) {
+      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+      final Iterator<Vertex> vertices = IncomingEdgeLookup.getVertices(commandContext, vertex, direction, edgeTypes);
+      return () -> vertices;
     }
     return edgeTypes != null ? vertex.getVertices(direction, edgeTypes) : vertex.getVertices(direction);
   }

@@ -23,7 +23,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -165,6 +167,7 @@ public class PatternPredicateExpression implements BooleanExpression {
     // Inline WHERE, e.g. EXISTS { (a)-[r:E*1..2 WHERE r.tag = 'ok']->(x) }: every traversed
     // relationship must satisfy it, as in the MATCH spelling.
     traverser.withEdgePredicate(relPattern.buildInlineWherePredicate(result, context));
+    traverser.withContext(context);
 
     // Get the end node (if bound)
     final NodePattern endNodePattern = pathPattern.getNode(1);
@@ -247,6 +250,25 @@ public class PatternPredicateExpression implements BooleanExpression {
 
     // Check incoming edges: startVertex <- endVertex
     if (isIncoming) {
+      // An edge type declared unidirectional stores no incoming side: both ends are bound, so look for the edge from
+      // the end that stores it (issue #8625)
+      if (IncomingEdgeLookup.isIncomingSideMissing(startVertex.getDatabase().getSchema(), Vertex.DIRECTION.IN,
+          relationshipTypes)) {
+        final Iterator<Edge> outEdges = startVertex instanceof VertexInternal internal ?
+            IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, endVertex.getIdentity(), relationshipTypes) :
+            endVertex.getEdges(Vertex.DIRECTION.OUT, relationshipTypes).iterator();
+        while (outEdges.hasNext()) {
+          final Edge edge = outEdges.next();
+          try {
+            if (edge.getIn().equals(startVertex.getIdentity()) && matchesRelationship(edge, relPattern, row, context))
+              return true;
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
+          }
+        }
+        return false;
+      }
+
       final Iterator<Edge> inEdges;
       if (relationshipTypes != null && relationshipTypes.length > 0) {
         inEdges = startVertex.getEdges(Vertex.DIRECTION.IN, relationshipTypes).iterator();
@@ -303,14 +325,10 @@ public class PatternPredicateExpression implements BooleanExpression {
       }
     }
 
-    // Check incoming edges
+    // Check incoming edges, the ones of a unidirectional type included (issue #8625)
     if (isIncoming) {
-      final Iterator<Edge> inEdges;
-      if (relationshipTypes != null && relationshipTypes.length > 0) {
-        inEdges = startVertex.getEdges(Vertex.DIRECTION.IN, relationshipTypes).iterator();
-      } else {
-        inEdges = startVertex.getEdges(Vertex.DIRECTION.IN).iterator();
-      }
+      final Iterator<Edge> inEdges = IncomingEdgeLookup.getEdges(context, startVertex, Vertex.DIRECTION.IN,
+          relationshipTypes != null && relationshipTypes.length > 0 ? relationshipTypes : null);
 
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();

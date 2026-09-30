@@ -487,6 +487,19 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       return transactions.getLast();
     }
 
+    /** How many transactions are stacked on this thread, the inactive ones on top included. */
+    public int getTransactionDepth() {
+      return transactions.size();
+    }
+
+    /** Whether any transaction stacked on this thread is still active. */
+    public boolean hasActiveTransaction() {
+      for (int i = transactions.size() - 1; i > -1; --i)
+        if (transactions.get(i).isActive())
+          return true;
+      return false;
+    }
+
     public void pushTransaction(final TransactionContext tx) {
       if (transactions.size() + 1 > maxNested)
         throw new TransactionException("Exceeded number of " + transactions.size()

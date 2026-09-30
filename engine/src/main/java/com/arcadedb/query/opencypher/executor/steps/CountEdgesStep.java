@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -110,9 +111,11 @@ public final class CountEdgesStep extends AbstractExecutionStep {
           if (provider != null) {
             // GAV/CSR path: O(1) count from offset arrays
             final int nodeId = provider.getNodeId(vertex.getIdentity());
-            count = nodeId >= 0 ? provider.countEdges(nodeId, direction, edgeTypes) : vertex.countEdges(direction, edgeTypes);
+            count = nodeId >= 0 ? provider.countEdges(nodeId, direction, edgeTypes) :
+                IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
           } else
-            count = vertex.countEdges(direction, edgeTypes);
+            // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+            count = IncomingEdgeLookup.countEdges(context, vertex, direction, edgeTypes);
         } else
           count = 0L; // NULL vertex = LEFT OUTER JOIN semantics
 

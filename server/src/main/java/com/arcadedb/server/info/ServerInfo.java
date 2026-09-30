@@ -47,6 +47,9 @@ public class ServerInfo {
     final JSONObject result = new JSONObject();
     result.put("version", Constants.getVersion());
     result.put("serverName", server.getServerName());
+    final String instanceId = server.getInstanceId();
+    if (instanceId != null)
+      result.put("instanceId", instanceId);
     result.put("languages", QueryEngineManager.getInstance().getAvailableLanguages());
 
     final Set<String> installedDatabases = new TreeSet<>(server.getDatabaseNames());

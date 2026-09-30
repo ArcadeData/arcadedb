@@ -79,6 +79,10 @@ class RaftClusterManager {
   /** How far {@link #isPermanent} follows a failure's cause chain. Deeper than any Ratis failure nests. */
   private static final int MAX_CAUSE_DEPTH = 16;
 
+  /** How long {@link #buildAddArgs} waits for a configuration that cannot be read yet, in {@value #COMMITTED_PEERS_WAIT_MS} ms steps. */
+  private static final int  COMMITTED_PEERS_WAIT_ATTEMPTS = 50;
+  private static final long COMMITTED_PEERS_WAIT_MS       = 100L;
+
   private final RaftHAServer raftHAServer;
   private final long         setConfigurationBudgetMs;
 
@@ -138,13 +142,16 @@ class RaftClusterManager {
     final String peerId = newPeer.getId().toString();
     final String address = newPeer.getAddress();
 
-    // Mode.ADD atomically appends this single peer to the CURRENT committed configuration, so two
-    // near-simultaneous adds cannot clobber each other. A full setConfiguration(getLivePeers()+peer)
-    // is read-modify-write last-write-wins and silently drops one of two concurrent adds (issue #4795),
-    // which is exactly why the K8s auto-join path already uses Mode.ADD (see KubernetesAutoJoin).
+    // COMPARE_AND_SET commits only if the leader's configuration is still the snapshot the new one was built from,
+    // so two near-simultaneous adds cannot clobber each other: the loser is rebuilt on top of the winner by the
+    // retry loop. A plain setConfiguration(getLivePeers()+peer) is read-modify-write last-write-wins and silently
+    // drops one of two concurrent adds (issue #4795). Not Mode.ADD, which is atomic too but cannot carry the
+    // address-uniqueness check that has to run against the state the change is applied to (issue #7802).
     setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId + " at " + address,
-        "The peer answered a connection but the Raft membership change did not commit: Ratis holds a Mode.ADD"
-            + " uncommitted until the new peer has caught up with the leader's log. Check that the server at "
+        "The peer answered a connection but the Raft membership change did not commit: Ratis holds the change"
+            + " uncommitted until the new peer has caught up with the leader's log, and the change is a"
+            + " compare-and-set that is refused, and retried, whenever another membership change lands first, so a"
+            + " cluster whose membership keeps changing can also run the budget out. Check that the server at "
             + address + " is running as part of this cluster - same cluster name and cluster token - and is"
             + " not still replaying its own log.");
 
@@ -197,18 +204,58 @@ class RaftClusterManager {
   }
 
   /**
-   * Builds the {@link SetConfigurationRequest.Mode#ADD} arguments for adding {@code newPeer}. Returns
+   * Builds the {@link SetConfigurationRequest.Mode#COMPARE_AND_SET} arguments for adding {@code newPeer}: the current
+   * configuration as the precondition, and the same configuration plus the new peer as the target. Returns
    * {@code null} when the peer is already a member, which the retry loop treats as success - this keeps
    * a retry after a lost success reply idempotent instead of spinning until the deadline.
+   * <p>
+   * Compare-and-set rather than {@code Mode.ADD} (issue #7802). {@code ADD} is atomic in appending one peer to the
+   * committed configuration, which is what keeps concurrent adds of DIFFERENT peers safe (#4795), but it carries no
+   * predicate: two requests naming one address under two ids were both appended. With a precondition the leader
+   * applies the change only if its configuration is still the one the address check below read, so of two racing
+   * adds exactly one commits and the other fails, is retried, and is rebuilt against the configuration that now holds
+   * the winner - where {@link RaftHAServer#ensureNoDuplicateAddress} refuses it. The check therefore runs against the
+   * state the change is applied to, whichever node served the request, which no lock on the serving node could
+   * guarantee. Adds of different peers still both land: the loser of the race is simply rebuilt on top of the winner.
+   *
+   * @throws DuplicatePeerAddressException when another member already holds the address under a different id
    */
   private SetConfigurationRequest.Arguments buildAddArgs(final String peerId, final RaftPeer newPeer) {
-    for (final RaftPeer peer : raftHAServer.getLivePeers())
+    // The COMMITTED configuration, never the declared server list getLivePeers() falls back to while the division cannot
+    // be read: a compare-and-set built from the declared list carries a precondition the leader may never match, so
+    // every attempt would be refused until the budget ran out. Mode.ADD never depended on the caller's view.
+    Collection<RaftPeer> committed = raftHAServer.getCommittedPeersOrNull();
+    // Unreadable for the moment an in-place restart re-initializes the division (issue #5271): waited out briefly, inside
+    // the retry budget's spirit, rather than handed back to the operator for a window that lasts a second or two.
+    for (int wait = 0; committed == null && wait < COMMITTED_PEERS_WAIT_ATTEMPTS; wait++) {
+      try {
+        Thread.sleep(COMMITTED_PEERS_WAIT_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      committed = raftHAServer.getCommittedPeersOrNull();
+    }
+    if (committed == null)
+      throw new ConfigurationException("Failed to add peer " + peerId + ": this node cannot read the live Raft"
+          + " configuration right now (its Raft server is starting or restarting). Retry in a moment.");
+    // Voting peers only, so the new configuration carries no listeners; the cluster has none, and a future one would
+    // have to be carried across here or this add would silently drop it (Mode.ADD never touched them).
+    final List<RaftPeer> currentPeers = new ArrayList<>(committed);
+    for (final RaftPeer peer : currentPeers)
       if (peer.getId().toString().equals(peerId))
         return null; // already a member
 
+    RaftHAServer.ensureNoDuplicateAddress(currentPeers, newPeer);
+
+    final List<RaftPeer> newPeers = new ArrayList<>(currentPeers.size() + 1);
+    newPeers.addAll(currentPeers);
+    newPeers.add(newPeer);
+
     return SetConfigurationRequest.Arguments.newBuilder()
-        .setServersInNewConf(List.of(newPeer))
-        .setMode(SetConfigurationRequest.Mode.ADD)
+        .setServersInCurrentConf(currentPeers)
+        .setServersInNewConf(newPeers)
+        .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
         .build();
   }
 

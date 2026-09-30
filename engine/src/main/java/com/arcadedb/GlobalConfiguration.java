@@ -604,6 +604,10 @@ public enum GlobalConfiguration {
       "Per-transaction soft cap (in bytes) on the record pre-images/final images retained for the disjoint-slot merge (TX_PAGE_SLOT_MERGE). When a transaction's tracked images exceed this, the merge is disabled for the rest of that transaction and its conflicting pages fall back to a normal retry - bounding heap on a very large transaction (e.g. a bulk in-place update) instead of retaining ~2x every touched record until commit",
       Long.class, 16L * 1024 * 1024),
 
+  TX_STALE_READ_CHECK("arcadedb.txStaleReadCheck", SCOPE.DATABASE,
+      "Refuse, with a retryable ConcurrentModificationException, a property write on a record read in the current transaction when a concurrent transaction committed a change to that record in between (issue #8610). Without it, modify() refreshes such a record silently and a value computed from the older read overwrites the concurrent change (a lost update under READ_COMMITTED). A change that touches only the edge lists of a vertex (edge creation) is never refused. Only direct property assignment and removal is checked: an in-place change to a list, map or embedded document got from the record is not. Set to false to restore the previous last-writer-wins behavior",
+      Boolean.class, true),
+
   GRAPH_SUPERNODE_THRESHOLD("arcadedb.graph.supernodeThreshold", SCOPE.DATABASE,
       "Approximate number of edges (per vertex, per direction) after which the vertex's edge list is promoted to the striped super-node layout, spreading further appends over multiple files so concurrent insertions on the same hot vertex do not contend. FORWARD-INCOMPATIBLE ON FIRST USE: promotion writes a new record type (the stripe directory), so once any vertex promotes, the database can no longer be opened by releases older than 26.8.1; promotion is one-way. This ordering guarantee applies only to the OLTP edge-list read walks (edgeIterator/vertexIterator/ridIterator): iteration order on promoted vertices is APPROXIMATELY newest-first instead of exactly newest-first, the stripe chains are interleaved so the newest edge is always within the first 'supernodeStripes' entries and an edge of recency rank r is returned at a position of order r, but only the order WITHIN a stripe is exact - an application needing an exact order must sort or use an index. That rank-fidelity holds for the whole read: the first 'supernodeInterleaveRounds x supernodeStripes' entries are taken one per stripe per turn and past that the rotation widens into geometrically growing batches, which costs the position of an entry a bounded factor rather than the relation to its rank (see GRAPH_SUPERNODE_INTERLEAVE_ROUNDS). It does NOT hold for a query the planner routes through a GraphAnalyticalView (e.g. GAVExpandAll): a view returns neighbours ordered by internal dense node ID, which carries no relationship to recency. 0 disables promotion entirely (databases stay fully readable by older versions)",
       Integer.class, 4096),
@@ -834,6 +838,14 @@ public enum GlobalConfiguration {
       'groovy' enables the legacy Groovy engine with security restrictions (use only if needed for compatibility). \
       'auto' attempts Java first, falls back to Groovy if needed (not recommended for security-critical deployments).""",
       String.class, "java", Set.of("auto", "groovy", "java")),
+
+  GREMLIN_CLIENT_PORT("arcadedb.gremlin.client.port", SCOPE.DATABASE,
+      """
+      Port of the Gremlin Server the remote ArcadeGraph client connects to. 0 (default) uses the port the ArcadeDB server \
+      advertises for its Gremlin plugin, and falls back to 8182 (the TinkerPop default) when the server advertises none. \
+      Set it when the Gremlin port is reached through a mapping the server does not know about (container port publishing, \
+      a load balancer).""",
+      Integer.class, 0),
 
   /**
    * Not in use anymore after removing Gremlin Executor
@@ -1448,6 +1460,13 @@ public enum GlobalConfiguration {
   // SERVER
   SERVER_NAME("arcadedb.server.name", SCOPE.SERVER, "Server name", String.class, Constants.PRODUCT + "_0"),
 
+  INSTANCE_ID("arcadedb.instance.id", SCOPE.DATABASE,
+      "Optional instance id (format 'adb-' followed by a lowercase UUID) to use instead of the one ArcadeDB generates and "
+          + "persists in the file 'instance.id' of the server configuration directory. Set it when that directory is read-only "
+          + "or is copied between nodes. The id identifies this instance (standalone server, HA node or embedded engine) to "
+          + "ArcadeData support. It is NOT a credential and is never used for authentication. Empty means generated. "
+          + "A malformed value is ignored with a warning", String.class, ""),
+
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
@@ -1957,7 +1976,9 @@ public enum GlobalConfiguration {
       """
       Maximum election timeout in milliseconds. Default of 10000ms is a balance between fast failover and \
       resilience to heartbeat blips under heavy ingest. Bump higher for WAN clusters or sustained bulk-load \
-      workloads where leader appender threads compete with replication.""",
+      workloads where leader appender threads compete with replication. A value at or below \
+      arcadedb.ha.electionTimeoutMin is widened to twice the minimum, because with no spread followers split the vote \
+      again and again.""",
       Integer.class, 10_000),
 
   HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
@@ -2514,8 +2535,24 @@ public enum GlobalConfiguration {
   HA_STALE_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.staleFollowerRecoveryDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds the lag described by HA_STALE_FOLLOWER_LAG_THRESHOLD must persist continuously \
-      (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
+      (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag. \
+      Governs only the lag-based recovery: the stuck-at-stale-term reformat has its own window, \
+      HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS.""",
       Long.class, 60_000L),
+
+  HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.divergedFollowerRecoveryDurationMs", SCOPE.SERVER,
+      """
+      How long in milliseconds a follower must stay stuck at a stale term (see HA_DIVERGED_FOLLOWER_RECOVERY) - on \
+      consecutive health-monitor ticks and without its applied index advancing - before it reformats its Raft storage \
+      and rejoins. Any advance of the applied index restarts the window, so a follower that is still applying entries is \
+      never reformatted however long its catch-up takes. The effective value is floored at 2x HA_ELECTION_TIMEOUT_MAX: \
+      a follower that stops hearing its leader gives up on it within one election timeout, which clears the signature, \
+      so a window shorter than that could reformat a node that was only waiting for an election. \
+      UPGRADE NOTE: before 26.10.1 this window was HA_STALE_FOLLOWER_RECOVERY_DURATION_MS (default 60000), shared \
+      with the lag-based recovery. It is now separate and defaults to 20000, cutting the time a cluster runs without \
+      that follower's fault tolerance; a deployment that raised the old setting to delay the reformat must raise this \
+      one instead.""",
+      Long.class, 20_000L),
 
   HA_DIVERGED_FOLLOWER_RECOVERY("arcadedb.ha.divergedFollowerRecovery", SCOPE.SERVER,
       """
@@ -2527,11 +2564,11 @@ public enum GlobalConfiguration {
       (HA_STALE_FOLLOWER_LAG_THRESHOLD) nor the leader-driven stalled-replica resync \
       (HA_STALLED_REPLICA_RESYNC_DURATION_MS) ever fire - both need a large lag - and the leader's appender otherwise \
       loops on INCONSISTENCY forever until an operator restarts a node. The stuck condition must persist for \
-      HA_STALE_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers, and HA_DIVERGED_FOLLOWER_MAX_REFORMATS bounds how \
-      often it retries. \
+      HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers, and HA_DIVERGED_FOLLOWER_MAX_REFORMATS bounds \
+      how often it retries. \
       DESTRUCTIVE: this deletes the local Raft storage automatically (the database files are preserved and re-synced \
       from the leader). The signature is "stuck at a stale term", which a genuine log divergence satisfies but so can a \
-      sustained (> HA_STALE_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
+      sustained (> HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
       leader's current-term entries do not; in that case the reformat is wasteful (no data loss - the leader holds \
       everything) but does not fix the connectivity. \
       No cross-follower coordination: if a systemic condition makes several followers satisfy the signature at once they \
@@ -2544,7 +2581,7 @@ public enum GlobalConfiguration {
       """
       Maximum number of automatic Raft-storage reformats (HA_DIVERGED_FOLLOWER_RECOVERY) allowed within one divergence \
       episode before the follower gives up and logs a SEVERE message for operator intervention, instead of reformatting \
-      and full-snapshot-installing every HA_STALE_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
+      and full-snapshot-installing every HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
       shared Ratis restart-retry budget, so without this cap a node whose divergence keeps reproducing would loop \
       silently. The budget re-arms once the follower has looked healthy for 5x the recovery duration (the episode is \
       considered resolved). Set to 0 for unbounded reformats (no breaker).""",

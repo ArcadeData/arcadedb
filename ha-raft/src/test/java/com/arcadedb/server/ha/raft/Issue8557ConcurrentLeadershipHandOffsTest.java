@@ -320,7 +320,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       }
     };
     final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.getDatabasesBeingReplaced()).thenReturn(List.of("db-A"));
+    when(sm.hasLeaderServiceGap()).thenReturn(true);
     final CountDownLatch started = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
     final AtomicReference<String> ranOn = new AtomicReference<>();
@@ -365,7 +365,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       }
     };
     final ArcadeStateMachine stale = mock(ArcadeStateMachine.class);
-    when(stale.getDatabasesBeingReplaced()).thenReturn(List.of("db-A"));
+    when(stale.hasLeaderServiceGap()).thenReturn(true);
     final ArcadeStateMachine current = mock(ArcadeStateMachine.class);
     setStateMachine(server, current);
     final CountDownLatch ran = new CountDownLatch(1);
@@ -414,7 +414,7 @@ class Issue8557ConcurrentLeadershipHandOffsTest {
       }
     };
     final ArcadeStateMachine sm = mock(ArcadeStateMachine.class);
-    when(sm.getDatabasesBeingReplaced()).thenReturn(List.of());
+    when(sm.hasLeaderServiceGap()).thenReturn(false);
 
     server.queueReplacingDatabaseHandOff(sm);
     Thread.sleep(100);
