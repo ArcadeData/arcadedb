@@ -77,10 +77,6 @@ class Issue7760DuplicatedKeyConcealmentHttpTest {
   private record HandledResponse(int statusCode, String body) {
   }
 
-  private HandledResponse handle(final RuntimeException toThrow) {
-    return handle(toThrow, "development");
-  }
-
   private HandledResponse handle(final RuntimeException toThrow, final String serverMode) {
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_MODE, serverMode);
@@ -114,7 +110,7 @@ class Issue7760DuplicatedKeyConcealmentHttpTest {
     return new HandledResponse(statusCode[0], body.getValue());
   }
 
-  /** Handler whose execute() throws, standing in for a group save refused by the cluster-capability interlock. */
+  /** Handler whose execute() throws, standing in for a write refused with a duplicated key. */
   private static final class ThrowingHandler extends AbstractServerHttpHandler {
     private final RuntimeException toThrow;
 
