@@ -1467,6 +1467,21 @@ public enum GlobalConfiguration {
           + "ArcadeData support. It is NOT a credential and is never used for authentication. Empty means generated. "
           + "A malformed value is ignored with a warning", String.class, ""),
 
+  SUPPORT_URL("arcadedb.support.url", SCOPE.SERVER,
+      "Base URL of the ArcadeData customer portal used by the Support tab of Studio. Must be HTTPS (plain HTTP is accepted only "
+          + "for localhost/127.0.0.1, for tests). Overrides the value registered in the file 'support.json' of the server "
+          + "configuration directory", String.class, "https://portal.arcadedb.com"),
+
+  SUPPORT_CLIENT_ID("arcadedb.support.clientId", SCOPE.SERVER,
+      "Client ID (workspace id) of the ArcadeData customer portal used by the Support tab of Studio. Together with "
+          + "arcadedb.support.clientKey it registers the server without using Studio (e.g. containers or Kubernetes secrets) "
+          + "and overrides the file 'support.json' of the server configuration directory. Empty means not set", String.class, ""),
+
+  SUPPORT_CLIENT_KEY("arcadedb.support.clientKey", SCOPE.SERVER,
+      "Client key (a 'wsk_...' workspace key) of the ArcadeData customer portal used by the Support tab of Studio. It is a "
+          + "credential: it is masked when settings are listed or dumped, never returned by any API and never logged. "
+          + "Empty means not set", String.class, ""),
+
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
@@ -4035,7 +4050,7 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
-    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
+    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 
   /**
