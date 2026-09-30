@@ -105,8 +105,11 @@ class Issue8767AstarOptionsAndHeuristicsTest {
       });
 
       final String common = "direction:'OUT', heuristicFormula:'MANHATTAN', tieBreaker:false, ";
-      assertThat(path(db, "astar", v, "{" + common + "vertexAxisNames:['x','y']}"))
-          .isEqualTo(path(db, "astar", v, "{" + common + "vertexAxisNames:'x,y'}"));
+      // With the heuristic applied, MANHATTAN over coordinates up to 100 against weights of 1 is inadmissible and A*
+      // takes the direct A->B edge; with the axes silently dropped (h = 0) it would walk A, C, B.
+      final List<RID> direct = List.of(v[0], v[1]);
+      assertThat(path(db, "astar", v, "{" + common + "vertexAxisNames:['x','y']}")).isEqualTo(direct);
+      assertThat(path(db, "astar", v, "{" + common + "vertexAxisNames:'x,y'}")).isEqualTo(direct);
     });
   }
 
