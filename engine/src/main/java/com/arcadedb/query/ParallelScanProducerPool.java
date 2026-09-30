@@ -76,6 +76,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class ParallelScanProducerPool extends DedicatedThreadPool {
+  private static final AtomicInteger DEDICATED_READERS = new AtomicInteger();
 
   private static final class Holder {
     static final ParallelScanProducerPool INSTANCE = new ParallelScanProducerPool();
@@ -114,8 +115,6 @@ public final class ParallelScanProducerPool extends DedicatedThreadPool {
   public static int getActiveDedicatedReaders() {
     return DEDICATED_READERS.get();
   }
-
-  private static final AtomicInteger DEDICATED_READERS = new AtomicInteger();
 
   private ParallelScanProducerPool() {
     // 0 = auto-size to available cores (with a floor of DEFAULT_THREADS_FLOOR). An explicit positive value
