@@ -41,11 +41,11 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class ChainCycleGuard {
-  private final boolean    exact;
-  private Set<RID>          visited;
-  private RID               checkpoint;
-  private int hops;
-  private int limit = 1;
+  private final boolean exact;
+  private Set<RID>      visited;
+  private RID           checkpoint;
+  private int           hops;
+  private int           limit = 1;
 
   ChainCycleGuard(final RID head) {
     this(head, false);
