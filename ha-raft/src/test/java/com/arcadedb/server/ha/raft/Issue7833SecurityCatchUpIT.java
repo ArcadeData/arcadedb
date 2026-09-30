@@ -114,16 +114,17 @@ class Issue7833SecurityCatchUpIT extends BaseRaftHATest {
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
 
     final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
-    final long indexBefore = leader.getLastAppliedIndex();
+    final long indexBefore = lastRaftLogIndex(leader);
 
     assertThat(ClusterSecuritySeedQuery.seedForCatchUp(getServer(followerIndex), getRaftPlugin(followerIndex),
         "an Issue7833 regression test")).isEmpty();
 
-    // A cluster under no other load applies nothing else here, so the index standing still is the evidence that
-    // the leader answered from the fingerprint comparison rather than by submitting the three documents.
-    assertThat(leader.getLastAppliedIndex())
+    // No security entry past the position the leader had reached is the evidence that it answered from the
+    // fingerprint comparison rather than by submitting the three documents. Read by entry type, not by the raw
+    // index: the cluster can commit entries of its own in the same window (issue #8455).
+    assertThat(securityEntriesInLogAfter(leader, indexBefore))
         .as("a node already in step must not make the leader replicate anything")
-        .isEqualTo(indexBefore);
+        .isEmpty();
   }
 
   /**
