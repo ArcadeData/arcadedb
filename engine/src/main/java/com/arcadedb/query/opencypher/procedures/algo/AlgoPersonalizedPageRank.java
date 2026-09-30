@@ -149,8 +149,11 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           if (!(pair.get(1) instanceof Number weight))
             throw new IllegalArgumentException(getName() + "(): the weight of a [node, weight] pair must be a number");
           addSource(sources, extractVertex(pair.get(0), "sourceNodes[*]"), weight.doubleValue());
-        } else
-          addSource(sources, extractVertex(item, "sourceNodes[*] (use [[node, weight], ...] for weighted sources)"), 1.0);
+        } else if (item == null || item instanceof Vertex)
+          addSource(sources, extractVertex(item, "sourceNodes[*]"), 1.0);
+        else
+          throw new IllegalArgumentException(getName() + "(): sourceNodes[*] must be a node or a [node, weight] pair, got "
+              + item.getClass().getSimpleName() + " (use [[node, weight], ...] for weighted sources)");
       }
     } else
       addSource(sources, extractVertex(arg, "sourceNode"), 1.0);
