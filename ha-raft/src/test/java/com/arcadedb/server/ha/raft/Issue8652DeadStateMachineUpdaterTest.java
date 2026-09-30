@@ -118,4 +118,16 @@ class Issue8652DeadStateMachineUpdaterTest {
     assertThat(target.persistentLagRecover.get()).as("a resync cannot help a node that applies nothing").isZero();
     assertThat(target.recoveryCalls.get()).isEqualTo(1);
   }
+
+  @Test
+  void aDeadUpdaterThatKeepsComingBackCountsTowardTheCrashLoopEscalation() {
+    final HealthMonitorTest.FakeHealthTarget target = new HealthMonitorTest.FakeHealthTarget();
+    target.deadUpdater = "gone";
+    final HealthMonitor monitor = new HealthMonitor(target, 0, 1_000L, 60_000L, false, 0, 2, 20_000L);
+
+    for (int i = 0; i < 40; i++)
+      monitor.tick();
+
+    assertThat(target.recoveryCalls.get()).as("the restarts stop once the crash-loop budget is spent").isLessThanOrEqualTo(3);
+  }
 }

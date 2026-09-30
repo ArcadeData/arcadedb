@@ -97,11 +97,14 @@ class Issue8652DeadUpdaterRecoveryIT extends BaseRaftHATest {
     assertThat(followerRaft.getRaftLogFailure()).as("healthy log writer").isNull();
     assertThat(followerRaft.getRaftLifeCycleState()).isEqualTo(LifeCycle.State.RUNNING);
 
+    final ArcadeStateMachine before = followerRaft.getStateMachine();
     // Closes the log only, leaving the division's own lifecycle untouched.
     ((RaftLogBase) followerRaft.getRaftDivision().getRaftLog()).close();
 
     // The blind spot: not a writer failure Ratis reported, so the #7037 mark stays empty; the closed log is what shows.
-    assertThat(followerRaft.getRaftLogFailure()).contains("Raft log is closed");
+    // Believed on the second sighting, like a CLOSING division; the health monitor may already have restarted the node
+    Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+        .until(() -> followerRaft.getRaftLogFailure() != null || followerRaft.getStateMachine() != before);
 
     awaitRecoveredAndReplicating(leaderIndex, followerIndex, "LogClosed");
   }

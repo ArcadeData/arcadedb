@@ -375,7 +375,8 @@ class BootstrapElection {
             answeredBy.isEmpty() ? "a node that names no peer" : "peer '" + answeredBy + "'",
             GlobalConfiguration.HA_SERVER_LIST.getKey());
     } catch (final Exception e) {
-      // best effort: an unreadable answer changes nothing about a release that was already sent
+      LogManager.instance().log(BootstrapElection.class, Level.FINE, "Unreadable answer to the pass conclusion sent to %s: %s",
+          peerId, e.getMessage());
     }
   }
 
