@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Regression tests for #7876: introspection of a database type with no {@code .gql} declaration described every
  * property as a flat {@code {name, kind: "SCALAR"}}, so a LIST / ARRAY_OF_* property read as a single String and a
- * MANDATORY / NOTNULL property read as nullable. It also named a {@code Long} scalar that introspection itself could not
+ * MANDATORY + NOTNULL property read as nullable. It also named a {@code Long} scalar that introspection itself could not
  * resolve. The database-type arm must emit the same wrapper chain (#7116) the schema-declared arm does.
  */
 class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
@@ -47,6 +47,7 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
     doc.createProperty("ranks", Type.LIST, "INTEGER");
     doc.createProperty("bigRanks", Type.LIST, "LONG");
     doc.createProperty("untyped", Type.LIST);
+    doc.createProperty("lowerCaseOfType", Type.LIST, "integer");
     doc.createProperty("addresses", Type.LIST, "Address");
     doc.createProperty("scores", Type.ARRAY_OF_INTEGERS);
     doc.createProperty("smallScores", Type.ARRAY_OF_SHORTS);
@@ -56,7 +57,7 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
     doc.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
     doc.createProperty("mandatoryOnly", Type.STRING).setMandatory(true);
     doc.createProperty("notNullOnly", Type.INTEGER).setNotNull(true);
-    doc.createProperty("requiredTags", Type.LIST, "STRING").setMandatory(true);
+    doc.createProperty("requiredTags", Type.LIST, "STRING").setMandatory(true).setNotNull(true);
     doc.createProperty("counter", Type.LONG);
     doc.createProperty("plain", Type.STRING);
   }
@@ -74,6 +75,8 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
         assertListOf(fieldType(record, "bigRanks"), "SCALAR", "Long");
         // A LIST with no declared element type keeps the historic String element, but is still a LIST
         assertListOf(fieldType(record, "untyped"), "SCALAR", "String");
+        // ofType is matched case-insensitively
+        assertListOf(fieldType(record, "lowerCaseOfType"), "SCALAR", "Int");
         // A LIST whose element type is a database type names that type, which __type can resolve
         assertListOf(fieldType(record, "addresses"), "OBJECT", "Address");
       }
@@ -99,15 +102,17 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
   }
 
   @Test
-  void mandatoryOrNotNullPropertyReportsNonNullWrapper() {
+  void mandatoryAndNotNullPropertyReportsNonNullWrapper() {
     executeTest(database -> {
       defineDatabaseOnlyType(database);
       try (final ResultSet resultSet = database.query("graphql", TYPE_QUERY)) {
         final Result record = resultSet.next();
 
         assertNonNullOf(fieldType(record, "name"), "SCALAR", "String");
-        assertNonNullOf(fieldType(record, "mandatoryOnly"), "SCALAR", "String");
-        assertNonNullOf(fieldType(record, "notNullOnly"), "SCALAR", "Int");
+        // Either flag alone still lets the field resolve to null (explicit null, or an absent property), so claiming
+        // NON_NULL would make a generated client reject a record ArcadeDB accepts
+        assertNamedScalar(fieldType(record, "mandatoryOnly"), "String");
+        assertNamedScalar(fieldType(record, "notNullOnly"), "Int");
       }
       return null;
     });
@@ -190,6 +195,8 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
 
         assertListOf(fieldType(doc, "tags"), "SCALAR", "String");
         assertNonNullOf(fieldType(doc, "name"), "SCALAR", "String");
+        assertListOf(fieldType(doc, "ids"), "SCALAR", "Long");
+        assertListOf(fieldType(doc, "addresses"), "OBJECT", "Address");
       }
       return null;
     });
@@ -236,6 +243,13 @@ class Issue7876DatabaseTypeIntrospectionTest extends AbstractGraphQLTest {
       }
       return null;
     });
+  }
+
+  private static void assertNamedScalar(final Result type, final String name) {
+    assertThat(type).isNotNull();
+    assertThat(type.<String>getProperty("kind")).isEqualTo("SCALAR");
+    assertThat(type.<String>getProperty("name")).isEqualTo(name);
+    assertThat(type.<Result>getProperty("ofType")).isNull();
   }
 
   private static void assertListOf(final Result type, final String elementKind, final String elementName) {

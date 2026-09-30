@@ -657,11 +657,12 @@ public class GraphQLSchema {
   /**
    * Describes a database property with the same wrapper chain {@link #buildTypeInfo} produces for a schema-declared
    * field (#7876, extending #7116 to types with no {@code .gql} declaration): a LIST or ARRAY_OF_* property is a
-   * {@code LIST} wrapper around its element type, and a MANDATORY or NOTNULL property is wrapped in {@code NON_NULL}.
+   * {@code LIST} wrapper around its element type, and a property both MANDATORY and NOTNULL is wrapped in
+   * {@code NON_NULL}.
    * <p>
-   * The NON_NULL mapping is a deliberate approximation: MANDATORY alone still allows an explicit {@code null} and NOTNULL
-   * alone allows the property to be absent, but either one is the strongest nullability signal the schema carries, and
-   * GraphQL has only the one non-null wrapper to express it.
+   * NON_NULL is a promise that the field never resolves to {@code null}, which code generators turn into non-nullable
+   * client types. MANDATORY alone still allows an explicit {@code null}, and NOTNULL alone allows the property to be
+   * absent (which the resolver returns as {@code null}), so only the two together keep that promise.
    */
   private ResultInternal buildDatabaseFieldTypeInfo(final Property prop) {
     final Type type = prop.getType();
@@ -673,7 +674,7 @@ public class GraphQLSchema {
       info = arrayElement != null ? buildListInfo(buildNamedInfo(arrayElement, "SCALAR"))
           : buildNamedInfo(mapDatabaseTypeToGraphQL(type), "SCALAR");
     }
-    return prop.isMandatory() || prop.isNotNull() ? wrapNonNull(info) : info;
+    return prop.isMandatory() && prop.isNotNull() ? wrapNonNull(info) : info;
   }
 
   /**
