@@ -51,7 +51,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesEngine implements AutoCloseable {
-  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER (ISSUE #7476)
+  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER: UP TO TWICE, THE ARRAY COSTS ABOUT WHAT THE CEILING ALREADY ALLOWS
   private static final long FLAT_WINDOW_PER_CEILING = 2L;
 
   private final DatabaseInternal       database;

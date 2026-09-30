@@ -242,7 +242,9 @@ public final class IncomingEdgeLookup {
    * transaction, is answered by a scan of its own for this vertex alone: slower, but on no heap.
    * <p>
    * The buckets are read whatever the caller may read, as the vertex's own edge lists are walked to delete it: the
-   * edges go as a consequence of the vertex and are never returned. An edge another transaction creates into the vertex after this transaction's scan
+   * edges go as a consequence of the vertex and are never returned. A caller that uses the answer as an existence test
+   * (the Cypher {@code DELETE} of a vertex still connected) reveals that such an edge exists to a user who may delete the
+   * vertex but not read its edge bucket; that is the vertex's own edge lists' behaviour too. An edge another transaction creates into the vertex after this transaction's scan
    * is not seen either, as the target holds no trace of it to conflict on.
    * <p>
    * As in the queries, a lightweight edge is looked for on a type that DECLARES itself lightweight: the deprecated
