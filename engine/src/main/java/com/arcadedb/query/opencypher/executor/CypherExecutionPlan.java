@@ -1398,6 +1398,8 @@ public class CypherExecutionPlan {
         case SET: {
           final SetClause setClause = entry.getTypedClause();
           if (!setClause.isEmpty() && !absorbsSet(currentStep, setClause)) {
+            if (currentStep != null && eagerness.needsBarrier(setClause))
+              currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
@@ -1419,6 +1421,8 @@ public class CypherExecutionPlan {
         case REMOVE: {
           final RemoveClause removeClause = entry.getTypedClause();
           if (!removeClause.isEmpty()) {
+            if (currentStep != null && eagerness.needsBarrier(removeClause))
+              currentStep = withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
@@ -1753,6 +1757,9 @@ public class CypherExecutionPlan {
       case MATCH:
         final MatchClause matchClause = entry.getTypedClause();
         currentSegmentMatchClauses.add(matchClause);
+        // A property an earlier clause writes must be fully written before this one reads it (issue #8733)
+        if (currentStep != null && eagerness.needsBarrier(matchClause))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         eagerness.observeRead(matchClause);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
@@ -1821,6 +1828,7 @@ public class CypherExecutionPlan {
           mergeStep.setPrevious(currentStep);
         }
         currentStep = mergeStep;
+        eagerness.observeWrite(mergeClause);
         break;
 
       case CREATE:
@@ -1839,20 +1847,26 @@ public class CypherExecutionPlan {
       case SET:
         final SetClause setClause = entry.getTypedClause();
         if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
+          if (eagerness.needsBarrier(setClause))
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final SetStep setStep =
               new SetStep(setClause, context, functionFactory);
           setStep.setPrevious(currentStep);
           currentStep = setStep;
+          eagerness.observeWrite(setClause);
         }
         break;
 
       case REMOVE:
         final RemoveClause removeClause = entry.getTypedClause();
         if (!removeClause.isEmpty() && currentStep != null) {
+          if (eagerness.needsBarrier(removeClause))
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
               new RemoveStep(removeClause, context, functionFactory);
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
+          eagerness.observeWrite(removeClause);
         }
         break;
 
@@ -1878,6 +1892,8 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
             && SimpleCypherStatement.isWriteProcedureCall(callClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
+        if (SimpleCypherStatement.isWriteProcedureCall(callClause))
+          eagerness.observeWriteProcedure();
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -3922,6 +3938,8 @@ public class CypherExecutionPlan {
     // Step 5: SET clause - update properties
     if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null
         && !absorbsSet(currentStep, statement.getSetClause())) {
+      if (eagerness.needsBarrier(statement.getSetClause()))
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
@@ -3946,6 +3964,8 @@ public class CypherExecutionPlan {
     // Step 6a: REMOVE clauses - remove properties
     for (final RemoveClause removeClause : statement.getRemoveClauses()) {
       if (!removeClause.isEmpty() && currentStep != null) {
+        if (eagerness.needsBarrier(removeClause))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
         removeStep.setPrevious(currentStep);
         currentStep = removeStep;
