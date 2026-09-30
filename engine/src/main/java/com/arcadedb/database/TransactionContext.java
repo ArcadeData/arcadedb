@@ -128,6 +128,7 @@ public class TransactionContext implements Transaction {
    */
   public static final byte SLOT_KIND_CHUNK_COLLAPSED_TO_PLACEHOLDER_CONTENT = 6;
 
+  // ANY NEW FIELD A WRITE POPULATES MUST ALSO BE CHECKED BY isReadOnlyView(), OR A DIRTY TRANSACTION WOULD SCAN IN PARALLEL (#8775)
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),

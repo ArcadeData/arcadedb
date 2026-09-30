@@ -159,13 +159,34 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
         while (rs.hasNext()) {
           final Result row = rs.next();
           rows++;
-          // tombstone every record the scan returns that the workers have not yet read: none may be skipped
+          // the update moves every row out of the filter: a unit the caller scanned through the transaction would miss them
           if (rows == 1)
             database.command("sql", "UPDATE E SET grp = 7 WHERE grp = 5");
           assertThat(row.<Integer>getProperty("grp")).isEqualTo(5);
         }
       }
       assertThat(rows).isEqualTo(expected);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void deleteDuringIterationLeavesTheRunningScanOnCommittedPagesWithoutFailing() {
+    // Rows the transaction deleted after the first pull can still be returned by the scan, which reads committed
+    // pages. It is the same insensitive-cursor behaviour as for inserts, and it must not fail the scan or the commit
+    database.begin();
+    try {
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          rs.next();
+          if (rows++ == 0)
+            database.command("sql", "DELETE FROM E WHERE grp = 5");
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+      assertThat(count()).isZero();
     } finally {
       database.rollback();
     }

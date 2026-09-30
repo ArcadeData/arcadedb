@@ -168,7 +168,9 @@ final class ParallelTypeScan {
    * <p>
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
-   * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later.
+   * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
+   * transaction deleted after that pull can still be returned. Once the transaction has written, the caller no longer
+   * scans units itself, it waits for the workers (polling, so it never hangs) rather than mix two views in one scan.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
     final DatabaseInternal db = context.getDatabase();
