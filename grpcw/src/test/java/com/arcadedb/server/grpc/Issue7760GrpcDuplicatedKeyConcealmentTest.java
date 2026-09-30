@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.server.ArcadeDBServer;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
@@ -30,8 +31,8 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7760 on the gRPC transport: production mode leaves out the {@code arcadedb-dup-keys} trailer (the key
- * values are stored data) and keeps the class and index-name trailers, the same decision the HTTP
+ * Issue #7760 on the gRPC transport: production mode replaces the {@code arcadedb-dup-keys} trailer's value with the same
+ * placeholder HTTP uses (the key values are stored data) and keeps the class and index-name trailers, the same decision the HTTP
  * {@code exceptionArgs} takes ({@code Issue7760DuplicatedKeyConcealmentHttpTest}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -44,11 +45,12 @@ class Issue7760GrpcDuplicatedKeyConcealmentTest {
   }
 
   @Test
-  void productionModeOmitsTheKeysTrailerButKeepsTheIndex() {
+  void productionModeReplacesTheKeysTrailerAndKeepsTheIndex() {
     final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(duplicate(), "ExecuteCommand", null, true);
 
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
-    assertThat(sre.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY)).isNull();
+    assertThat(new String(Base64.getDecoder().decode(sre.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY)), StandardCharsets.UTF_8))
+        .isEqualTo(ArcadeDBServer.CONCEALED_DUPLICATED_KEYS);
     assertThat(sre.getStatus().getDescription()).doesNotContain(SECRET);
     assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DuplicatedKeyException.class.getName());
     assertThat(new String(Base64.getDecoder().decode(sre.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY)), StandardCharsets.UTF_8))

@@ -150,8 +150,8 @@ public final class GrpcErrorMapper {
    * <p>
    * What survives concealment is what a client can act on without reading prose: the status CODE, the
    * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key index trailer - which goes to a DRIVER rebuilding a typed
-   * exception rather than into a human-readable description; the KEYS trailer is omitted because key values are
-   * stored data (issue #7760) - and the leader-redirect
+   * exception rather than into a human-readable description; the KEYS trailer carries a placeholder because key
+   * values are stored data (issue #7760) - and the leader-redirect
    * address and sentence, which this server put there rather than an exception.
    *
    * @param conceal true when the server runs in production mode - see {@code ArcadeDBServer.isProductionMode()}
@@ -305,14 +305,14 @@ public final class GrpcErrorMapper {
 
   /**
    * The index name stays (schema metadata a driver needs to rebuild the typed exception); the KEY VALUES are stored
-   * data, so in production the trailer is left out and the client falls back to the concealed description, the same
-   * decision the HTTP {@code exceptionArgs} takes (issue #7760).
+   * data, so in production the trailer carries {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} instead, the same
+   * placeholder the HTTP {@code exceptionArgs} carries, so a client reads one value on either transport (issue #7760).
    */
   private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup, final boolean conceal) {
     if (dup.getIndexName() != null)
       trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
-    if (!conceal && dup.getKeys() != null)
-      trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
+    if (dup.getKeys() != null)
+      trailers.put(DUP_KEYS_KEY, encodeTrailer(conceal ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()));
   }
 
   /**

@@ -58,6 +58,9 @@ class Issue7754MixedBooleanTemporalQueryTest extends TestHelper {
       assertThat(rs.stream().map(r -> r.getProperty("v")).toList()).containsExactly(false);
     }
 
+    // Native orderBy does not fail either: the pair has no ordering, so it falls back to a stable string order
+    assertThat(database.select().fromType("Mixed").orderBy("v", true).documents().toList()).hasSize(3);
+
     // Native Select API, same column
     assertThat(database.select().fromType("Mixed").where().property("v").gt().value(bound).documents().toList()).hasSize(1);
     assertThat(database.select().fromType("Mixed").where().property("v").lt().value(true).documents().toList()).hasSize(1);
