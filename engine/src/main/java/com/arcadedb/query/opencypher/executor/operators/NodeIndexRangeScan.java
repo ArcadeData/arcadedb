@@ -491,7 +491,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
                   resolvedUpperBound != null ? new Object[] { resolvedUpperBound } : null, resolvedUpperInclusive,
                   resolvedLowerBound != null ? new Object[] { resolvedLowerBound } : null, resolvedLowerInclusive);
         if (resolvedLowerBound == null && resolvedUpperBound == null)
-          // Past the null keys that lead an index holding them, when they are not read here: the first row is then the first value
+          // Past the null keys that lead an index holding them (a null key sorts lowest), when they are not read here: the
+          // first row is the first value. The skip in fetchMore is only a safety net for a comparator that disagrees
           return nullKeys == NullKeys.SKIPPED_IN_INDEX || nullKeys == NullKeys.PLACED_FROM_INDEX ?
               rangeIndex.iterator(true, new Object[] { null }, false) : rangeIndex.iterator(true);
         if (resolvedUpperBound == null)

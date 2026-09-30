@@ -223,6 +223,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           parallelRows.close();
           parallelRows = null;
         }
+        // Nothing is read after a close: the scan must not plan itself again
+        finished = true;
       }
     };
   }
