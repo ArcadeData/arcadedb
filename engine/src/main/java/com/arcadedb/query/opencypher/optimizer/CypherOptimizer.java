@@ -366,7 +366,8 @@ public class CypherOptimizer {
     }
 
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
-      // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700)
+      // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700). An index the
+      // schema no longer offers cannot give an order either
       final TypeIndex scanIndex = type.getPolymorphicIndexByProperties(rangeScan.getIndexProperties());
       if (scanIndex == null || (scanIndex.getMetadata() != null && scanIndex.getMetadata().hasAnyCaseInsensitive()))
         return null;

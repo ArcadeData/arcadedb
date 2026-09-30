@@ -90,6 +90,11 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
     if (!(index instanceof RangeIndex))
       throw new CommandExecutionException(
           "The index on '" + typeName + "." + propertyName + "' is no longer available: re-plan the query");
+    // The planner refuses a case-insensitive index, whose key is the folded value (issue #8698): so must a plan that
+    // predates one
+    if (index.getMetadata() != null && index.getMetadata().isCaseInsensitive(0))
+      throw new CommandExecutionException(
+          "The index on '" + typeName + "." + propertyName + "' is case-insensitive now: re-plan the query");
 
     final IndexCursor cursor = index.iterator(!max);
     try {

@@ -19,13 +19,20 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
+import com.arcadedb.query.opencypher.optimizer.RangePredicate;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8766 (#8698, #8699, #8700): a {@code COLLATE ci} index stores its string keys lower-cased, so its order and its
@@ -138,5 +145,30 @@ class Issue8766CaseInsensitiveIndexOrderingTest extends TestHelper {
     database.command("sql", "DROP INDEX `Late[s]`");
     database.command("sql", "CREATE INDEX ON Late (s COLLATE ci) NOTUNIQUE");
     assertThat(column("opencypher", query)).containsExactlyInAnyOrderElementsOf(before);
+  }
+
+  @Test
+  void parameterizedRangeFollowsTheValues() {
+    final List<Object> expected = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (c:Nx) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a"))) {
+      while (rs.hasNext())
+        expected.add(rs.next().getProperty("s"));
+    }
+    final List<Object> actual = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (c:Ci) WHERE c.s < $p RETURN c.s AS s", Map.of("p", "a"))) {
+      while (rs.hasNext())
+        actual.add(rs.next().getProperty("s"));
+    }
+    assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+  }
+
+  @Test
+  void aRetainedRangeScanRefusesAFoldedIndex() {
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final NodeIndexRangeScan scan = new NodeIndexRangeScan("c", "Ci", "s",
+        List.of(new RangePredicate("s", ComparisonExpression.Operator.LESS_THAN, "a", false)), "Ci[s]", 1.0, 1L);
+    assertThatThrownBy(() -> scan.execute(context, -1).hasNext()).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("re-plan");
   }
 }
