@@ -98,9 +98,9 @@ final class ParallelTypeScan {
   // holds at least 1024 of them. Loading a record by its address costs more than reading it in a page scan, so a unit
   // of entries is smaller than the records of a unit of pages.
   private static final int ENTRIES_PER_UNIT_PAGE = 32;
-  // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
   // THE MOST PAGES OF A UNIT THE CALLER READS WHOLE INSIDE A TRANSACTION (#8775): IT HOLDS ALL ITS ROWS ON THE HEAP AT ONCE
   private static final int MAX_CALLER_UNIT_PAGES = 64;
+  // A LIST OF ITS OWN, COMPARED BY IDENTITY: List.of() IS A SHARED SINGLETON
   private static final List<Result> END_OF_UNIT = new ArrayList<>(0);
 
   private final DatabaseInternal     database;
@@ -502,7 +502,8 @@ final class ParallelTypeScan {
           // NO WORKER HAS TAKEN THE UNIT THE CONSUMER NEEDS: NONE OF THEM IS RUNNING, THEY ARE STILL QUEUED BEHIND THE
           // PRODUCERS OF OTHER QUERIES, WHICH A RESULT SET LEFT OPEN CAN PARK FOR THE WHOLE ABANDONMENT TIMEOUT. THE
           // CONSUMER TAKES IT AND SCANS IT ITSELF RATHER THAN WAIT FOR ROWS NOBODY IS PRODUCING (#8594)
-          if (nextUnit.get() == consumerUnit && callerMayTake(units.get(consumerUnit)) && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+          if (nextUnit.get() == consumerUnit
+              && callerMayTake(units.get(consumerUnit)) && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             channels[consumerUnit] = null;
             if (consumerContext == null)
               consumerContext = workerContext(context);

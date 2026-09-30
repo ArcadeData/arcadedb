@@ -91,6 +91,31 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void transactionThatCreatedEdgesStaysSequential() {
+    database.getSchema().createEdgeType("Link");
+    database.getSchema().buildEdgeType().withName("OneWay").withBidirectional(false).create();
+    database.begin();
+    try {
+      final var c = database.iterateType("E", false).next().asVertex();
+      final var d = database.iterateType("E", false).next().asVertex();
+      assertThat(sqlPlan()).contains("(parallel)");
+      c.newEdge("Link", d).save();
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+    } finally {
+      database.rollback();
+    }
+    database.begin();
+    try {
+      final var c = database.iterateType("E", false).next().asVertex();
+      final var d = database.iterateType("E", false).next().asVertex();
+      c.newEdge("OneWay", d).save();
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void transactionThatUpdatedStaysSequentialAndSeesItsUpdate() {
     database.begin();
     try {
