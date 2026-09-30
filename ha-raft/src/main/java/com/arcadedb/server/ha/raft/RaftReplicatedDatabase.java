@@ -857,8 +857,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * whose unclaimed entry a live state machine applies from its WAL bytes.
    */
   private void awaitLocalApplyAndRelease(final ReplicationPayload payload, final long committedLogIndex) {
-    // #5503: this replica never runs phase 2 - the state machine writes the pages asynchronously - so
-    // the local page cache still holds the pre-commit version of every page this transaction touched.
+    // #5503: this thread never runs phase 2 - the state machine writes the pages asynchronously, on a replica and on a
+    // leader whose entry it applies from the WAL bytes - so the local page cache still holds the pre-commit version of
+    // every page this transaction touched.
     // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
     // would read that stale version, pass its own version check and ship a delta stamped with the same
     // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
@@ -893,9 +894,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * The entry's index, or when the exception lost it this node's current Raft commit index, the closest bound it has: the
-   * wait then covers at least every entry this node already knows committed, rather than releasing the commit locks on
-   * a page cache the apply may still be about to advance (#5503).
+   * The entry's index, or when the exception lost it this node's current Raft commit index. That fallback is a weak bound:
+   * on a replica the commit index may still trail the entry, so the wait may not cover it. It covers at least every entry
+   * this node already knows committed, which beats releasing the commit locks at once (#5503). Every leader-side message
+   * carries the index, so this is reached only for a garbled or foreign one.
    */
   private long committedLogIndexOrCommitIndex(final long committedLogIndex) {
     if (committedLogIndex > 0)

@@ -37,6 +37,7 @@ import java.util.concurrent.Callable;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.doReturn;
@@ -308,6 +309,7 @@ class Issue6965LocalCommitHandshakeTest {
     assertThatThrownBy(() -> database.replicateAndCommitLocally(payload, false, null))
         .isInstanceOf(MajorityCommittedAllFailedException.class);
 
+    verify(raftServer, never()).waitForAppliedIndex(anyString(), anyLong());
     verify(tx, never()).commit2ndPhase(any());
     verify(tx).reset();
   }
@@ -339,8 +341,7 @@ class Issue6965LocalCommitHandshakeTest {
         new RuntimeException()).getLogIndex()).isEqualTo(5L);
     assertThat(new MajorityCommittedAllFailedException("ALL quorum not reached").getLogIndex()).isEqualTo(-1L);
     // A garbled remote message must not turn the "committed, do not retry" signal into a NumberFormatException.
-    assertThat(new MajorityCommittedAllFailedException("at logIndex=99999999999999999999999").getLogIndex()).isEqualTo(
-        999999999999999999L);
+    assertThat(new MajorityCommittedAllFailedException("at logIndex=99999999999999999999999").getLogIndex()).isEqualTo(-1L);
   }
 
   /** Issue #8781: a closed state machine applies nothing more, so the committing thread publishes. */

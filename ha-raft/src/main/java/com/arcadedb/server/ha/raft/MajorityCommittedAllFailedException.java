@@ -43,7 +43,7 @@ import java.util.regex.Pattern;
  * remotely failure the HTTP layer answers it 409 "do not retry" instead.
  */
 public class MajorityCommittedAllFailedException extends TransactionCommittedRemotelyException {
-  private static final Pattern LOG_INDEX = Pattern.compile("logIndex=(\\d{1,18})");
+  private static final Pattern LOG_INDEX = Pattern.compile("logIndex=(\\d{1,18})(?!\\d)");
 
   private final long logIndex;
 
@@ -70,8 +70,9 @@ public class MajorityCommittedAllFailedException extends TransactionCommittedRem
   private static long parseLogIndex(final String message) {
     if (message == null)
       return -1L;
-    // The message may come from a remote reply: at most 18 digits always parse, so a garbled one cannot turn this
-    // "committed, do not retry" signal into a NumberFormatException.
+    // The message may come from a remote reply: a longer, garbled number is rejected rather than truncated to a wrong
+    // index, and at most 18 digits always parse, so it cannot turn this "committed, do not retry" signal into a
+    // NumberFormatException.
     final Matcher matcher = LOG_INDEX.matcher(message);
     return matcher.find() ? Long.parseLong(matcher.group(1)) : -1L;
   }
