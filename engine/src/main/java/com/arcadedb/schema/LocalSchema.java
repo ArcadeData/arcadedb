@@ -4148,9 +4148,6 @@ public class LocalSchema implements Schema {
     }
 
     synchronized (files) {
-      while (files.size() < fileId + 1)
-        files.add(null);
-
       if (files.get(fileId) != null)
         throw new SchemaException(
             "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");

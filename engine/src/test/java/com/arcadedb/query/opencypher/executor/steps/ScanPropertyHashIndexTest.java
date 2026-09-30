@@ -80,4 +80,15 @@ class ScanPropertyHashIndexTest extends TestHelper {
     assertThat(index.candidates(3L)).isNull();
     assertThat(count(index.candidates("a"))).isEqualTo(1);
   }
+
+  @Test
+  void aKeyWithFewDistinctValuesIsNotSelective() {
+    database.getSchema().createVertexType("T");
+    database.transaction(() -> {
+      for (int i = 0; i < ScanPropertyHashIndex.MIN_RECORDS_TO_JUDGE + 10; i++)
+        database.newVertex("T").set("kind", "K" + (i % 3)).set("id", "i" + i).save();
+    });
+    assertThat(build("kind").isSelective()).isFalse();
+    assertThat(build("id").isSelective()).isTrue();
+  }
 }

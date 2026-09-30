@@ -157,4 +157,31 @@ class OpenCypherUnindexedChainedMatchIssue8695Test extends TestHelper {
     assertThat(c.get("n3")).isEqualTo(1);
     assertThat(c.get(null)).isEqualTo(0);
   }
+
+  /** The literal is listed first and is the low-cardinality property: the row-dependent one must be the hash key. */
+  @Test
+  void theRowDependentPropertyIsPreferredAsTheKey() {
+    database.getSchema().createVertexType("Asset");
+    database.getSchema().createVertexType("Seed");
+    final int n = 15_000;
+    database.transaction(() -> {
+      for (int i = 0; i < n; i++) {
+        database.newVertex("Asset").set("kind", "X", "name", "n" + i).save();
+        database.newVertex("Seed").set("ref", "n" + i).save();
+      }
+    });
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    int rows = 0;
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (s:Seed) OPTIONAL MATCH (a:Asset {kind: 'X', name: s.ref}) RETURN s.ref AS r, a.name AS a")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat((String) row.getProperty("a")).isEqualTo(row.getProperty("r"));
+        rows++;
+      }
+    }
+    assertThat(rows).isEqualTo(n);
+    watch.assertGaveUpWithin(15_000, "hashing on the row-dependent name vs a scan (or one huge kind bucket) per outer row");
+  }
 }

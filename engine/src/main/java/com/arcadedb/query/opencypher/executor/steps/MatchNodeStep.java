@@ -132,7 +132,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private       Collection<TypeIndex> polymorphicIndexes;
   /** Context variable the plan sets to TRUE for a read-only statement; the scan hash below is only ever built for one. */
   public static final String READ_ONLY_STATEMENT_KEY = "cypherReadOnlyStatement";
-  /** Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. */
+  /**
+   * Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. Each
+   * concurrent query, and each unindexed chained MATCH step in it, holds its own hash (tens of MB at the cap).
+   */
   private static final long  SCAN_HASH_MAX_RECORDS   = 200_000L;
 
   // Issue #8695: a chained single-label MATCH whose inline equality has no index re-scans the whole type once per outer
@@ -710,11 +713,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
         scanHashDeclined = true;
         return null;
       }
-      for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet())
-        if (ScanPropertyHashIndex.isSupported(InlineProperties.resolve(entry.getValue(), currentInputResult, context))) {
+      // Prefer a property whose value comes from the row (an expression or a parameter): a literal in the map is the
+      // same for every row and usually the low-cardinality one ({kind: 'X', name: r.v}), a poor key.
+      String fallback = null;
+      for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+        final Object declared = entry.getValue();
+        if (!ScanPropertyHashIndex.isSupported(InlineProperties.resolve(declared, currentInputResult, context)))
+          continue;
+        if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)) {
           scanHashProperty = entry.getKey();
           break;
         }
+        if (fallback == null)
+          fallback = entry.getKey();
+      }
+      if (scanHashProperty == null)
+        scanHashProperty = fallback;
       if (scanHashProperty == null) {
         // a row whose values are null (an earlier OPTIONAL MATCH) says nothing about the next ones: give up only after a few
         if (++scanHashMisses >= 8)
@@ -724,7 +738,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       @SuppressWarnings("unchecked") final Iterator<Identifiable> scan =
           (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-      scanHashIndex = new ScanPropertyHashIndex(scan, scanHashProperty, WorkGuard.forCommandDeadline(context));
+      final ScanPropertyHashIndex built = new ScanPropertyHashIndex(scan, scanHashProperty, WorkGuard.forCommandDeadline(context));
+      if (!built.isSelective()) {
+        scanHashDeclined = true;
+        return null;
+      }
+      scanHashIndex = built;
     }
 
     final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
