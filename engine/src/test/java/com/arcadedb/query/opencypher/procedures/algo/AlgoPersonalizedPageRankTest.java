@@ -226,10 +226,49 @@ class AlgoPersonalizedPageRankTest {
 
   @Test
   void pprRejectsInvalidSources() {
-    for (final String bad : new String[] { "[]", "[[a, -1]]", "[[a, 0]]", "[[a, 'x']]", "[[a, 1, 2]]", "[1]", "[null]" })
+    final String[][] cases = { { "[]", "empty" }, { "[[a, -1]]", "non-negative" }, { "[[a, 0]]", "positive" }, { "[[a, 'x']]", "must be a number" },
+        { "[[a, 1, 2]]", "[node, weight] pair" }, { "[1]", "must be a node" }, { "[null]", "cannot be null" }, { "[a, 3.0]", "[[node, weight]" } };
+    for (final String[] c : cases)
       assertThatThrownBy(() -> database.query("opencypher",
-          "MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(" + bad + ") YIELD nodeId, score RETURN nodeId, score").stream().count())
-          .as(bad).isInstanceOf(Exception.class);
+          "MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(" + c[0] + ") YIELD nodeId, score RETURN nodeId, score").stream().count())
+          .as(c[0]).hasStackTraceContaining(c[1]);
+  }
+
+  @Test
+  void pprMixesPlainNodesAndPairs() {
+    final Map<String, Double> mixed = scores(
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([a, [c, 2]])" + NAMES);
+    final Map<String, Double> pairs = scores(
+        "MATCH (a:Person {name:'A'}), (c:Person {name:'C'}) CALL algo.personalizedPageRank([[a, 1], [c, 2]])" + NAMES);
+    assertThat(mixed).hasSize(4);
+    for (final String k : mixed.keySet())
+      assertThat(mixed.get(k)).isCloseTo(pairs.get(k), within(1e-12));
+  }
+
+  @Test
+  void pprIgnoresSourceAbsentFromTheCsrView() {
+    database.getSchema().createVertexType("Other");
+    database.transaction(() -> database.newVertex("Other").set("name", "X").save());
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database).withName("ppr-unknown-csr").withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS").build();
+    try {
+      assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+      final String opts = "'FOLLOWS', 0.85, 50, 0";
+      final Map<String, Double> plain = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, " + opts + ")" + NAMES);
+      assertThat(plain).containsKeys("A", "B", "C", "D");
+
+      // X is not in the view: the CSR path declines and the OLTP path (whole graph) ignores it as a source
+      final Map<String, Double> zero = scores(
+          "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([a, [x, 0]], " + opts + ")" + NAMES);
+      final Map<String, Double> weighted = scores(
+          "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([[a, 1], [x, 5]], " + opts + ")" + NAMES);
+      for (final String k : plain.keySet()) {
+        assertThat(zero.get(k)).isCloseTo(plain.get(k), within(1e-9));
+        assertThat(weighted.get(k)).isCloseTo(plain.get(k), within(1e-9));
+      }
+    } finally {
+      gav.shutdown();
+    }
   }
 
   @Test
