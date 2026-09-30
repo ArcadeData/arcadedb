@@ -257,15 +257,15 @@ class AlgoPersonalizedPageRankTest {
       final Map<String, Double> plain = scores("MATCH (a:Person {name:'A'}) CALL algo.personalizedPageRank(a, " + opts + ")" + NAMES);
       assertThat(plain).containsKeys("A", "B", "C", "D");
 
-      // X is not in the view: the CSR path declines and the OLTP path (whole graph) ignores it as a source
+      // X is not in the view: the CSR path declines and the OLTP path (whole graph) takes over; a zero weight adds nothing
       final Map<String, Double> zero = scores(
           "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([a, [x, 0]], " + opts + ")" + NAMES);
       final Map<String, Double> weighted = scores(
           "MATCH (a:Person {name:'A'}), (x:Other) CALL algo.personalizedPageRank([[a, 1], [x, 5]], " + opts + ")" + NAMES);
-      for (final String k : plain.keySet()) {
+      for (final String k : plain.keySet())
         assertThat(zero.get(k)).isCloseTo(plain.get(k), within(1e-9));
-        assertThat(weighted.get(k)).isCloseTo(plain.get(k), within(1e-9));
-      }
+      // The OLTP fallback analyzes the whole graph, where X is a legitimate source, so it is not ignored there
+      assertThat(weighted.get("X")).isGreaterThan(0.0);
     } finally {
       gav.shutdown();
     }
