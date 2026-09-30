@@ -2131,12 +2131,17 @@ public class ArcadeDBServer {
     // restore or import completes and is then replaced by this command - the same end state a refusal and restart
     // reach. The wait is bounded and the refusal stays its fallback, so a pathological holder still fails the boot
     // loudly instead of hanging it. Unlike SnapshotInstaller, which proceeds without the slot when its wait expires
-    // because it applies a committed Raft entry, an operator's startup command may decline, so it does.
+    // because it applies a committed Raft entry, an operator's startup command is allowed to decline, so on
+    // timeout it refuses instead.
+    //
+    // The non-waiting begin() below is not redundant with the waiting one: it is what names the holder in the INFO
+    // line an operator sees while the boot pauses, and it skips the log entirely when the slot is free. The waiting
+    // overload repeats that first attempt itself, so by the time it parks the holder may be a different one.
     final long waitMs = configuration.getValueAsLong(GlobalConfiguration.SERVER_STARTUP_RESTORE_SLOT_WAIT_MS);
     Operation running = backupCoordinator.begin(databaseName, Operation.RESTORE);
     if (running != null && waitMs > 0) {
       LogManager.instance().log(this, Level.INFO,
-          "The startup 'restore:' command for database '%s' is waiting up to %dms for %s already running on it to finish",
+          "The startup 'restore:' command for database '%s' is waiting up to %dms for %s that was running on it to finish",
           null, databaseName, waitMs, running.phrase());
       running = backupCoordinator.begin(databaseName, Operation.RESTORE, waitMs);
     }

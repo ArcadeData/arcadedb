@@ -135,7 +135,7 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * <p>
    * Three callers use that overload: two applying a committed Raft entry - the HA snapshot install as {@code RESTORE}
    * and the replicated drop-database apply as {@code DROP} (issue #8035) - and the {@code restore:} startup command
-   * of {@code arcadedb.server.defaultDatabases} as {@code RESTORE} (issue #7652). Both kinds already conflict with
+   * of {@code arcadedb.server.defaultDatabases} as {@code RESTORE} (issue #7652). Those kinds already conflict with
    * everything, so this is only ever consulted to decide whether a NEW reservation of a different kind should queue
    * behind a waiter - see the guard in {@link #begin(String, Operation)}.
    * <p>
@@ -248,9 +248,9 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * <p>
    * The wait is bounded because the caller's own operation is: a timeout expiring hands the conflict back, and what
    * happens next is the caller's decision - the Raft appliers proceed without the slot, loudly, which is the same
-   * outcome they had before this existed, while the startup restore refuses as it did before. Bounding it is also what keeps a caller
-   * that already holds a conflicting reservation on this database from waiting on itself - these reservations are
-   * not reentrant.
+   * outcome they had before this existed, while the startup restore refuses as it did before. Bounding it is also
+   * what keeps a caller that already holds a conflicting reservation on this database from waiting on itself - these
+   * reservations are not reentrant.
    *
    * @param timeoutMs how long to wait; zero or negative does not wait at all and is exactly
    *                  {@link #begin(String, Operation)}

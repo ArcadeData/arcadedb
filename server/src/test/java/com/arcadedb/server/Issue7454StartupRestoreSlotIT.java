@@ -409,6 +409,59 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     assertReservable(target);
   }
 
+  /**
+   * Issue #7652: a boot thread interrupted while it waits takes nothing - it refuses exactly as a timeout does, keeps
+   * its interrupt flag, leaves the existing database alone and leaks neither the slot nor its waiter registration.
+   */
+  @Test
+  @Timeout(180)
+  void anInterruptedStartupRestoreWaitRefusesAndLeaksNothing() throws Exception {
+    final String target = "interrupted7652";
+    databasesToDrop.add(target);
+    createDatabaseWithMarker(target);
+    setStartupRestoreSlotWaitMs(120_000);
+    final String url = localArchiveUrl();
+    final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
+
+    assertThat(coordinator.begin(target, Operation.BACKUP)).isNull();
+
+    final AtomicReference<Throwable> restoreFailure = new AtomicReference<>();
+    final AtomicBoolean interruptFlagKept = new AtomicBoolean();
+    final Thread restorer = new Thread(() -> {
+      try {
+        getServer(0).restoreDatabaseFromStartupCommand(target, url, databaseDirectory() + File.separator + target);
+      } catch (final Throwable t) {
+        restoreFailure.set(t);
+        interruptFlagKept.set(Thread.currentThread().isInterrupted());
+      }
+    }, "issue7652-interrupted-restorer");
+    restorer.setDaemon(true);
+    restorer.start();
+
+    final boolean waited;
+    try {
+      waited = awaitRestoreWaiter(target, restorer);
+      restorer.interrupt();
+      restorer.join(120_000);
+    } finally {
+      coordinator.end(target, Operation.BACKUP);
+    }
+
+    assertThat(waited).as("the startup restore never waited for the backup holding the slot").isTrue();
+    assertThat(restorer.isAlive()).as("the interrupted startup restore did not return").isFalse();
+    assertThat(restoreFailure.get())
+        .isInstanceOf(ServerControlPlane.OperationInProgressException.class)
+        .hasMessage(MaintenanceCoordinator.refusal(Operation.RESTORE, target, Operation.BACKUP));
+    assertThat(interruptFlagKept.get()).as("the interrupt must not be swallowed").isTrue();
+    assertThat(getServer(0).getDatabase(target).getSchema().existsType("Marker7454"))
+        .as("an interrupted startup restore must leave the original database untouched").isTrue();
+    // The waiter registration must be gone too: with it leaked, the guard would still refuse this export.
+    assertThat(coordinator.begin(target, Operation.EXPORT))
+        .as("the interrupted startup restore leaked its waiter registration").isNull();
+    coordinator.end(target, Operation.EXPORT);
+    assertReservable(target);
+  }
+
   // ------------------------------------------------------------------------------------------------- HELPERS
 
   private void setStartupRestoreSlotWaitMs(final long waitMs) {

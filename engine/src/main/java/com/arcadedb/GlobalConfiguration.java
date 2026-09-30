@@ -1608,7 +1608,7 @@ public enum GlobalConfiguration {
 
   SERVER_STARTUP_RESTORE_SLOT_WAIT_MS("arcadedb.server.startupRestoreSlotWaitMs", SCOPE.SERVER, """
       Milliseconds the `restore:` command of `arcadedb.server.defaultDatabases` waits for a backup, restore or import of the same database, \
-      already running on this server, to finish before it refuses to start. A refusal stops the server boot. 0 refuses immediately, without waiting.""",
+      already running on this server, to finish before it refuses to start. A refusal stops the server boot. 0 or a negative value refuses immediately, without waiting.""",
       Long.class, 60_000L),
 
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """
