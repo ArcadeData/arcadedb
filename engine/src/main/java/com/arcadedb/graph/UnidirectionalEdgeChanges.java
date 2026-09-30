@@ -126,7 +126,7 @@ public final class UnidirectionalEdgeChanges {
   /** The lookup the vertex deletes of the current transaction share, created on first use (issue #8676). */
   IncomingEdgeLookup getDeleteLookup() {
     if (deleteLookup == null)
-      deleteLookup = new IncomingEdgeLookup();
+      deleteLookup = new IncomingEdgeLookup(true);
     return deleteLookup;
   }
 

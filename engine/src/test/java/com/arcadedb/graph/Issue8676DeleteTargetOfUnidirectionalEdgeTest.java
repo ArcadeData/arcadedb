@@ -257,6 +257,19 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   }
 
   @Test
+  void aRolledBackDeleteLeavesNoStaleScanForTheNextTransaction() {
+    createSchema(false);
+    createPair("U8");
+    database.begin();
+    b.asVertex().delete();
+    database.rollback();
+    assertThat(database.countType("U8", false)).isEqualTo(1);
+
+    database.transaction(() -> b.asVertex().delete());
+    assertEdgeGone("U8");
+  }
+
+  @Test
   void bidirectionalTypeIsUnchanged() {
     createSchema(false);
     createPair("B8");

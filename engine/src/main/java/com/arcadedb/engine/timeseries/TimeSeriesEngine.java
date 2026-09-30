@@ -601,6 +601,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Uses block-level aggregation on sealed stores (decompresses arrays directly, no Object[] boxing).
    * Falls back to row iteration only for the small mutable bucket.
    */
+  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER (ISSUE #7476)
+  private static final long FLAT_WINDOW_PER_CEILING = 2L;
+
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter) throws IOException {
@@ -702,7 +705,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
       // #7476: a window far wider than the ceiling could only hold a sparse answer, which the map mode holds for what it has;
       // up to twice the ceiling the flat window costs about what the ceiling already allows, and is cheaper than a map
-      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS || (bucketCeiling > 0 && computedBuckets > 2L * bucketCeiling))
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
       else
