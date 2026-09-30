@@ -122,7 +122,8 @@ final class ParallelTypeScan {
   // saturated pool a consumer slow to reach its first poll is already on the clock.
   private volatile long                    lastConsumed;
   private          int                     consumerUnit;
-  // WHEN THE CONSUMER STARTED WAITING FOR A UNIT NO WORKER HAD STARTED, 0 WHEN IT IS NOT (#8775)
+  // WHEN THE CONSUMER STARTED WAITING FOR A UNIT NO WORKER HAD STARTED, 0 WHEN IT IS NOT (#8775). ONLY THE CONSUMER THREAD TOUCHES IT
+  // (THE ONE THAT PULLS THE RESULT SET), SO IT NEEDS NO VOLATILE
   private          long                    unitWaitSince;
   private          List<Result>            consumerBatch;
   private          int                     consumerBatchIndex;
@@ -614,7 +615,8 @@ final class ParallelTypeScan {
    * after the scan is submitted none has run yet, and that is not saturation.
    */
   private boolean callerMayClaimNow() {
-    if (!database.isTransactionActive())
+    // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST
+    if (!database.isTransactionActive() || readerUnits != null)
       return true;
     final long now = System.currentTimeMillis();
     if (unitWaitSince == 0) {
