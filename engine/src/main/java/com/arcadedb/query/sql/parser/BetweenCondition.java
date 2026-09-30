@@ -199,7 +199,11 @@ public class BetweenCondition extends BooleanExpression {
     if (!matchesField && !matchesLowerCaseField)
       return false;
 
-    return second.isEarlyCalculated(info.getContext()) && third.isEarlyCalculated(info.getContext());
+    if (!second.isEarlyCalculated(info.getContext()) || !third.isEarlyCalculated(info.getContext()))
+      return false;
+    // Bounds of a range over a CI index are lower-cased behind the user's back: only lower-case literals keep its meaning
+    return !matchesLowerCaseField
+        || BinaryCondition.isLowerCaseLiteral(second, info.getContext()) && BinaryCondition.isLowerCaseLiteral(third, info.getContext());
   }
 
   public Expression resolveKeyFrom(final BinaryCondition additional) {

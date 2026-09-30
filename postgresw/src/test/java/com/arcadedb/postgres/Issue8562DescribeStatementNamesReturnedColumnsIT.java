@@ -63,7 +63,8 @@ class Issue8562DescribeStatementNamesReturnedColumnsIT extends PostgresWireProto
 
         final String[][] statements = {
             { "S1", "INSERT INTO Article8562 SET id = 1 RETURN @rid" },
-            { "S2", "UPDATE Article8562 SET id = 9 RETURN AFTER" } };
+            { "S2", "UPDATE Article8562 SET id = 9 RETURN AFTER" },
+            { "S3", "INSERT INTO Article8562 SET id = 3 RETURN id" } };
 
         for (final String[] statement : statements) {
           sendParse(out, statement[0], statement[1]);

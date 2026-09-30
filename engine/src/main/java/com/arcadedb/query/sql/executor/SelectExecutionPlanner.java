@@ -4623,7 +4623,9 @@ public class SelectExecutionPlanner {
             // side of the range)
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
-              if (next.createRangeWith(singleExp)) {
+              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
+              if (next.createRangeWith(singleExp) && (!(ciCollation && isLowerCaseRewrite(singleExp, info))
+                  || next instanceof BinaryCondition other && BinaryCondition.isLowerCaseLiteral(other.getRight(), context))) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
                 if (ciCollation && isLowerCaseRewrite(next, info)) {

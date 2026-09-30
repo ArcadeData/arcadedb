@@ -81,6 +81,13 @@ class Issue8560MixedCaseToLowerCaseCiIndexTest extends TestHelper {
   }
 
   @Test
+  void mixedCaseRangeBoundKeepsEveryMatchingRecord() {
+    // "anne" and "Bob" lower-case above 'C' (97 > 67): the index must not narrow the bound to 'c' and lose them
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'C'")).containsExactlyInAnyOrder("John", "MARY", "anne", "Bob");
+    assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'a' AND name.toLowerCase() < 'C'")).isEmpty();
+  }
+
+  @Test
   void rangeOperatorsAgreeWithTheSubqueryForm() {
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'A' AND name.toLowerCase() < 'C'")).isEmpty();
     assertThat(names("SELECT name FROM P WHERE name.toLowerCase() >= 'a' AND name.toLowerCase() < 'c'")).containsExactlyInAnyOrder("anne", "Bob");

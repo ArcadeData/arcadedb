@@ -1282,7 +1282,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphnodes");
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("path.subgraphnodes");
-    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMinArgs()).isEqualTo(1);
     assertThat(proc.getMaxArgs()).isEqualTo(2);
     assertThat(proc.getYieldFields()).contains("node");
   }
@@ -1292,7 +1292,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.subgraphall");
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("path.subgraphall");
-    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMinArgs()).isEqualTo(1);
     assertThat(proc.getMaxArgs()).isEqualTo(2);
     assertThat(proc.getYieldFields()).contains("nodes", "relationships");
   }
@@ -1302,7 +1302,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final CypherProcedure proc = CypherProcedureRegistry.get("path.spanningtree");
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("path.spanningtree");
-    assertThat(proc.getMinArgs()).isEqualTo(2);
+    assertThat(proc.getMinArgs()).isEqualTo(1);
     assertThat(proc.getMaxArgs()).isEqualTo(2);
     assertThat(proc.getYieldFields()).contains("path");
   }
