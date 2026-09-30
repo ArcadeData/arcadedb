@@ -79,6 +79,10 @@ class RaftClusterManager {
   /** How far {@link #isPermanent} follows a failure's cause chain. Deeper than any Ratis failure nests. */
   private static final int MAX_CAUSE_DEPTH = 16;
 
+  /** How long {@link #buildAddArgs} waits for a configuration that cannot be read yet, in {@value #COMMITTED_PEERS_WAIT_MS} ms steps. */
+  private static final int  COMMITTED_PEERS_WAIT_ATTEMPTS = 50;
+  private static final long COMMITTED_PEERS_WAIT_MS       = 100L;
+
   private final RaftHAServer raftHAServer;
   private final long         setConfigurationBudgetMs;
 
@@ -198,10 +202,6 @@ class RaftClusterManager {
     raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
   }
-
-  /** How long {@link #buildAddArgs} waits for a configuration that cannot be read yet, in {@value #COMMITTED_PEERS_WAIT_MS} ms steps. */
-  private static final int  COMMITTED_PEERS_WAIT_ATTEMPTS = 50;
-  private static final long COMMITTED_PEERS_WAIT_MS       = 100L;
 
   /**
    * Builds the {@link SetConfigurationRequest.Mode#COMPARE_AND_SET} arguments for adding {@code newPeer}: the current
