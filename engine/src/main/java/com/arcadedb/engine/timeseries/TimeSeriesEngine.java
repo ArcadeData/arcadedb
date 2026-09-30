@@ -700,8 +700,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (useFlatMode && actualMin <= actualMax) {
       firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
-      // #7476: a window wider than the ceiling could only hold a sparse answer, which the map mode holds for what it has
-      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS || (bucketCeiling > 0 && computedBuckets > bucketCeiling))
+      // #7476: a window far wider than the ceiling could only hold a sparse answer, which the map mode holds for what it has;
+      // up to twice the ceiling the flat window costs about what the ceiling already allows, and is cheaper than a map
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS || (bucketCeiling > 0 && computedBuckets > 2L * bucketCeiling))
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
       else

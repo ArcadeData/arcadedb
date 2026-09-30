@@ -106,7 +106,9 @@ public final class IncomingEdgeLookup {
   // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
   private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
   // WHETHER THE PER-VERTEX FALLBACK OF A DELETE WAS REPORTED AT WARNING ALREADY
-  private static final AtomicBoolean FALLBACK_WARNED   = new AtomicBoolean();
+  // PER-VERTEX SCANS A DELETE TOOK BECAUSE THE TYPES COULD NOT BE INDEXED IN HEAP: WHAT A TEST READS TO TELL THE FALLBACK TAKEN
+  private static final AtomicLong    FALLBACK_SCANS   = new AtomicLong();
+  private static final AtomicBoolean FALLBACK_WARNED = new AtomicBoolean();
   // THE LAST CLOSURE THE STATIC CHECKS COMPUTED ON THIS THREAD: STEPS ASK PER ROW FOR THE SAME TYPES
   private static final ThreadLocal<CachedClosure> LAST_STATIC_CLOSURE = new ThreadLocal<>();
   // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
@@ -325,6 +327,11 @@ public final class IncomingEdgeLookup {
   /** Whether the thread is evaluating a pattern (see {@link #walkingPattern}). */
   public static boolean isWalkingPattern() {
     return PATTERN_WALKS.get()[0] > 0;
+  }
+
+  /** The per-vertex scans of a delete since the JVM started. */
+  static long getFallbackScans() {
+    return FALLBACK_SCANS.get();
   }
 
   /** The scans taken since the JVM started. */
@@ -649,6 +656,7 @@ public final class IncomingEdgeLookup {
 
     /** The edges of {@code typeNames} that end in {@code target}, found by scanning them with no index kept in heap. */
     static List<Edge> scanEdgesInto(final DatabaseInternal database, final String[] typeNames, final RID target) {
+      FALLBACK_SCANS.incrementAndGet();
       final Schema schema = database.getSchema();
       final WorkGuard guard = WorkGuard.forCommandDeadline(null);
       final List<Edge> result = new ArrayList<>();
