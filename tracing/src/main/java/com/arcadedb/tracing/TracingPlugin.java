@@ -28,7 +28,6 @@ import com.arcadedb.server.monitor.OtelResourceAttributes;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
-import io.micrometer.observation.ObservationPredicate;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.TraceContext;
@@ -74,7 +73,6 @@ public class TracingPlugin implements ServerPlugin {
   private String                        serviceName;
   private SdkTracerProvider             tracerProvider;
   private DeactivatableObservationHandler attachedHandler;
-  private ExcludedPathsPredicate        attachedPredicate;
 
   /**
    * The enable flag is the whole opt-in: a deployment that sets it does not also have to name this plugin in
@@ -140,10 +138,6 @@ public class TracingPlugin implements ServerPlugin {
       attachedHandler.deactivate();
       attachedHandler = null;
     }
-    if (attachedPredicate != null) {
-      attachedPredicate.deactivate();
-      attachedPredicate = null;
-    }
     if (tracerProvider != null) {
       tracerProvider.close();
       tracerProvider = null;
@@ -159,7 +153,7 @@ public class TracingPlugin implements ServerPlugin {
    * Builds an OTel tracer feeding {@code processor} and registers a first-matching composite handler
    * on the registry: the propagating receiver handler claims contexts carrying an inbound
    * {@code traceparent} (continuing the upstream trace); everything else opens a fresh span. The HTTP requests whose
-   * path is in {@code excludedPaths} are turned into no-op Observations before any span exists (issue #7295).
+   * path is in {@code excludedPaths} are declined by the tracing handler, so they get no span (issue #7295).
    */
   private void attach(final ObservationRegistry registry, final SpanProcessor processor, final double samplingRate,
       final Resource resource, final String[] excludedPaths) {
@@ -184,13 +178,8 @@ public class TracingPlugin implements ServerPlugin {
 
     attachedHandler = new DeactivatableObservationHandler(new ObservationHandler.FirstMatchingCompositeObservationHandler(
         new PropagatingReceiverTracingObservationHandler<>(tracer, propagator),
-        new DefaultTracingObservationHandler(tracer)));
+        new DefaultTracingObservationHandler(tracer)), excludedPaths);
     registry.observationConfig().observationHandler(attachedHandler);
-
-    if (excludedPaths.length > 0) {
-      attachedPredicate = new ExcludedPathsPredicate(excludedPaths);
-      registry.observationConfig().observationPredicate(attachedPredicate);
-    }
 
     // Expose the active trace context to the core logger (issue #4466) without the core taking an
     // OpenTelemetry dependency. The HTTP handler reads this when populating its per-request
@@ -261,53 +250,37 @@ public class TracingPlugin implements ServerPlugin {
   }
 
   /**
-   * Leaves the HTTP requests whose raw path is one of the excluded paths untraced: returning {@code false} makes the
-   * registry hand out the no-op Observation, so no span, no scope and no child span is created for a readiness or
-   * health probe. Like the handler, it cannot be removed from the registry, so {@link #stopService()} deactivates it.
-   * <p>
-   * The predicate is registry-wide: it applies to any Observation whose context carries
-   * {@link AbstractServerHttpHandler#OBSERVATION_REQUEST_PATH}. Today only the HTTP request Observation sets it; a future
-   * Observation that sets it too is subject to the exclusion list as well.
-   */
-  private static final class ExcludedPathsPredicate implements ObservationPredicate {
-    private final String[]      excludedPaths;
-    private final AtomicBoolean active = new AtomicBoolean(true);
-
-    private ExcludedPathsPredicate(final String[] excludedPaths) {
-      this.excludedPaths = excludedPaths;
-    }
-
-    private void deactivate() {
-      active.set(false);
-    }
-
-    @Override
-    public boolean test(final String name, final Observation.Context context) {
-      if (!active.get() || context == null)
-        return true;
-      final Object requestPath = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
-      if (!(requestPath instanceof String))
-        return true;
-      final String path = withoutTrailingSlash((String) requestPath);
-      for (final String excluded : excludedPaths)
-        if (excluded.equals(path))
-          return false;
-      return true;
-    }
-  }
-
-  /**
    * Wraps the tracing handler so it can be turned off on {@link #stopService()}. The
    * {@link ObservationRegistry} offers no API to remove a handler, so once the plugin stops this
    * gates every callback to a no-op - preventing the (now closed) tracer provider from being used by
    * later Observations.
+   * <p>
+   * It also declines the HTTP requests whose raw path ({@link AbstractServerHttpHandler#OBSERVATION_REQUEST_PATH}) is
+   * one of the excluded paths (issue #7295): the readiness and health probes get no span, while the Observation itself
+   * stays alive for any other handler registered on the server. {@code supportsContext} is asked once, when the
+   * Observation is created, and the context supplier has already stored the path by then.
    */
   private static final class DeactivatableObservationHandler implements ObservationHandler<Observation.Context> {
     private final ObservationHandler<Observation.Context> delegate;
+    private final String[]                                excludedPaths;
     private final AtomicBoolean                                                     active = new AtomicBoolean(true);
 
-    private DeactivatableObservationHandler(final ObservationHandler<Observation.Context> delegate) {
+    private DeactivatableObservationHandler(final ObservationHandler<Observation.Context> delegate, final String[] excludedPaths) {
       this.delegate = delegate;
+      this.excludedPaths = excludedPaths;
+    }
+
+    private boolean isExcluded(final Observation.Context context) {
+      if (excludedPaths.length == 0)
+        return false;
+      final Object requestPath = context.get(AbstractServerHttpHandler.OBSERVATION_REQUEST_PATH);
+      if (!(requestPath instanceof String))
+        return false;
+      final String path = withoutTrailingSlash((String) requestPath);
+      for (final String excluded : excludedPaths)
+        if (excluded.equals(path))
+          return true;
+      return false;
     }
 
     private void deactivate() {
@@ -316,7 +289,7 @@ public class TracingPlugin implements ServerPlugin {
 
     @Override
     public boolean supportsContext(final Observation.Context context) {
-      return active.get() && delegate.supportsContext(context);
+      return active.get() && !isExcluded(context) && delegate.supportsContext(context);
     }
 
     @Override

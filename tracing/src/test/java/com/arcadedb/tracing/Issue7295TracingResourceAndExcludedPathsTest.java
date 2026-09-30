@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +66,45 @@ class Issue7295TracingResourceAndExcludedPathsTest {
 
     assertThat(span.getResource().getAttribute(SERVICE_NAME)).isEqualTo("graph-prod");
     assertThat(span.getResource().getAttribute(AttributeKey.stringKey("deployment.environment"))).isEqualTo("prod");
+  }
+
+  @Test
+  void spansReportAServiceNameSuppliedOnlyByResourceAttributes() {
+    final SpanData span = exportOneSpan(new ContextConfiguration(),
+        Map.of("OTEL_RESOURCE_ATTRIBUTES", "service.name=graph-attrs,service.namespace=data"));
+
+    assertThat(span.getResource().getAttribute(SERVICE_NAME)).isEqualTo("graph-attrs");
+    assertThat(span.getResource().getAttribute(AttributeKey.stringKey("service.namespace"))).isEqualTo("data");
+  }
+
+  @Test
+  void anExcludedProbeStaysVisibleToOtherObservationHandlers() {
+    final ObservationRegistry registry = ObservationRegistry.create();
+    final AtomicInteger otherHandlerStarts = new AtomicInteger();
+    registry.observationConfig().observationHandler(new ObservationHandler<>() {
+      @Override
+      public boolean supportsContext(final Observation.Context context) {
+        return true;
+      }
+
+      @Override
+      public void onStart(final Observation.Context context) {
+        otherHandlerStarts.incrementAndGet();
+      }
+    });
+    final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+    final TracingPlugin plugin = new TracingPlugin();
+    plugin.attachForTest(registry, exporter, new ContextConfiguration(), Map.of());
+    try {
+      httpObservation(registry, "/api/v1/ready").observe(() -> {
+      });
+
+      // Only the tracing handler declines the probe; the Observation itself is not vetoed.
+      assertThat(exporter.getFinishedSpanItems()).isEmpty();
+      assertThat(otherHandlerStarts.get()).isEqualTo(1);
+    } finally {
+      plugin.stopService();
+    }
   }
 
   @Test
@@ -121,8 +162,8 @@ class Issue7295TracingResourceAndExcludedPathsTest {
     stopped.attachForTest(registry, stoppedExporter, new ContextConfiguration(), Map.of());
     stopped.stopService();
 
-    // The registry offers no API to remove a predicate, so a stopped plugin's exclusion stays registered. It must not
-    // keep vetoing observations for a plugin attached afterwards with a different configuration.
+    // The registry offers no API to remove a handler, so a stopped plugin's handler (and its exclusion list) stays
+    // registered. It must not keep declining observations for a plugin attached afterwards with another configuration.
     final ContextConfiguration none = new ContextConfiguration();
     none.setValue(GlobalConfiguration.SERVER_METRICS_TRACING_EXCLUDED_PATHS, "");
     final InMemorySpanExporter exporter = InMemorySpanExporter.create();

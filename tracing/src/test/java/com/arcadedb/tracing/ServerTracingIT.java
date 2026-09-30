@@ -147,13 +147,14 @@ class ServerTracingIT extends BaseGraphServerTest {
 
     try {
       final long readyRequestsBefore = readyRequestCount();
-      for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
-        final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
-        c.setRequestMethod("GET");
-        c.connect();
-        assertThat(c.getResponseCode()).as(probe).isBetween(200, 299);
-        c.disconnect();
-      }
+      for (final String method : new String[] { "GET", "HEAD" })
+        for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
+          final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
+          c.setRequestMethod(method);
+          c.connect();
+          assertThat(c.getResponseCode()).as(method + " " + probe).isBetween(200, 299);
+          c.disconnect();
+        }
 
       final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/databases")).openConnection();
       c.setRequestMethod("GET");
