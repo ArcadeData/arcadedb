@@ -6256,27 +6256,38 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private static final long TX_PREPARED_AT_CAPABILITY_TTL_MS = 1_000L;
-  private volatile long     txPreparedAtCapabilityCheckedAt;
-  private volatile boolean  txPreparedAtCapable;
+
+  /** One answer and the moment it was computed, published together so a reader never pairs a fresh answer with a stale time. */
+  private record TxPreparedAtCapability(boolean capable, long computedAt) {
+  }
+
+  private final    AtomicLong                  txPreparedAtMembershipEpoch = new AtomicLong();
+  private volatile TxPreparedAtCapability      txPreparedAtCapability      = new TxPreparedAtCapability(false, 0L);
 
   /**
    * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Answered
    * from a value refreshed at most once per second: it is asked on every commit, and {@link #allPeersSupport} builds a list of
-   * the peers per call. A membership change drops the cached answer at once ({@link #invalidateTxPreparedAtCapability}); a peer that merely stops
-   * advertising is noticed within the TTL.
+   * the peers per call. A membership change drops the answer at once ({@link #invalidateTxPreparedAtCapability}); a peer that
+   * merely stops advertising is noticed within the TTL. An answer computed under the previous membership is never published:
+   * the epoch is compared before it is stored.
    */
   public boolean canStateTxPreparedAt() {
     final long now = System.currentTimeMillis();
-    if (now - txPreparedAtCapabilityCheckedAt > TX_PREPARED_AT_CAPABILITY_TTL_MS) {
-      txPreparedAtCapable = allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX);
-      txPreparedAtCapabilityCheckedAt = now;
-    }
-    return txPreparedAtCapable;
+    final TxPreparedAtCapability cached = txPreparedAtCapability;
+    if (now - cached.computedAt() <= TX_PREPARED_AT_CAPABILITY_TTL_MS)
+      return cached.capable();
+
+    final long epoch = txPreparedAtMembershipEpoch.get();
+    final boolean capable = allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX);
+    if (epoch == txPreparedAtMembershipEpoch.get())
+      txPreparedAtCapability = new TxPreparedAtCapability(capable, now);
+    return capable;
   }
 
   /** Drops the cached {@link #canStateTxPreparedAt} answer, so the next commit asks again; called when the membership changes. */
   void invalidateTxPreparedAtCapability() {
-    txPreparedAtCapabilityCheckedAt = 0L;
+    txPreparedAtMembershipEpoch.incrementAndGet();
+    txPreparedAtCapability = new TxPreparedAtCapability(false, 0L);
   }
 
   /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */

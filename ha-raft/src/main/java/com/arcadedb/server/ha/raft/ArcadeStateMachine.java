@@ -38,7 +38,6 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -4128,17 +4127,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     boolean locked = false;
     try {
       locked = lifecycleLock.tryLock(SEALED_INSTALL_LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-      if (!locked)
-        throw new TimeoutException("Timeout of %dms expired while locking TimeSeries type '%s' for a sealed-store repair"
-            .formatted(SEALED_INSTALL_LOCK_TIMEOUT_MS, tsType.getName()));
+      if (!locked) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, but the type "
+                + "stayed locked for %dms (a backup or snapshot in flight?), so it was not installed", null, tsType.getName(),
+            shardIndex, decodedDbName(db), SEALED_INSTALL_LOCK_TIMEOUT_MS);
+        return false;
+      }
       Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
       tsType.initEngine();
-    } catch (final TimeoutException e) {
-      LogManager.instance().log(this, Level.SEVERE,
-          "Received TimeSeries sealed store for type '%s' shard %d (db=%s) whose storage engine is unavailable, but the type "
-              + "stayed locked (a backup or snapshot in flight?), so it was not installed: %s", e, tsType.getName(), shardIndex,
-          decodedDbName(db), e.getMessage());
-      return false;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       LogManager.instance().log(this, Level.SEVERE,

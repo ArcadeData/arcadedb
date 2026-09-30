@@ -25,7 +25,6 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 /**
@@ -129,13 +128,13 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
         // #7475): a type whose engine never loaded has no shard lock to take, and this is what a copy of the
         // database - which holds the read half through TimeSeriesCompactionPause - is excluded from the repair by.
         // It also keeps the engine from appearing or vanishing between here and the shard locks below.
-        lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().writeLock(), deadline, timeoutMs, tsType.getName(), -1);
+        TimeSeriesShardOrder.lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().writeLock(), deadline, timeoutMs, tsType.getName(), -1, "locking");
 
         for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.shardsOf(tsType)) {
           if (!contains(shards, slot.typeName(), slot.shardIndex()))
             continue;
-          lockOrTimeOut(acquired, slot.shard().getCompactionLock().writeLock(), deadline, timeoutMs, slot.typeName(),
-              slot.shardIndex());
+          TimeSeriesShardOrder.lockOrTimeOut(acquired, slot.shard().getCompactionLock().writeLock(), deadline, timeoutMs, slot.typeName(),
+              slot.shardIndex(), "locking");
           locked++;
         }
       }
@@ -148,16 +147,6 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
       throw e;
     }
     return new TimeSeriesSealedInstallLock(acquired, locked);
-  }
-
-  private static void lockOrTimeOut(final List<Lock> acquired, final Lock lock, final long deadline, final long timeoutMs,
-      final String typeName, final int shardIndex) throws InterruptedException {
-    final long remaining = deadline - System.currentTimeMillis();
-    if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-      throw new TimeoutException(
-          "Timeout of %dms expired while locking TimeSeries type '%s'%s for a sealed-store install".formatted(timeoutMs,
-              typeName, shardIndex < 0 ? "" : " shard " + shardIndex));
-    acquired.add(lock);
   }
 
   private static boolean names(final Collection<ShardRef> shards, final String typeName) {

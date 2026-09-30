@@ -22,9 +22,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
+import com.arcadedb.exception.TimeoutException;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 /**
  * The ONE order in which every multi-shard lock acquisition in this package visits TimeSeries shards, and the
@@ -119,5 +123,19 @@ final class TimeSeriesShardOrder {
     for (final LocalTimeSeriesType tsType : typesOf(database))
       slots.addAll(shardsOf(tsType));
     return slots;
+  }
+
+  /**
+   * Takes {@code lock} within what is left of the shared {@code deadline} and records it in {@code acquired}, or throws a
+   * {@link TimeoutException} naming the type and, for a shard, its index ({@code shardIndex < 0} names the type alone).
+   * The caller releases whatever it had recorded on any exit.
+   */
+  static void lockOrTimeOut(final List<Lock> acquired, final Lock lock, final long deadline, final long timeoutMs,
+      final String typeName, final int shardIndex, final String what) throws InterruptedException {
+    final long remaining = deadline - System.currentTimeMillis();
+    if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
+      throw new TimeoutException("Timeout of %dms expired while %s TimeSeries type '%s'%s".formatted(timeoutMs, what, typeName,
+          shardIndex < 0 ? "" : " shard " + shardIndex));
+    acquired.add(lock);
   }
 }
