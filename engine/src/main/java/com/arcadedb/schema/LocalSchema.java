@@ -2541,7 +2541,9 @@ public class LocalSchema implements Schema {
    * live counters survive as they are. A full {@link #load} builds new instances, still unpublished at this point, while
    * the previous generation is live in {@code files}: each rebuilt bucket inherits the counter of the live instance on
    * the same file id, so a follower's next {@code count(*)} does not rescan every bucket. A counter the live instance
-   * does not know (-1) stays unknown and is recomputed.
+   * does not know (-1) stays unknown and is recomputed. The counter is read before the barrier publishes the rebuilt
+   * instance, which is exact because the only caller on a live database is the Raft apply thread, and it applies schema
+   * entries and record writes serially. Rebuilt buckets start without page free-space hints and regather them.
    */
   private void carryLiveRecordCountsIntoRebuiltBuckets() {
     for (final Component component : filesDuringLoad()) {

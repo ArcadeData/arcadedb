@@ -78,6 +78,8 @@ class Issue8717SchemaReloadKeepsLiveCountsTest extends TestHelper {
     // is not left unknown either, which would cost a rescan of every bucket on the next count(*).
     assertThat(bucket().getCachedRecordCount()).isEqualTo(INITIAL + INSERTED);
     assertThat(bucket().count()).isEqualTo(INITIAL + INSERTED);
+    // Nor are the stale page hints of the close applied to the rebuilt instance: it starts empty and regathers.
+    assertThat(bucket().getStatistics().getJSONArray("pages").length()).isZero();
   }
 
   @Test
