@@ -2076,7 +2076,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
    * @param body          the relayed upload, asked whether this node's cap cut it
    */
-  // Package-private so the in-band refusal of issue #8674 can be driven with a scripted leader answer.
   ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
       final String url, final HttpResponse<InputStream> response, final long readTimeoutMs,
       final CountingInputStream body) throws IOException {
@@ -2127,8 +2126,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
             clientGone = true;
             throw e;
           }
-          if (!line.isBlank())
-            ended = trackRelayedEvent(line, lastProgress);
+          // Sticky: once the leader has written its ending, nothing after it can take that ending back.
+          if (!line.isBlank() && trackRelayedEvent(line, lastProgress))
+            ended = true;
         }
       } catch (final IOException e) {
         relayFailure = e;
@@ -2146,9 +2146,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
                 + "started answering, because the request body exceeded '%s' (%,d bytes) on this node. %s Raise that "
                 + "setting or split the payload; the leader's log reports what it loaded before the relay was cut", null,
             databaseName, body.getBytesRead(), GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
-            body.getMaxBodySize(), clientGone
+            body.getMaxBodySize(), (clientGone
                 ? "The client had already gone (" + relayFailure.getMessage() + "), so it is not told."
-                : "The client's stream ends with an in-band 413.");
+                : "The client's stream ends with an in-band 413.")
+                + (leaderBody.hasExpired() ? " The leader had also sent nothing for " + readTimeoutMs + " ms." : ""));
         if (!clientGone)
           writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastProgress);
       } else if (relayFailure != null)
@@ -2159,6 +2160,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     return null;
   }
 
+  /**
+   * Logs a relay that ended on a failure this node's cap did not cause. The 200 and part of the stream are already on
+   * the wire, so there is no status left to change and no terminal line to trust: a consumer that saw neither
+   * 'summary' nor 'error' knows it did not get everything, which is the contract the encoding is built on. The relay
+   * only ever writes whole lines on this path, so the client's stream ends on a line boundary even when the leader
+   * stalled mid-line.
+   */
   private void logRelayFailure(final IOException e, final ReadBoundedInputStream leaderBody, final String url,
       final long readTimeoutMs, final String databaseName) {
     if (leaderBody.hasExpired())
@@ -2172,10 +2180,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       LogManager.instance().log(this, Level.WARNING,
           "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
           e.getMessage());
-    // The 200 and part of the stream are already on the wire, so there is no status left to change and no
-    // terminal line to trust: a consumer that saw neither 'summary' nor 'error' knows it did not get
-    // everything, which is the contract the encoding is built on. The relay only ever writes whole lines,
-    // so the stream the client got ends on a line boundary even when the leader stalled mid-line.
   }
 
   /**

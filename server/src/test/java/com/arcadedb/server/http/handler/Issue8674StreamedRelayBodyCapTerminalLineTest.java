@@ -162,6 +162,16 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
     assertThat(lines).containsExactly(PROGRESS_LINE, leaderError);
   }
 
+  /** A terminal line stays the ending whatever the leader wrote after it: nothing is appended. */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void aLineAfterTheLeadersTerminalLineDoesNotReopenTheStream() throws Exception {
+    final String leaderError = "{\"error\":{\"error\":\"truncated\",\"status\":400}}";
+    final List<String> lines = relay(overCapBody(), PROGRESS_LINE + "\n" + leaderError + "\n" + PROGRESS_LINE + "\n", true);
+
+    assertThat(lines).containsExactly(PROGRESS_LINE, leaderError, PROGRESS_LINE);
+  }
+
   /** Same with a {@code summary}, the other terminal event, followed by a stray blank line that ends nothing. */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -232,7 +242,8 @@ class Issue8674StreamedRelayBodyCapTerminalLineTest {
         assertThat(leader.answered.await(CLIENT_READ_MS, TimeUnit.MILLISECONDS))
             .as("the leader answered 200 and a progress line while the upload is still pending").isTrue();
         assertThat(catchThrowable(() -> sent.get(2, TimeUnit.SECONDS)))
-            .as("the response is withheld while the upload is pending").isInstanceOf(TimeoutException.class);
+            .as("the response is withheld while the upload is pending - if this fails, a JDK now delivers it mid-upload: "
+                + "not an ArcadeDB regression, see #8719").isInstanceOf(TimeoutException.class);
 
         release.countDown();
         assertThat(sent.get(CLIENT_READ_MS, TimeUnit.MILLISECONDS).statusCode())
