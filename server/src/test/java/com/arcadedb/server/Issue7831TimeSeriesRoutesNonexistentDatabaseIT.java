@@ -31,6 +31,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 
@@ -55,6 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest {
 
+  // Per-request hang detector, not a latency bound.
+  private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
   private static final String BOGUS_DB = "issue7831_database_does_not_exist";
 
   private final HttpClient client = HttpClient.newHttpClient();
@@ -88,6 +91,7 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
     // from the missing database, not from the handler losing its body validation.
     final HttpResponse<String> response = client.send(HttpRequest.newBuilder(
             URI.create(getServerHttpUrl("/api/v1/ts/" + getDatabaseName() + "/prom/write")))
+        .timeout(REQUEST_TIMEOUT)
         .header("Authorization", basicAuth())
         .header("Content-Type", "application/x-protobuf")
         .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[0]))
@@ -102,6 +106,8 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
     final byte[] lineProtocol = "cpu,host=h1 value=1.0 1000".getBytes(StandardCharsets.UTF_8);
     final byte[] json = "{\"type\":\"cpu\"}".getBytes(StandardCharsets.UTF_8);
 
+    // The bodies only matter if a route ever validates them before resolving the database. Should that happen
+    // it answers 400 here and this fails: that is the regression, do not "fix" it by loosening to 4xx.
     // Soft: one regressed route must not hide the state of the others.
     final SoftAssertions soft = new SoftAssertions();
     assertNotFound(soft, post("/prom/read", promRead, "application/x-protobuf"), "POST prom/read");
@@ -126,6 +132,7 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
 
   private HttpResponse<String> post(final String suffix, final byte[] body, final String contentType) throws Exception {
     return client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/ts/" + BOGUS_DB + suffix)))
+        .timeout(REQUEST_TIMEOUT)
         .header("Authorization", basicAuth())
         .header("Content-Type", contentType)
         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
@@ -134,6 +141,7 @@ class Issue7831TimeSeriesRoutesNonexistentDatabaseIT extends BaseGraphServerTest
 
   private HttpResponse<String> get(final String suffix) throws Exception {
     return client.send(HttpRequest.newBuilder(URI.create(getServerHttpUrl("/api/v1/ts/" + BOGUS_DB + suffix)))
+        .timeout(REQUEST_TIMEOUT)
         .header("Authorization", basicAuth())
         .GET()
         .build(), HttpResponse.BodyHandlers.ofString());
