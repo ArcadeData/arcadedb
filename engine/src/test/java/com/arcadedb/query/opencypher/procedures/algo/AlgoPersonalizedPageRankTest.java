@@ -228,7 +228,7 @@ class AlgoPersonalizedPageRankTest {
 
   @Test
   void pprRejectsInvalidSources() {
-    final String[][] cases = { { "[]", "empty" }, { "[[a, -1]]", "non-negative" }, { "[[a, 0]]", "positive" }, { "[[a, 'x']]", "must be a number" },
+    final String[][] cases = { { "[]", "cannot be an empty list" }, { "[[a, -1]]", "must be finite and non-negative" }, { "[[a, 0]]", "must sum to a positive finite number" }, { "[[a, 'x']]", "must be a number" },
         { "[[a, 1, 2]]", "[node, weight] pair" }, { "[1]", "must be a node" }, { "[null]", "cannot be null" }, { "[a, 3.0]", "[[node, weight]" } };
     for (final String[] c : cases)
       assertThatThrownBy(() -> database.query("opencypher",
@@ -267,6 +267,13 @@ class AlgoPersonalizedPageRankTest {
       final Map<RID, Double> withZero = run(newContext(), new Object[] { List.of(a, List.of(e[0], 0)), "FOLLOWS", 0.85, 50, 0.0 });
       for (final Map.Entry<RID, Double> entry : csr.entrySet())
         assertThat(withZero.get(entry.getKey())).isCloseTo(entry.getValue(), within(1e-9));
+
+      // A positively weighted unknown source makes the CSR path decline: the OLTP path answers over the whole graph,
+      // where E is a regular source
+      final BasicCommandContext oltpContext = newContext();
+      final Map<RID, Double> withPositive = run(oltpContext, new Object[] { List.of(a, List.of(e[0], 1)), "FOLLOWS", 0.85, 50, 0.0 });
+      assertThat(oltpContext.getVariable(CommandContext.CSR_ACCELERATED_VAR)).isNull();
+      assertThat(withPositive.get(e[0].getIdentity())).isGreaterThan(0.0);
     } finally {
       gav.shutdown();
     }
