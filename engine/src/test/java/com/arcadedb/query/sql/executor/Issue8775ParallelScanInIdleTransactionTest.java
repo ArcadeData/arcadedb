@@ -228,9 +228,9 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
-  void deleteDuringIterationLeavesTheRunningScanOnCommittedPagesWithoutFailing() {
-    // Rows the transaction deleted after the first pull can still be returned by the scan, which reads committed
-    // pages. It is the same insensitive-cursor behaviour as for inserts, and it must not fail the scan or the commit
+  void rowsDeletedDuringIterationAreNotHandedOut() {
+    // The workers read committed pages, which still hold a row the transaction has deleted: the scan drops it on its way
+    // out, as the sequential scan, which reads through the transaction, would not have returned it
     database.begin();
     try {
       long rows = 0;
@@ -241,7 +241,27 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
             database.command("sql", "DELETE FROM E WHERE grp = 5");
         }
       }
-      assertThat(rows).isEqualTo(expected);
+      // only the row handed out before the delete
+      assertThat(rows).isEqualTo(1);
+      assertThat(count()).isZero();
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void deletingEveryReturnedRowWhileIteratingLeavesNothingBehind() {
+    // the common loop: iterate a query and delete each record it returns, through the record API
+    database.begin();
+    try {
+      long deleted = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          rs.next().getRecord().get().delete();
+          deleted++;
+        }
+      }
+      assertThat(deleted).isEqualTo(expected);
       assertThat(count()).isZero();
     } finally {
       database.rollback();
@@ -265,7 +285,7 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
           }
         }
       }
-      assertThat(rows).isEqualTo(expected);
+      assertThat(rows).isEqualTo(1);
       assertThat(touched).isLessThanOrEqualTo(1);
     } finally {
       database.rollback();
@@ -291,7 +311,7 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
           }
         }
       }
-      assertThat(rows).isEqualTo(expected);
+      assertThat(rows).isEqualTo(1);
     } finally {
       database.rollback();
     }

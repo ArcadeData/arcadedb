@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
@@ -180,7 +181,7 @@ final class ParallelTypeScan {
    * The decision is taken once, at the first pull. A transaction that writes while it drains the result does not feed
    * those writes back into a scan already running, whose workers read committed pages. This is not a statement
    * snapshot: units are read incrementally, so a commit from another thread can still reach pages read later. Rows the
-   * transaction deleted after that pull can still be returned. Inside a transaction the caller never reads a unit
+   * transaction deleted after that pull are dropped on their way out; one it updated comes back as committed. Inside a transaction the caller never reads a unit
    * itself: one no worker has started (#8594) is read by a thread of its own, from committed pages, into the unit's
    * bounded channel, so the scan progresses on a saturated pool and never mixes two views.
    */
@@ -471,8 +472,12 @@ final class ParallelTypeScan {
           final List<Result> batch = consumerBatch;
           if (batch != null && consumerBatchIndex < batch.size()) {
             lastConsumed = System.currentTimeMillis();
-            nextItem = batch.get(consumerBatchIndex);
+            final Result candidate = batch.get(consumerBatchIndex);
             batch.set(consumerBatchIndex++, null); // EARLY CLEANSE FOR GC
+            // A ROW THE TRANSACTION HAS DELETED SINCE THE SCAN STARTED IS NOT HANDED OUT: THE SEQUENTIAL SCAN WOULD NOT HAVE (#8775)
+            if (deletedByTransaction(candidate))
+              continue;
+            nextItem = candidate;
             break;
           }
           consumerBatch = null;
@@ -629,6 +634,14 @@ final class ParallelTypeScan {
       return false;
     }
     return now - unitWaitSince >= DEDICATED_READER_GRACE_MS;
+  }
+
+  /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
+  private boolean deletedByTransaction(final Result row) {
+    if (!database.isTransactionActive())
+      return false;
+    final RID rid = row.getIdentity().orElse(null);
+    return rid != null && database.getTransaction().isDeletedInTransaction(rid);
   }
 
   private void stopDedicatedReader() {
