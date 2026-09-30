@@ -263,7 +263,8 @@ public class KubernetesAutoJoin {
 
           // Mode.ADD atomically appends one peer to the current configuration. It is deliberately not the guarded
           // compare-and-set RaftClusterManager.addPeer issues (issue #7802): this pod adds ITSELF, under the id derived from
-          // its own address, so it cannot put a second id on an address the way two operator requests can.
+          // its own address. That does not make it airtight: if an operator already added a different id at this address,
+          // Mode.ADD commits it (no predicate), and the peers-share-address cluster alert is what reports it afterwards.
           // Unlike setConfiguration() (last-write-wins), concurrent joins from different pods are safe.
           final SetConfigurationRequest.Arguments addArgs = SetConfigurationRequest.Arguments.newBuilder()
               .setServersInNewConf(List.of(localPeer))
