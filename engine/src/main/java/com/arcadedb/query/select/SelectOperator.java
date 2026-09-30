@@ -251,8 +251,8 @@ public enum SelectOperator {
   abstract Object eval(final Document record, Object left, Object right);
 
   /**
-   * Reads the sort order as a predicate, answering false for a pair with no defined ordering (a BOOLEAN against a
-   * timestamp, issue #7754) instead of letting the comparator's IllegalArgumentException fail the whole select. It is
+   * Reads the sort order as a predicate, answering false for ANY pair with no defined ordering (the comparator's
+   * unsupported pairs, such as a BOOLEAN against a timestamp, issue #7754) instead of letting the comparator's IllegalArgumentException fail the whole select. It is
    * the native API's twin of what the SQL Gt/Lt/Ge/Le operators do with the same exception.
    */
   private static boolean ordered(final Object left, final Object right, final IntPredicate test) {
