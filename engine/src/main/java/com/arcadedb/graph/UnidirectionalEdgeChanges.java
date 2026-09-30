@@ -136,12 +136,13 @@ public final class UnidirectionalEdgeChanges {
     return deleteLookupTooLarge;
   }
 
-  void deleteLookupTooLarge() {
+  void markDeleteLookupTooLarge() {
     deleteLookupTooLarge = true;
   }
 
   /** Drops the changes of the transaction that ended: committed or rolled back, they are no longer its own. */
   public void transactionEnded() {
+    // NO CONTEXT BUILT IT, SO ITS SNAPSHOTS CHARGED NO QUERY BUDGET THAT HAS TO BE GIVEN BACK: DROPPED AS THEY ARE
     deleteLookup = null;
     deleteLookupTooLarge = false;
     created = null;
