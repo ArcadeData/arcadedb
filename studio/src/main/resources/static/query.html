@@ -392,8 +392,7 @@
     if (historyNavIndex < filtered.length - 1) {
       historyNavIndex++;
       let q = filtered[historyNavIndex];
-      $("#inputLanguage").val(q.l);
-      editor.setOption("mode", getEditorMode());
+      setEditorLanguage(q.l);
       editor.setValue(q.c);
       editor.setCursor(editor.lineCount(), 0);
     }
@@ -405,8 +404,7 @@
     if (historyNavIndex > 0) {
       historyNavIndex--;
       let q = filtered[historyNavIndex];
-      $("#inputLanguage").val(q.l);
-      editor.setOption("mode", getEditorMode());
+      setEditorLanguage(q.l);
       editor.setValue(q.c);
       editor.setCursor(editor.lineCount(), 0);
     } else {

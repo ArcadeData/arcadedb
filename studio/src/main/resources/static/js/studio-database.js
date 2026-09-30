@@ -2143,6 +2143,13 @@ function refreshActiveSidebarPanel() {
   }
 }
 
+// SETS THE QUERY LANGUAGE AND SWITCHES THE EDITOR'S SYNTAX MODE WITH IT: SETTING THE DROPDOWN ALONE LEFT A CYPHER QUERY
+// HIGHLIGHTED AS SQL (AND VICE VERSA), BECAUSE A PROGRAMMATIC .val() DOES NOT FIRE THE DROPDOWN'S change HANDLER
+function setEditorLanguage(language) {
+  $("#inputLanguage").val(language);
+  editor.setOption("mode", getEditorMode());
+}
+
 // --- Saved Queries ---
 
 function getSavedQueries() {
@@ -2174,9 +2181,13 @@ function populateSavedQueriesPanel() {
     let name = escapeHtml(q.name);
     let cmd = escapeHtml(q.c || "");
     let lang = escapeHtml(q.l || "sql");
-    html += "<div class='saved-query-entry' onclick='executeSavedQuery(" + i + ")'>";
+    // A CLICK ONLY LOADS THE QUERY, SO IT CAN BE EDITED BEFORE RUNNING IT; RUNNING IS THE EXPLICIT PLAY BUTTON (ISSUE #7049)
+    html += "<div class='saved-query-entry' title='Click to load into the editor' onclick='loadSavedQuery(" + i + ")'>";
     html += "<div class='saved-query-name'><span>" + name + "<span class='saved-query-lang'>" + lang + "</span></span>";
-    html += "<span class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete'><i class='fa fa-times'></i></span></div>";
+    html += "<span class='saved-query-actions'>";
+    html += "<span class='saved-query-run' onclick='event.stopPropagation(); executeSavedQuery(" + i + ")' title='Run'><i class='fa fa-play'></i></span>";
+    html += "<span class='saved-query-delete' onclick='event.stopPropagation(); deleteSavedQuery(" + i + ")' title='Delete'><i class='fa fa-times'></i></span>";
+    html += "</span></div>";
     html += "<div class='saved-query-preview'>" + cmd + "</div>";
     html += "</div>";
   }
@@ -2210,6 +2221,16 @@ function saveCurrentQuery() {
     populateSavedQueriesPanel();
     globalNotify("Saved", "Query saved as '" + escapeHtml(name.trim()) + "'", "success");
   });
+}
+
+function loadSavedQuery(index) {
+  let queries = getSavedQueries();
+  let q = queries[index];
+  if (!q) return;
+  if (q.l) setEditorLanguage(q.l);
+  editor.setValue(q.c || "");
+  globalActivateTab("tab-query");
+  editor.focus();
 }
 
 function executeSavedQuery(index) {
@@ -2337,7 +2358,7 @@ function loadHistoryEntry(index) {
   let queryHistory = getQueryHistory();
   let q = queryHistory[index];
   if (!q) return;
-  if (q.l) $("#inputLanguage").val(q.l);
+  if (q.l) setEditorLanguage(q.l);
   editor.setValue(q.c || "");
   globalActivateTab("tab-query");
   editor.focus();
@@ -2934,10 +2955,7 @@ function pasteReferenceExample(code, lang) {
   let tmp = document.createElement("textarea");
   tmp.innerHTML = code;
   let decoded = tmp.value;
-  if (lang) {
-    $("#inputLanguage").val(lang);
-    editor.setOption("mode", getEditorMode());
-  }
+  if (lang) setEditorLanguage(lang);
   editor.setValue(decoded);
   editor.focus();
 }
@@ -3074,7 +3092,7 @@ function browseType(typeName) {
   let limit = parseInt($("#inputLimit").val()) || 100;
   let query = "select from " + quoteSqlName(typeName);
 
-  $("#inputLanguage").val("sql");
+  setEditorLanguage("sql");
   editor.setValue(query);
   globalActivateTab("tab-query");
 
@@ -3134,7 +3152,7 @@ function countRecords(typeName) {
 function executeCommand(language, query) {
   globalResultset = null;
 
-  if (language != null) $("#inputLanguage").val(language);
+  if (language != null) setEditorLanguage(language);
   else language = $("#inputLanguage").val();
 
   if (query != null) editor.setValue(query);
