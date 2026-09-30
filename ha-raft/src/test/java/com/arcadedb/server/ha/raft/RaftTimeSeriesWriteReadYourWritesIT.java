@@ -232,6 +232,15 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
    * only once there is an actual write to make - matching the ordering PostPrometheusWriteHandler had before
    * this PR - so a nonexistent database never reaches {@code getDatabase()} on either the truly-empty-body
    * path or the well-formed-but-zero-series path.
+   * <p>
+   * Issue #7831: since #7681 reparented {@code AbstractBinaryHttpHandler} onto {@code DatabaseAbstractHandler},
+   * the database is resolved before {@code PostPrometheusWriteHandler.execute} runs, and a missing one raises
+   * {@code DatabaseNotAvailableException}, which {@code AbstractServerHttpHandler} answers {@code 404 Database not
+   * found} since #6778. The empty-body {@code 400} is therefore unreachable for a database that is not there, and
+   * {@code 404} is the accurate answer every other database route gives. The property this test protects is
+   * unchanged - never a {@code 500} - so it now pins {@code 404} on both shapes.
+   * {@code Issue7831TimeSeriesRoutesNonexistentDatabaseIT} pins the same contract on every
+   * {@code /api/v1/ts/{database}} route without a cluster.
    */
   @Test
   void prometheusNonexistentDatabaseNeverSurfacesA500() throws Exception {
@@ -241,15 +250,16 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String bogusDb = "this_database_does_not_exist";
 
-    // A nonexistent database combined with an empty body must stay 400 - not the 500 a premature
-    // getDatabase() resolution ahead of the rawBytes-empty check would produce.
+    // A nonexistent database combined with an empty body answers 404 (issue #7831): the database is resolved
+    // before the handler's empty-body check, and its absence is a "not found", never the 500 this test was written
+    // against.
     final HttpURLConnection badDbEmptyBodyConnection = openPrometheusWriteConnectionForDatabase(leaderPort, password, bogusDb);
     try (final OutputStream os = badDbEmptyBodyConnection.getOutputStream()) {
       os.flush();
     }
     assertThat(badDbEmptyBodyConnection.getResponseCode())
-        .as("A nonexistent database plus an empty body must stay 400, not fall through to a 500")
-        .isEqualTo(400);
+        .as("A nonexistent database plus an empty body must answer 404 Database not found, not fall through to a 500")
+        .isEqualTo(404);
 
     // The exact case the third review round flagged: a well-formed, Snappy-compressed, protobuf-decodable
     // WriteRequest with zero time series, against a nonexistent database. This must NOT surface as 500 -
@@ -262,8 +272,8 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
       os.flush();
     }
     assertThat(badDbEmptyWriteRequestConnection.getResponseCode())
-        .as("A nonexistent database plus a well-formed but zero-series WriteRequest must not surface as 500")
-        .isNotEqualTo(500);
+        .as("A nonexistent database plus a well-formed but zero-series WriteRequest must answer 404, not a 500")
+        .isEqualTo(404);
   }
 
   private HttpURLConnection openLineProtocolConnection(final int port, final String password) throws Exception {
