@@ -161,8 +161,8 @@ final class ParallelTypeScan {
 
   /**
    * Plans a parallel execution of the bucket steps {@code bucketSteps}, in their order, or returns {@code null} when
-   * this execution must stay sequential: parallel scans are disabled, the caller runs inside a transaction (the
-   * workers do not see its changes), on an async executor thread or on a scan producer thread (a producer must never
+   * this execution must stay sequential: parallel scans are disabled, the caller runs inside a transaction that has
+   * written something or pins the pages it reads (the workers do not see its changes, issue #8775), on an async executor thread or on a scan producer thread (a producer must never
    * consume a nested parallel scan, #4948), or there is not enough to share.
    */
   static ParallelTypeScan plan(final CommandContext context, final String typeName, final List<ExecutionStep> bucketSteps) {
@@ -221,7 +221,7 @@ final class ParallelTypeScan {
     return db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
         && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
         && !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
-        && !db.isTransactionActive();
+        && (!db.isTransactionActive() || db.getTransaction().isReadOnlyView());
   }
 
   /**

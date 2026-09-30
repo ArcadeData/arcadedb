@@ -1914,6 +1914,17 @@ public class TransactionContext implements Transaction {
     return totalImpactedPages > 0 || !indexChanges.isEmpty();
   }
 
+  /**
+   * True when this transaction has written nothing yet and pins nothing it reads (issue #8775): no page, record,
+   * deletion or index change is pending, and the isolation level is READ_COMMITTED, which caches no page it reads. What
+   * it sees is then exactly what the committed pages hold, so a reader on another thread sees the same.
+   */
+  public boolean isReadOnlyView() {
+    return isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED && !hasChanges() && newRecords.isEmpty()
+        && modifiedRecordsCache.isEmpty() && deletedRecordsInTx.isEmpty() && (updatedRecords == null || updatedRecords.isEmpty())
+        && bucketRecordDelta.isEmpty() && newPageCounters.isEmpty();
+  }
+
   public int getModifiedPages() {
     int result = 0;
     if (modifiedPages != null)
