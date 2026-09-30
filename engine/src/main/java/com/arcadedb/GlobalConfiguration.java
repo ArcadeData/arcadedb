@@ -3727,11 +3727,11 @@ public enum GlobalConfiguration {
    * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
    * <p>
    * This is the entry point for a value that arrived from an administrative command, where refusing loudly is an
-   * error the operator can read and act on. All four such writers use it: the {@code set server setting} and
-   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool, and
-   * {@code ALTER DATABASE ... SETTING} in SQL.
+   * error the operator can read and act on. The administrative writers use it: the {@code set server setting} and
+   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool,
+   * {@code ALTER DATABASE ... SETTING} in SQL, and the console's {@code SET} command and {@code -D} arguments (#7870).
    * <p>
-   * There is a FIFTH writer of raw text, and issue #7222 is what it cost to leave it out of that list:
+   * There is a further writer of raw text, and issue #7222 is what it cost to leave it out of that list:
    * {@link #readConfiguration()}, the system-property and environment-variable path, which used
    * {@link #setValue(Object)} and so got the permissive {@code Boolean.parseBoolean} - a container deployment
    * configures through exactly that path, and {@code requireAuthentication=yes} silently became {@code false}. It
@@ -3759,8 +3759,9 @@ public enum GlobalConfiguration {
    *       {@code Console.setGlobalConfiguration}, which calls this method directly and reports a refusal to the
    *       operator - as an error for {@code SET}, on {@code System.err} for {@code -D} (#7870).</li>
    * </ol>
-   * The last one used to store what it read straight into the overlay map with a plain {@code put}, touching
-   * neither this method nor {@link #setValue(Object)}, so a {@code "yes"} written there survived as the string
+   * The configuration-file one ({@link ContextConfiguration#fromJSON(String)}) used to store what it read straight
+   * into the overlay map with a plain {@code put}, touching neither this method nor {@link #setValue(Object)}, so a
+   * {@code "yes"} written there survived as the string
    * {@code "yes"} and {@link ContextConfiguration#getValueAsBoolean(GlobalConfiguration)} read it as {@code false}
    * through {@code Boolean.parseBoolean} - which for {@code arcadedb.ha.tls.mutualAuth} meant an operator writing
    * down that they wanted mutual TLS on the Raft channel turned it off instead.

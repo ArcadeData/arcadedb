@@ -1536,15 +1536,8 @@ public class Console {
     }
 
     /**
-     * Stores operator-typed text into a {@link GlobalConfiguration} setting, for both the {@code -D<key>=<value>} arguments
-     * ({@code printError == true}) and the {@code SET} command ({@code printError == false}).
-     * <p>
-     * Issue #7870: this is raw external text, so it goes through the same strict parse as every other such writer
-     * ({@link GlobalConfiguration#coerceFromAdminCommand(Object)}), not through {@code setValue}'s permissive
-     * {@code Boolean.parseBoolean}, which read {@code SET arcadedb.txWAL = yes} as {@code false} and silently turned the
-     * write-ahead log off. A refused value leaves the setting untouched. On the {@code -D} path it is reported on
-     * {@code System.err} and ignored, like the other two refusals there; on the {@code SET} path it is thrown as a
-     * {@link ConsoleException}, so it is reported as an ERROR and fails a batch script like any other failed command.
+     * Issue #7870: operator-typed text goes through the strict parse ({@code yes} is refused, not read as {@code false}).
+     * A refusal is printed and ignored for {@code -D} ({@code printError}), and thrown for {@code SET} so it fails the command.
      */
     private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
         final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
@@ -1553,18 +1546,17 @@ public class Console {
                 if (printError)
                     System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
             } else {
-                final Object coerced;
                 try {
-                    coerced = cfg.coerceFromAdminCommand(value);
-                } catch (final IllegalArgumentException e) {
-                    if (printError) {
-                        System.err.println(e.getMessage() + ". The setting will be ignored");
-                        return false;
-                    }
-                    throw new ConsoleException(e.getMessage());
+                    cfg.setValue(cfg.coerceFromAdminCommand(value));
+                    return true;
+                } catch (final RuntimeException e) {
+                    if (!printError)
+                        throw new ConsoleException(e.getMessage());
+                    // THE -D PATH MUST NEVER ABORT THE CONSOLE, AND MUST NOT LEAVE THE REFUSED TEXT IN THE SYSTEM PROPERTY
+                    // FOR A LATER, POSSIBLY PERMISSIVE, READER
+                    System.clearProperty(key);
+                    System.err.println(e.getMessage() + ". The setting will be ignored");
                 }
-                cfg.setValue(coerced);
-                return true;
             }
         } else {
             if (printError)

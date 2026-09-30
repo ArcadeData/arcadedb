@@ -59,6 +59,7 @@ class ConsoleGlobalSettingStrictParseTest {
     console.close();
     System.clearProperty(GlobalConfiguration.TX_WAL.getKey());
     System.clearProperty(GlobalConfiguration.ASYNC_TX_BATCH_SIZE.getKey());
+    System.clearProperty(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getKey());
     GlobalConfiguration.resetAll();
   }
 
@@ -119,6 +120,35 @@ class ConsoleGlobalSettingStrictParseTest {
     runCapturingStderr("-D" + GlobalConfiguration.TX_WAL.getKey() + "=false");
 
     assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).isFalse();
+  }
+
+  @Test
+  void setCommandRefusesAnEmptyBooleanValue() {
+    assertThatThrownBy(() -> console.parse("set arcadedb.txWAL ="));
+
+    assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).isTrue();
+  }
+
+  @Test
+  void setCommandRefusesAValueOutsideTheAllowList() {
+    assertThatThrownBy(() -> console.parse("set arcadedb.bucketReuseSpaceMode = huge")).hasMessageContaining("huge");
+
+    assertThat(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString()).isEqualTo("high");
+  }
+
+  @Test
+  void commandLineArgumentWithoutAValueIsRefusedForABoolean() throws IOException {
+    final String stderr = runCapturingStderr("-D" + GlobalConfiguration.TX_WAL.getKey());
+
+    assertThat(GlobalConfiguration.TX_WAL.getValueAsBoolean()).as("'-Darcadedb.txWAL' alone must not turn the WAL off").isTrue();
+    assertThat(stderr).contains(GlobalConfiguration.TX_WAL.getKey()).contains("ignored");
+  }
+
+  @Test
+  void commandLineArgumentRefusalDoesNotLeaveTheRefusedTextInTheSystemProperty() throws IOException {
+    runCapturingStderr("-D" + GlobalConfiguration.TX_WAL.getKey() + "=yes");
+
+    assertThat(System.getProperty(GlobalConfiguration.TX_WAL.getKey())).isNull();
   }
 
   private static String runCapturingStderr(final String setting) throws IOException {
