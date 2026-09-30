@@ -698,6 +698,10 @@ public class AnchorSelector {
       seeks.add(new AnchorSelection.UnionIndexSeek(propertyName, value, indexStats, List.of(value)));
     }
 
+    // A union of unselective seeks loads a large share of the label one random access at a time: the scan is cheaper then
+    if (totalCost >= costModel.estimateScanCost(label))
+      return null;
+
     return new AnchorSelection(node.getVariable(), node, seeks, totalCost, Math.min(typeCount, Math.max(1, estimatedRows)));
   }
 

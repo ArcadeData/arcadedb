@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -126,7 +127,7 @@ class Issue8723CypherOrIndexSeekTest extends TestHelper {
     assertThat(plan).contains("IN [1, 2]").doesNotContain("LiteralExpression@");
   }
 
-  private static List<Object> expectedIds(final java.util.function.IntPredicate predicate) {
+  private static List<Object> expectedIds(final IntPredicate predicate) {
     final List<Object> ids = new ArrayList<>();
     for (int i = 0; i < VERTICES; i++)
       if (predicate.test(i))

@@ -40,6 +40,7 @@ final class MappedScanStep extends AbstractExecutionStep {
   // The page range [fromPage, toPage) a parallel scan assigned to this step, or -1/-1 for the whole bucket
   private       int                          fromPage = -1;
   private       int                          toPage   = -1;
+  private       boolean                      warnedAboutSkippedRecords;
 
   private Iterator<Record> iterator;
 
@@ -83,8 +84,11 @@ final class MappedScanStep extends AbstractExecutionStep {
             return;
           }
         }
-        if (iterator instanceof BucketIterator bucketIterator && bucketIterator.getSkippedRecordCount() > 0)
+        if (!warnedAboutSkippedRecords && iterator instanceof BucketIterator bucketIterator
+            && bucketIterator.getSkippedRecordCount() > 0) {
+          warnedAboutSkippedRecords = true;
           ParallelRecordScan.warnSkipped(bucketId, bucketIterator.getSkippedRecordCount());
+        }
       }
 
       @Override

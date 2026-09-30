@@ -39,6 +39,10 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
  * below, each of which reads the row and the command's parameters and nothing else. A function call, a subquery, a
  * pattern or a comprehension may keep state, call user code or need the rest of the pipeline, so a predicate with one
  * of them keeps the scan on the calling thread, as does any node this list does not know.
+ * <p>
+ * The workers share the one predicate instance, where a SQL scan gives each its own copy of the AST. A node joins the list
+ * only if evaluating it is thread-safe: no mutable state, or state published through volatile immutable snapshots as
+ * {@code ComparisonExpression}'s temporal memos are. Keep that in mind before adding a node or a cache to one of them.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

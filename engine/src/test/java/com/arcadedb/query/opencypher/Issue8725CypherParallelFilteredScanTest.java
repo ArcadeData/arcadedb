@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -91,6 +92,19 @@ class Issue8725CypherParallelFilteredScanTest extends TestHelper {
     final Map<String, Object> params = Map.of("g", 12, "n", "n5");
     assertThat(column(query, params)).isNotEmpty().isEqualTo(sequential(query, params));
     assertThat(profile(query, params)).contains("[parallel]");
+  }
+
+  @Test
+  void temporalAndParameterPredicatesAreThreadSafeAcrossWorkers() {
+    database.getSchema().createVertexType("Dated", 4);
+    database.transaction(() -> {
+      for (int i = 0; i < ROWS; i++)
+        database.newVertex("Dated").set("id", i, "day", LocalDate.of(2020, 1, 1).plusDays(i % 1000)).save();
+    });
+    final String query = "MATCH (d:Dated) WHERE d.day >= $from AND d.day < $to RETURN d.id AS id";
+    final Map<String, Object> params = Map.of("from", LocalDate.of(2020, 3, 1), "to", LocalDate.of(2020, 6, 1));
+    assertThat(profile(query, params)).contains("[parallel]");
+    assertThat(column(query, params)).isNotEmpty().isEqualTo(sequential(query, params));
   }
 
   @Test
