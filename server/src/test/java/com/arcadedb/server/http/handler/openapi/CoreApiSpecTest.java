@@ -66,6 +66,21 @@ class CoreApiSpecTest {
             "commitRetries", "commitRetryDelayMs", "expectedVertexCount");
   }
 
+  /** Issue #7682: the load honours arcadedb-session-id, and says what it does and does not do with it. */
+  @Test
+  void batchDeclaresTheSessionHeaderAndThatTheLoadDoesNotJoinTheTransaction() {
+    final Operation post = openAPI.getPaths().get("/api/v1/batch/{database}").getPost();
+    final Parameter session = post.getParameters().stream()
+        .filter(p -> HttpSessionManager.ARCADEDB_SESSION_ID.equals(p.getName())).findFirst().orElse(null);
+    assertThat(session).as("the batch operation must declare the session header it now honours").isNotNull();
+    assertThat(session.getIn()).isEqualTo("header");
+    assertThat(session.getRequired()).isFalse();
+    assertThat(session.getDescription()).contains("404").contains("does NOT put the loaded records in that transaction");
+
+    assertThat(post.getResponses().get("200").getHeaders()).containsKey(HttpSessionManager.ARCADEDB_SESSION_ID);
+    assertThat(post.getResponses().get("404").getDescription()).contains("arcadedb-session-id");
+  }
+
   @Test
   void batchDeclaresTruncationTimeout() {
     final Operation post = openAPI.getPaths().get("/api/v1/batch/{database}").getPost();
