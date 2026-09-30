@@ -690,7 +690,9 @@ public class AnchorSelector {
       if (indexStats == null)
         return null;
 
-      final Object value = values.size() == 1 ? values.getFirst() : new InListValues(values);
+      // Always the IN-list form: a single `x IN $xs` is one parameter that resolves to a whole list at runtime, which a plain
+      // equality seek would look up as one key
+      final Object value = new InListValues(values);
       final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
       totalCost += values.size() * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
       estimatedRows += indexStats.isUnique() ? values.size() : (long) (values.size() * typeCount * perSeekSelectivity);
