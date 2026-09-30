@@ -114,6 +114,10 @@ public final class IncomingEdgeLookup {
   // HOW MANY PATTERN WALKS THE THREAD IS INSIDE: THE SQL GRAPH FUNCTIONS ANSWER THE INCOMING SIDE ONLY THERE
   private static final ThreadLocal<int[]> PATTERN_WALKS = ThreadLocal.withInitial(() -> new int[1]);
 
+  // WHETHER THE SCANS READ THE BUCKETS WHATEVER THE CALLER MAY READ: THE LOOKUP OF A VERTEX DELETE, WHICH DELETES THE EDGES AS A
+  // CONSEQUENCE OF THE VERTEX AND NEVER RETURNS THEM, AS THE WALK OF THE VERTEX'S OWN EDGE LISTS DOES
+  private final boolean unchecked;
+
   // CREATED ON FIRST USE: A QUERY OVER A SCHEMA WITHOUT UNIDIRECTIONAL TYPES NEVER NEEDS IT
   private volatile Map<String, Snapshot> snapshots;
   // THE STEPS ASK ONCE PER ROW, MOSTLY FOR THE SAME TYPES: THE LAST ANSWER AND THE UNTYPED ONE ARE KEPT, UNTIL THE
@@ -121,6 +125,18 @@ public final class IncomingEdgeLookup {
   private volatile ClosureEntry          lastClosure;
   private volatile Closure               untypedClosure;
   private volatile long                  memoizedAt = -1L;
+
+  public IncomingEdgeLookup() {
+    this(false);
+  }
+
+  IncomingEdgeLookup(final boolean unchecked) {
+    this.unchecked = unchecked;
+  }
+
+  private static boolean isReadable(final DatabaseInternal database, final Bucket bucket, final boolean unchecked) {
+    return unchecked || SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+  }
 
   /**
    * The edges of {@code vertex} in {@code direction} over {@code edgeTypes} (all when empty), as
@@ -225,8 +241,8 @@ public final class IncomingEdgeLookup {
    * vertices in one transaction costs one scan rather than N. A type too large to index in heap, or a delete with no
    * transaction, is answered by a scan of its own for this vertex alone: slower, but on no heap.
    * <p>
-   * The buckets the caller cannot read are left out, as in a query: a user who may delete the vertex but not read the
-   * edges leaves those edges behind. An edge another transaction creates into the vertex after this transaction's scan
+   * The buckets are read whatever the caller may read, as the vertex's own edge lists are walked to delete it: the
+   * edges go as a consequence of the vertex and are never returned. An edge another transaction creates into the vertex after this transaction's scan
    * is not seen either, as the target holds no trace of it to conflict on.
    * <p>
    * As in the queries, a lightweight edge is looked for on a type that DECLARES itself lightweight: the deprecated
@@ -432,7 +448,7 @@ public final class IncomingEdgeLookup {
         final UnidirectionalEdgeChanges builtBy = tx != null ? tx.getUnidirectionalEdgeChanges() : null;
         if (builtBy != null)
           builtBy.scanTaken();
-        for (final Snapshot snapshot : Snapshot.build(database, missing, builtBy, context)) {
+        for (final Snapshot snapshot : Snapshot.build(database, missing, builtBy, context, unchecked)) {
           final Snapshot previous = map.put(snapshot.typeName, snapshot);
           if (previous != null)
             previous.limit.release();
@@ -567,13 +583,13 @@ public final class IncomingEdgeLookup {
     }
 
     static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
-        final UnidirectionalEdgeChanges builtBy, final CommandContext context) {
+        final UnidirectionalEdgeChanges builtBy, final CommandContext context, final boolean unchecked) {
       SCANS_TAKEN.addAndGet(typeNames.size());
       final Schema schema = database.getSchema();
       final Map<String, Builder> builders = new HashMap<>();
       final List<Builder> lightweight = new ArrayList<>();
       try {
-        return build(database, typeNames, builtBy, context, schema, builders, lightweight);
+        return build(database, typeNames, builtBy, context, schema, builders, lightweight, unchecked);
       } catch (final RuntimeException | Error e) {
         // A SCAN THAT FAILED (THE HEAP CAP, AN UNREADABLE RECORD) GIVES BACK WHAT ITS BUILDERS CHARGED AT ONCE
         for (final Builder builder : builders.values())
@@ -584,7 +600,7 @@ public final class IncomingEdgeLookup {
 
     private static List<Snapshot> build(final DatabaseInternal database, final List<String> typeNames,
         final UnidirectionalEdgeChanges builtBy, final CommandContext context, final Schema schema,
-        final Map<String, Builder> builders, final List<Builder> lightweight) {
+        final Map<String, Builder> builders, final List<Builder> lightweight, final boolean unchecked) {
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
       for (final String typeName : typeNames) {
         final Builder builder = new Builder(OperationHeapLimit.of(context, "edges",
@@ -595,7 +611,7 @@ public final class IncomingEdgeLookup {
         // THE USER'S resultSetLimit, AND A SCAN CUT SHORT WOULD ANSWER PART OF THE EDGES WITH NO ERROR. A BUCKET THE
         // CALLER CANNOT READ IS LEFT OUT, AS IN THE LIGHTWEIGHT WALK BELOW
         for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
-          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          if (isReadable(database, bucket, unchecked))
             scan(database, bucket, guard, record -> {
               final Edge edge = record.asEdge();
               builder.add(edge.getIn(), edge.getOut(), edge.getIdentity().getBucketId(), edge.getIdentity().getPosition());
@@ -606,7 +622,7 @@ public final class IncomingEdgeLookup {
       }
 
       if (!lightweight.isEmpty())
-        addLightweightEdges(database, builders, lightweight.size(), guard);
+        addLightweightEdges(database, builders, lightweight.size(), guard, unchecked);
 
       final List<Snapshot> result = new ArrayList<>(typeNames.size());
       for (final String typeName : typeNames) {
@@ -626,7 +642,7 @@ public final class IncomingEdgeLookup {
      * holds.
      */
     private static void addLightweightEdges(final DatabaseInternal database, final Map<String, Builder> builders,
-        final int lightweightTypes, final WorkGuard guard) {
+        final int lightweightTypes, final WorkGuard guard, final boolean unchecked) {
       final Schema schema = database.getSchema();
       final String[] names = new String[lightweightTypes];
       int n = 0;
@@ -638,7 +654,7 @@ public final class IncomingEdgeLookup {
         if (type.getType() != Vertex.RECORD_TYPE)
           continue;
         for (final Bucket bucket : type.getBuckets(false)) {
-          if (!SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          if (!isReadable(database, bucket, unchecked))
             continue;
           scan(database, bucket, guard, record -> {
             final Vertex vertex = record.asVertex();
@@ -666,7 +682,7 @@ public final class IncomingEdgeLookup {
       final List<String> lightweight = new ArrayList<>();
       for (final String typeName : typeNames) {
         for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
-          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          if (isReadable(database, bucket, true))
             scan(database, bucket, guard, record -> {
               final Edge edge = record.asEdge();
               if (target.equals(edge.getIn()))
@@ -684,7 +700,7 @@ public final class IncomingEdgeLookup {
         if (type.getType() != Vertex.RECORD_TYPE)
           continue;
         for (final Bucket bucket : type.getBuckets(false))
-          if (SecurityHelper.canAccessFile(database, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          if (isReadable(database, bucket, true))
             scan(database, bucket, guard, record -> {
               for (final Edge edge : record.asVertex().getEdges(Vertex.DIRECTION.OUT, names))
                 if (edge.getIdentity().getPosition() < 0 && target.equals(edge.getIn()))

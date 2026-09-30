@@ -99,6 +99,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           final int ceiling = (int) Math.min(Math.max(limit.getMaxElements(), 0L), Integer.MAX_VALUE);
           final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter,
               aggregationMetrics, ceiling);
+          // THE SCAN STOPS ONE BLOCK PAST THE CEILING AT MOST, AND WHAT COMES BACK OVER IT IS REFUSED HERE
           limit.check(aggResult.getUsedBucketCount());
 
           // Lazy conversion: wrap the bucket timestamp iterator instead of materializing all rows

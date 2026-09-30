@@ -61,6 +61,23 @@ class Issue8633SqlScriptLetBetweenTransactionsTest extends TestHelper {
     assertThat(database.countType("Log", false)).isEqualTo(3);
   }
 
+  @Test
+  void aRetryBlockAndAPlainBlockEachRunOnceInBothOrders() {
+    database.getSchema().createDocumentType("Log");
+    database.command("sqlscript", """
+        BEGIN;
+        INSERT INTO Log SET n = 1;
+        COMMIT RETRY 3;
+        BEGIN;
+        INSERT INTO Log SET n = 2;
+        COMMIT;
+        BEGIN;
+        INSERT INTO Log SET n = 3;
+        COMMIT RETRY 3;
+        """).close();
+    assertThat(database.countType("Log", false)).isEqualTo(3);
+  }
+
   private void assertEachBlockRunsOnce(final boolean bidirectional) {
     database.getSchema().createVertexType("Question");
     database.getSchema().createVertexType("Tag");
