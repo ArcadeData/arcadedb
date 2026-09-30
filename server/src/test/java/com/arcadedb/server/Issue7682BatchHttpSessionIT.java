@@ -27,8 +27,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -129,6 +129,34 @@ class Issue7682BatchHttpSessionIT extends BaseGraphServerTest {
       assertThat(countVertices(rootAuth(), null)).isZero();
     } finally {
       rollback(rootAuth(), rootSession);
+    }
+  }
+
+  /** A session is one transaction on one database: naming it on a load into another database is refused. */
+  @Test
+  void aLoadNamingASessionOfAnotherDatabaseIsRefused() throws Exception {
+    seed();
+    final String otherDatabase = getDatabaseName() + "7682";
+    final HttpResponse<String> created = post("/server", rootAuth(), null,
+        new JSONObject().put("command", "create database " + otherDatabase).toString(), "application/json");
+    assertThat(created.statusCode()).as("could not create the second database: %s", created.body()).isEqualTo(200);
+
+    final String sessionId = beginSession(rootAuth());
+    try {
+      final HttpRequest.Builder builder = request("/batch/" + otherDatabase, rootAuth(), sessionId)
+          .header("Content-Type", NDJSON)
+          .POST(HttpRequest.BodyPublishers.ofString(
+              "{\"@type\":\"vertex\",\"@class\":\"V7682\",\"@id\":\"a\"}\n"));
+      final HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+
+      assertThat(response.statusCode())
+          .as("a session of '%s' must not be usable on '%s': %s", getDatabaseName(), otherDatabase, response.body())
+          .isEqualTo(404);
+      assertThat(response.headers().firstValue(HttpSessionManager.ARCADEDB_SESSION_ID)).isEmpty();
+    } finally {
+      rollback(rootAuth(), sessionId);
+      post("/server", rootAuth(), null, new JSONObject().put("command", "drop database " + otherDatabase).toString(),
+          "application/json");
     }
   }
 

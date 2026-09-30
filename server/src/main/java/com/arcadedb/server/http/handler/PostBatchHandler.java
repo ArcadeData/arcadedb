@@ -238,7 +238,7 @@ import java.util.logging.Level;
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
   private static final int        VERTEX_BATCH_SIZE     = 10_000;
-  private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
+  private static final HttpString SESSION_ID_HEADER     = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
   /** Value of the {@code phase} field of a progress line while vertices are being committed. */
   private static final String     VERTEX_PHASE          = "vertices";
   /** Value of the {@code phase} field of a progress line while edges are being accepted. */
@@ -374,7 +374,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // declines the upload the same way every other early verdict does (issue #7682). See runInSession.
     final HttpSession session;
     try {
-      session = resolveSession(exchange, user);
+      session = resolveSession(exchange, user, databaseName);
     } catch (final HttpSessionException e) {
       inputStream.close();
       throw e;
@@ -396,10 +396,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * outside the transaction its caller believes it is inside: the same answer {@code POST /ts/{database}/write}
    * gives since issue #7402, rather than the degrade a read gets.
    * <p>
+   * A session opened on ANOTHER database is refused the same way. An HTTP session is one transaction on one
+   * database, and nothing in the id says which, so without this check a load into {@code B} naming a session of
+   * {@code A} would run under {@code A}'s lock and answer with {@code A}'s id - harmless, since the principal is
+   * checked and the load never touches the session's transaction, but it echoes a session the request has nothing
+   * to do with (code review on PR #8729). Names are compared case-sensitively, as the server looks databases up.
+   * <p>
    * The presence test is deliberately the one {@code DatabaseAbstractHandler.setTransactionInThreadLocal} makes on
    * the same header, so the two paths cannot disagree about whether a request named a session at all.
    */
-  private HttpSession resolveSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  private HttpSession resolveSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String databaseName) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId == null || sessionId.isEmpty())
       return null;
@@ -407,6 +414,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
     if (session == null)
       throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+
+    final DatabaseInternal sessionDatabase = session.transaction.getDatabase();
+    if (sessionDatabase == null || !databaseName.equals(sessionDatabase.getName()))
+      throw new HttpSessionException(
+          "Remote transaction '" + sessionId.getFirst() + "' does not belong to database '" + databaseName + "'");
     return session;
   }
 
@@ -445,6 +457,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   private ExecutionResponse runInSession(final HttpServerExchange exchange, final ServerSecurityUser user,
       final HttpSession session, final String databaseName, final String contentType, final boolean streaming,
       final CountingInputStream inputStream) throws Exception {
+    // Set before the lock is taken, not inside the callback: the streaming encoding sends its headers with the first
+    // progress line, from inside load(). The cost is that a refusal raised by execute() itself - a 503 lock timeout,
+    // a 404 because the session ended while this request waited for it - also carries the id; the status says what
+    // happened to it, and the id is the one the client sent.
     exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
 
     final ExecutionResponse[] response = new ExecutionResponse[1];
