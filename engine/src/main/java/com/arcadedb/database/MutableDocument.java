@@ -374,7 +374,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       embMap.put(mapKey, emb);
       set(propertyName, embMap);
     } else if (old instanceof Map)
-      ((Map<String, EmbeddedDocument>) old).put(mapKey, emb);
+      putInStoredMap(propertyName, (Map<Object, EmbeddedDocument>) old, mapKey, emb);
     else
       throw new IllegalArgumentException(
           "Property '" + propertyName + "' is '" + old.getClass() + "', but null or Map was expected");
@@ -409,9 +409,28 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
         embeddedTypeName);
-    ((Map<Object, EmbeddedDocument>) old).put(propertyMapKey, emb);
+    putInStoredMap(propertyName, (Map<Object, EmbeddedDocument>) old, propertyMapKey, emb);
 
     return emb;
+  }
+
+  /**
+   * Adds the embedded document to the map stored in the property, healing a caller-set immutable map the way the
+   * collection arm of {@link #newEmbeddedDocument(String, String)} does (issues #7777, #8712).
+   */
+  private void putInStoredMap(final String propertyName, final Map<Object, EmbeddedDocument> stored, final Object key,
+      final EmbeddedDocument emb) {
+    try {
+      stored.put(key, emb);
+      dirty = true;
+      propertiesAssigned = true;
+    } catch (final UnsupportedOperationException e) {
+      // THE STORED MAP IS IMMUTABLE (E.G. A Map.of() THE CALLER SET): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE
+      // NEW ENTRY. TRY/CATCH RATHER THAN A CHECK UP FRONT BECAUSE THE JDK EXPOSES NO "IS IT MUTABLE" QUERY
+      final Map<Object, EmbeddedDocument> copy = new LinkedHashMap<>(stored);
+      copy.put(key, emb);
+      set(propertyName, copy);
+    }
   }
 
   /**

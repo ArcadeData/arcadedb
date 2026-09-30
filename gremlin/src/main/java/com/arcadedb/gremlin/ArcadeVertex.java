@@ -133,6 +133,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     this.graph.tx().readWrite();
 
     final MutableVertex mutableElement = baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
 
     mutableElement.set(key, value);
     mutableElement.save();
@@ -151,6 +153,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     this.graph.tx().readWrite();
 
     final MutableVertex mutableElement = baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
     mutableElement.set(key, value);
     mutableElement.save();
 
@@ -165,6 +169,8 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     this.graph.tx().readWrite();
 
     final MutableVertex mutableElement = baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
     final MutableEmbeddedDocument embedded = mutableElement.newEmbeddedDocument(typeName, key);
     mutableElement.save();
 

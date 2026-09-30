@@ -132,6 +132,8 @@ public abstract class ArcadeElement<T extends Document> implements Element, Iden
         graph.features().vertex().properties().supportsNullPropertyValues();
 
     final MutableDocument mutableElement = baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
 
     for (int i = 0; i < propertyKeyValues.length; i = i + 2) {
       if (!propertyKeyValues[i].equals(org.apache.tinkerpop.gremlin.structure.T.id) && !propertyKeyValues[i].equals(
