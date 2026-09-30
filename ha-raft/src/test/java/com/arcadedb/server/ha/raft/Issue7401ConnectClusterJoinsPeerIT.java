@@ -111,6 +111,8 @@ class Issue7401ConnectClusterJoinsPeerIT extends BaseRaftHATest {
 
     dropFromConfigurationAndRestart(leader, rejoining);
 
+    // Passes only because the fixture restored the leader's HTTP-address map: the declared port reaches the
+    // follower's map, not the leader's, where the seed runs. Drop that restore once #8689 is fixed.
     final Response response = serverCommand(follower, "connect cluster " + joinAddressOf(rejoining));
 
     assertThat(response.status()).as("body: %s", response.body()).isEqualTo(200);
