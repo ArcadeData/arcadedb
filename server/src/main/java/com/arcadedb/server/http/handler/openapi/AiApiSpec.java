@@ -453,8 +453,8 @@ public class AiApiSpec implements OpenApiContributor {
     final Schema<String> type = SpecBuilders.string("""
         Which event this is. 'tool_start' and 'tool_end' bracket one tool the server ran locally, and 'done' \
         terminates a complete stream. 'error' terminates a stream cut short after it started - the gateway's \
-        connection dropped or fell silent - and says why; no 'done' follows it. The gateway's own 'session' and 'tool_call' events never appear: the \
-        server consumes both and synthesizes the pair above in their place. Any OTHER value is an event the \
+        connection dropped or fell silent - and says why; no 'done' follows it. The gateway's own 'session' and \
+        'tool_call' events never appear: the server consumes both and synthesizes the pair above in their place. Any OTHER value is an event the \
         gateway added and this server relays unchanged - ignore what you do not recognise rather than failing \
         on it.""");
     type.setEnum(List.of("tool_start", "tool_end", "done", "error"));
@@ -475,8 +475,9 @@ public class AiApiSpec implements OpenApiContributor {
         the caller. On an 'error' event, a message fit to show the user saying why the stream ended early."""));
     schema.addProperty("code", SpecBuilders.string("""
         Machine-readable reason, on 'error' only: 'gateway_interrupted' when the gateway's connection dropped, \
-        'gateway_timeout' when it stopped sending, 'internal_error' otherwise. All three are retryable; the \
-        interrupted exchange was not persisted."""));
+        'gateway_timeout' when it stopped sending, a 'token_*' code when the subscription token was rejected, \
+        'internal_error' otherwise. The same vocabulary as the 'code' member of the error bodies the chat \
+        operations answer before a stream starts. The interrupted exchange was not persisted."""));
     schema.addProperty("response", SpecBuilders.string(
         "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
     schema.addProperty("commands", SpecBuilders.arrayOf(SpecBuilders.ref("AiCommand"),

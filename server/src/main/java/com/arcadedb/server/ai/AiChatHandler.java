@@ -427,9 +427,17 @@ public class AiChatHandler extends AbstractServerHttpHandler {
    * nobody left to tell.
    */
   private void endStreamWithError(final OutputStream output, final Exception e, final String chatId) {
-    final String code;
-    final String message;
-    if (e instanceof HttpTimeoutException) {
+    if (e instanceof InterruptedException)
+      Thread.currentThread().interrupt();
+
+    String code;
+    String message;
+    if (e instanceof AiTokenException tokenException) {
+      // Keeps the token_* code Studio switches to its inactive panel on, as the pre-stream answer does
+      final JSONObject body = new JSONObject(tokenException.getJsonResponse());
+      code = body.getString("code", "token_invalid");
+      message = body.getString("error", "Invalid or expired subscription token");
+    } else if (e instanceof HttpTimeoutException) {
       code = "gateway_timeout";
       message = "AI service stopped responding before the answer was complete. Please try again later.";
     } else if (e instanceof IOException) {

@@ -124,7 +124,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   /** The reporter's case: the gateway's connection is closed under the relay ("AI gateway I/O error: closed"). */
   @Test
   void aGatewayThatDropsMidStreamEndsTheStreamWithAnErrorEvent() throws Exception {
-    startGateway(out -> {
+    startGateway((in, out) -> {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeEvent(out, new JSONObject().put("type", "text").put("n", 1));
@@ -148,11 +148,13 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   @Test
   void aGatewayThatFallsSilentMidStreamEndsTheStreamWithATimeoutEvent() throws Exception {
     AiChatHandler.streamSilenceMs = 1_000L;
-    startGateway(out -> {
+    startGateway((in, out) -> {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
-      // then silence, with the connection held open
-      Thread.sleep(HANG_DETECT_MS);
+      // then silence, with the connection held open until this server gives up on it and closes it
+      while (in.read() >= 0) {
+        // discard
+      }
     });
 
     final List<JSONObject> events = streamedChat();
@@ -168,7 +170,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
   /** A drop right after a tool ran: Studio has already drawn the tool, and still needs to be told the answer is lost. */
   @Test
   void aGatewayThatDropsAfterAToolCallEndsTheStreamWithAnErrorEvent() throws Exception {
-    startGateway(out -> {
+    startGateway((in, out) -> {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeEvent(out, new JSONObject().put("type", "tool_call").put("id", "tc-1").put("name", "get_schema")
@@ -193,7 +195,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
    */
   @Test
   void aHeartbeatCommentFromTheGatewayIsRelayedToTheClient() throws Exception {
-    startGateway(out -> {
+    startGateway((in, out) -> {
       write(out, SSE_HEADERS);
       writeEvent(out, new JSONObject().put("type", "session").put("sessionId", "s-1"));
       writeChunk(out, ": keepalive\n\n");
@@ -224,7 +226,7 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
 
   @FunctionalInterface
   private interface Script {
-    void answer(OutputStream out) throws Exception;
+    void answer(InputStream in, OutputStream out) throws Exception;
   }
 
   /**
@@ -239,12 +241,13 @@ class Issue8642AiChatStreamInterruptedTest extends BaseGraphServerTest {
           final Socket connection = gateway.accept();
           final Thread handler = new Thread(() -> {
             try (connection) {
-              final String path = readRequest(connection.getInputStream());
+              final InputStream in = connection.getInputStream();
+              final String path = readRequest(in);
               final OutputStream out = connection.getOutputStream();
               if (path.startsWith("/api/chat/tool_result/"))
                 write(out, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}");
               else
-                script.answer(out);
+                script.answer(in, out);
             } catch (final Exception ignored) {
               // The test asserts on the client side
             }
