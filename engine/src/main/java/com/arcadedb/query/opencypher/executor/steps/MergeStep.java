@@ -88,7 +88,6 @@ public class MergeStep extends AbstractExecutionStep {
   // The SET clause that follows this MERGE and that this step applies itself (issue #8735), and what that takes
   private       SetClause           absorbedSet;
   private       SetClauseApplier    absorbedSetApplier;
-  private final Map<RID, MutableDocument> absorbedWrittenDocs = new HashMap<>();
   // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
   private       boolean             createItemsResolved;
   private       List<SetClause.SetItem> createItems;
@@ -276,7 +275,9 @@ public class MergeStep extends AbstractExecutionStep {
           applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
         // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
         if (absorbedSet != null && !createSetFolded)
-          absorbedSetApplier.apply(absorbedSet, r, absorbedWrittenDocs, labelReplacements);
+          // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
+          // back through an earlier write, and a step-wide map would retain a document per matched node
+          absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
       }
 
       resultsRef.set(results);
@@ -1015,7 +1016,7 @@ public class MergeStep extends AbstractExecutionStep {
       }
 
       if (vertex == null) {
-        vertex = createVertex(nodePattern, baseResult);
+        vertex = createVertex(nodePattern, baseResult, null);
         if (nodePattern.getVariable() != null)
           baseResult.setProperty(nodePattern.getVariable(), vertex);
       }
@@ -1316,10 +1317,6 @@ public class MergeStep extends AbstractExecutionStep {
    * @param result current result context for evaluating property expressions
    * @return created vertex
    */
-  private Vertex createVertex(final NodePattern nodePattern, final Result result) {
-    return createVertex(nodePattern, result, null);
-  }
-
   /**
    * @param foldedSet the SET items {@link #foldableCreateItems} accepted, applied to the vertex before its first
    *                  save, or null

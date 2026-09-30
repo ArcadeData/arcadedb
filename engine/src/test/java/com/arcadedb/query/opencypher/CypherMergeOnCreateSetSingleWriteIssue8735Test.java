@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for GitHub issue #8735: {@code MERGE (v:V {id: r.id}) ON CREATE SET v.name = r.name} saved the new
@@ -39,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherMergeOnCreateSetSingleWriteIssue8735Test extends TestHelper {
-  private static long updates(final com.arcadedb.database.Database db) {
+  private static long updates(final Database db) {
     return ((Number) db.getStats().get("updateRecord")).longValue();
   }
 
@@ -88,7 +90,7 @@ class CypherMergeOnCreateSetSingleWriteIssue8735Test extends TestHelper {
   }
 
   @Test
-  void onCreateSetOverridesPatternPropertyAndCountsStatistics() {
+  void onCreateSetOverridesPatternProperty() {
     try (final ResultSet rs = database.command("opencypher",
         "MERGE (v:V8735c {id: 1, name: 'pattern'}) ON CREATE SET v.name = 'set', v.other = 2 RETURN v")) {
       final Vertex v = rs.next().getVertex().get();
@@ -219,6 +221,61 @@ class CypherMergeOnCreateSetSingleWriteIssue8735Test extends TestHelper {
   @Test
   void setAfterCreateCountsStatistics() {
     assertThat(propertiesSet("CREATE (v:V8735r {id: 1}) SET v.name = 'x', v.other = 2")).isEqualTo(3);
+  }
+
+  @Test
+  void absorbedSetOnADuplicateKeyInsideOneBatchStillMatches() {
+    final List<Map<String, Object>> rows = new ArrayList<>(rows(0, 5));
+    rows.addAll(rows(0, 5));
+    database.command("opencypher", "UNWIND $rows AS r MERGE (v:V8735s {id: r.id}) SET v.name = r.name", Map.of("rows", rows)).close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735s) RETURN count(v) AS c, count(v.name) AS n")) {
+      final Result r = rs.next();
+      assertThat(r.<Long>getProperty("c")).isEqualTo(5L);
+      assertThat(r.<Long>getProperty("n")).isEqualTo(5L);
+    }
+  }
+
+  @Test
+  void manyMatchedNodesAreStillUpdatedByAnAbsorbedSet() {
+    database.command("opencypher", "UNWIND $rows AS r MERGE (v:V8735t {id: r.id})", Map.of("rows", rows(0, 300))).close();
+    database.command("opencypher", "UNWIND $rows AS r MERGE (v:V8735t {id: r.id}) SET v.name = r.name", Map.of("rows", rows(0, 300))).close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735t) RETURN count(v.name) AS n")) {
+      assertThat(rs.next().<Long>getProperty("n")).isEqualTo(300L);
+    }
+  }
+
+  @Test
+  void setAfterCreateOnAPathKeepsWorking() {
+    database.command("opencypher", "CREATE (a:V8735u {id: 1}), (a)-[:R8735]->(b:V8735u {id: 2}) SET a.x = 1").close();
+    // the validator refuses naming a node again in the same CREATE, which is what keeps a path node from being folded
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE (a)-[:R8735]->(b:V8735u {id: 4}), (a:V8735u {id: 3}) SET a.x = 3").close())
+        .hasMessageContaining("already");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735u) WHERE v.x IS NOT NULL RETURN v.id AS id ORDER BY id")) {
+      assertThat(rs.next().<Number>getProperty("id").longValue()).isEqualTo(1L);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void aUniqueIndexAndAMandatoryPropertySeeTheFinalValues() {
+    database.command("sql", "CREATE VERTEX TYPE V8735w");
+    database.command("sql", "CREATE PROPERTY V8735w.id LONG");
+    database.command("sql", "CREATE PROPERTY V8735w.code STRING (mandatory true)");
+    database.command("sql", "CREATE INDEX ON V8735w (id) UNIQUE");
+    database.command("opencypher", "MERGE (v:V8735w {id: 1}) ON CREATE SET v.code = 'a', v.id = 5").close();
+    database.command("opencypher", "MERGE (v:V8735w {id: 2}) SET v.code = 'b'").close();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:V8735w) RETURN v.id AS id, v.code AS code ORDER BY code")) {
+      assertThat(rs.next().<Number>getProperty("id").longValue()).isEqualTo(5L);
+      assertThat(rs.next().<String>getProperty("code")).isEqualTo("b");
+    }
+  }
+
+  @Test
+  void foldedAndUnfoldedPathsStoreTheSameValuesAndCountTheSame() {
+    // v.a = v.id + 0 reads the node, so it takes the unfolded path; both must agree with the folded one
+    final int folded = propertiesSet("MERGE (v:V8735x {id: 1}) ON CREATE SET v.name = 'x', v.n = 2");
+    final int unfolded = propertiesSet("MERGE (v:V8735y {id: 1}) ON CREATE SET v.name = 'x', v.n = v.id + 1");
+    assertThat(folded).isEqualTo(unfolded);
   }
 
   private int propertiesSet(final String cypher) {
