@@ -19,6 +19,7 @@
 package com.arcadedb.server.support;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -210,5 +211,41 @@ class SupportRedactorTest {
   void hugeLineWithKeywordsIsBounded() {
     final String line = ("password" + "x".repeat(500) + " ").repeat(200);
     assertThat(redact(line)).isNotNull();
+  }
+
+  /**
+   * A log line may be up to {@link SupportLogCollector#MAX_LINE_CHARS} characters. The patterns that scan for a name around a
+   * keyword and for a URL scheme used to be unbounded, which made one such line cost minutes (quadratic backtracking) and a
+   * long quoted value overflow the stack. Loosening the bound deletes the test.
+   */
+  @Test
+  void aSixtyFourKilobyteLineIsRedactedInBoundedTime() {
+    final int n = SupportLogCollector.MAX_LINE_CHARS;
+    final String[] lines = { "-".repeat(n - 10) + " token x", "-a".repeat(n / 2) + " token", "a.".repeat(n / 2) + "token",
+        "-token".repeat(n / 6), "token".repeat(n / 5) + " = x", "password=\"" + "a".repeat(n - 20), "password=\\\"" + "a".repeat(n - 20),
+        "eyJ".repeat(n / 3), "a://".repeat(n / 4), "a://b:" + "c".repeat(n - 20), "x".repeat(n - 20) + " --token" };
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    for (final String line : lines)
+      new SupportRedactor.Session().redactLine(line);
+    watch.assertStayedUnder(10_000L, "redacting a 64K-character line is linear-ish, not quadratic in the line length");
+  }
+
+  @Test
+  void aLongQuotedValueIsMaskedWithoutOverflowingTheStack() {
+    final String secret = "a".repeat(SupportLogCollector.MAX_LINE_CHARS - 40);
+    final String redacted = new SupportRedactor.Session().redactLine("x password=\"" + secret + "\" y");
+    assertThat(redacted).contains(SupportRedactor.MASK).doesNotContain("aaaaaaaaaaaaaaaa");
+  }
+
+  @Test
+  void anOptionNameLongerThanTheBoundIsStillRedactedAroundItsKeyword() {
+    final String option = "--" + "x".repeat(80) + "-password";
+    assertThat(redact(option + " hunter2")).doesNotContain("hunter2");
+  }
+
+  @Test
+  void anApiKeyNameWithADotIsRecognisedLikeTheOtherSeparators() {
+    for (final String name : new String[] { "apikey", "api-key", "api_key", "api.key", "api key" })
+      assertThat(redact("service." + name + "=abc123def456")).as(name).doesNotContain("abc123def456");
   }
 }

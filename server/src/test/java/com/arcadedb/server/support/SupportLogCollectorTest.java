@@ -367,17 +367,43 @@ class SupportLogCollectorTest {
 
   @Test
   void aVeryLongLineIsCutAndCountedInsteadOfFillingTheHeap() throws Exception {
-    final int max = SupportLogCollector.MAX_LINE_CHARS;
-    final String text = "short\r\n" + "x".repeat(max + 500) + "\nlast";
+    final int max = 16;
+    final String text = "short\r\n" + "x".repeat(max + 500) + "\n\nlast\rmid\r\nend";
     final int[] truncated = new int[1];
-    try (final java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.StringReader(text))) {
-      assertThat(SupportLogCollector.readLine(reader, truncated)).isEqualTo("short");
-      final String cut = SupportLogCollector.readLine(reader, truncated);
-      assertThat(cut).startsWith("x".repeat(max)).endsWith("...[500 characters cut]");
-      assertThat(cut.length()).isLessThan(max + 40);
-      assertThat(SupportLogCollector.readLine(reader, truncated)).isEqualTo("last");
-      assertThat(SupportLogCollector.readLine(reader, truncated)).isNull();
-    }
+    final SupportLineReader reader = new SupportLineReader(new java.io.StringReader(text), max, truncated);
+    assertThat(reader.readLine()).isEqualTo("short");
+    final String cut = reader.readLine();
+    assertThat(cut).isEqualTo("x".repeat(max) + " ...[500 characters cut]");
+    // an empty line is a line, and \r, \n and \r\n all terminate
+    assertThat(reader.readLine()).isEmpty();
+    assertThat(reader.readLine()).isEqualTo("last");
+    assertThat(reader.readLine()).isEqualTo("mid");
+    assertThat(reader.readLine()).isEqualTo("end");
+    assertThat(reader.readLine()).isNull();
     assertThat(truncated[0]).isEqualTo(1);
+  }
+
+  @Test
+  void theLineReaderAgreesWithBufferedReaderOnAnyInputAcrossChunkBoundaries() throws Exception {
+    // Lines of every length around the 64K chunk size, with mixed terminators, read back the same as BufferedReader does
+    final StringBuilder text = new StringBuilder();
+    final String[] terminators = { "\n", "\r\n", "\r" };
+    for (int i = 0; i < 60; i++) {
+      text.append("L").append(i).append("-").append("y".repeat(65_530 + i)).append(terminators[i % 3]);
+      text.append(i % 7 == 0 ? terminators[(i + 1) % 3] : "");
+    }
+    text.append("tail without terminator");
+    final java.util.List<String> expected = new java.util.ArrayList<>();
+    try (final java.io.BufferedReader buffered = new java.io.BufferedReader(new java.io.StringReader(text.toString()))) {
+      String line;
+      while ((line = buffered.readLine()) != null)
+        expected.add(line);
+    }
+    final SupportLineReader reader = new SupportLineReader(new java.io.StringReader(text.toString()), Integer.MAX_VALUE, new int[1]);
+    final java.util.List<String> actual = new java.util.ArrayList<>();
+    String line;
+    while ((line = reader.readLine()) != null)
+      actual.add(line);
+    assertThat(actual).isEqualTo(expected);
   }
 }

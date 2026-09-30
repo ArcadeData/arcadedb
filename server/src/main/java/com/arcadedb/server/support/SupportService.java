@@ -39,6 +39,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -69,6 +70,7 @@ public class SupportService implements AutoCloseable {
   }
 
   private volatile CachedWhoami whoami;
+  private final     Semaphore   previewSlot = new Semaphore(1);
 
   public SupportService(final ArcadeDBServer server, final Path configDirectory) {
     this(server, new SupportConfiguration(configDirectory, server.getConfiguration()), new SupportBundleManager(),
@@ -116,7 +118,7 @@ public class SupportService implements AutoCloseable {
     final JSONObject json = new JSONObject();
     final SupportConfiguration.Registration registration = configuration.get();
     json.put("registered", registration != null);
-    json.put("portalUrl", configuration.getPortalUrl());
+    json.put("portalUrl", configuration.getPortalUrl(registration));
     json.put("canWriteConfig", configuration.canWriteConfig());
     json.put("instanceId", server.getInstanceId());
     json.put("buyUrl", BUY_URL);
@@ -263,6 +265,18 @@ public class SupportService implements AutoCloseable {
    * @param request {@code includeLogs, window, includeDiagnostics, includeThreads}
    */
   public JSONObject preview(final JSONObject request) {
+    // One scan at a time: collecting and zipping logs reads every file of the window, and two of them at once on a large log
+    // would double the disk and CPU spent on a server that is probably already in trouble
+    if (!previewSlot.tryAcquire())
+      throw new SupportException("preview_busy", "Another preview is being built: wait for it to finish, then try again");
+    try {
+      return buildPreview(request);
+    } finally {
+      previewSlot.release();
+    }
+  }
+
+  private JSONObject buildPreview(final JSONObject request) {
     final boolean includeLogs = request.getBoolean("includeLogs", false);
     final boolean includeDiagnostics = request.getBoolean("includeDiagnostics", true);
     final boolean includeThreads = request.getBoolean("includeThreads", false);
@@ -276,7 +290,7 @@ public class SupportService implements AutoCloseable {
     try {
       bundle = bundles.create();
     } catch (final IOException e) {
-      throw new SupportException("bad_request", "Cannot create the temporary directory of the preview: " + e.getClass().getSimpleName());
+      throw new SupportException("internal_error", "Cannot create the temporary directory of the preview: " + e.getClass().getSimpleName());
     }
 
     boolean success = false;
@@ -423,8 +437,9 @@ public class SupportService implements AutoCloseable {
       final JSONArray top = summary.getJSONArray("topExceptions");
       for (int i = 0; i < top.length() && i < 5; i++) {
         final JSONObject e = top.getJSONObject(i);
-        out.append("- `").append(e.getString("class", "")).append("` x").append(e.getLong("count", 0)).append(": ")
-            .append(e.getString("message", "").replace('`', '\'')).append('\n');
+        // Class and count only: an exception message may carry record data, SQL text or database names, and this text goes into a
+        // public issue. The messages stay in summary.json, which is sent to the portal and never to GitHub.
+        out.append("- `").append(e.getString("class", "").replace('`', '\'')).append("` x").append(e.getLong("count", 0)).append('\n');
       }
     }
     String text = out.toString();
@@ -473,7 +488,7 @@ public class SupportService implements AutoCloseable {
         bundles.remove(bundle.getId());
       return response;
     } catch (final IOException e) {
-      throw new SupportException("bad_request", "Cannot read the preview files: " + e.getClass().getSimpleName());
+      throw new SupportException("internal_error", "Cannot read the preview files: " + e.getClass().getSimpleName());
     } catch (final SupportPortalException e) {
       SupportPortalClient.logFailure(this, "create issue", e);
       throw e;
@@ -492,7 +507,7 @@ public class SupportService implements AutoCloseable {
       bundles.remove(bundle.getId());
       return response;
     } catch (final IOException e) {
-      throw new SupportException("bad_request", "Cannot read the preview files: " + e.getClass().getSimpleName());
+      throw new SupportException("internal_error", "Cannot read the preview files: " + e.getClass().getSimpleName());
     }
   }
 

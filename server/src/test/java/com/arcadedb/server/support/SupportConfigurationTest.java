@@ -126,6 +126,29 @@ class SupportConfigurationTest {
     assertThat(store(configuration).get().getPortalUrl()).isEqualTo("https://portal.arcadedb.com");
   }
 
+  /** The whole precedence of the portal URL: an explicit setting, else the file, else the default. */
+  @Test
+  void thePortalUrlPrecedenceTable() throws Exception {
+    final String file = "https://portal.file.example.com";
+    final String setting = "https://portal.setting.example.com";
+    final String dflt = "https://portal.arcadedb.com";
+    // { URL in support.json (null = no file), the setting (null = not set), expected URL }
+    final String[][] table = { { null, null, dflt }, { file, null, file }, { null, setting, setting }, { file, setting, setting },
+        { null, dflt, dflt }, { file, dflt, dflt }, { file, "", file } };
+    for (final String[] row : table) {
+      Files.deleteIfExists(dir.resolve("support.json"));
+      final ContextConfiguration configuration = new ContextConfiguration();
+      if (row[0] != null)
+        store(configuration).save(row[0], "ws-1", KEY);
+      if (row[1] != null)
+        configuration.setValue(GlobalConfiguration.SUPPORT_URL, row[1]);
+      final SupportConfiguration store = store(configuration);
+      assertThat(store.getPortalUrl()).as("file=%s setting=%s", row[0], row[1]).isEqualTo(row[2]);
+      if (row[0] != null)
+        assertThat(store.get().getPortalUrl()).as("registration: file=%s setting=%s", row[0], row[1]).isEqualTo(row[2]);
+    }
+  }
+
   @Test
   void settingsAloneRegisterWithoutAFile() {
     final ContextConfiguration configuration = new ContextConfiguration();

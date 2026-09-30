@@ -54,13 +54,15 @@ public final class SupportRedactor {
   public static final String PEM  = "[REDACTED PEM BLOCK]";
 
   private static final String KEYWORDS =
-      "pass(?:word|wd|phrase)|pwd|secret|token|api[-_ ]?key|credentials?|private[-_]?key|client[-_]?key|access[-_]?key|session[-_]?id|cookie";
+      "pass(?:word|wd|phrase)|pwd|secret|token|api[-_. ]?key|credentials?|private[-_]?key|client[-_]?key|access[-_]?key|session[-_]?id|cookie";
 
   // Cheap pre-filter: a line that matches none of these cannot be changed by any rule below.
   private static final Pattern PRE_FILTER = Pattern.compile(
       "(?i)" + KEYWORDS + "|authorization|bearer|identified\\s+by|-----|://[^/\\s]*@|wsk_|eyJ|AKIA|gh[pousr]_|\\bat-[0-9a-f]{20}");
 
-  private static final String QUOTED_VALUE = "\"(?:[^\"\\\\]|\\\\.)*\"?|'(?:[^'\\\\]|\\\\.)*'?|\\\\\"(?:[^\\\\]|\\\\(?!\"))*?\\\\\"";
+  // Possessive: a long quoted value must neither backtrack nor recurse once per character (a 64K-character string overflows the
+  // stack with a plain (?:a|b)* and is polynomial without the possessive quantifiers)
+  private static final String QUOTED_VALUE = "\"(?:[^\"\\\\]++|\\\\.)*+\"?|'(?:[^'\\\\]++|\\\\.)*+'?|\\\\\"(?:[^\\\\]++|\\\\(?!\"))*+\\\\\"";
   // (keyword)(rest of the name)(separator)(value)
   private static final Pattern KEY_VALUE = Pattern.compile(
       "(?i)(" + KEYWORDS + ")([\\w.\\-]{0,64})((?:\\\\?[\"'])?\\s*[=:]\\s*)(" + QUOTED_VALUE + "|\\S+)");
@@ -74,17 +76,17 @@ public final class SupportRedactor {
       "(?i)\\b(authorization|proxy-authorization|set-cookie|cookie|x-api-key|x-auth-token)(\\\\?[\"']?\\s*[:=]\\s*)(.*)");
   private static final Pattern BEARER       = Pattern.compile("(?i)\\b(bearer)(\\s+)[A-Za-z0-9._~+/=\\-]{8,}");
   private static final Pattern CLI_OPTION   = Pattern.compile(
-      "(?i)(--?[\\w.\\-]*(?:" + KEYWORDS + ")[\\w.\\-]*)(\\s+)(?!-)(\\S+)");
+      "(?i)(--?[\\w.\\-]{0,64}(?:" + KEYWORDS + ")[\\w.\\-]{0,64})(\\s+)(?!-)(\\S+)");
   private static final Pattern IDENTIFIED   = Pattern.compile("(?i)(identified\\s+by\\s+)('[^']*'|\"[^\"]*\"|\\S+)");
-  private static final Pattern URL_CREDS    = Pattern.compile("(?i)\\b([a-z][a-z0-9+.\\-]*://)([^/\\s:@]+):([^@\\s/]*)@");
+  private static final Pattern URL_CREDS    = Pattern.compile("(?i)\\b([a-z][a-z0-9+.\\-]{0,31}://)([^/\\s:@]{1,256}):([^@\\s/]{0,256})@");
   private static final Pattern PEM_INLINE   = Pattern.compile("-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----");
   private static final Pattern PEM_BEGIN    = Pattern.compile("-----BEGIN [A-Z0-9 ]+-----");
   private static final Pattern PEM_END      = Pattern.compile("-----END [A-Z0-9 ]+-----");
   private static final Pattern SHAPES       = Pattern.compile(
-      "\\bat-[0-9a-f]{32,}\\b|\\bwsk_[A-Za-z0-9_\\-]{20,}|\\beyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]*|"
+      "\\bat-[0-9a-f]{32,}\\b|\\bwsk_[A-Za-z0-9_\\-]{20,}|\\beyJ[A-Za-z0-9_\\-]{8,4096}\\.[A-Za-z0-9_\\-]{8,4096}\\.[A-Za-z0-9_\\-]*|"
           + "\\bAKIA[0-9A-Z]{16}\\b|\\bgh[pousr]_[A-Za-z0-9]{20,}");
 
-  private static final Pattern PASSWORD_OPTION_ONLY = Pattern.compile("(?i)^--?[\\w.\\-]*(?:" + KEYWORDS + ")[\\w.\\-]*$");
+  private static final Pattern PASSWORD_OPTION_ONLY = Pattern.compile("(?i)^--?[\\w.\\-]{0,64}(?:" + KEYWORDS + ")[\\w.\\-]{0,64}$");
 
   private SupportRedactor() {
   }
