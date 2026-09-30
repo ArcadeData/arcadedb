@@ -71,6 +71,10 @@ public class SupportLogCollector {
 
   private static final String DEFAULT_LOG_FILE = "arcadedb.log";
   private static final int    CHECK_EVERY      = 200;
+  /** A log line longer than this is truncated when read: one pathological line must not fill the heap. */
+  static final         int    MAX_LINE_CHARS   = 1 << 16;
+
+  private final ZoneId zone;
 
   /** What went in the zip for one log file. */
   public record FileStat(String name, long sizeBytes, long lines, int redactions) {
@@ -127,8 +131,6 @@ public class SupportLogCollector {
     }
   }
 
-  private final ZoneId zone;
-
   /** @param zone the time zone the log timestamps are written in: the JVM zone of the server */
   public SupportLogCollector(final ZoneId zone) {
     this.zone = zone;
@@ -143,6 +145,7 @@ public class SupportLogCollector {
     Path directory;
     String stem = DEFAULT_LOG_FILE;
 
+    // Fully qualified: the ArcadeDB LogManager (used elsewhere in this class) has the same simple name
     final String pattern = java.util.logging.LogManager.getLogManager().getProperty("java.util.logging.FileHandler.pattern");
     if (pattern != null && !pattern.isBlank()) {
       final String expanded = pattern.replace("%%", "\u0000").replace("%t", System.getProperty("java.io.tmpdir", "/tmp"))
@@ -210,6 +213,7 @@ public class SupportLogCollector {
     long totalLines = 0;
     int totalRedactions = 0;
     int skipped = 0;
+    final int[] truncated = new int[1];
 
     boolean success = false;
     try (final CountingOutputStream counting = new CountingOutputStream(new BufferedOutputStream(Files.newOutputStream(zipFile)));
@@ -232,7 +236,7 @@ public class SupportLogCollector {
 
         try (final BufferedReader reader = new BufferedReader(new InputStreamReader(open(file), StandardCharsets.UTF_8), 1 << 16)) {
           String line;
-          while ((line = reader.readLine()) != null) {
+          while ((line = readLine(reader, truncated)) != null) {
             final long key = parseKey(line, zone);
             if (key >= 0) {
               session.resetBlock();
@@ -293,6 +297,8 @@ public class SupportLogCollector {
 
     if (skipped > 0)
       warnings.add(skipped + " log file(s) skipped: last modified before the start of the window");
+    if (truncated[0] > 0)
+      warnings.add(truncated[0] + " very long log line(s) were cut to " + MAX_LINE_CHARS + " characters");
     if (totalLines == 0)
       warnings.add("No log lines in the selected window (" + files.size() + " log file(s) examined, time zone of the log: " + zone
           + "). Widen the window or send the diagnostics only");
@@ -303,6 +309,40 @@ public class SupportLogCollector {
       throw tooLarge(maxZipBytes);
     }
     return new Result(stats, warnings, totalLines, totalRedactions, zipBytes, summary.finish(window));
+  }
+
+  /**
+   * Like {@link BufferedReader#readLine()} but keeps at most {@link #MAX_LINE_CHARS} characters of a line: the rest is read
+   * and dropped, and the line says so. {@code truncated[0]} counts the lines cut.
+   */
+  static String readLine(final BufferedReader reader, final int[] truncated) throws IOException {
+    final StringBuilder line = new StringBuilder();
+    boolean any = false;
+    long dropped = 0;
+    int c;
+    while ((c = reader.read()) != -1) {
+      any = true;
+      if (c == '\n')
+        break;
+      if (c == '\r') {
+        reader.mark(1);
+        final int next = reader.read();
+        if (next != '\n' && next != -1)
+          reader.reset();
+        break;
+      }
+      if (line.length() < MAX_LINE_CHARS)
+        line.append((char) c);
+      else
+        dropped++;
+    }
+    if (!any)
+      return null;
+    if (dropped > 0) {
+      line.append(" ...[").append(dropped).append(" characters cut]");
+      truncated[0]++;
+    }
+    return line.toString();
   }
 
   private static void checkCap(final CountingOutputStream counting, final long maxZipBytes) {

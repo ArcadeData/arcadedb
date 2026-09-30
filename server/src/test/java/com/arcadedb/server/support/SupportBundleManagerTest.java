@@ -75,7 +75,75 @@ class SupportBundleManagerTest {
     assertThat(a).doesNotExist();
     assertThat(b).doesNotExist();
     assertThat(manager.size()).isZero();
-    assertThatThrownBy(manager::create).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(manager::create).isInstanceOfSatisfying(SupportException.class, e -> {
+      assertThat(e.getCode()).isEqualTo("support_stopped");
+      assertThat(e.getStudioStatus()).isEqualTo(503);
+    });
+  }
+
+  @Test
+  void aLeasedPreviewSurvivesItsExpiryUntilTheLeaseCloses() throws Exception {
+    final AtomicLong now = new AtomicLong(0L);
+    try (final SupportBundleManager manager = new SupportBundleManager(now::get, 1000L)) {
+      final SupportBundleManager.Bundle bundle = manager.create();
+      Files.writeString(bundle.getDirectory().resolve("logs.zip"), "x");
+      final SupportBundleManager.Lease lease = manager.lease(bundle.getId());
+
+      // A slow upload outlives the 15 minutes: neither the cleaner nor another call may delete the files under it
+      now.addAndGet(5000L);
+      manager.purgeExpired();
+      assertThat(bundle.getDirectory().resolve("logs.zip")).exists();
+      assertThat(manager.ids()).containsExactly(bundle.getId());
+
+      // ... and it goes as soon as the last lease is released
+      lease.close();
+      assertThat(bundle.getDirectory()).doesNotExist();
+      assertThat(manager.size()).isZero();
+      // closing twice is harmless
+      lease.close();
+    }
+  }
+
+  @Test
+  void aLeasedPreviewIsNeverTheEvictionVictim() throws Exception {
+    final AtomicLong now = new AtomicLong(0L);
+    try (final SupportBundleManager manager = new SupportBundleManager(now::get, SupportBundleManager.TTL_MS)) {
+      final SupportBundleManager.Bundle oldest = manager.create();
+      final SupportBundleManager.Lease lease = manager.lease(oldest.getId());
+      for (int i = 1; i < SupportBundleManager.MAX_BUNDLES + 3; i++) {
+        now.incrementAndGet();
+        manager.create();
+      }
+      // The oldest is the one being sent: another idle one was evicted instead
+      assertThat(oldest.getDirectory()).exists();
+      assertThat(manager.ids()).contains(oldest.getId());
+      lease.close();
+    }
+  }
+
+  @Test
+  void theLimitIsExceededRatherThanDeletingAPreviewInUse() throws Exception {
+    try (final SupportBundleManager manager = new SupportBundleManager()) {
+      final java.util.List<SupportBundleManager.Lease> leases = new java.util.ArrayList<>();
+      for (int i = 0; i < SupportBundleManager.MAX_BUNDLES; i++)
+        leases.add(manager.lease(manager.create().getId()));
+      // Every preview is being sent: creating one more must terminate and must not delete any of them
+      final SupportBundleManager.Bundle extra = manager.create();
+      assertThat(manager.size()).isEqualTo(SupportBundleManager.MAX_BUNDLES + 1);
+      assertThat(extra.getDirectory()).exists();
+      leases.forEach(SupportBundleManager.Lease::close);
+    }
+  }
+
+  @Test
+  void leasingAnUnknownOrRemovedPreviewIsPreviewNotFound() throws Exception {
+    try (final SupportBundleManager manager = new SupportBundleManager()) {
+      assertThatThrownBy(() -> manager.lease("nope")).isInstanceOfSatisfying(SupportException.class,
+          e -> assertThat(e.getCode()).isEqualTo("preview_not_found"));
+      final SupportBundleManager.Bundle bundle = manager.create();
+      manager.remove(bundle.getId());
+      assertThatThrownBy(() -> manager.lease(bundle.getId())).isInstanceOf(SupportException.class);
+    }
   }
 
   @Test

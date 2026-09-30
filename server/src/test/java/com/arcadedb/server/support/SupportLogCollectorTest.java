@@ -364,4 +364,20 @@ class SupportLogCollectorTest {
     assertThat(result.getLines()).isEqualTo(1000);
     assertThat(read(zip, "arcadedb.log")).containsExactlyElementsOf(expected);
   }
+
+  @Test
+  void aVeryLongLineIsCutAndCountedInsteadOfFillingTheHeap() throws Exception {
+    final int max = SupportLogCollector.MAX_LINE_CHARS;
+    final String text = "short\r\n" + "x".repeat(max + 500) + "\nlast";
+    final int[] truncated = new int[1];
+    try (final java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.StringReader(text))) {
+      assertThat(SupportLogCollector.readLine(reader, truncated)).isEqualTo("short");
+      final String cut = SupportLogCollector.readLine(reader, truncated);
+      assertThat(cut).startsWith("x".repeat(max)).endsWith("...[500 characters cut]");
+      assertThat(cut.length()).isLessThan(max + 40);
+      assertThat(SupportLogCollector.readLine(reader, truncated)).isEqualTo("last");
+      assertThat(SupportLogCollector.readLine(reader, truncated)).isNull();
+    }
+    assertThat(truncated[0]).isEqualTo(1);
+  }
 }

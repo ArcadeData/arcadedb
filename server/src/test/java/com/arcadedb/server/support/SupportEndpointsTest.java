@@ -615,6 +615,68 @@ class SupportEndpointsTest extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void twoConcurrentDownloadsOfOnePreviewBothSucceed() throws Exception {
+    register();
+    final JSONObject preview = call("POST", "/api/v1/server/support/preview", new JSONObject().put("includeDiagnostics", true).toString()).json();
+    final String body = new JSONObject().put("previewId", preview.getString("previewId")).toString();
+
+    // Both build the zip of the same preview at once: the second used to fail moving over the first one's file
+    final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+    final java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+    try {
+      final List<java.util.concurrent.Future<Resp>> results = new ArrayList<>();
+      for (int i = 0; i < 2; i++)
+        results.add(pool.submit(() -> {
+          go.await();
+          return call("POST", "/api/v1/server/support/bundle", body);
+        }));
+      go.countDown();
+      for (final java.util.concurrent.Future<Resp> result : results) {
+        final Resp response = result.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(response.status()).isEqualTo(200);
+        assertThat(unzip(response.bytes())).containsKey("diagnostics.json");
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  void aChangedKeyOrPortalNeverReadsTheCachedWhoamiOfAnother() throws Exception {
+    register();
+    final int before = (int) portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count();
+    assertThat(call("GET", "/api/v1/server/support", null).status()).isEqualTo(200);
+    // Served from the cache: no new call
+    assertThat(portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count()).isEqualTo(before);
+
+    // A different key with the same last four characters must not reuse the answer of the first
+    final String sameTail = "wsk_DIFFERENT0123456789abcdefghijklmnopq" + MockPortal.KEY.substring(MockPortal.KEY.length() - 4);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_ID, MockPortal.CLIENT_ID);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_KEY, sameTail);
+    final Resp status = call("GET", "/api/v1/server/support", null);
+    assertThat(status.status()).isEqualTo(200);
+    assertThat(portal.requests.stream().filter(r -> r.path().endsWith("/whoami")).count()).isGreaterThan(before);
+    // the mock portal refuses this key: the status says so instead of showing the workspace of the first
+    assertThat(status.json().has("portalError")).isTrue();
+  }
+
+  @Test
+  void aBadPortalUrlInTheConfigurationIsReportedByTheStatusNotAServerError() throws Exception {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_ID, MockPortal.CLIENT_ID);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_CLIENT_KEY, MockPortal.KEY);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_URL, "http://portal.example.com");
+    try {
+      final Resp status = call("GET", "/api/v1/server/support?refresh=true", null);
+      assertThat(status.status()).isEqualTo(200);
+      assertThat(status.json().getBoolean("registered")).isTrue();
+      assertThat(status.json().getJSONObject("portalError").getString("error")).isEqualTo("portal_url_invalid");
+      assertKeyNeverServed();
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SUPPORT_URL, portal.url());
+    }
+  }
+
   private static Map<String, String> unzip(final byte[] bytes) throws IOException {
     final Map<String, String> result = new HashMap<>();
     try (final ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {

@@ -28,11 +28,14 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -61,7 +64,8 @@ public class SupportService implements AutoCloseable {
   private volatile Supplier<List<Path>> logFiles;
   private final long                   retryDelayMs;
 
-  private record CachedWhoami(String clientId, String keyHint, String json, long at) {
+  /** {@code fingerprint}: the portal, the client id and a hash of the key, so a changed key or portal never reads a stale answer. */
+  private record CachedWhoami(String fingerprint, String json, long at) {
   }
 
   private volatile CachedWhoami whoami;
@@ -131,6 +135,11 @@ public class SupportService implements AutoCloseable {
     } catch (final SupportException e) {
       // The portal is unreachable or refuses the key: Studio still shows the registration and why the portal did not answer
       json.put("portalError", new JSONObject().put("error", e.getCode()).put("message", e.getMessage()));
+    } catch (final IllegalArgumentException e) {
+      // A hand-edited support.json (or a setting) with a portal URL that is not acceptable: validated when it is used, not only
+      // when it is saved
+      json.put("portalError", new JSONObject().put("error", "portal_url_invalid").put("message",
+          "The portal address in the support configuration is not valid: " + e.getMessage()));
     }
     return json;
   }
@@ -176,12 +185,21 @@ public class SupportService implements AutoCloseable {
   private String whoamiCached(final SupportConfiguration.Registration registration, final boolean refresh) {
     final CachedWhoami cached = whoami;
     final long now = System.currentTimeMillis();
-    if (!refresh && cached != null && cached.clientId.equals(registration.getClientId()) && cached.keyHint.equals(registration.getKeyHint())
-        && now - cached.at < WHOAMI_CACHE_MS)
+    final String fingerprint = fingerprint(registration.getPortalUrl(), registration.getClientId(), registration.getKey());
+    if (!refresh && cached != null && cached.fingerprint.equals(fingerprint) && now - cached.at < WHOAMI_CACHE_MS)
       return cached.json;
     final String json = client(registration).whoami();
-    whoami = new CachedWhoami(registration.getClientId(), registration.getKeyHint(), json, now);
+    whoami = new CachedWhoami(fingerprint, json, now);
     return json;
+  }
+
+  private static String fingerprint(final String portalUrl, final String clientId, final String key) {
+    try {
+      final byte[] hash = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+      return portalUrl + "|" + clientId + "|" + HexFormat.of().formatHex(hash);
+    } catch (final NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is not available", e);
+    }
   }
 
   /**
@@ -210,7 +228,7 @@ public class SupportService implements AutoCloseable {
       // The message of an IOException names a path, never the content
       throw new SupportException("config_not_writable", "Cannot write the registration file: " + e.getClass().getSimpleName());
     }
-    whoami = new CachedWhoami(clientId.trim(), SupportConfiguration.keyHint(key.trim()), who, System.currentTimeMillis());
+    whoami = new CachedWhoami(fingerprint(url, clientId.trim(), key.trim()), who, System.currentTimeMillis());
     return status(false);
   }
 
@@ -444,9 +462,10 @@ public class SupportService implements AutoCloseable {
       metadata.put("kind", kind);
 
     final String previewId = request.getString("previewId", null);
-    final SupportBundleManager.Bundle bundle = previewId == null || previewId.isEmpty() ? null : bundles.get(previewId);
 
-    try {
+    // The preview is leased for the whole upload: a slow one may outlive the preview's 15 minutes
+    try (final SupportBundleManager.Lease lease = previewId == null || previewId.isEmpty() ? null : bundles.lease(previewId)) {
+      final SupportBundleManager.Bundle bundle = lease == null ? null : lease.bundle();
       final String response = client.createIssue(metadata, bundle == null ? null : bundle.getLogs(),
           bundle == null ? null : bundle.getDiagnostics(), bundle == null ? null : bundle.getSummary(),
           bundle == null ? null : bundle.getThreads());
@@ -464,10 +483,10 @@ public class SupportService implements AutoCloseable {
   /** Sends the files of a preview to an existing issue. */
   public String addAttachments(final long number, final String previewId) {
     final SupportPortalClient client = requireClient();
-    final SupportBundleManager.Bundle bundle = bundles.get(previewId);
-    if (bundle.isEmpty())
-      throw new SupportException("bad_request", "The preview has no files to send");
-    try {
+    try (final SupportBundleManager.Lease lease = bundles.lease(previewId)) {
+      final SupportBundleManager.Bundle bundle = lease.bundle();
+      if (bundle.isEmpty())
+        throw new SupportException("bad_request", "The preview has no files to send");
       final String response = client.addAttachments(number, bundle.getLogs(), bundle.getDiagnostics(), bundle.getSummary(),
           bundle.getThreads());
       bundles.remove(bundle.getId());
@@ -509,14 +528,28 @@ public class SupportService implements AutoCloseable {
    * download is what the user reviewed.
    */
   public Path buildDownload(final String previewId) throws IOException {
-    final SupportBundleManager.Bundle bundle = bundles.get(previewId);
+    // The lease ends with this call: a caller that streams the file afterwards holds its own (see SupportHandler)
+    try (final SupportBundleManager.Lease lease = bundles.lease(previewId)) {
+      return buildDownload(lease.bundle());
+    }
+  }
+
+  /** As {@link #buildDownload(String)} for a preview the caller already holds with {@link SupportBundleManager#lease}. */
+  public Path buildDownload(final SupportBundleManager.Bundle bundle) throws IOException {
     if (bundle.isEmpty())
       throw new SupportException("bad_request", "The preview has no files");
 
-    final Path target = bundle.getDirectory().resolve("arcadedb-support-bundle.zip");
-    if (Files.exists(target))
+    // One build at a time per preview: two downloads of it would otherwise write the same partial file
+    synchronized (bundle.getBuildLock()) {
+      final Path target = bundle.getDirectory().resolve("arcadedb-support-bundle.zip");
+      if (Files.exists(target))
+        return target;
+      writeZip(bundle, target);
       return target;
+    }
+  }
 
+  private static void writeZip(final SupportBundleManager.Bundle bundle, final Path target) throws IOException {
     final Path partial = bundle.getDirectory().resolve("arcadedb-support-bundle.zip.partial");
     try (final ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(partial))) {
       addFile(zip, "diagnostics.json", bundle.getDiagnostics());
@@ -536,7 +569,6 @@ public class SupportService implements AutoCloseable {
         }
     }
     Files.move(partial, target);
-    return target;
   }
 
   private static void addFile(final ZipOutputStream zip, final String name, final Path file) throws IOException {

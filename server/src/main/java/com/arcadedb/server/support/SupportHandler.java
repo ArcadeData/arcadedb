@@ -93,6 +93,9 @@ public class SupportHandler extends AbstractServerHttpHandler {
       return error(e);
     } catch (final IllegalArgumentException e) {
       return error(new SupportException("bad_request", e.getMessage()));
+    } catch (final IllegalStateException e) {
+      LogManager.instance().log(this, Level.WARNING, "Support: %s is not available", e, action);
+      return error(new SupportException("support_stopped", "The support service is not available: " + e.getMessage()));
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Support: %s failed", e, action);
       return error(new SupportException("bad_request", "The operation failed: " + e.getClass().getSimpleName()));
@@ -115,17 +118,20 @@ public class SupportHandler extends AbstractServerHttpHandler {
 
   private ExecutionResponse download(final HttpServerExchange exchange, final SupportService service, final String previewId)
       throws IOException {
-    final Path zip = service.buildDownload(previewId);
-    final long size = Files.size(zip);
-    exchange.setStatusCode(200);
-    exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
-    exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
-        "attachment; filename=\"arcadedb-support-" + Instant.now().toString().replaceAll("[^0-9TZ]", "") + ".zip\"");
-    exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, size);
-    exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-store");
-    try (final OutputStream out = streamedResponseOutput(exchange, () -> "the support bundle download");
-        final InputStream in = Files.newInputStream(zip)) {
-      in.transferTo(out);
+    // Leased while the file is built AND streamed: a slow client must not see the preview expire under the download
+    try (final SupportBundleManager.Lease lease = service.getBundles().lease(previewId)) {
+      final Path zip = service.buildDownload(lease.bundle());
+      final long size = Files.size(zip);
+      exchange.setStatusCode(200);
+      exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
+      exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
+          "attachment; filename=\"arcadedb-support-" + Instant.now().toString().replaceAll("[^0-9TZ]", "") + ".zip\"");
+      exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, size);
+      exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-store");
+      try (final OutputStream out = streamedResponseOutput(exchange, () -> "the support bundle download");
+          final InputStream in = Files.newInputStream(zip)) {
+        in.transferTo(out);
+      }
     }
     // Written already
     return null;
@@ -159,11 +165,10 @@ public class SupportHandler extends AbstractServerHttpHandler {
 
   private static ExecutionResponse errorResponse(final int status, final SupportException e) {
     final JSONObject body = new JSONObject().put("error", e.getCode()).put("detail", e.getMessage()).put("message", e.getMessage());
-    final ExecutionResponse response = new ExecutionResponse(status, body.toString());
     if (e.getRetryAfterSeconds() > 0) {
       body.put("retryAfterSeconds", e.getRetryAfterSeconds());
       return new ExecutionResponse(status, body.toString()).setHeader("Retry-After", String.valueOf(e.getRetryAfterSeconds()));
     }
-    return response;
+    return new ExecutionResponse(status, body.toString());
   }
 }

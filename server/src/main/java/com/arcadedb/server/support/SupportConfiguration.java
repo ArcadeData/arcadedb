@@ -130,11 +130,11 @@ public class SupportConfiguration {
     if (clientId.isEmpty() || key.isEmpty())
       return null;
 
-    final String url;
-    if (!settingUrl.isEmpty() && !settingUrl.equals(DEFAULT_PORTAL_URL))
-      url = settingUrl;
-    else
-      url = file.getString("portalUrl", DEFAULT_PORTAL_URL);
+    // An explicit setting wins over the file even when it names the default portal (an operator overriding a test URL that
+    // was registered in support.json); only an unset setting lets the file decide
+    final boolean settingExplicit = !settingUrl.isEmpty() && (!settingUrl.equals(DEFAULT_PORTAL_URL)
+        || configuration.hasValue(GlobalConfiguration.SUPPORT_URL.getKey()) || GlobalConfiguration.SUPPORT_URL.isChanged());
+    final String url = settingExplicit ? settingUrl : file.getString("portalUrl", DEFAULT_PORTAL_URL);
 
     return new Registration(stripTrailingSlash(url), clientId, key, file.getString("registeredAt", ""),
         !settingId.isEmpty() && !settingKey.isEmpty());
