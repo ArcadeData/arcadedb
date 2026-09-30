@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -62,6 +63,23 @@ class Issue8712NewEmbeddedDocumentImmutableMapTest extends TestHelper {
       d.newEmbeddedDocument("Item8712b", "items", (Object) "b").set("n", 2);
 
       assertThat(d.getMap("items")).containsOnlyKeys("a", "b");
+    });
+  }
+
+  @Test
+  void declaredMapPropertyKeepsTheReturnedEmbeddedInstanceStored() {
+    database.getSchema().createDocumentType("Item8712c");
+    database.getSchema().createDocumentType("Holder8712c").createProperty("items", Type.MAP);
+
+    database.transaction(() -> {
+      final MutableDocument seed = database.newDocument("Item8712c").set("n", 0);
+      final MutableDocument d = database.newDocument("Holder8712c");
+      d.set("items", Map.of("a", seed));
+      final MutableEmbeddedDocument emb = d.newEmbeddedDocument("Item8712c", "items", "b");
+      emb.set("n", 2);
+
+      // the instance handed back must be the one stored, or later writes to it are lost
+      assertThat(d.getMap("items").get("b")).isSameAs(emb);
     });
   }
 }

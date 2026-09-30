@@ -217,7 +217,7 @@ public class EdgeLinkedList {
    */
   public boolean containsLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       if (current.containsLightEdge(edgeTypeBucketId, vertexRID))
         return true;
@@ -230,7 +230,7 @@ public class EdgeLinkedList {
 
   public boolean containsEdge(final RID rid) {
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       if (current.containsEdge(rid))
         return true;
@@ -245,7 +245,7 @@ public class EdgeLinkedList {
     final JSONArray array = new JSONArray();
 
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final JSONObject j = current.toJSON(false);
       if (j.has("array")) {
@@ -261,7 +261,7 @@ public class EdgeLinkedList {
 
   public RID getFirstEdgeConnectedToVertex(final RID ridVertex, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(ridVertex, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
@@ -297,7 +297,7 @@ public class EdgeLinkedList {
 
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(rid, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
@@ -307,6 +307,17 @@ public class EdgeLinkedList {
     }
 
     return false;
+  }
+
+  private ChainCycleGuard newCycleGuard() {
+    return new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+  }
+
+  /**
+   * For the walks that delete what they visit: O(chunks) memory, allocated lazily on the first hop.
+   */
+  private ChainCycleGuard newExactCycleGuard() {
+    return ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
   }
 
   /**
@@ -369,7 +380,7 @@ public class EdgeLinkedList {
       fileIdToFilter = null;
 
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       total += current.count(fileIdToFilter);
       current = previousOf(current, guard);
@@ -493,7 +504,7 @@ public class EdgeLinkedList {
 
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       // #5155: walk the chain with unanchored reads. A chunk that does not hold the target is read-only, so
       // anchoring it (loadChunkForWrite -> fetchPageInTransaction -> page.modify()) would copy its whole page
@@ -524,7 +535,7 @@ public class EdgeLinkedList {
   public void removeEdgeRID(final RID edge) {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       // #5155: probe read-only, anchor only the chunk that actually holds the edge (see removeEdge).
       if (current.containsEdge(edge)) {
@@ -543,7 +554,7 @@ public class EdgeLinkedList {
   public void removeVertex(final RID vertexRID) {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newExactCycleGuard();
     while (current != null) {
       final RID nextRID = previousRIDOf(current, guard);
       // #5155: a chunk with no edge to the vertex is read-only during this removal - probe unanchored and skip
@@ -637,7 +648,7 @@ public class EdgeLinkedList {
       // accumulated bytes already exceed any practical threshold anyway (4096 cap-size chunks ~= 4M edges).
       long totalBytes = 0;
       EdgeSegment segment = lastSegment;
-      final ChainCycleGuard guard = new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+      final ChainCycleGuard guard = newCycleGuard();
       for (int walked = 0; segment != null && walked < 4096; ++walked) {
         totalBytes += segment.getRecordSize();
         segment = previousOf(segment, guard);
@@ -722,6 +733,7 @@ public class EdgeLinkedList {
     final TransactionContext tx = database.getTransactionIfExists();
     // The guarded predecessor: a chunk whose previous pointer names itself ends the chain like a tail does, so it is
     // never deleted and relinked around - that would point the chunk in front of it at the chunk just deleted (#8568)
+    // (single hops below: nothing to loop on, so the self-pointer check is all they need)
     if (prevBrowsedRID != null && current.isEmpty() && previousRIDOf(current) != null) {
       // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST.
       // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
@@ -744,7 +756,7 @@ public class EdgeLinkedList {
   public void deleteAll() {
     final TransactionContext tx = ((DatabaseInternal) vertex.getDatabase()).getTransactionIfExists();
     EdgeSegment current = lastSegment;
-    final ChainCycleGuard guard = ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
+    final ChainCycleGuard guard = newExactCycleGuard();
     while (current != null) {
       final EdgeSegment prev = previousOf(current, guard);
       // Deleting a chunk does not commute with a concurrent append on its page: exclude the page from the
