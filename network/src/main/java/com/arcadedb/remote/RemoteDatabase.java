@@ -1042,7 +1042,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Accept", NDJSON_CONTENT_TYPE)
           .build();
 
-      final HttpResponse<InputStream> response = sendStreamed(request, getTimeout());
+      final HttpResponse<InputStream> response = sendStreamed(request, streamSilenceMs());
       body = response.body();
 
       // Before the status check, and deliberately: on an HA cluster the bookmark is meaningful on a refused
@@ -1552,7 +1552,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Content-Type", NDJSON_CONTENT_TYPE);
 
       if (onProgress != null)
-        return readStreamedBatch(sendStreamed(builder.header("Accept", NDJSON_CONTENT_TYPE).build(), getTimeout()),
+        return readStreamedBatch(sendStreamed(builder.header("Accept", NDJSON_CONTENT_TYPE).build(), streamSilenceMs()),
             onProgress);
 
       final HttpResponse<String> response = sendWithWatchdog(builder.build());

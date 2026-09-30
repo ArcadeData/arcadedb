@@ -432,6 +432,11 @@ class Issue8473RemoteStalledAnswerTest {
     }
 
     @Override
+    long streamSilenceMs() {
+      return BUDGET_MS;
+    }
+
+    @Override
     void requestClusterConfiguration() {
       // No cluster: the scripted server answers only the request under test
     }

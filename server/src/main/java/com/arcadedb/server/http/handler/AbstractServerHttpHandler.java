@@ -1492,6 +1492,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * The silence, in milliseconds, after which a streamed query answer writes a keep-alive newline; not positive means
+   * never (issue #8565). Read when a stream is created, like {@link #streamingWriteTimeout()}.
+   */
+  protected int streamingKeepAliveInterval() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL);
+  }
+
+  /**
    * The output stream a streamed response - NDJSON or Server-Sent Events - is written to, every write of which is
    * bounded by {@link #streamingWriteTimeout()} (issue #7806). Switches the exchange to blocking mode if it is not
    * already. A client that stops reading gets its connection closed instead of holding this worker thread for as
