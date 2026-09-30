@@ -161,6 +161,9 @@ public class Issue7299SchemaCopyOnWritePublicationTest {
 
     assertThat(type.getDownsamplingTiers()).isEmpty();
     assertThat(heldByReader).containsExactly(new DownsamplingTier(7L * 86_400_000L, 3_600_000L));
+
+    // And what the getter hands out is not a back door into the published list.
+    assertThatThrownBy(() -> heldByReader.add(new DownsamplingTier(1L, 1L))).isInstanceOf(UnsupportedOperationException.class);
   }
 
   /**

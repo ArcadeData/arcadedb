@@ -60,7 +60,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
   private final    List<ColumnDefinition> tsColumns            = new ArrayList<>();
   // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
-  private volatile List<DownsamplingTier> downsamplingTiers    = new ArrayList<>();
+  // Always an immutable copy, so no caller of getDownsamplingTiers() can mutate the published list either.
+  private volatile List<DownsamplingTier> downsamplingTiers    = List.of();
   private volatile TimeSeriesEngine    engine;
   /**
    * Set when schema load registered this type despite {@link #initEngine()} failing (issue #6356), so the type
@@ -313,7 +314,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
     checkForSchemaMutation();
-    this.downsamplingTiers = tiers != null ? new ArrayList<>(tiers) : new ArrayList<>();
+    this.downsamplingTiers = tiers != null ? List.copyOf(tiers) : List.of();
   }
 
   @Override
@@ -388,6 +389,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
           "Unsupported mutable bucket format version " + mutableFormatVersion + " (this build supports up to " +
               TimeSeriesBucket.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
 
+    // Refilled in place, unlike downsamplingTiers: fromJSON only runs on the fresh instance LocalSchema builds at
+    // schema load, before the type is registered and reachable by any reader.
     tsColumns.clear();
     final JSONArray colArray = json.getJSONArray("tsColumns", null);
     if (colArray != null) {
@@ -417,6 +420,6 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         ));
       }
     }
-    downsamplingTiers = tiers;
+    downsamplingTiers = List.copyOf(tiers);
   }
 }
