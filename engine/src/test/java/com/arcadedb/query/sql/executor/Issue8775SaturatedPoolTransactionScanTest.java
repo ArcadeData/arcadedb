@@ -201,9 +201,10 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
         // one reader serves every unit the caller claims: the threads do not pile up with the units
         watching.set(false);
         watcher.join();
-        assertThat(peakReaders.get()).isLessThanOrEqualTo(1);
+        assertThat(peakReaders.get()).as("the reader path must have been used").isBetween(1L, 1L);
         return rows;
       } finally {
+        watching.set(false);
         database.rollback();
       }
     } finally {

@@ -138,6 +138,8 @@ final class ParallelTypeScan {
   private          BlockingQueue<Integer>  readerUnits;
   private volatile Thread                  dedicatedReader;
   private volatile boolean                 closed;
+  // WHETHER THE CONSUMER RUNS IN A TRANSACTION, DECIDED PER BATCH: A THREAD-LOCAL LOOKUP PER ROW WOULD EAT INTO THE SCAN (#8775)
+  private          boolean                 filterDeleted;
 
   private ParallelTypeScan(final DatabaseInternal database, final String typeName, final List<Unit> units) {
     this.database = database;
@@ -478,7 +480,7 @@ final class ParallelTypeScan {
             final Result candidate = batch.get(consumerBatchIndex);
             batch.set(consumerBatchIndex++, null); // EARLY CLEANSE FOR GC
             // A ROW THE TRANSACTION HAS DELETED SINCE THE SCAN STARTED IS NOT HANDED OUT: THE SEQUENTIAL SCAN WOULD NOT HAVE (#8775)
-            if (deletedByTransaction(candidate))
+            if (filterDeleted && deletedByTransaction(candidate))
               continue;
             nextItem = candidate;
             break;
@@ -496,6 +498,7 @@ final class ParallelTypeScan {
             final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
             if (fetched != null) {
               consumerBatch = fetched;
+              filterDeleted = database.isTransactionActive();
               consumerBatchIndex = 0;
             } else {
               chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
@@ -545,6 +548,7 @@ final class ParallelTypeScan {
             ++consumerUnit;
           } else if (polled != null) {
             consumerBatch = polled;
+            filterDeleted = database.isTransactionActive();
             consumerBatchIndex = 0;
           }
         }
