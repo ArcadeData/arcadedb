@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.engine.Component;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
@@ -34,33 +35,33 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class FileSlots {
-  private volatile AtomicReferenceArray<Component> slots = new AtomicReferenceArray<>(16);
-  private volatile int                              size;
+  /** The array and its used length travel together, so a reader can never pair one generation's array with another's size. */
+  private record Table(AtomicReferenceArray<Component> slots, int size) {
+  }
+
+  private volatile Table table = new Table(new AtomicReferenceArray<>(16), 0);
 
   Component get(final int id) {
-    final AtomicReferenceArray<Component> current = slots;
-    return id >= 0 && id < current.length() ? current.get(id) : null;
+    final Table current = table;
+    return id >= 0 && id < current.size ? current.slots.get(id) : null;
   }
 
   /** Number of slots in use (one past the highest index ever added or set). */
   int size() {
-    return size;
+    return table.size;
   }
 
   synchronized void set(final int id, final Component component) {
-    ensureSize(id + 1);
-    slots.set(id, component);
+    ensureSize(id + 1).slots.set(id, component);
   }
 
   synchronized void add(final Component component) {
-    final int id = size;
-    ensureSize(id + 1);
-    slots.set(id, component);
+    final int id = table.size;
+    ensureSize(id + 1).slots.set(id, component);
   }
 
   synchronized void clear() {
-    slots = new AtomicReferenceArray<>(16);
-    size = 0;
+    table = new Table(new AtomicReferenceArray<>(16), 0);
   }
 
   /** Atomically publishes a whole new table. */
@@ -68,37 +69,47 @@ final class FileSlots {
     final AtomicReferenceArray<Component> next = new AtomicReferenceArray<>(Math.max(16, components.length));
     for (int i = 0; i < components.length; i++)
       next.set(i, components[i]);
-    slots = next;
-    size = components.length;
+    table = new Table(next, components.length);
   }
 
   /** Copy of the current content, {@link #size()} long. */
   Component[] toArray() {
-    final AtomicReferenceArray<Component> current = slots;
-    final int s = Math.min(size, current.length());
-    final Component[] copy = new Component[s];
-    for (int i = 0; i < s; i++)
-      copy[i] = current.get(i);
+    final Table current = table;
+    final Component[] copy = new Component[current.size];
+    for (int i = 0; i < copy.length; i++)
+      copy[i] = current.slots.get(i);
     return copy;
   }
 
   List<Component> toList() {
-    final Component[] array = toArray();
-    final List<Component> list = new ArrayList<>(array.length);
-    for (final Component c : array)
-      list.add(c);
-    return list;
+    return new ArrayList<>(Arrays.asList(toArray()));
   }
 
-  private void ensureSize(final int required) {
+  /** First component with this name, scanning one consistent generation of the table without copying it. */
+  Component findByName(final String name) {
+    final Table current = table;
+    for (int i = 0; i < current.size; i++) {
+      final Component c = current.slots.get(i);
+      if (c != null && name.equals(c.getName()))
+        return c;
+    }
+    return null;
+  }
+
+  private Table ensureSize(final int required) {
+    Table current = table;
+    if (required <= current.size)
+      return current;
+
+    AtomicReferenceArray<Component> slots = current.slots;
     if (required > slots.length()) {
       final AtomicReferenceArray<Component> next = new AtomicReferenceArray<>(Math.max(required, slots.length() * 2));
-      final AtomicReferenceArray<Component> old = slots;
-      for (int i = 0; i < old.length(); i++)
-        next.set(i, old.get(i));
+      for (int i = 0; i < current.size; i++)
+        next.set(i, slots.get(i));
       slots = next;
     }
-    if (required > size)
-      size = required;
+    current = new Table(slots, required);
+    table = current;
+    return current;
   }
 }

@@ -716,13 +716,12 @@ public class LocalSchema implements Schema {
         // The full rebuild REPLACES the array (issue #7963): a slot it did not stage belongs to a file the new
         // generation does not have. The new table is built aside and published in one step (issue #8634), so a
         // lock-free reader never sees it half rewritten.
-        final Component[] next = files.toArray();
+        Component[] table = files.toArray();
         if (rebuildingEverything)
-          for (int i = 0; i < next.length; ++i)
+          for (int i = 0; i < table.length; ++i)
             if (!stagedFiles.containsKey(i))
-              next[i] = null;
+              table[i] = null;
 
-        Component[] table = next;
         for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
           final int fileId = entry.getKey();
           if (table.length < fileId + 1)
@@ -1414,10 +1413,7 @@ public class LocalSchema implements Schema {
         return null;
     }
 
-    for (final Component f : files.toArray())
-      if (f != null && name.equals(f.getName()))
-        return f;
-    return null;
+    return files.findByName(name);
   }
 
   /**

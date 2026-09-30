@@ -24,9 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,7 +92,6 @@ class OpenCypherUnindexedChainedMatchIssue8695Test extends TestHelper {
 
   private Map<Object, Integer> counts(final String query) {
     final Map<Object, Integer> out = new HashMap<>();
-    final List<Object> order = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query)) {
       while (rs.hasNext()) {
         final Result row = rs.next();
@@ -102,5 +99,43 @@ class OpenCypherUnindexedChainedMatchIssue8695Test extends TestHelper {
       }
     }
     return out;
+  }
+
+  /** A write upstream of the chained match must stay visible to it: the hash is only for read-only statements. */
+  @Test
+  void recordsCreatedUpstreamStayVisibleToTheChainedMatch() {
+    database.getSchema().createVertexType("Asset");
+    database.getSchema().createVertexType("Seed");
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newVertex("Seed").set("ref", "n" + i).save();
+    });
+
+    int found = 0;
+    try (final ResultSet rs = database.command("opencypher",
+        "MATCH (s:Seed) CREATE (:Asset {name: s.ref}) WITH s MATCH (a:Asset {name: s.ref}) RETURN s.ref AS r, a.name AS a")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat((String) row.getProperty("a")).isEqualTo(row.getProperty("r"));
+        found++;
+      }
+    }
+    assertThat(found).isEqualTo(5);
+  }
+
+  /** The first properties of the map may not be hashable (null, a list): the lookup still answers through the plain scan. */
+  @Test
+  void unsupportedLookupValuesFallBackToTheScan() {
+    database.getSchema().createVertexType("Conn");
+    database.getSchema().createVertexType("Ref");
+    database.transaction(() -> {
+      for (int i = 0; i < 12; i++)
+        database.newVertex("Conn").set("name", "n" + i).save();
+      for (int i = 0; i < 12; i++)
+        database.newVertex("Ref").set("v", i % 2 == 0 ? null : "n" + i).save();
+    });
+    final Map<Object, Integer> c = counts("MATCH (r:Ref) OPTIONAL MATCH (c:Conn {name: r.v}) RETURN r.v AS v, count(c) AS c");
+    assertThat(c.get("n1")).isEqualTo(1);
+    assertThat(c.get(null)).isEqualTo(0);
   }
 }

@@ -130,15 +130,23 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // the moment issue #7021 made this lookup polymorphic. Same write-once-per-execution contract as the
   // fields above, and cleared with them.
   private       Collection<TypeIndex> polymorphicIndexes;
+  /** Context variable the plan sets to TRUE for a read-only statement; the scan hash below is only ever built for one. */
+  public static final String READ_ONLY_STATEMENT_KEY = "cypherReadOnlyStatement";
+  /** Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. */
+  private static final long  SCAN_HASH_MAX_RECORDS   = 500_000L;
+
   // Issue #8695: a chained single-label MATCH whose inline equality has no index re-scans the whole type once per outer
   // row. From the second such scan on, the type is read once into a hash over one property (see
-  // {@link ScanPropertyHashIndex}) and each row only visits the records sharing its value. Same per-execution contract
-  // as the fields above. {@code unindexedScanOpens} counts the scans so a query that opens it once (a LIMIT, a single
-  // outer row) never pays for the build.
+  // {@link ScanPropertyHashIndex}) and each row only visits the records sharing its value. Per-execution state like
+  // the fields above, never reset because the step instance lives for one execution. {@code unindexedScanOpens} counts
+  // the scans so a query that opens it once (a LIMIT, a single outer row) never pays for the build. Only for a
+  // read-only statement: the snapshot would not see a record an upstream CREATE/SET/MERGE produced mid-query, which
+  // the live scan does.
   private       int                   unindexedScanOpens;
   private       String                scanHashProperty;
   private       ScanPropertyHashIndex scanHashIndex;
   private       boolean               scanHashDeclined;
+  private       int                   scanHashMisses;
 
   /**
    * Creates a match node step.
@@ -682,9 +690,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return everyVertex;
   }
 
-  /** Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. */
-  private static final long SCAN_HASH_MAX_RECORDS = 5_000_000L;
-
   /**
    * Answers a chained, unindexed inline-equality match from a hash built over one full scan, or returns null to
    * leave the plain scan in charge (first open, unsupported value type, type too large).
@@ -693,6 +698,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (scanHashDeclined)
       return null;
     if (scanHashIndex == null) {
+      if (!Boolean.TRUE.equals(context.getVariable(READ_ONLY_STATEMENT_KEY))) {
+        scanHashDeclined = true;
+        return null;
+      }
       if (++unindexedScanOpens < 2)
         return null;
       if (context.getDatabase().countType(label, true) > SCAN_HASH_MAX_RECORDS) {
@@ -704,8 +713,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
           scanHashProperty = entry.getKey();
           break;
         }
-      if (scanHashProperty == null)
+      if (scanHashProperty == null) {
+        // a row whose values are null (an earlier OPTIONAL MATCH) says nothing about the next ones: give up only after a few
+        if (++scanHashMisses >= 8)
+          scanHashDeclined = true;
         return null;
+      }
 
       @SuppressWarnings("unchecked") final Iterator<Identifiable> scan =
           (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
@@ -713,7 +726,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
-    return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null;
+    return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null; // null: plain scan for this row
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {

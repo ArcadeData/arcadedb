@@ -34,28 +34,49 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class FileSlotsTest {
 
+  private static final class Stub extends Component {
+    Stub(final int id) {
+      super(null, "c" + id, id, 0, "");
+    }
+
+    @Override
+    public void close() {
+    }
+  }
+
   @Test
   void growsAndResolvesById() {
     final FileSlots slots = new FileSlots();
     assertThat(slots.get(0)).isNull();
     assertThat(slots.get(-1)).isNull();
-    slots.set(40, null);
+    final Stub c40 = new Stub(40);
+    slots.set(40, c40);
     assertThat(slots.size()).isEqualTo(41);
-    slots.add(null);
+    assertThat(slots.get(40)).isSameAs(c40);
+    assertThat(slots.get(39)).isNull();
+    final Stub c41 = new Stub(41);
+    slots.add(c41);
     assertThat(slots.size()).isEqualTo(42);
+    assertThat(slots.get(41)).isSameAs(c41);
     assertThat(slots.get(1000)).isNull();
+    assertThat(slots.findByName("c41")).isSameAs(c41);
+    assertThat(slots.findByName("nope")).isNull();
     slots.clear();
     assertThat(slots.size()).isEqualTo(0);
+    assertThat(slots.get(40)).isNull();
   }
 
   @Test
   void replaceAllPublishesTheWholeTable() {
     final FileSlots slots = new FileSlots();
-    slots.set(3, null);
-    slots.replaceAll(new Component[5]);
+    slots.set(3, new Stub(3));
+    final Stub replacement = new Stub(1);
+    slots.replaceAll(new Component[] { null, replacement, null, null, null });
     assertThat(slots.size()).isEqualTo(5);
+    assertThat(slots.get(3)).isNull();
+    assertThat(slots.get(1)).isSameAs(replacement);
     assertThat(slots.toArray()).hasSize(5);
-    assertThat(slots.toList()).hasSize(5);
+    assertThat(slots.toList()).hasSize(5).contains(replacement);
   }
 
   @Test
@@ -74,8 +95,10 @@ class FileSlotsTest {
     }
   }
 
+  /** A reader that sees a size must find every slot below it filled, however the table grew meanwhile. */
   @Test
-  void concurrentGrowthNeverLosesOrTearsSlots() throws Exception {
+  void concurrentGrowthNeverExposesAnUnfilledSlot() throws Exception {
+    final int total = 20_000;
     final FileSlots slots = new FileSlots();
     final AtomicInteger errors = new AtomicInteger();
     final AtomicBoolean stop = new AtomicBoolean();
@@ -83,20 +106,24 @@ class FileSlotsTest {
     for (int t = 0; t < readers.length; t++) {
       readers[t] = new Thread(() -> {
         while (!stop.get()) {
-          final int size = slots.size();
-          if (slots.toArray().length < Math.min(size, 0))
+          final Component[] copy = slots.toArray();
+          for (int i = 0; i < copy.length; i++)
+            if (copy[i] == null || copy[i].getFileId() != i) {
+              errors.incrementAndGet();
+              break;
+            }
+          if (copy.length > 0 && slots.findByName("c" + (copy.length - 1)) == null)
             errors.incrementAndGet();
-          slots.get(size);
         }
       });
       readers[t].start();
     }
-    for (int i = 0; i < 20_000; i++)
-      slots.add(null);
+    for (int i = 0; i < total; i++)
+      slots.add(new Stub(i));
     stop.set(true);
     for (final Thread r : readers)
       r.join(10_000);
     assertThat(errors.get()).isZero();
-    assertThat(slots.size()).isEqualTo(20_000);
+    assertThat(slots.size()).isEqualTo(total);
   }
 }
