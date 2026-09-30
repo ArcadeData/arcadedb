@@ -1005,16 +1005,41 @@ body.col-resizing * {
   justify-content: space-between;
 }
 
-.saved-query-name .saved-query-delete {
+.saved-query-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* THE PADDING GIVES EACH ICON A FINGER-SIZED HIT AREA, SO A TAP ON "RUN" CANNOT LAND ON "DELETE" */
+.saved-query-name .saved-query-delete,
+.saved-query-name .saved-query-run {
   opacity: 0;
-  color: #cc4444;
   font-size: 0.7rem;
+  padding: 4px 6px;
   cursor: pointer;
   transition: opacity 0.15s;
 }
 
-.saved-query-entry:hover .saved-query-delete {
+.saved-query-name .saved-query-delete {
+  color: #cc4444;
+}
+
+.saved-query-name .saved-query-run {
+  color: var(--color-brand);
+}
+
+.saved-query-entry:hover .saved-query-delete,
+.saved-query-entry:hover .saved-query-run {
   opacity: 1;
+}
+
+/* NO HOVER ON TOUCH DEVICES: KEEP THE RUN AND DELETE BUTTONS VISIBLE THERE */
+@media (hover: none) {
+  .saved-query-name .saved-query-delete,
+  .saved-query-name .saved-query-run {
+    opacity: 1;
+  }
 }
 
 .saved-query-preview {

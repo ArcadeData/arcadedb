@@ -829,10 +829,11 @@ function aiOpenInQuery(blockId) {
 
   // Set language and command in Query panel
   setTimeout(function() {
-    $("#inputLanguage").val(language);
     if (typeof editor !== "undefined" && editor) {
+      setEditorLanguage(language);
       editor.setValue(command);
-    }
+    } else
+      $("#inputLanguage").val(language);
   }, 100);
 }
 
