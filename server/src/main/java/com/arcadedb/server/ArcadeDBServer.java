@@ -159,6 +159,8 @@ public class ArcadeDBServer {
    * addressing metadata a driver needs to rebuild a typed {@code DuplicatedKeyException} (issue #7760). A
    * placeholder rather than an empty segment, so the pipe-separated {@code exceptionArgs} keeps its three parts for
    * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer) must both apply it, or the setting means one thing on each surface.
+   * Any new surface that serialises {@code getKeys()} or the exception message must apply it too: nothing enforces
+   * it, and the /ws insert session, Bolt and Redis do not yet (issue #8749).
    */
   public static final String                                CONCEALED_DUPLICATED_KEYS            = "[concealed]";
 
