@@ -230,6 +230,33 @@ class Issue8676DeleteTargetOfUnidirectionalEdgeTest extends TestHelper {
   }
 
   @Test
+  void lightweightSelfLoopIsRemoved() {
+    createSchema(true);
+    database.transaction(() -> {
+      a = database.newVertex("V8").set("n", "a").save().getIdentity();
+      a.asVertex().newEdge("U8", a);
+    });
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "U8")).isEqualTo(1);
+    database.transaction(() -> a.asVertex().delete());
+    assertThat(database.existsRecord(a)).isFalse();
+  }
+
+  @Test
+  void everySourceOfATargetIsCleaned() {
+    createSchema(false);
+    createPair("U8");
+    final RID[] c = new RID[1];
+    database.transaction(() -> {
+      c[0] = database.newVertex("V8").set("n", "c").save().getIdentity();
+      c[0].asVertex().newEdge("U8", b);
+    });
+    database.transaction(() -> b.asVertex().delete());
+    assertThat(database.countType("U8", false)).isZero();
+    assertThat(a.asVertex().countEdges(Vertex.DIRECTION.OUT, "U8")).isZero();
+    assertThat(c[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "U8")).isZero();
+  }
+
+  @Test
   void bidirectionalTypeIsUnchanged() {
     createSchema(false);
     createPair("B8");

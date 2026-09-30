@@ -105,9 +105,9 @@ public final class IncomingEdgeLookup {
   private static final long       LIGHTWEIGHT_POSITION = -1L;
   // SCANS TAKEN SINCE THE JVM STARTED, ONE PER TYPE: WHAT A TEST READS TO TELL A KEPT SCAN FROM A REPEATED ONE
   private static final AtomicLong SCANS_TAKEN          = new AtomicLong();
-  // WHETHER THE PER-VERTEX FALLBACK OF A DELETE WAS REPORTED AT WARNING ALREADY
   // PER-VERTEX SCANS A DELETE TOOK BECAUSE THE TYPES COULD NOT BE INDEXED IN HEAP: WHAT A TEST READS TO TELL THE FALLBACK TAKEN
-  private static final AtomicLong    FALLBACK_SCANS   = new AtomicLong();
+  private static final AtomicLong FALLBACK_SCANS = new AtomicLong();
+  // WHETHER THE PER-VERTEX FALLBACK OF A DELETE WAS REPORTED AT WARNING ALREADY
   private static final AtomicBoolean FALLBACK_WARNED = new AtomicBoolean();
   // THE LAST CLOSURE THE STATIC CHECKS COMPUTED ON THIS THREAD: STEPS ASK PER ROW FOR THE SAME TYPES
   private static final ThreadLocal<CachedClosure> LAST_STATIC_CLOSURE = new ThreadLocal<>();
