@@ -1336,6 +1336,9 @@ message ApiTokenInfo {
   string token_hash   = 6;
   // The token's last four characters, so an operator can tell two tokens apart in a list.
   string token_suffix = 7;
+  // Whether the token's expiry has passed, derived by the server at listing time (issue #7601) so the caller does not
+  // compare expires_at against its own clock. Set by the listing only; a freshly minted token reports false.
+  bool   expired      = 8;
 }
 
 message ListApiTokensRequest {

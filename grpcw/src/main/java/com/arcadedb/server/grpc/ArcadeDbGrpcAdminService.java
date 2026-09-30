@@ -539,6 +539,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
         .setPermissionsJson(token.getJSONObject("permissions", new JSONObject()).toString())
         .setTokenHash(token.getString("tokenHash", ""))
         .setTokenSuffix(token.getString("tokenSuffix", ""))
+        .setExpired(token.getBoolean("expired", false))
         .build();
   }
 

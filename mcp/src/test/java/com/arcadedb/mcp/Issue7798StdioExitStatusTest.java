@@ -27,6 +27,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
@@ -140,6 +142,27 @@ class Issue7798StdioExitStatusTest extends BaseGraphServerTest {
 
     assertThat(status).as("stdin closing is how this process ends normally, not a crash").isZero();
     assertThat(stops.get()).as("the success path runs the same finally as the failure paths").isEqualTo(1);
+  }
+
+  /** Issue #8039: a stdin that fails mid-session is a dead transport, not a clean shutdown. */
+  @Test
+  void theStdioLoopReportsAnIOFailureOnStdinAsNotClean() {
+    final InputStream broken = new InputStream() {
+      @Override
+      public int read() throws IOException {
+        throw new IOException("broken pipe on stdin");
+      }
+
+      @Override
+      public int read(final byte[] b, final int off, final int len) throws IOException {
+        throw new IOException("broken pipe on stdin");
+      }
+    };
+
+    assertThat(new MCPStdioServer(null, null, null, broken, discardedStdout()).run())
+        .as("an I/O failure on stdin must not be reported as a clean end of input").isFalse();
+    assertThat(new MCPStdioServer(null, null, null, emptyStdin(), discardedStdout()).run())
+        .as("EOF is the clean way for the loop to end").isTrue();
   }
 
   /**
