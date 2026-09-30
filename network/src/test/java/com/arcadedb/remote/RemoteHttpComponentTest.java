@@ -1155,6 +1155,16 @@ class RemoteHttpComponentTest {
     assertThat(RemoteHttpComponent.computeWatchdogMs(0)).isEqualTo(30_000L);
   }
 
+  // Issue #8565: a streamed answer gets the same silence floor as a buffered call
+
+  @Test
+  void streamSilenceBudgetHasTheBufferedPathFloor() {
+    component.setTimeout(100);
+    assertThat(component.streamSilenceMs()).isEqualTo(30_000L);
+    component.setTimeout(120_000);
+    assertThat(component.streamSilenceMs()).isEqualTo(120_000L);
+  }
+
   /**
    * A server that accepts the connection, reads the request, and never responds exercises the case
    * the watchdog exists for (the per-request {@code HttpRequest} timeout does not cover it once

@@ -157,26 +157,29 @@ public final class NdJsonResultStream implements AutoCloseable {
    * javadoc, "Liveness"). Meant to be called from a timer thread. Never waits for a writer: when the stream is being
    * written to it is not silent, and when the stream is closed there is nobody to tell.
    *
-   * @return false once the stream is closed or the write failed, so the caller stops its timer; true otherwise
+   * @return how long, in milliseconds, until the stream could next be idle for {@code idleMs}, so the caller can check
+   *         again then instead of a full interval later (which would let the silence reach twice the interval); or
+   *         -1 once the stream is closed or the write failed, so the caller stops its timer
    */
-  public boolean keepAlive(final long idleMs) {
+  public long keepAlive(final long idleMs) {
     if (!lock.tryLock())
-      return true;
+      return idleMs;
     try {
       if (closed)
-        return false;
-      if (System.nanoTime() - lastFlushNanos < idleMs * 1_000_000L)
-        return true;
+        return -1;
+      final long idleNanos = System.nanoTime() - lastFlushNanos;
+      if (idleNanos < idleMs * 1_000_000L)
+        return Math.max(1, idleMs - idleNanos / 1_000_000L);
       if (pendingBytes == 0)
         out.write(NEWLINE);
       out.flush();
       pendingBytes = 0;
       lastFlushNanos = System.nanoTime();
       started = true;
-      return true;
+      return idleMs;
     } catch (final IOException e) {
       // The client is gone, or the write bound closed the connection: the worker thread finds out on its own write
-      return false;
+      return -1;
     } finally {
       lock.unlock();
     }

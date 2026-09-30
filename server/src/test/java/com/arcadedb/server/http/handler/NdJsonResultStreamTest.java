@@ -203,10 +203,10 @@ class NdJsonResultStreamTest {
   void keepAliveWritesABareNewlineOnlyAfterTheIdleInterval() throws IOException {
     final FlushRecordingStream out = new FlushRecordingStream();
     try (final NdJsonResultStream stream = new NdJsonResultStream(out, 50)) {
-      assertThat(stream.keepAlive(60_000)).isTrue();
+      assertThat(stream.keepAlive(60_000)).as("time left until it could be idle").isBetween(1L, 60_000L);
       assertThat(out.text()).as("not idle for long enough yet").isEmpty();
 
-      assertThat(stream.keepAlive(0)).isTrue();
+      assertThat(stream.keepAlive(0)).isGreaterThanOrEqualTo(0);
       assertThat(out.text()).isEqualTo("\n");
       assertThat(out.flushes).hasSize(1);
       assertThat(stream.hasStarted()).isTrue();
@@ -221,7 +221,7 @@ class NdJsonResultStreamTest {
       stream.writeRecord(new JSONObject().put("n", 2)); // pending: neither threshold reached
       assertThat(out.flushes).hasSize(1);
 
-      assertThat(stream.keepAlive(0)).isTrue();
+      assertThat(stream.keepAlive(0)).isGreaterThanOrEqualTo(0);
       assertThat(out.flushes).hasSize(2);
       assertThat(out.lines()).hasSize(2).noneMatch(String::isEmpty);
     }
@@ -233,7 +233,7 @@ class NdJsonResultStreamTest {
     final NdJsonResultStream stream = new NdJsonResultStream(out, 50);
     stream.close();
 
-    assertThat(stream.keepAlive(0)).isFalse();
+    assertThat(stream.keepAlive(0)).isEqualTo(-1);
     assertThat(out.text()).isEmpty();
   }
 }

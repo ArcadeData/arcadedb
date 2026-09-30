@@ -93,4 +93,17 @@ class Issue8566AggItemsNullsAndSeedTest {
     assertThat(empty.keySet()).isEqualTo(full.keySet());
     assertThat(empty.get("median")).isNull();
   }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void nanIsSkippedLikeAMissingValue() {
+    final List<String> items = List.of("a", "b", "c");
+    Map<String, Object> r = (Map<String, Object>) min.execute(new Object[] { Arrays.asList(Double.NaN, 1, 2), items }, null);
+    assertThat(r.get("value")).isEqualTo(1.0);
+    assertThat(r.get("items")).isEqualTo(List.of("b"));
+
+    r = (Map<String, Object>) max.execute(new Object[] { Arrays.asList(Double.NaN, 1, 2), items }, null);
+    assertThat(r.get("value")).isEqualTo(2.0);
+    assertThat(r.get("items")).isEqualTo(List.of("c"));
+  }
 }

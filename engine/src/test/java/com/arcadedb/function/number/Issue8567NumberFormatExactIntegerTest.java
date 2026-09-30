@@ -52,4 +52,11 @@ class Issue8567NumberFormatExactIntegerTest {
     assertThat(function.execute(new Object[] { 1234.5678 }, null)).isEqualTo("1,234.568");
     assertThat(function.execute(new Object[] { 7, "000.00" }, null)).isEqualTo("007.00");
   }
+
+  @Test
+  void otherNumberSubclassesFallBackToDouble() {
+    assertThat(function.execute(new Object[] { new java.util.concurrent.atomic.LongAdder() }, null)).isEqualTo("0");
+    assertThat(function.execute(new Object[] { (short) 12, "000" }, null)).isEqualTo("012");
+    assertThat(function.execute(new Object[] { 1.5f }, null)).isEqualTo("1.5");
+  }
 }

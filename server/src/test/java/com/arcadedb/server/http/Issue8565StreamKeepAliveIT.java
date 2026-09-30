@@ -84,8 +84,13 @@ public class Issue8565StreamKeepAliveIT extends BaseGraphServerTest {
   @Test
   void aSlowRowIsPrecededByKeepAliveNewlines() throws Exception {
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL, 200);
-
-    final List<String> lines = streamQuery();
+    final List<String> lines;
+    try {
+      lines = streamQuery();
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL,
+          GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL.getDefValue());
+    }
 
     assertThat(lines.stream().filter(String::isEmpty).count()).as("keep-alive lines during a %d ms gap", GAP_MS).isGreaterThanOrEqualTo(2);
     final List<String> events = lines.stream().filter(l -> !l.isEmpty()).toList();
@@ -98,8 +103,13 @@ public class Issue8565StreamKeepAliveIT extends BaseGraphServerTest {
   @Test
   void zeroDisablesTheKeepAlive() throws Exception {
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL, 0);
-
-    final List<String> lines = streamQuery();
+    final List<String> lines;
+    try {
+      lines = streamQuery();
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL,
+          GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL.getDefValue());
+    }
 
     assertThat(lines).noneMatch(String::isEmpty);
     assertThat(lines).hasSize(4);
