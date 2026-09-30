@@ -62,6 +62,15 @@ class Issue7476AggregationCeilingSizingTest extends TestHelper {
   }
 
   @Test
+  void theFlatWindowIsKeptUpToTwiceTheCeilingAndNotBeyond() throws Exception {
+    // A WINDOW OF span + 2 BUCKETS: 199 IS UNDER TWICE A CEILING OF 100, 201 IS OVER IT
+    final TimeSeriesEngine engine = createType(1, 0L, 197L);
+    assertThat(aggregate(engine, 100).isFlatMode()).isTrue();
+    database.command("sql", "INSERT INTO " + TYPE + " SET ts = 199, value = 1.0").close();
+    assertThat(aggregate(engine, 100).isFlatMode()).isFalse();
+  }
+
+  @Test
   void noCeilingKeepsTheFlatWindow() throws Exception {
     final TimeSeriesEngine engine = createType(1, 0L, 5_000_000L, 9_000_000L);
 
