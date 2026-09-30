@@ -18,11 +18,13 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -31,6 +33,14 @@ import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Fluent builder for continuous aggregates.
+ * <p>
+ * The builder varies over {@link BasicDatabase}, not over {@code DatabaseInternal}, so the same body of builder code
+ * runs against an embedded database and against {@code RemoteDatabase} (issue #7688, the #7399 shape for continuous
+ * aggregates). This class is the embedded implementation: {@link #create()} builds the aggregate in place. A remote
+ * schema subclasses it and overrides {@link #create()} to issue {@link #toSQL()} through the server instead.
+ */
 public class ContinuousAggregateBuilder {
   private static final Pattern TIME_BUCKET_PATTERN = Pattern.compile(
       "ts\\.timeBucket\\s*\\(\\s*'([^']+)'\\s*,\\s*(\\w+)\\s*\\)",
@@ -40,12 +50,16 @@ public class ContinuousAggregateBuilder {
       "ts\\.timeBucket\\s*\\([^)]+\\)\\s+(?:AS\\s+)?(\\w+)",
       Pattern.CASE_INSENSITIVE);
 
-  private final DatabaseInternal database;
-  private String  name;
-  private String  query;
-  private boolean ifNotExists = false;
+  protected final BasicDatabase database;
+  protected       String        name;
+  protected       String        query;
+  protected       boolean       ifNotExists = false;
 
-  public ContinuousAggregateBuilder(final DatabaseInternal database) {
+  /**
+   * @param database the database the aggregate will be created in. An embedded {@code DatabaseInternal} for this class;
+   *                 a subclass may accept any other {@link BasicDatabase}, {@code RemoteDatabase} included.
+   */
+  public ContinuousAggregateBuilder(final BasicDatabase database) {
     this.database = database;
   }
 
@@ -64,15 +78,63 @@ public class ContinuousAggregateBuilder {
     return this;
   }
 
-  public ContinuousAggregate create() {
+  /**
+   * The aggregate name accumulated so far, or {@code null} when {@link #withName} has not been called. For subclasses
+   * that have to name the aggregate they just created when reading it back.
+   */
+  public String getName() {
+    return name;
+  }
+
+  /**
+   * The checks that need nothing but the builder state, so they hold wherever the aggregate is created. Every other
+   * check - the source type exists and is a TimeSeries type, the query carries an aliased {@code ts.timeBucket()} and a
+   * {@code GROUP BY} - needs the schema, and runs where the aggregate is built: in {@link #create()} embedded, and on
+   * the server, through this same class, for the DDL a remote schema renders.
+   */
+  protected void validate() {
     if (name == null || name.isEmpty())
       throw new IllegalArgumentException("Continuous aggregate name is required");
     if (name.contains("`"))
       throw new IllegalArgumentException("Continuous aggregate name must not contain backtick characters");
     if (query == null || query.isEmpty())
       throw new IllegalArgumentException("Continuous aggregate query is required");
+  }
 
-    final LocalSchema schema = (LocalSchema) database.getSchema();
+  /**
+   * Renders the accumulated state as the single {@code CREATE CONTINUOUS AGGREGATE} statement that creates the same
+   * aggregate, for an implementation that can only reach the schema through {@code command("sql", ...)} (issue #7688).
+   * <p>
+   * The query is emitted verbatim after {@code AS}. The server parses it and stores its own rendering of the parsed
+   * statement - exactly what an embedded {@code CREATE CONTINUOUS AGGREGATE} does - so {@code getQuery()} on an
+   * aggregate created this way returns the normalized form, not the caller's spelling.
+   */
+  public String toSQL() {
+    validate();
+
+    final StringBuilder sql = new StringBuilder(64 + query.length());
+    sql.append("CREATE CONTINUOUS AGGREGATE ");
+    if (ifNotExists)
+      sql.append("IF NOT EXISTS ");
+    sql.append(Identifier.quote(name)).append(" AS ");
+    MaterializedViewBuilder.appendQuery(sql, query);
+    return sql.toString();
+  }
+
+  /**
+   * Creates the aggregate and returns it.
+   * <p>
+   * This implementation creates it in place, in the embedded database the builder was constructed with. A remote
+   * schema returns a subclass that overrides this to issue {@link #toSQL()} through the server.
+   */
+  public ContinuousAggregate create() {
+    validate();
+
+    if (!(database instanceof DatabaseInternal databaseInternal))
+      throw new SchemaException("Cannot create the continuous aggregate '" + name + "' in place: "
+          + database.getClass().getSimpleName() + " is not an embedded database. Use the builder returned by its own Schema");
+
+    final LocalSchema schema = (LocalSchema) databaseInternal.getSchema();
 
     if (schema.existsContinuousAggregate(name)) {
       if (ifNotExists)
@@ -85,7 +147,7 @@ public class ContinuousAggregateBuilder {
           "': a type with the same name already exists");
 
     // Parse and validate the query
-    final String sourceTypeName = extractSourceType(query);
+    final String sourceTypeName = extractSourceType(databaseInternal, query);
     if (sourceTypeName == null)
       throw new SchemaException("Continuous aggregate query must SELECT FROM a single type");
 
@@ -141,7 +203,7 @@ public class ContinuousAggregateBuilder {
 
       // Create and register the continuous aggregate
       final ContinuousAggregateImpl ca = new ContinuousAggregateImpl(
-          database, name, query, name, sourceTypeName,
+          databaseInternal, name, query, name, sourceTypeName,
           bucketIntervalMs, finalBucketAlias, finalTsColumn);
       ca.setStatus(MaterializedViewStatus.BUILDING);
       // THE MONITOR GUARDS THE MAP AGAINST THE synchronized ACCESSORS, TAKEN UNDER THE WRITE LOCK THIS CALLBACK HOLDS -
@@ -153,7 +215,7 @@ public class ContinuousAggregateBuilder {
 
       // Perform initial full refresh (watermark=0 means all data)
       try {
-        ContinuousAggregateRefresher.incrementalRefresh(database, ca);
+        ContinuousAggregateRefresher.incrementalRefresh(databaseInternal, ca);
       } catch (final Exception e) {
         synchronized (schema) {
           schema.continuousAggregates.remove(name);
@@ -192,7 +254,7 @@ public class ContinuousAggregateBuilder {
             "Use a simple SELECT ... FROM ... GROUP BY query.");
   }
 
-  private String extractSourceType(final String sql) {
+  private static String extractSourceType(final DatabaseInternal database, final String sql) {
     final Statement parsed = database.getStatementCache().get(sql);
     if (parsed instanceof SelectStatement select) {
       final FromClause from = select.getTarget();
