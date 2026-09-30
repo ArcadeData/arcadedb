@@ -108,6 +108,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
   public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
+  /**
+   * Key under which the HTTP request's {@link Observation.Context} carries the raw request path (issue #7295), so an
+   * attached tracer can decide - before any span exists - to leave a request untraced, e.g. the readiness and health
+   * probes. It is a plain context entry, never a key value: key values become span attributes and meter tags, and the
+   * raw path is client-controlled.
+   */
+  public static final String                OBSERVATION_REQUEST_PATH = "arcadedb.http.request.path";
   // Request body parsed as a top-level JSON array (issue #5415). A JSON array is a legitimate request body,
   // but it is not a JSONObject, so it cannot travel in the `payload` argument of execute(). It is parsed
   // once by the shared request pipeline and attached here, where a handler reads it back with
@@ -446,6 +453,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               final RequestReplyReceiverContext<HttpServerExchange, Object> ctx = new RequestReplyReceiverContext<>(
                   (carrier, key) -> carrier.getRequestHeaders().getFirst(key));
               ctx.setCarrier(exchange);
+              ctx.put(OBSERVATION_REQUEST_PATH, exchange.getRequestPath());
               return ctx;
             }, httpServer.getServer().getObservationRegistry())
         .lowCardinalityKeyValue("method", exchange.getRequestMethod().toString())

@@ -19,6 +19,8 @@
 package com.arcadedb.metrics.otlp;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,5 +78,33 @@ class OtlpMetricsPluginTest {
     // stopService must unregister and close cleanly.
     plugin.stopService();
     assertThat(Metrics.globalRegistry.getRegistries().size()).isEqualTo(before);
+  }
+
+  /**
+   * Issue #7295: the OTLP registry reports the same service.name the tracing plugin does - "arcadedb" by default rather
+   * than Micrometer's "unknown_service" - and keeps the endpoint from the ArcadeDB setting.
+   */
+  @Test
+  void otlpConfigReportsArcadedbServiceNameByDefault() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT, "http://collector:4318/v1/metrics");
+
+    final OtlpConfig config = OtlpMetricsPlugin.otlpConfig(cfg, Map.of());
+
+    assertThat(config.resourceAttributes().get("service.name")).isEqualTo("arcadedb");
+    assertThat(config.url()).isEqualTo("http://collector:4318/v1/metrics");
+  }
+
+  /**
+   * Issue #7295: OTEL_SERVICE_NAME wins over a service.name in OTEL_RESOURCE_ATTRIBUTES, as the OpenTelemetry
+   * specification requires. Micrometer's default resolution did the opposite.
+   */
+  @Test
+  void otlpConfigLetsOtelServiceNameWinOverResourceAttributes() {
+    final OtlpConfig config = OtlpMetricsPlugin.otlpConfig(new ContextConfiguration(),
+        Map.of("OTEL_SERVICE_NAME", "graph-prod", "OTEL_RESOURCE_ATTRIBUTES", "service.name=other,deployment.environment=prod"));
+
+    assertThat(config.resourceAttributes().get("service.name")).isEqualTo("graph-prod");
+    assertThat(config.resourceAttributes().get("deployment.environment")).isEqualTo("prod");
   }
 }

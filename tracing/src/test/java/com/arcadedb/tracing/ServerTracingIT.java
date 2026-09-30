@@ -57,11 +57,13 @@ class ServerTracingIT extends BaseGraphServerTest {
 
     try {
       final String parentTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-      final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
+      // Not /api/v1/ready: the probes are excluded from tracing by default (issue #7295).
+      final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/databases")).openConnection();
       c.setRequestMethod("GET");
+      c.setRequestProperty("Authorization", basicAuth());
       c.setRequestProperty("traceparent", "00-" + parentTraceId + "-00f067aa0ba902b7-01");
       c.connect();
-      assertThat(c.getResponseCode()).isEqualTo(204);
+      assertThat(c.getResponseCode()).isEqualTo(200);
       c.disconnect();
 
       // The span is exported in the handler's finally block, just after the client gets the
@@ -99,8 +101,7 @@ class ServerTracingIT extends BaseGraphServerTest {
       final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/command/graph")).openConnection();
       c.setRequestMethod("POST");
       c.setDoOutput(true);
-      c.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      c.setRequestProperty("Authorization", basicAuth());
       c.setRequestProperty("Content-Type", "application/json");
       c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"SELECT 1 AS one\"}".getBytes(StandardCharsets.UTF_8));
       c.connect();
@@ -129,5 +130,56 @@ class ServerTracingIT extends BaseGraphServerTest {
     } finally {
       plugin.stopService();
     }
+  }
+
+  /**
+   * Issue #7295: a readiness or health probe produces no span through the production handler wiring, while a request
+   * sent after it does. The probe's span, were it created, would be exported before the later request's.
+   */
+  @Test
+  void healthProbesProduceNoSpan() throws Exception {
+    final ObservationRegistry registry = getServer(0).getObservationRegistry();
+    final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+    final TracingPlugin plugin = new TracingPlugin();
+    plugin.attachForTest(registry, exporter);
+
+    try {
+      for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
+        final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
+        c.setRequestMethod("GET");
+        c.connect();
+        assertThat(c.getResponseCode()).as(probe).isBetween(200, 299);
+        c.disconnect();
+      }
+
+      final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/databases")).openConnection();
+      c.setRequestMethod("GET");
+      c.setRequestProperty("Authorization", basicAuth());
+      c.connect();
+      assertThat(c.getResponseCode()).isEqualTo(200);
+      c.disconnect();
+
+      final AttributeKey<String> pathKey = AttributeKey.stringKey("path");
+      SpanData databasesSpan = null;
+      for (int attempt = 0; attempt < 100 && databasesSpan == null; attempt++) {
+        databasesSpan = exporter.getFinishedSpanItems().stream()
+            .filter(s -> "/databases".equals(s.getAttributes().get(pathKey)))
+            .findFirst()
+            .orElse(null);
+        if (databasesSpan == null)
+          Thread.sleep(20);
+      }
+
+      assertThat(databasesSpan).as("the non-probe request must still be traced").isNotNull();
+      assertThat(exporter.getFinishedSpanItems())
+          .as("no span may carry a probe path")
+          .noneMatch(s -> "/ready".equals(s.getAttributes().get(pathKey)) || "/health".equals(s.getAttributes().get(pathKey)));
+    } finally {
+      plugin.stopService();
+    }
+  }
+
+  private static String basicAuth() {
+    return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
   }
 }

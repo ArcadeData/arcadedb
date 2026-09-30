@@ -1530,6 +1530,20 @@ public enum GlobalConfiguration {
   SERVER_METRICS_TRACING_SAMPLING_RATE("arcadedb.serverMetrics.tracing.samplingRate", SCOPE.SERVER,
       "Parent-based trace sampling ratio in [0.0,1.0]", Float.class, 0.0f),
 
+  SERVER_METRICS_TRACING_EXCLUDED_PATHS("arcadedb.serverMetrics.tracing.excludedPaths", SCOPE.SERVER, """
+      Comma-separated HTTP request paths that never produce a trace span, matched exactly against the request path \
+      (query string excluded). The default leaves out the readiness and health probes, which a container \
+      orchestrator or load balancer calls every few seconds and which would otherwise flood the trace backend \
+      with noise (issue #7295). Set it to an empty string to trace every request. Read when the tracing plugin \
+      starts.""", String.class, "/api/v1/ready,/api/v1/health"),
+
+  SERVER_METRICS_SERVICE_NAME("arcadedb.serverMetrics.serviceName", SCOPE.SERVER, """
+      The OpenTelemetry service.name resource attribute the tracing and OTLP metrics plugins report. The standard \
+      OpenTelemetry environment variables take precedence, as they do for any OpenTelemetry SDK: OTEL_SERVICE_NAME \
+      first, then a service.name entry in OTEL_RESOURCE_ATTRIBUTES (whose other attributes are reported as well); \
+      this setting applies only when neither names a service. Before issue #7295 the tracing plugin ignored both \
+      variables and reported unknown_service:java. Read when the plugins start.""", String.class, "arcadedb"),
+
   SERVER_HEALTH_CHECK_ENABLED("arcadedb.server.healthCheck.enabled", SCOPE.SERVER, """
       True (the default) to run the server health monitor: one daemon thread that samples free disk space on \
       the databases' filesystem, available heap, and the average JVM safepoint pause, and writes a WARNING to \
