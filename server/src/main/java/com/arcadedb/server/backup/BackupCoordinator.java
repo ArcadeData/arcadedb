@@ -133,8 +133,9 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * {@link Operation#ordinal()}. A value is never all-zero - the entry is removed instead. Copy-on-write for the same
    * reason as {@link #inProgress}: {@link #waitingOther(String, Operation)} reads an array outside the map's lock.
    * <p>
-   * Two callers use that overload, both applying a committed Raft entry: the HA snapshot install as {@code RESTORE}
-   * and the replicated drop-database apply as {@code DROP} (issue #8035). Both kinds already conflict with
+   * Three callers use that overload: two applying a committed Raft entry - the HA snapshot install as {@code RESTORE}
+   * and the replicated drop-database apply as {@code DROP} (issue #8035) - and the {@code restore:} startup command
+   * of {@code arcadedb.server.defaultDatabases} as {@code RESTORE} (issue #7652). Both kinds already conflict with
    * everything, so this is only ever consulted to decide whether a NEW reservation of a different kind should queue
    * behind a waiter - see the guard in {@link #begin(String, Operation)}.
    * <p>
@@ -241,10 +242,13 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    * an import is an operator command that can be retried. An HA snapshot install cannot - it applies a committed
    * Raft entry, and a follower that declines to apply one diverges from the cluster (issue #7444). Nor can the apply
    * of a replicated drop database, for the same reason (issue #8035). So they need a third answer between taking the
-   * slot and giving up: wait for whatever is in the way, and take the slot the moment it lets go.
+   * slot and giving up: wait for whatever is in the way, and take the slot the moment it lets go. The {@code restore:}
+   * startup command waits too (issue #7652), for a different reason: its refusal stops the server boot, killing a
+   * backup that held the slot half way into its archive.
    * <p>
-   * The wait is bounded because the caller's own operation is: a timeout expiring means the caller proceeds without
-   * the slot, loudly, which is the same outcome it had before this existed. Bounding it is also what keeps a caller
+   * The wait is bounded because the caller's own operation is: a timeout expiring hands the conflict back, and what
+   * happens next is the caller's decision - the Raft appliers proceed without the slot, loudly, which is the same
+   * outcome they had before this existed, while the startup restore refuses as it did before. Bounding it is also what keeps a caller
    * that already holds a conflicting reservation on this database from waiting on itself - these reservations are
    * not reentrant.
    *
