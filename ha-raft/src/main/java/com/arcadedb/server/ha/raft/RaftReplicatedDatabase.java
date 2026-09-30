@@ -2223,30 +2223,36 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
-      if (!published)
-        retireAbandonedInstalments(instalmentState);
-      if (outerSchemaCommitThread == null)
-        isSchemaCommitThread.remove();
-      else
-        isSchemaCommitThread.set(outerSchemaCommitThread);
-      if (outerInstalments == null)
-        schemaInstalments.remove();
-      else {
-        // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
-        // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
-        // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
-        // the counter and the buffer telling the same story.
-        //
-        // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
-        // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
-        // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
-        outerInstalments.bufferedBytes = 0;
-        schemaInstalments.set(outerInstalments);
+      // Released last and in a finally of its own: this cleanup must not be able to leave the registration open, which is
+      // silent and permanent (every replica write to the database is refused until the node restarts). It stays open
+      // through the retire submit above, which still belongs to the exclusive operation.
+      try {
+        if (!published)
+          retireAbandonedInstalments(instalmentState);
+        if (outerSchemaCommitThread == null)
+          isSchemaCommitThread.remove();
+        else
+          isSchemaCommitThread.set(outerSchemaCommitThread);
+        if (outerInstalments == null)
+          schemaInstalments.remove();
+        else {
+          // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
+          // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
+          // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
+          // the counter and the buffer telling the same story.
+          //
+          // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
+          // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
+          // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
+          outerInstalments.bufferedBytes = 0;
+          schemaInstalments.set(outerInstalments);
+        }
+        schemaWalBuffer.get().clear();
+        schemaBucketDeltaBuffer.get().clear();
+        proxied.getFileManager().stopRecordingChanges();
+      } finally {
+        endLeaderExclusive(exclusiveOn);
       }
-      schemaWalBuffer.get().clear();
-      schemaBucketDeltaBuffer.get().clear();
-      proxied.getFileManager().stopRecordingChanges();
-      endLeaderExclusive(exclusiveOn);
     }
   }
 
