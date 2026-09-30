@@ -21,12 +21,18 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -43,6 +49,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code instanceOf} is called by openCypher label resolution with no database lock held - so every one of them
  * needs the publication edge a volatile write provides. The reflective test below is what closes the series: a
  * seventh field added without it fails here rather than in a sixth issue.
+ * <p>
+ * Issue #7866: the sweep first reflected over {@code LocalDocumentType.class.getDeclaredFields()} alone, so by
+ * construction it could not see a subclass. {@link LocalEdgeType} held two plain booleans, {@code lightweight} and
+ * {@code unique}, that {@code ALTER TYPE ... WITH} reassigns while the edge-creation path reads them lock-free - and
+ * for a LIGHTWEIGHT type {@code unique} is the only enforcement of the constraint. The sweep now covers the whole
+ * family: every class of the schema package that extends {@link LocalDocumentType}, found by scanning the package
+ * rather than by a hand-kept list, so a new subclass is swept the day it is added.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -63,24 +76,91 @@ public class Issue7299SchemaCopyOnWritePublicationTest {
   }
 
   /**
-   * The sweep, run by the machine rather than by the next reader of the class.
+   * The sweep, run by the machine rather than by the next reader of the class, over every class of the family.
    */
   @Test
-  public void everyMutableReferenceMemberIsPublishedSafely() {
+  public void everyMutableReferenceMemberIsPublishedSafely() throws Exception {
     final List<String> offenders = new ArrayList<>();
 
-    for (final Field field : LocalDocumentType.class.getDeclaredFields()) {
-      final int modifiers = field.getModifiers();
-      if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers) || Modifier.isVolatile(modifiers))
-        continue;
-      offenders.add(field.getType().getSimpleName() + " " + field.getName());
-    }
+    for (final Class<?> type : localDocumentTypeFamily())
+      for (final Field field : type.getDeclaredFields()) {
+        final int modifiers = field.getModifiers();
+        if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers) || Modifier.isVolatile(modifiers))
+          continue;
+        offenders.add(type.getSimpleName() + "." + field.getName() + " (" + field.getType().getSimpleName() + ")");
+      }
 
     assertThat(offenders).as(
-            "Members of LocalDocumentType that a schema mutation reassigns while a lock-free reader walks them must "
-                + "be final (immutable or a concurrent collection) or volatile, so the reader gets a happens-before "
-                + "edge against the write. Add the keyword rather than relaxing this assertion (issue #7299).")
+            "Members of the LocalDocumentType family that a schema mutation reassigns while a lock-free reader walks "
+                + "them must be final (immutable or a concurrent collection) or volatile, so the reader gets a "
+                + "happens-before edge against the write. Add the keyword rather than relaxing this assertion "
+                + "(issues #7299, #7866).")
         .isEmpty();
+  }
+
+  /**
+   * Issue #7866: the discovery the sweep rests on must actually find the subclasses, or the sweep above degrades
+   * back into the single-class check it replaced and passes for the wrong reason.
+   */
+  @Test
+  public void theSweepReachesEverySubclassOfTheFamily() throws Exception {
+    assertThat(localDocumentTypeFamily()).contains(LocalDocumentType.class, LocalVertexType.class, LocalEdgeType.class,
+        LocalTimeSeriesType.class);
+  }
+
+  /**
+   * Issue #7866, named explicitly: the two members the issue reported, which the first sweep could not see.
+   */
+  @Test
+  public void edgeTypeFlagsSettableThroughAlterTypeAreVolatile() throws NoSuchFieldException {
+    assertThat(Modifier.isVolatile(LocalEdgeType.class.getDeclaredField("lightweight").getModifiers())).isTrue();
+    assertThat(Modifier.isVolatile(LocalEdgeType.class.getDeclaredField("unique").getModifiers())).isTrue();
+  }
+
+  /**
+   * Every class of {@code com.arcadedb.schema} assignable to {@link LocalDocumentType}, read from the directory the
+   * package was compiled into. Only the package of the class itself is scanned: the family has no member elsewhere,
+   * and a class outside it cannot reach the package-private state the sweep is protecting.
+   */
+  private static List<Class<?>> localDocumentTypeFamily() throws URISyntaxException, ClassNotFoundException {
+    final String packageName = LocalDocumentType.class.getPackageName();
+    final URL url = LocalDocumentType.class.getResource(LocalDocumentType.class.getSimpleName() + ".class");
+    assertThat(url).isNotNull();
+    assertThat(url.getProtocol()).as("the sweep scans the compiled package directory, not a jar").isEqualTo("file");
+
+    final File[] files = new File(url.toURI()).getParentFile().listFiles((dir, name) -> name.endsWith(".class"));
+    assertThat(files).isNotNull();
+
+    final List<Class<?>> family = new ArrayList<>();
+    for (final File file : files) {
+      final String className = packageName + "." + file.getName().substring(0, file.getName().length() - ".class".length());
+      final Class<?> type = Class.forName(className, false, LocalDocumentType.class.getClassLoader());
+      if (LocalDocumentType.class.isAssignableFrom(type))
+        family.add(type);
+    }
+    return family;
+  }
+
+  /**
+   * Issue #7866: restoring a TimeSeries type from JSON used to clear and refill the live downsampling tier list in
+   * place, under the feet of the maintenance scheduler that iterates it with no lock held. A reader that already
+   * holds the list must keep seeing the tiers it read; the restored ones arrive as a new, fully built list.
+   */
+  @Test
+  public void restoringDownsamplingTiersDoesNotMutateTheListReadersHold() {
+    database.command("sql", "CREATE TIMESERIES TYPE Sensor7866 TIMESTAMP ts FIELDS (v DOUBLE)");
+    database.command("sql", "ALTER TIMESERIES TYPE Sensor7866 ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS");
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("Sensor7866");
+
+    final List<DownsamplingTier> heldByReader = type.getDownsamplingTiers();
+    assertThat(heldByReader).containsExactly(new DownsamplingTier(7L * 86_400_000L, 3_600_000L));
+
+    final JSONObject json = type.toJSON();
+    json.put("downsamplingTiers", new JSONArray());
+    type.fromJSON(json);
+
+    assertThat(type.getDownsamplingTiers()).isEmpty();
+    assertThat(heldByReader).containsExactly(new DownsamplingTier(7L * 86_400_000L, 3_600_000L));
   }
 
   /**

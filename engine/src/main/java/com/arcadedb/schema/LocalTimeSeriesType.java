@@ -47,17 +47,20 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   public static final String KIND_CODE = "t";
 
-  private String                       timestampColumn;
-  private String                       precision;
-  private int                          shardCount;
-  private long                         retentionMs;
-  private long                         compactionBucketIntervalMs;
-  private int                          sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
+  // Volatile, like every mutable member of the LocalDocumentType family (issues #7299, #7866): the setters and
+  // fromJSON() write them under the schema lock, while queries and the maintenance scheduler read them lock-free.
+  private volatile String                 timestampColumn;
+  private volatile String                 precision;
+  private volatile int                    shardCount;
+  private volatile long                   retentionMs;
+  private volatile long                   compactionBucketIntervalMs;
+  private volatile int                    sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
   // A type created by this build writes the current mutable row format; one restored from JSON keeps
   // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
-  private int                          mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
-  private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
-  private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
+  private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
+  private final    List<ColumnDefinition> tsColumns            = new ArrayList<>();
+  // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
+  private volatile List<DownsamplingTier> downsamplingTiers    = new ArrayList<>();
   private volatile TimeSeriesEngine    engine;
   /**
    * Set when schema load registered this type despite {@link #initEngine()} failing (issue #6356), so the type
@@ -402,16 +405,18 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
       }
     }
 
-    downsamplingTiers.clear();
+    // Built aside and published with one volatile write, so a reader holding the previous list never sees it change.
+    final List<DownsamplingTier> tiers = new ArrayList<>();
     final JSONArray tierArray = json.getJSONArray("downsamplingTiers", null);
     if (tierArray != null) {
       for (int i = 0; i < tierArray.length(); i++) {
         final JSONObject tierJson = tierArray.getJSONObject(i);
-        downsamplingTiers.add(new DownsamplingTier(
+        tiers.add(new DownsamplingTier(
             tierJson.getLong("afterMs"),
             tierJson.getLong("granularityMs")
         ));
       }
     }
+    downsamplingTiers = tiers;
   }
 }
