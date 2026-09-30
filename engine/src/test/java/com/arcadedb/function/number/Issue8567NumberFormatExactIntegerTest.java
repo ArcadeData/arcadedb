@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.concurrent.atomic.LongAdder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,7 +56,7 @@ class Issue8567NumberFormatExactIntegerTest {
 
   @Test
   void otherNumberSubclassesFallBackToDouble() {
-    assertThat(function.execute(new Object[] { new java.util.concurrent.atomic.LongAdder() }, null)).isEqualTo("0");
+    assertThat(function.execute(new Object[] { new LongAdder() }, null)).isEqualTo("0");
     assertThat(function.execute(new Object[] { (short) 12, "000" }, null)).isEqualTo("012");
     assertThat(function.execute(new Object[] { 1.5f }, null)).isEqualTo("1.5");
   }
