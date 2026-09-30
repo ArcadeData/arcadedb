@@ -42,6 +42,17 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
   @Override
   public void rename(final String newName) {
+    // The whole method, not only super.rename(): the edge-bucket loop and both rollbacks read and move the same
+    // names, so a second rename of this type must not interleave with any of them (issue #7937). Reentrant.
+    renameLock.lock();
+    try {
+      renameInternal(newName);
+    } finally {
+      renameLock.unlock();
+    }
+  }
+
+  private void renameInternal(final String newName) {
     final String oldName = name;
 
     super.rename(newName);

@@ -149,8 +149,9 @@ public final class GrpcErrorMapper {
    * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other.
    * <p>
    * What survives concealment is what a client can act on without reading prose: the status CODE, the
-   * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key trailers - which carry the same index and keys, but to
-   * a DRIVER rebuilding a typed exception rather than into a human-readable description - and the leader-redirect
+   * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key index trailer - which goes to a DRIVER rebuilding a typed
+   * exception rather than into a human-readable description; the KEYS trailer is omitted because key values are
+   * stored data (issue #7760) - and the leader-redirect
    * address and sentence, which this server put there rather than an exception.
    *
    * @param conceal true when the server runs in production mode - see {@code ArcadeDBServer.isProductionMode()}
@@ -179,7 +180,7 @@ public final class GrpcErrorMapper {
       redirect = attachLeaderRedirect(trailers, ha, notTheLeader);
     } else if (cause instanceof DuplicatedKeyException dup) {
       code = Status.Code.ALREADY_EXISTS;
-      addDuplicatedKeyTrailers(trailers, dup);
+      addDuplicatedKeyTrailers(trailers, dup, conceal);
     } else if (cause instanceof DatabaseOperationInProgressException) {
       // A backup, restore or import of the same database already holds the per-database maintenance slot, so a
       // SQL 'BACKUP DATABASE' or 'IMPORT DATABASE' sent through ExecuteCommand was refused. ABORTED is what the
@@ -302,10 +303,15 @@ public final class GrpcErrorMapper {
         context != null ? context : "gRPC");
   }
 
-  private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {
+  /**
+   * The index name stays (schema metadata a driver needs to rebuild the typed exception); the KEY VALUES are stored
+   * data, so in production the trailer is left out and the client falls back to the concealed description, the same
+   * decision the HTTP {@code exceptionArgs} takes (issue #7760).
+   */
+  private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup, final boolean conceal) {
     if (dup.getIndexName() != null)
       trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
-    if (dup.getKeys() != null)
+    if (!conceal && dup.getKeys() != null)
       trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
   }
 

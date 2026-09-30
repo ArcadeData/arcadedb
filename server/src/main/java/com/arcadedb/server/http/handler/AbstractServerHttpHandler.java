@@ -1050,7 +1050,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
-              dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
+              dup.getIndexName() + "|" + (isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()) + "|"
+                      + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
     }
 
     // 503 + Retry-After, before the NeedRetryException arm below, which it extends: a node refused the request before
@@ -2166,7 +2167,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
-   * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * and HA rely on them - except the duplicated-key VALUES inside {@code exceptionArgs}, which are stored data and
+   * are replaced by {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} (issue #7760). {@code development} and {@code test} keep the full verbose body to aid debugging.
    * <p>
    * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
    * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since
@@ -2210,7 +2212,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code exceptionArgs} are a wire contract consumed by the remote Java driver
    * ({@code RemoteHttpComponent.manageException}) and by HA leader-exception reconstruction
    * ({@code RaftReplicatedDatabase.reconstructLeaderException}) to rebuild typed exceptions, leader-redirect hints and
-   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. Only the
+   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. The one
+   * exception is the duplicated-key VALUES, which {@code classifyError} replaces in production (issue #7760). Only the
    * free-form cause chain ({@code detail}), which can carry file paths and engine internals, is concealed in
    * production ({@code verbose == false}) so it is never leaked to a client probing endpoints. Package-private for
    * direct unit testing.
