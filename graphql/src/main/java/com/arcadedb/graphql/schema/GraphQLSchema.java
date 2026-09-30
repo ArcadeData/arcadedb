@@ -62,6 +62,13 @@ public class GraphQLSchema {
    */
   private static final String BOUND_PARAMETER_PREFIX = "__gqlArg";
 
+  /**
+   * Scalars introspection publishes and resolves. {@code Long} is not a GraphQL built-in, but a LONG / ARRAY_OF_LONGS
+   * property is described with it, so it is declared here for {@code __type} and {@code __schema} to resolve (#7876).
+   */
+  private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long" };
+  private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
+
   private final Database                          database;
   private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
   private ObjectTypeDefinition              queryDefinition;
@@ -543,7 +550,7 @@ public class GraphQLSchema {
     }
 
     // Add GraphQL built-in scalar types
-    for (final String scalar : new String[] { "String", "Int", "Float", "Boolean", "ID" }) {
+    for (final String scalar : BUILT_IN_SCALARS) {
       if (!addedTypes.contains(scalar)) {
         final ResultInternal scalarResult = new ResultInternal();
         scalarResult.setProperty("name", scalar);
@@ -565,7 +572,7 @@ public class GraphQLSchema {
       return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments);
 
     // Check scalars
-    if (Set.of("String", "Int", "Float", "Boolean", "ID").contains(typeName)) {
+    if (BUILT_IN_SCALAR_SET.contains(typeName)) {
       final ResultInternal result = new ResultInternal();
       result.setProperty("name", typeName);
       result.setProperty("kind", "SCALAR");
@@ -628,12 +635,8 @@ public class GraphQLSchema {
 
             if (fieldSelections != null) {
               for (final Selection fieldSub : fieldSelections) {
-                if ("type".equals(fieldSub.getFieldName())) {
-                  final ResultInternal typeInfo = new ResultInternal();
-                  typeInfo.setProperty("name", mapDatabaseTypeToGraphQL(prop.getType()));
-                  typeInfo.setProperty("kind", "SCALAR");
-                  fieldResult.setProperty(fieldSub.getName(), typeInfo);
-                }
+                if ("type".equals(fieldSub.getFieldName()))
+                  fieldResult.setProperty(fieldSub.getName(), buildDatabaseFieldTypeInfo(prop));
               }
             }
 
@@ -652,6 +655,55 @@ public class GraphQLSchema {
   }
 
   /**
+   * Describes a database property with the same wrapper chain {@link #buildTypeInfo} produces for a schema-declared
+   * field (#7876, extending #7116 to types with no {@code .gql} declaration): a LIST or ARRAY_OF_* property is a
+   * {@code LIST} wrapper around its element type, and a MANDATORY or NOTNULL property is wrapped in {@code NON_NULL}.
+   */
+  private ResultInternal buildDatabaseFieldTypeInfo(final Property prop) {
+    final Type type = prop.getType();
+    final ResultInternal info;
+    if (type == Type.LIST) {
+      info = buildListInfo(buildDatabaseListElementInfo(prop.getOfType()));
+    } else {
+      final String arrayElement = mapDatabaseArrayElementToGraphQL(type);
+      info = arrayElement != null ? buildListInfo(buildNamedInfo(arrayElement, "SCALAR"))
+          : buildNamedInfo(mapDatabaseTypeToGraphQL(type), "SCALAR");
+    }
+    return prop.isMandatory() || prop.isNotNull() ? wrapNonNull(info) : info;
+  }
+
+  /**
+   * The element of a LIST property: its declared {@code ofType} when that names a primitive type, or a database type
+   * (reported as an OBJECT that {@code __type} resolves). With no {@code ofType}, or one naming neither, the element
+   * keeps the historic {@code String}.
+   */
+  private ResultInternal buildDatabaseListElementInfo(final String ofType) {
+    if (ofType != null && !ofType.isEmpty()) {
+      if (database.getSchema().existsType(ofType))
+        return buildNamedInfo(ofType, "OBJECT");
+      final Type elementType = Type.getTypeByName(ofType);
+      if (elementType != null)
+        return buildNamedInfo(mapDatabaseTypeToGraphQL(elementType), "SCALAR");
+    }
+    return buildNamedInfo("String", "SCALAR");
+  }
+
+  private static ResultInternal buildListInfo(final ResultInternal element) {
+    final ResultInternal listInfo = new ResultInternal();
+    listInfo.setProperty("name", null);
+    listInfo.setProperty("kind", "LIST");
+    listInfo.setProperty("ofType", element);
+    return listInfo;
+  }
+
+  private static ResultInternal buildNamedInfo(final String name, final String kind) {
+    final ResultInternal namedInfo = new ResultInternal();
+    namedInfo.setProperty("name", name);
+    namedInfo.setProperty("kind", kind);
+    return namedInfo;
+  }
+
+  /**
    * Recursively describes a GraphQL type reference, matching the introspection schema a client
    * relies on to walk list/non-null wrappers (#7116): a wrapping type (LIST or NON_NULL) carries
    * {@code ofType} and no {@code name} of its own; only the innermost named type carries
@@ -661,17 +713,12 @@ public class GraphQLSchema {
   private ResultInternal buildTypeInfo(final com.arcadedb.graphql.parser.Type type) {
     if (type.getListType() != null) {
       final ListType listType = type.getListType();
-      final ResultInternal listInfo = new ResultInternal();
-      listInfo.setProperty("name", null);
-      listInfo.setProperty("kind", "LIST");
-      listInfo.setProperty("ofType", buildTypeInfo(listType.getType()));
+      final ResultInternal listInfo = buildListInfo(buildTypeInfo(listType.getType()));
       return listType.isBang() ? wrapNonNull(listInfo) : listInfo;
     }
 
     final String name = type.getTypeName().getName();
-    final ResultInternal namedInfo = new ResultInternal();
-    namedInfo.setProperty("name", name);
-    namedInfo.setProperty("kind", objectTypeDefinitionMap.containsKey(name) ? "OBJECT" : "SCALAR");
+    final ResultInternal namedInfo = buildNamedInfo(name, objectTypeDefinitionMap.containsKey(name) ? "OBJECT" : "SCALAR");
     return type.isBang() ? wrapNonNull(namedInfo) : namedInfo;
   }
 
@@ -699,6 +746,20 @@ public class GraphQLSchema {
       case DOUBLE -> "Float";
       case BOOLEAN -> "Boolean";
       default -> "String";
+    };
+  }
+
+  /**
+   * The GraphQL element scalar of an ARRAY_OF_* property, or {@code null} when the type is not a primitive array.
+   */
+  private static String mapDatabaseArrayElementToGraphQL(final Type type) {
+    if (type == null)
+      return null;
+    return switch (type) {
+      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS -> "Int";
+      case ARRAY_OF_LONGS -> "Long";
+      case ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "Float";
+      default -> null;
     };
   }
 
