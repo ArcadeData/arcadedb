@@ -77,4 +77,24 @@ class Issue8834Issue8835RangeIndexTest extends TestHelper {
     assertThat(longs("MATCH (n:H) WHERE n.u <= 1 RETURN n.u AS v")).containsExactlyInAnyOrder(0L, 1L);
     assertThat(longs("MATCH (n:H) WHERE n.h = 7 RETURN n.h AS v")).containsExactly(7L);
   }
+
+  @Test
+  void subtypeRangeOnParentIndexHoldingNullKeysIsFilteredByLabel() {
+    database.command("sql", "CREATE VERTEX TYPE NP");
+    database.command("sql", "CREATE VERTEX TYPE NQ EXTENDS NP");
+    database.command("sql", "CREATE VERTEX TYPE NR EXTENDS NP");
+    database.command("sql", "CREATE PROPERTY NP.a LONG");
+    database.command("sql", "CREATE INDEX ON NP (a) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      database.newVertex("NP").set("a", 10L).save();
+      database.newVertex("NP").save();
+      database.newVertex("NQ").set("a", 20L).save();
+      database.newVertex("NQ").save();
+      database.newVertex("NR").set("a", 30L).save();
+      database.newVertex("NR").save();
+    });
+    assertThat(longs("MATCH (n:NQ) WHERE n.a > 5 RETURN n.a AS v ORDER BY v")).containsExactly(20L);
+    assertThat(longs("MATCH (n:NQ) WHERE n.a < 25 RETURN n.a AS v ORDER BY v")).containsExactly(20L);
+    assertThat(longs("MATCH (n:NR) WHERE n.a >= 0 RETURN n.a AS v")).containsExactly(30L);
+  }
 }
