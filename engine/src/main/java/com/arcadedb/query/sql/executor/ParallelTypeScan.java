@@ -135,6 +135,7 @@ final class ParallelTypeScan {
   private          CommandContext          consumerContext;
   private final    AtomicInteger           nextUnit = new AtomicInteger();
   // THE THREADS READING THE UNITS THE CALLER CLAIMED INSIDE A TRANSACTION (#8775): close() STOPS THEM
+  // ONLY THE CONSUMER THREAD TOUCHES IT
   private          BlockingQueue<Integer>  readerUnits;
   private volatile Thread                  dedicatedReader;
   private volatile boolean                 closed;
@@ -670,11 +671,12 @@ final class ParallelTypeScan {
     return now - unitWaitSince >= DEDICATED_READER_GRACE_MS * 1_000_000L;
   }
 
-  /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
+  /** The transaction the consumer runs in, or null without one. */
   private TransactionContext transactionOrNull() {
     return database.isTransactionActive() ? database.getTransaction() : null;
   }
 
+  /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
   private boolean deletedByTransaction(final Result row) {
     // NOTHING DELETED, THE COMMON CASE: NO LOOKUP, NO Optional
     if (!filterTx.hasDeletedRecords())
