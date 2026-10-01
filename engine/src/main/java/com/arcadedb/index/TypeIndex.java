@@ -39,6 +39,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
@@ -48,9 +49,10 @@ import java.util.*;
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
   private       String              logicName;
-  private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
+  // Copy-on-write: a query plans and reads while DDL on the same type adds, removes or clears sub-indexes
+  private final List<IndexInternal> indexesOnBuckets = new CopyOnWriteArrayList<>();
   private final DocumentType        type;
-  private       boolean             valid            = true;
+  private volatile boolean          valid            = true;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -119,11 +121,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
 
     // Check if this is a full-text index to preserve scores
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, -1);
 
       // For full-text indexes, collect entries with scores
@@ -174,11 +176,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
 
     // Check if this is a full-text index to preserve scores
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, limit);
 
       // For full-text indexes, collect entries with scores
@@ -246,13 +248,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * every range cursor over it, so a {@link MultiIndexCursor} merging both kinds can compare them.
    */
   private IndexCursor keyedCursor(final Collection<Identifiable> result, final Object[] keys) {
-    if (indexesOnBuckets.isEmpty())
+    final IndexInternal first = firstOrNull();
+    if (first == null)
       return new IndexCursorCollection(result);
     BinaryComparator cmp = comparator;
     if (cmp == null)
       // RESOLVED ONCE: THE SERIALIZER, AND SO ITS COMPARATOR, LIVES AS LONG AS THE DATABASE. A RACE ONLY RESOLVES IT TWICE
       comparator = cmp = ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator();
-    return new IndexCursorCollection(result, keys, indexesOnBuckets.getFirst().getBinaryKeyTypes(), cmp);
+    return new IndexCursorCollection(result, keys, first.getBinaryKeyTypes(), cmp);
   }
 
   @Override
@@ -311,9 +314,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public Schema.INDEX_TYPE getType() {
     checkIsValid();
-    if (indexesOnBuckets.isEmpty())
-      return null;
-    return getFirstUnderlyingIndex().getType();
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getType();
   }
 
   @Override
@@ -363,7 +365,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isResultApproximate() {
     // Same definition across every bucket sub-index, so the first one answers for all of them.
-    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
+    final IndexInternal first = firstOrNull();
+    return first != null && first.isResultApproximate();
   }
 
   @Override
@@ -388,12 +391,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
+    // Order: sub-indexes dropped, then valid = false, then the list cleared. The wrapper must stay valid during the first step
+    // (LocalSchema#dropIndex resolves and unregisters the wrapper through its sub-indexes), so until valid = false a reader
+    // sees a valid wrapper with some sub-indexes missing: it usually gets an IndexException or a null type, which the callers
+    // treat as "not a candidate". A query that already chose this index and reads it in that instant can miss the rows of the
+    // sub-indexes already dropped: the index is going away, and that query was planned before the drop completed.
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    indexesOnBuckets.clear();
-
     valid = false;
+    indexesOnBuckets.clear();
   }
 
   @Override
@@ -643,8 +650,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // For full-text indexes, always search all buckets regardless of bucket selection strategy.
     // Full-text queries contain search terms/phrases, not document property values, so bucket
     // selection based on hashing those keys would incorrectly query only one bucket.
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // Full-text searches must scan all buckets to ensure complete results
@@ -712,6 +719,19 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return valid;
   }
 
+  /**
+   * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
+   * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
+   * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
+   * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
+   */
+  public boolean isReadyForQueries() {
+    if (!valid)
+      return false;
+    final IndexInternal first = firstOrNull();
+    return first != null && first.getType() != null;
+  }
+
   private void checkIsValid() {
     if (!valid)
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
@@ -719,18 +739,29 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
-    if (indexesOnBuckets.isEmpty())
+    final IndexInternal first = firstOrNull();
+    if (first == null)
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
-    return indexesOnBuckets.getFirst();
+    return first;
+  }
+
+  /** The first sub-index, or null when none (yet, or any more): a single read, so it cannot race with a concurrent clear(). */
+  private IndexInternal firstOrNull() {
+    // A single read of the backing array (CopyOnWriteArrayList#get), so it cannot race with a concurrent clear(), and it
+    // allocates nothing when the list is populated: the exception below only happens on the rare empty state
+    try {
+      return indexesOnBuckets.get(0);
+    } catch (final IndexOutOfBoundsException e) {
+      return null;
+    }
   }
 
   public IndexMetadata getMetadata() {
     // Return stored metadata if available, otherwise delegate to first underlying bucket index
     if (metadata != null)
       return metadata;
-    if (!indexesOnBuckets.isEmpty())
-      return getFirstUnderlyingIndex().getMetadata();
-    return null;
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getMetadata();
   }
 
   @Override
@@ -740,8 +771,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // for all of them.
     if (metadata != null)
       return metadata;
-    if (!indexesOnBuckets.isEmpty())
-      return getFirstUnderlyingIndex().getMetadataForNewFile();
-    return null;
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getMetadataForNewFile();
   }
 }

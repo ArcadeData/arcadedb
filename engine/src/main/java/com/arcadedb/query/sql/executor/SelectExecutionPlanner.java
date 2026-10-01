@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
@@ -868,15 +869,19 @@ public class SelectExecutionPlanner {
    * Finds a RangeIndex (LSM_TREE) on the specified property.
    */
   private RangeIndex findIndexForProperty(final DocumentType type, final String propertyName) {
-    final Collection<TypeIndex> indexes = type.getAllIndexes(true);
-    for (final TypeIndex index : indexes) {
-      // Must be a single-property index on the exact property
-      final List<String> propNames = index.getPropertyNames();
-      if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
-        // Must support ordered iterations (RangeIndex like LSM_TREE). A case-insensitive index holds its keys folded, so
-        // its ends are not the ends of the values and its key is not a value any record holds (issue #8698)
-        if (index.supportsOrderedIterations() && !holdsFoldedKeys(index))
-          return index;
+    for (final TypeIndex index : plannableIndexes(type.getAllIndexes(true))) {
+      try {
+        // Must be a single-property index on the exact property
+        final List<String> propNames = index.getPropertyNames();
+        if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
+          // Must support ordered iterations (RangeIndex like LSM_TREE). A case-insensitive index holds its keys folded, so
+          // its ends are not the ends of the values and its key is not a value any record holds (issue #8698)
+          if (index.supportsOrderedIterations() && !holdsFoldedKeys(index))
+            return index;
+        }
+      } catch (final IndexException e) {
+        // Dropped or rebuilt while reading it: not a candidate
+        logSkippedIndex(index, e);
       }
     }
     return null;
@@ -3617,7 +3622,7 @@ public class SelectExecutionPlanner {
       indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(indexedFunctionConditions, info.target, context);
 
       if (indexedFunctionConditions == null || indexedFunctionConditions.isEmpty()) {
-        IndexSearchDescriptor bestIndex = findBestIndexFor(context, typez.getAllIndexes(true), block, typez);
+        IndexSearchDescriptor bestIndex = findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
         if (bestIndex != null) {
 
           final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
@@ -3881,11 +3886,22 @@ public class SelectExecutionPlanner {
     if (typez == null)
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
 
-    for (final Index idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).toList()) {
-      // A case-insensitive index iterates its folded keys, which is not the order of the values (issue #8700)
-      if (holdsFoldedKeys(idx))
+    for (final TypeIndex idx : plannableIndexes(typez.getAllIndexes(true))) {
+      final List<String> indexFields;
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
+      try {
+        if (!idx.supportsOrderedIterations())
+          continue;
+        // A case-insensitive index iterates its folded keys, which is not the order of the values (issue #8700)
+        if (holdsFoldedKeys(idx))
+          continue;
+        indexFields = idx.getPropertyNames();
+        nullStrategy = idx.getNullStrategy();
+      } catch (final IndexException e) {
+        // Dropped or rebuilt while reading it: not a candidate
+        logSkippedIndex(idx, e);
         continue;
-      final List<String> indexFields = idx.getPropertyNames();
+      }
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
@@ -3917,7 +3933,7 @@ public class SelectExecutionPlanner {
 
         // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index. The same goes when no record
         // can hold a null for the first indexed property: it is NOTNULL, or the WHERE clause filters nulls out (#8664)
-        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.getFirst(), info)) {
+        if (nullStrategy == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.getFirst(), info)) {
           // NULLs are indexed or there are none, just use the index directly
           plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
           plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
@@ -4156,7 +4172,7 @@ public class SelectExecutionPlanner {
     if (typez == null)
       throw new CommandExecutionException("Cannot find type " + targetType);
 
-    final Collection<TypeIndex> indexes = typez.getAllIndexes(true);
+    final List<TypeIndex> indexes = plannableIndexes(typez.getAllIndexes(true));
 
     if (indexes.isEmpty())
       return null;
@@ -4593,6 +4609,43 @@ public class SelectExecutionPlanner {
     return results;
   }
 
+  private static boolean isFullText(final Index index) {
+    try {
+      return index.getType() == FULL_TEXT;
+    } catch (final IndexException e) {
+      return false;
+    }
+  }
+
+  private void logSkippedIndex(final Index index, final IndexException e) {
+    LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
+  }
+
+  private static boolean isPlannable(final Index index) {
+    try {
+      if (index instanceof TypeIndex typeIndex)
+        return typeIndex.isReadyForQueries();
+      return (!(index instanceof IndexInternal internal) || internal.isValid()) && index.getType() != null;
+    } catch (final IndexException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Snapshot of the indexes of a type that can be planned on, see {@link TypeIndex#isReadyForQueries()}: neither an index being
+   * created nor one being dropped by a concurrent DDL is a candidate for a query that does not name it. The check is a best
+   * effort: the callers read an index's metadata under a try/catch of IndexException, and any new planner path that reads
+   * index metadata must do the same.
+   */
+  private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
+    final List<TypeIndex> result = new ArrayList<>(indexes.size());
+    for (final TypeIndex index : indexes) {
+      if (isPlannable(index))
+        result.add(index);
+    }
+    return result;
+  }
+
   /**
    * given a flat AND block and a set of indexes, returns the best index to be used to process it,
    * with the complete description on how to use it
@@ -4603,7 +4656,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> indexes,
+  private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final List<TypeIndex> indexes,
       final AndBlock block, final DocumentType clazz) {
 
     // get all valid index descriptors
@@ -4615,8 +4668,7 @@ public class SelectExecutionPlanner {
         .collect(Collectors.toList());
 
     final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream()
-        .filter(idx -> idx.getType().equals(FULL_TEXT))
-        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz))
+        .map(idx -> buildIndexSearchDescriptorForFulltextSafely(context, idx, block, clazz))
         .filter(Objects::nonNull)
         .filter(x -> x.keyCondition != null)
         .filter(x -> !x.getSubBlocks().isEmpty())
@@ -4628,9 +4680,23 @@ public class SelectExecutionPlanner {
     // is redundant, just discard it)
     //descriptors = removePrefixIndexes(descriptors);
 
-    if (descriptors.isEmpty())
-      return null;
+    // Ranking reads the metadata of the candidates again: one dropped meanwhile is discarded and the ranking restarts. It
+    // ends: every pass returns, rethrows, or leaves strictly fewer candidates
+    while (true) {
+      if (descriptors.isEmpty())
+        return null;
+      try {
+        return pickBestDescriptor(context, descriptors);
+      } catch (final IndexException e) {
+        final List<IndexSearchDescriptor> stillValid = descriptors.stream().filter(d -> isPlannable(d.index)).toList();
+        if (stillValid.size() == descriptors.size())
+          throw e;
+        descriptors = stillValid;
+      }
+    }
+  }
 
+  private IndexSearchDescriptor pickBestDescriptor(final CommandContext context, List<IndexSearchDescriptor> descriptors) {
     // First, prefer indexes that cover more conditions (more subBlocks)
     // This ensures composite indexes are preferred over single-property indexes
     final int maxSubBlocks = descriptors.stream()
@@ -4649,7 +4715,7 @@ public class SelectExecutionPlanner {
     // condition would lose full-text semantics. (Issue #3483 follow-up)
     if (descriptors.size() > 1) {
       final List<IndexSearchDescriptor> fullTextDescriptors = descriptors.stream()
-          .filter(d -> d.index.getType().equals(FULL_TEXT))
+          .filter(d -> isFullText(d.index))
           .toList();
       if (!fullTextDescriptors.isEmpty() && fullTextDescriptors.size() < descriptors.size())
         descriptors = fullTextDescriptors;
@@ -4762,6 +4828,17 @@ public class SelectExecutionPlanner {
     return result;
   }
 
+  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltextSafely(final CommandContext context, final TypeIndex index,
+      final AndBlock block, final DocumentType clazz) {
+    try {
+      return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
+    } catch (final IndexException e) {
+      // Dropped or rebuilt after plannableIndexes()
+      logSkippedIndex(index, e);
+      return null;
+    }
+  }
+
   /**
    * given a full text index and a flat AND block, returns a descriptor on how to process it with an
    * index (index, index key and additional filters to apply after index fetch
@@ -4839,13 +4916,26 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block,
       final DocumentType clazz) {
+    try {
+      return buildIndexSearchDescriptorInternal(context, index, block, clazz);
+    } catch (final IndexException e) {
+      // Dropped or rebuilt between plannableIndexes() and here: not a candidate for this plan
+      logSkippedIndex(index, e);
+      return null;
+    }
+  }
+
+  private IndexSearchDescriptor buildIndexSearchDescriptorInternal(final CommandContext context, final Index index,
+      final AndBlock block, final DocumentType clazz) {
     // Only a key index answers "the value equals the key". A FULL_TEXT index - BY ITEM included - answers by analyzer
     // token (so `txt = 'two'` also matched the item 'two words' and 'Two') and parses the key as a query (so '--', '-two'
     // or 'a:b' find nothing), and the vector and geospatial families answer a similarity or a shape. Handing them `=`,
     // IN, CONTAINS, CONTAINSANY, CONTAINSALL and dropping the condition from the residual filter was answering them
     // wrong in both directions; a recheck could remove the extra rows but never bring back the missing ones. CONTAINSTEXT
     // reaches a FULL_TEXT index through buildIndexSearchDescriptorForFulltext instead (issues #8435, #8438).
-    if (!index.getType().isExactKeyLookup())
+    final Schema.INDEX_TYPE indexType = index.getType();
+    // null: sub-indexes emptied by a concurrent drop or rebuild after plannableIndexes()
+    if (indexType == null || !indexType.isExactKeyLookup())
       return null;
 
     final List<String> indexFields = index.getPropertyNames();

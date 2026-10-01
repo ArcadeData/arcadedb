@@ -22,8 +22,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
@@ -32,6 +34,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
@@ -127,24 +130,32 @@ public class WhereClause extends SimpleNode {
       } else {
         final Map<String, Object> conditions = getEqualityOperations(condition, context);
 
-        for (final Index index : indexes) {
-          if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT))
-            continue;
+        for (final TypeIndex index : indexes) {
+          try {
+            // An index created or dropped by a concurrent DDL is no source for an estimation
+            if (!index.isReadyForQueries())
+              continue;
+            if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT)
+              continue;
 
-          final List<String> indexedFields = index.getPropertyNames();
-          int nMatchingKeys = 0;
-          for (final String indexedField : indexedFields) {
-            if (conditions.containsKey(indexedField)) {
-              nMatchingKeys++;
-            } else {
-              break;
+            final List<String> indexedFields = index.getPropertyNames();
+            int nMatchingKeys = 0;
+            for (final String indexedField : indexedFields) {
+              if (conditions.containsKey(indexedField)) {
+                nMatchingKeys++;
+              } else {
+                break;
+              }
             }
-          }
-          if (nMatchingKeys > 0) {
-            final long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
-            if (newCount < conditionEstimation) {
-              conditionEstimation = newCount;
+            if (nMatchingKeys > 0) {
+              final long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
+              if (newCount < conditionEstimation) {
+                conditionEstimation = newCount;
+              }
             }
+          } catch (final IndexException e) {
+            // Dropped or rebuilt while reading it: no source for an estimation
+            LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while estimating: %s", index.getName(), e.getMessage());
           }
         }
       }
