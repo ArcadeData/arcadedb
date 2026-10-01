@@ -1083,7 +1083,10 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry");
+          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
+          + "stop the node, delete the entries in the database directory that do not start with '.snapshot', move "
+          + "the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
+          + ".snapshot-pending");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
@@ -1515,11 +1518,35 @@ public final class SnapshotInstaller {
           return;
         }
         // Otherwise a live file may be an un-moved original OR an already-installed snapshot file. Re-running
-        // phase 1 would destroy the latter (#7769); leave ambiguous layouts intact.
+        // phase 1 would destroy the latter (#7769), so the layout is classified first (issue #8304) rather than
+        // preserved forever: a database that never comes up on this node, behind an install path that refuses to
+        // run over it, is a worse outcome than either resolution below.
         if (hasLiveDatabaseFiles(dbDir)) {
-          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-              "Cannot determine the phase of the legacy snapshot swap for %s. Preserving the live files, "
-                  + "staging, backup and pending marker for manual recovery", null, dbDir);
+          if (liveFilesShareANameWithTheBackup(dbDir, snapshotBackup)) {
+            // Phase 1 MOVES each original into the backup, so no name can be in both places after a phase-1 crash.
+            // A name in both can only be a snapshot file already installed over an original, which is phase 2:
+            // every original is in the backup and the snapshot is part-way in. Roll forward exactly as a recorded
+            // INSTALLING phase does, by recording it and resuming; the backup stays until the result is validated.
+            LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+                "Resuming the legacy snapshot swap for %s, which was interrupted while installing the snapshot",
+                null, dbDir);
+            writeSwapPhase(dbDir, SwapPhase.INSTALLING);
+            atomicSwap(dbDir, snapshotNew, snapshotBackup);
+          } else {
+            // Disjoint names: the crash was part-way through phase 1 (the backup holds the originals that moved,
+            // the live directory the ones that did not), or, much less likely, in phase 2 with only files whose
+            // names no original had. Moving the backup over the live directory without clearing it rebuilds the
+            // complete original database in the first case; in the second it can leave a file that belongs only to
+            // the snapshot, a weaker hazard than a database that never opens. The staging is stale either way: the
+            // node reopens on the originals and the next install fetches a current snapshot.
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
+                    + "database, to the retained backup", null, dbDir);
+            deleteDirectoryIfExists(snapshotNew);
+            restoreBackup(dbDir, snapshotBackup);
+          }
+          requireRecoveredDatabase(dbDir);
+          completeSwapRecovery(dbDir);
           return;
         }
         // No live files: phase 1 finished, so complete the swap from the staging, as recovery always has. (A legacy
@@ -1632,6 +1659,17 @@ public final class SnapshotInstaller {
         entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
       return staged.iterator().hasNext();
     }
+  }
+
+  /** Whether any live database entry has the name of an entry in the backup. */
+  private static boolean liveFilesShareANameWithTheBackup(final Path dbDir, final Path backupDir) throws IOException {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
+        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+      for (final Path entry : live)
+        if (Files.exists(backupDir.resolve(entry.getFileName().toString())))
+          return true;
+    }
+    return false;
   }
 
   private static boolean hasLiveDatabaseFiles(final Path dbDir) throws IOException {
