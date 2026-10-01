@@ -118,7 +118,7 @@ class Issue7281OtlpPluginAutoDiscoveryTest {
         .isSameAs(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
 
     assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENABLED.getDefValue()).isEqualTo(Boolean.FALSE);
-    assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getDefValue()).isEqualTo("http://localhost:4317");
+    assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getDefValue()).isEqualTo("http://localhost:4318/v1/metrics");
     assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENABLED.getScope()).isEqualTo(GlobalConfiguration.SCOPE.SERVER);
     assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getScope()).isEqualTo(GlobalConfiguration.SCOPE.SERVER);
   }

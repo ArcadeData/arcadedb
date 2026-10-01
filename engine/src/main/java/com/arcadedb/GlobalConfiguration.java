@@ -1532,8 +1532,10 @@ public enum GlobalConfiguration {
       "Enable pushing the server metrics to an OTLP endpoint, alongside (never replacing) the Prometheus scrape endpoint. Requires the optional metrics plugin on the classpath and arcadedb.serverMetrics to be true",
       Boolean.class, false),
 
-  SERVER_METRICS_OTLP_ENDPOINT("arcadedb.serverMetrics.otlp.endpoint", SCOPE.SERVER, "OTLP metrics export endpoint",
-      String.class, "http://localhost:4317"),
+  SERVER_METRICS_OTLP_ENDPOINT("arcadedb.serverMetrics.otlp.endpoint", SCOPE.SERVER, """
+      OTLP metrics export endpoint. Metrics are pushed over OTLP/HTTP (protobuf), not gRPC, so this is the collector's \
+      HTTP receiver (port 4318, path /v1/metrics), not the gRPC port 4317. A URL without a path gets /v1/metrics \
+      appended""", String.class, "http://localhost:4318/v1/metrics"),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
