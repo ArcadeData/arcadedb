@@ -45,7 +45,6 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   private static final Pattern URL_WITHOUT_PATH = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]+)/?([?#].*)?$");
   private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@\\s]*@)?[^/?#@\\s]*:4317(?:[/?#].*)?$");
 
-  private static final Pattern USER_INFO        = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@\\s]*@");
 
   private OtlpMeterRegistry registry;
   private boolean           enabled;
@@ -96,8 +95,8 @@ public class OtlpMetricsPlugin implements ServerPlugin {
     final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
     if (looksLikeGrpcEndpoint(configured))
       LogManager.instance().log(OtlpMetricsPlugin.class, Level.WARNING,
-          "OTLP metrics endpoint '%s' looks like the OTLP/gRPC port (4317), but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
-          redactUserInfo(configured));
+          "The OTLP metrics endpoint (%s) looks like the OTLP/gRPC port (4317), but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
+          GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getKey());
     final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
     return new OtlpConfig() {
@@ -128,13 +127,6 @@ public class OtlpMetricsPlugin implements ServerPlugin {
       return endpoint;
     final String suffix = matcher.group(2);
     return matcher.group(1) + "/v1/metrics" + (suffix != null ? suffix : "");
-  }
-
-  /**
-   * Drops {@code user:password@} from a URL so credentials configured in the endpoint never reach the server log.
-   */
-  static String redactUserInfo(final String endpoint) {
-    return endpoint == null ? null : USER_INFO.matcher(endpoint).replaceFirst("$1");
   }
 
   /**
