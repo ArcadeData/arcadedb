@@ -2693,12 +2693,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO,
           "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
           notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
-      // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
-      // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
-      clearAllBootstrapUnreconciled();
-      // Likewise every pending bootstrap replacement it did reinstall (issue #8367); one it gave up on is still the
-      // copy the baseline rejected, so it stays pending.
-      settleBootstrapReplacementsExcept(notInstalled);
+      // A database this install reinstalled no longer holds the copy the bootstrap overwrite guard had kept, so its
+      // divergence mark goes (issue #6124), and so does its pending bootstrap replacement with the readiness holder it
+      // owns (issue #8367). Two kinds of present database were NOT reinstalled and still hold that copy: one the
+      // reconcile gave up on (issue #6760) and one the leader does not hold (LEADER_MISSING, issues #8559/#8588).
+      // Both keep their mark and their pending replacement, as in downloadAllDatabasesFrom (issue #8702).
+      final Set<String> leaderMissing = reconcileResult.leaderMissing();
+      if (notInstalled.isEmpty() && (leaderMissing == null || leaderMissing.isEmpty())) {
+        clearAllBootstrapUnreconciled();
+        settleBootstrapReplacementsExcept(null);
+      } else {
+        final Set<String> notReplaced = new HashSet<>(notInstalled);
+        if (leaderMissing != null)
+          notReplaced.addAll(leaderMissing);
+        for (final String dbName : getBootstrapUnreconciledDatabases())
+          if (!notReplaced.contains(dbName))
+            clearBootstrapUnreconciled(dbName);
+        settleBootstrapReplacementsExcept(notReplaced);
+      }
 
       // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
       // leader-driven snapshot install advances the applied index without going through
@@ -7145,9 +7157,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Clears every bootstrap-divergence mark (issue #6124). Used by the two full-resync paths, which
-   * reinstall EVERY database present on this node from the leader - the same reasoning
-   * {@link #clearDivergedState()} makes for the diverged set.
+   * Clears every bootstrap-divergence mark (issue #6124). Used by the two full-resync paths when they
+   * reinstalled EVERY database present on this node from the leader - the same reasoning
+   * {@link #clearDivergedState()} makes for the diverged set. A pass that left a database on its own
+   * copy (given up on, or not held by the leader) clears the marks one by one instead (issue #8702).
    */
   // @VisibleForTesting
   void clearAllBootstrapUnreconciled() {
