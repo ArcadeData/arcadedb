@@ -56,6 +56,8 @@ final class GrpcClientErrorMapper {
   static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
 
+  private static final int MAX_CAUSE_DEPTH = 32;
+
   private GrpcClientErrorMapper() {
   }
 
@@ -126,6 +128,10 @@ final class GrpcClientErrorMapper {
    * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting; a
    * failure to connect means the request never left this client. Everything else - a reset, a GOAWAY, a channel
    * shut down mid-call - can follow a request the server already applied.
+   * <p>
+   * Over-reporting is deliberate: a client-side {@code Channel shutdown invoked} or a TLS handshake failure also lands
+   * here although nothing went out, because the status alone cannot prove it. Reporting an unapplied write as "maybe
+   * applied" costs the caller a check; narrowing this to save that check would let a replay apply a write twice.
    */
   static boolean responseMayHaveBeenLost(final Throwable e) {
     if (Status.fromThrowable(e).getCode() != Status.Code.UNAVAILABLE)
@@ -154,7 +160,6 @@ final class GrpcClientErrorMapper {
     return false;
   }
 
-  private static final int MAX_CAUSE_DEPTH = 32;
 
   private static String describe(final Throwable e) {
     final Status status = Status.fromThrowable(e);

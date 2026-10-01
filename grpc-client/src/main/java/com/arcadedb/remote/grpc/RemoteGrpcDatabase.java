@@ -1313,7 +1313,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getRid(); // e.g. "#12:0"
 
     } catch (StatusRuntimeException | StatusException e) {
-      // THE REQUEST CARRIES NO TRANSACTION: THE SERVER COMMITS IT ON ITS OWN
+      // The request carries no transaction, so the server commits it on its own
       handleGrpcWriteException(e, "CreateRecord", true);
       throw new IllegalStateException("unreachable");
     }
@@ -2481,7 +2481,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
               .timeSeriesWrite(request.build()));
       return toWriteSummary(response);
     } catch (final StatusRuntimeException | StatusException e) {
-      // THE REQUEST HAS NO TRANSACTION FIELD: THE SERVER COMMITS THE POINTS ON ITS OWN
+      // The request has no transaction field, so the server commits the points on its own
       handleGrpcWriteException(e, "TimeSeriesWrite", true);
       throw new IllegalStateException("unreachable");
     }
