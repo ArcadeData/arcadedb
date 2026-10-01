@@ -36,6 +36,9 @@ var supportIssues = null;
 var supportIssuesFilter = "open";
 var supportCurrentIssue = null;
 var supportDetailsOpen = false; // the registration details under "Support Active"
+var supportInstallation = null; // the portal's answer to "register this server": {status, name, filled, differs}
+var supportInstallationError = null;
+var supportInstallationBusy = false;
 
 function supportEsc(value) {
   return escapeHtml(value == null ? "" : value);
@@ -392,6 +395,8 @@ function supportStatusPanelHtml(s) {
   if (s.scopes && s.scopes.length) html += "<div><dt>Scopes</dt><dd>" + supportEsc(s.scopes.join(", ")) + "</dd></div>";
   html += "</dl>";
 
+  html += '<div class="support-installation" id="supportInstallation">' + supportInstallationHtml() + "</div>";
+
   if (s.sla) {
     html += '<div class="support-sla"><dt class="support-sla-title">First-response times</dt><div class="support-sla-row">';
     SUPPORT_SEVERITIES.forEach(function (sev) {
@@ -423,6 +428,67 @@ $(document).on("click", "#supportStatusToggle", function () {
 $(document).on("click", "#supportRefreshBtn", function () {
   loadSupport(true);
   supportIssues = null;
+});
+
+// ------------------------------------------------------------------------------------------------ the server as an installation
+
+/** What the portal said about this server's record in the installations, and the button to do it (again). */
+function supportInstallationHtml() {
+  var html = '<div class="support-installation-text">';
+  var r = supportInstallation;
+  if (supportInstallationBusy) html += supportSpinner("Registering this server in the portal...");
+  else if (supportInstallationError)
+    html += '<i class="fa fa-circle-exclamation text-danger"></i> ' + supportEsc(supportInstallationError.message);
+  else if (r && r.status) {
+    var what =
+      r.status === "created"
+        ? "Added to your installations in the portal"
+        : r.status === "updated"
+          ? "Your installation in the portal was completed (" + supportEsc((r.filled || []).join(", ")) + ")"
+          : "Already in your installations in the portal";
+    html += '<i class="fa fa-circle-check support-ok"></i> ' + what + (r.name ? ": <b>" + supportEsc(r.name) + "</b>" : "") + ".";
+    if (r.differs && r.differs.length)
+      html += ' <span class="support-hint">Differs from what the portal has, left as it is: ' + supportEsc(r.differs.join(", ")) + ".</span>";
+  } else html += '<span class="support-hint">Add this server to the installations of your workspace in the portal, with its version and environment.</span>';
+  html += "</div>";
+  html +=
+    '<button class="btn btn-sm btn-outline-primary" id="supportSyncBtn"' +
+    (supportInstallationBusy ? " disabled" : "") +
+    '><i class="fa fa-cloud-arrow-up"></i> ' +
+    (r && r.status ? "Synchronize" : "Register this server in the portal") +
+    "</button>";
+  return html;
+}
+
+function supportRenderInstallation() {
+  $("#supportInstallation").html(supportInstallationHtml());
+}
+
+/** @param auto true right after the key was registered: only a new installation is announced, a failure stays in the details */
+function supportRegisterInstallation(auto) {
+  if (supportInstallationBusy) return;
+  supportInstallationBusy = true;
+  supportInstallationError = null;
+  supportRenderInstallation();
+  return supportApi("POST", "/installation")
+    .done(function (text) {
+      supportInstallation = supportParse(text) || {};
+      if (supportInstallation.status === "created")
+        globalNotify("Support", "This server was added to your installations in the portal", "success");
+      else if (!auto) globalNotify("Support", "This server is up to date in your installations in the portal", "success");
+    })
+    .fail(function (jqXHR) {
+      supportInstallationError = supportError(jqXHR);
+      if (!auto) globalNotify("Support", supportInstallationError.message, "warning");
+    })
+    .always(function () {
+      supportInstallationBusy = false;
+      supportRenderInstallation();
+    });
+}
+
+$(document).on("click", "#supportSyncBtn", function () {
+  supportRegisterInstallation(false);
 });
 
 function supportCredentials() {
@@ -472,8 +538,12 @@ function supportRegister() {
       $("#supportClientKey").val("");
       supportStatus = supportParse(text) || {};
       supportIssues = null;
+      supportInstallation = null;
+      supportInstallationError = null;
       renderSupportAll();
       globalNotify("Support", "This server is registered with the support portal", "success");
+      // Once registered, that's it: the server also becomes an installation of the workspace, without another click
+      supportRegisterInstallation(true);
     })
     .fail(function (jqXHR) {
       supportShowError(jqXHR, "#supportVerifyResult");
@@ -491,6 +561,8 @@ function supportUnregister() {
         .done(function () {
           supportIssues = null;
           supportCurrentIssue = null;
+          supportInstallation = null;
+          supportInstallationError = null;
           supportDetailsOpen = false;
           loadSupport(true);
           globalNotify("Support", "The registration was removed", "success");

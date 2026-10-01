@@ -307,6 +307,7 @@ public class HttpServer implements ServerPlugin {
         .get("/server/support", new SupportHandler(this, SupportHandler.Action.STATUS))
         .post("/server/support/register", new SupportHandler(this, SupportHandler.Action.REGISTER))
         .delete("/server/support/register", new SupportHandler(this, SupportHandler.Action.UNREGISTER))
+        .post("/server/support/installation", new SupportHandler(this, SupportHandler.Action.REGISTER_INSTALLATION))
         .post("/server/support/preview", new SupportHandler(this, SupportHandler.Action.PREVIEW))
         .post("/server/support/bundle", new SupportHandler(this, SupportHandler.Action.BUNDLE))
         .get("/server/support/issues", new SupportHandler(this, SupportHandler.Action.LIST_ISSUES))

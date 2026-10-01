@@ -63,7 +63,14 @@ public class SupportPortalClient {
   private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
       .followRedirects(HttpClient.Redirect.NEVER).build();
 
+  private static final java.util.regex.Pattern PROCESS_REFUSAL = java.util.regex.Pattern.compile(
+      "failed: (?:Error: )?([a-z_]+(?:\\.[a-z_]+)?): (.*)$", java.util.regex.Pattern.DOTALL);
+
   static final String API = "/api/v1/support";
+  /** A key runs a tenant process through the platform's ordinary process endpoint; it may run only one that declares it. */
+  static final String PROCESS_PATH = "/api/v1/process-execute";
+  /** The portal process that creates or completes the Installation of a server (access: {key: 'support:create'}). */
+  static final String REGISTER_PROCESS = "studio-register-instance";
 
   public static final long CALL_TIMEOUT_MS   = 30_000L;
   public static final long UPLOAD_TIMEOUT_MS = 20 * 60_000L;
@@ -110,6 +117,26 @@ public class SupportPortalClient {
 
   public String whoami() {
     return call("GET", "/whoami", null);
+  }
+
+  /**
+   * Registers this server as an installation of the workspace: runs the portal process {@link #REGISTER_PROCESS} with
+   * {@code {diagnostics}}, and returns what the process answered ({@code output.data}).
+   */
+  public String registerInstallation(final String jsonBody) {
+    final String answer;
+    try {
+      answer = execute("POST", PROCESS_PATH, REGISTER_PROCESS, "application/json", () -> HttpRequest.BodyPublishers.ofString(jsonBody),
+          CALL_TIMEOUT_MS);
+    } catch (final IOException e) {
+      throw new SupportPortalException("portal_error", 0, scrub(e.getMessage()), 0);
+    }
+    try {
+      final JSONObject output = new JSONObject(answer).getJSONObject("output");
+      return (output.has("data") ? output.getJSONObject("data") : output).toString();
+    } catch (final RuntimeException e) {
+      throw new SupportPortalException("portal_error", 0, "The portal answered in a form this server does not understand", 0);
+    }
   }
 
   public String listIssues(final String status) {
@@ -168,13 +195,13 @@ public class SupportPortalClient {
   private String callMultipart(final String path, final List<Part> parts) throws IOException {
     final String boundary = "arcadedb-" + HexFormat.of().formatHex(randomBytes());
     final Multipart body = new Multipart(boundary, parts);
-    return execute("POST", path, "multipart/form-data; boundary=" + boundary, () -> HttpRequest.BodyPublishers.fromPublisher(
+    return execute("POST", API + path, null, "multipart/form-data; boundary=" + boundary, () -> HttpRequest.BodyPublishers.fromPublisher(
         HttpRequest.BodyPublishers.ofInputStream(body::open), body.length()), UPLOAD_TIMEOUT_MS);
   }
 
   private String call(final String method, final String path, final String jsonBody) {
     try {
-      return execute(method, path, jsonBody != null ? "application/json" : null,
+      return execute(method, API + path, null, jsonBody != null ? "application/json" : null,
           () -> jsonBody != null ? HttpRequest.BodyPublishers.ofString(jsonBody) : HttpRequest.BodyPublishers.noBody(),
           CALL_TIMEOUT_MS);
     } catch (final IOException e) {
@@ -183,7 +210,8 @@ public class SupportPortalClient {
     }
   }
 
-  private String execute(final String method, final String path, final String contentType,
+  /** @param process the tenant process to run ({@code x-api-process}), or null for a support route */
+  private String execute(final String method, final String path, final String process, final String contentType,
       final Supplier<HttpRequest.BodyPublisher> publisher, final long timeoutMs) throws IOException {
     final boolean idempotent = !method.equals("POST");
     SupportPortalException last = null;
@@ -197,11 +225,13 @@ public class SupportPortalClient {
           break;
         }
 
-      final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(baseUrl + API + path))
+      final HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(baseUrl + path))
           .timeout(Duration.ofMillis(timeoutMs)).header("Authorization", "Bearer " + registration.getKey())
           .header("X-Client-Id", registration.getClientId()).header("User-Agent", userAgent()).header("Accept", "application/json");
       if (instanceId != null && !instanceId.isBlank())
         builder.header("X-Instance-Id", instanceId);
+      if (process != null)
+        builder.header("x-api-process", process);
       if (contentType != null)
         builder.header("Content-Type", contentType);
       builder.method(method, publisher.get());
@@ -258,6 +288,15 @@ public class SupportPortalClient {
     } catch (final RuntimeException ignored) {
       // not JSON
     }
+    if ("process_failed".equals(code)) {
+      // The portal's process refused with "<code>: <sentence>"; anything else is its own bug, shown without its text
+      final java.util.regex.Matcher m = PROCESS_REFUSAL.matcher(message == null ? "" : message);
+      final boolean refused = m.find();
+      code = refused ? m.group(1) : "portal_error";
+      message = refused ? m.group(2).strip() : null;
+    } else if ("unauthorized".equals(code) || "no_such_process".equals(code))
+      // The platform does not run this process for a key: the portal has not got it (a valid key would not be refused)
+      code = status == 401 || status == 404 ? "not_supported" : code;
     if (code == null || code.isBlank())
       code = switch (status) {
         case 400 -> "bad_request";
