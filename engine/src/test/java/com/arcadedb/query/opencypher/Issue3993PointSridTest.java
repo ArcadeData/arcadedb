@@ -97,4 +97,31 @@ class Issue3993PointSridTest extends TestHelper {
     assertThat(p.get("srid")).isEqualTo(9999);
     assertThat(p.get("crs")).isEqualTo("cartesian");
   }
+
+  @Test
+  void unknownCrsNameIsKeptWithoutSrid() {
+    final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'foo'})");
+    assertThat(p.get("crs")).isEqualTo("foo");
+    assertThat(p.containsKey("srid")).isFalse();
+  }
+
+  @Test
+  void dimensionMismatchIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, crs: 'WGS-84'})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 4326})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'cartesian-3D'})")).isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void positionalFormHasWgs84Srid() {
+    assertThat(point("point(1, 2)").get("srid")).isEqualTo(4326);
+  }
+
+  @Test
+  void xyPointWithGeographicSridIsGeographicForDistance() {
+    try (final ResultSet rs = database.command("opencypher",
+        "RETURN point.distance(point({x: 1, y: 2, srid: 4326}), point({longitude: 1, latitude: 2})) AS d")) {
+      assertThat(((Number) rs.next().getProperty("d")).doubleValue()).isEqualTo(0.0);
+    }
+  }
 }
