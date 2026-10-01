@@ -85,6 +85,8 @@ public final class CypherEagernessAnalyzer {
   private       boolean     writesAnyPropertyKey   = false;
   // Whether a clause that changes the graph has run ahead of the current one with no barrier since: what a LIMIT must not cut short (#8826, #8827).
   private       boolean     writePending           = false;
+  // Sticky, never cleared by a barrier: whether any clause that changes the graph precedes the current one.
+  private       boolean     writeSeen              = false;
 
   /**
    * Folds one MATCH (or OPTIONAL MATCH) clause into the read footprint. A node pattern with no static and
@@ -150,6 +152,7 @@ public final class CypherEagernessAnalyzer {
    */
   public void observeWriteClause() {
     writePending = true;
+    writeSeen = true;
   }
 
   /**
@@ -162,6 +165,11 @@ public final class CypherEagernessAnalyzer {
    * The barrier drains every row but the planner asks it to keep only the first {@code skip + limit} of them when no later
    * step can drop a row, so the memory stays O(limit).
    */
+  /** True when a clause that changes the graph was planned ahead of the current one, whether or not a barrier drained it since. */
+  public boolean hasObservedWrite() {
+    return writeSeen;
+  }
+
   public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
     // ORDER BY and an aggregation already drain their whole input
     return writePending && !hasOrderBy && !hasAggregations;
@@ -268,6 +276,7 @@ public final class CypherEagernessAnalyzer {
     if (setClause == null)
       return;
     writePending = true;
+    writeSeen = true;
     for (final SetClause.SetItem item : setClause.getItems()) {
       switch (item.getType()) {
       case PROPERTY -> observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -284,6 +293,7 @@ public final class CypherEagernessAnalyzer {
     if (removeClause == null)
       return;
     writePending = true;
+    writeSeen = true;
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
         observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -294,6 +304,7 @@ public final class CypherEagernessAnalyzer {
     if (mergeClause == null)
       return;
     writePending = true;
+    writeSeen = true;
     observeWrite(mergeClause.getOnCreateSet());
     observeWrite(mergeClause.getOnMatchSet());
   }
@@ -301,6 +312,7 @@ public final class CypherEagernessAnalyzer {
   /** A write procedure is opaque: it can write any property. */
   public void observeWriteProcedure() {
     writePending = true;
+    writeSeen = true;
     writesAnyPropertyKey = true;
   }
 

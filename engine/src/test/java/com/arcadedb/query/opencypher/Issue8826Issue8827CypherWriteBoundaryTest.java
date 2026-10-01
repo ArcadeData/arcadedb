@@ -67,7 +67,7 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
 
     drain(MATCH_8826 + "WITH n0, n1, n2, n3, p0 CALL (*) { RETURN 0 AS barrier } WITH n0, n1, n2, n3, p0 RETURN n0, n1, n2, n3, p0");
     final long withCall = count("MATCH (z:Z) RETURN count(z) AS c");
-    assertThat(withCall).isEqualTo(control);
+    assertThat(withCall).isEqualTo(control).isEqualTo(2000L);
   }
 
   @Test
