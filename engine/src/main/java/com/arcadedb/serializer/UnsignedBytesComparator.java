@@ -148,6 +148,10 @@ public final class UnsignedBytesComparator {
 
     @Override
     public boolean equals(final byte[] left, final byte[] right, final int length) {
+      if (length == 0)
+        // NOTHING TO COMPARE, SO EQUAL: THE LAST-BYTE FAST PATH BELOW WOULD READ INDEX -1 (ISSUE #7890)
+        return true;
+
       // OPTIMIZATION: TEST LAST BYTE FIRST
       int result = UnsignedBytesComparator.compare(left[length - 1], right[length - 1]);
       if (result != 0)

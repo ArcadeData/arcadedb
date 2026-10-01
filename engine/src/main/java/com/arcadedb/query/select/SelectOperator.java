@@ -26,6 +26,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntPredicate;
 
 /**
  * Native condition with support for simple operators through inheritance.
@@ -111,7 +112,7 @@ public enum SelectOperator {
       final Object rightValue = SelectExecutor.evaluateValue(record, right);
       if (leftValue == null || rightValue == null)
         return false;
-      return BinaryComparator.compareTo(leftValue, rightValue) < 0;
+      return ordered(leftValue, rightValue, c -> c < 0);
     }
   },
 
@@ -123,7 +124,7 @@ public enum SelectOperator {
       final Object rightValue = SelectExecutor.evaluateValue(record, right);
       if (leftValue == null || rightValue == null)
         return false;
-      return BinaryComparator.compareTo(leftValue, rightValue) <= 0;
+      return ordered(leftValue, rightValue, c -> c <= 0);
     }
   },
 
@@ -135,7 +136,7 @@ public enum SelectOperator {
       final Object rightValue = SelectExecutor.evaluateValue(record, right);
       if (leftValue == null || rightValue == null)
         return false;
-      return BinaryComparator.compareTo(leftValue, rightValue) > 0;
+      return ordered(leftValue, rightValue, c -> c > 0);
     }
   },
 
@@ -147,7 +148,7 @@ public enum SelectOperator {
       final Object rightValue = SelectExecutor.evaluateValue(record, right);
       if (leftValue == null || rightValue == null)
         return false;
-      return BinaryComparator.compareTo(leftValue, rightValue) >= 0;
+      return ordered(leftValue, rightValue, c -> c >= 0);
     }
   },
 
@@ -201,7 +202,7 @@ public enum SelectOperator {
         // RULE RATHER THAN AN ACCIDENT OF THE SORT ORDER
         if (leftValue == null || range[0] == null || range[1] == null)
           return false;
-        return BinaryComparator.compareTo(leftValue, range[0]) >= 0 && BinaryComparator.compareTo(leftValue, range[1]) <= 0;
+        return ordered(leftValue, range[0], c -> c >= 0) && ordered(leftValue, range[1], c -> c <= 0);
       }
       throw new IllegalArgumentException("BETWEEN requires a range of two values");
     }
@@ -248,6 +249,19 @@ public enum SelectOperator {
   }
 
   abstract Object eval(final Document record, Object left, Object right);
+
+  /**
+   * Reads the sort order as a predicate, answering false for ANY pair with no defined ordering (the comparator's
+   * unsupported pairs, such as a BOOLEAN against a timestamp, issue #7754) instead of letting the comparator's IllegalArgumentException fail the whole select. It is
+   * the native API's twin of what the SQL Gt/Lt/Ge/Le operators do with the same exception.
+   */
+  private static boolean ordered(final Object left, final Object right, final IntPredicate test) {
+    try {
+      return test.test(BinaryComparator.compareTo(left, right));
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+  }
 
   public static SelectOperator byName(final String name) {
     if (NAMES.isEmpty()) {

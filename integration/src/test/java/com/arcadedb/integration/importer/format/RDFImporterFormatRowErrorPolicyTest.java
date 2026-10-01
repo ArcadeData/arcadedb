@@ -118,7 +118,7 @@ class RDFImporterFormatRowErrorPolicyTest {
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settings()))
         .isInstanceOf(ImportException.class)
         .hasMessageContaining("line 1")
-        .hasMessageContaining("2 column");
+        .hasMessageContaining("2 term");
 
     assertThat(countOf("Related"))
         .as("the default policy aborts the whole import: not even the row before the short one is durable, since "
@@ -148,6 +148,40 @@ class RDFImporterFormatRowErrorPolicyTest {
     assertThat(context.errors.get())
         .as("the short line must be counted as an error, not silently dropped")
         .isEqualTo(1);
+  }
+
+  /** Issue #8159: a run of the separator is one gap, so a whitespace-padded statement is still three terms. */
+  @Test
+  void aWhitespacePaddedStatementIsReadAsThreeTerms() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v2,,rel,,,v3
+        v3,rel,v4
+        """);
+
+    format.load(null, null, parser, (DatabaseInternal) database, context, settings());
+
+    assertThat(countOf("Related")).isEqualTo(3);
+    assertThat(context.errors.get()).isZero();
+  }
+
+  @Test
+  void aRowOfOnlyEmptyCellsIsRefusedWithANamedErrorNotANullPointer() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v2,,,rel
+        """);
+
+    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settings()))
+        .isInstanceOf(ImportException.class)
+        .hasMessageContaining("line 1")
+        .hasMessageContaining("2 term");
   }
 
   /**

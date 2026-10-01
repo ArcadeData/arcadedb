@@ -851,6 +851,8 @@ public class CypherExecutionPlan {
    * CASE, etc.) that evaluate their children directly.
    */
   private void setupFunctionResolver(final BasicCommandContext context) {
+    // A read-only statement cannot change what an unindexed chained MATCH re-reads, so it may answer from a snapshot (issue #8695)
+    context.setVariable(MatchNodeStep.READ_ONLY_STATEMENT_KEY, statement.isReadOnly());
     if (expressionEvaluator != null) {
       final CypherFunctionFactory factory = expressionEvaluator.getFunctionFactory();
       context.setVariable(FunctionCallExpression.FUNCTION_RESOLVER_KEY,
@@ -1397,7 +1399,9 @@ public class CypherExecutionPlan {
 
         case SET: {
           final SetClause setClause = entry.getTypedClause();
-          if (!setClause.isEmpty()) {
+          if (!setClause.isEmpty() && !absorbsSet(currentStep, setClause)) {
+            if (currentStep != null && eagerness.needsBarrier(setClause))
+              currentStep = withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
@@ -1419,6 +1423,8 @@ public class CypherExecutionPlan {
         case REMOVE: {
           final RemoveClause removeClause = entry.getTypedClause();
           if (!removeClause.isEmpty()) {
+            if (currentStep != null && eagerness.needsBarrier(removeClause))
+              currentStep = withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
@@ -1753,6 +1759,9 @@ public class CypherExecutionPlan {
       case MATCH:
         final MatchClause matchClause = entry.getTypedClause();
         currentSegmentMatchClauses.add(matchClause);
+        // A property an earlier clause writes must be fully written before this one reads it (issue #8733)
+        if (currentStep != null && eagerness.needsBarrier(matchClause))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         eagerness.observeRead(matchClause);
         if (matchClause.isOptional()) {
           // Try chained count optimization first (handles 2 consecutive OPTIONAL MATCH + count)
@@ -1821,6 +1830,7 @@ public class CypherExecutionPlan {
           mergeStep.setPrevious(currentStep);
         }
         currentStep = mergeStep;
+        eagerness.observeWrite(mergeClause);
         break;
 
       case CREATE:
@@ -1838,21 +1848,30 @@ public class CypherExecutionPlan {
 
       case SET:
         final SetClause setClause = entry.getTypedClause();
-        if (!setClause.isEmpty() && currentStep != null) {
+        // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
+        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause))
+          eagerness.observeWrite(setClause);
+        if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
+          if (eagerness.needsBarrier(setClause))
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final SetStep setStep =
               new SetStep(setClause, context, functionFactory);
           setStep.setPrevious(currentStep);
           currentStep = setStep;
+          eagerness.observeWrite(setClause);
         }
         break;
 
       case REMOVE:
         final RemoveClause removeClause = entry.getTypedClause();
         if (!removeClause.isEmpty() && currentStep != null) {
+          if (eagerness.needsBarrier(removeClause))
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
               new RemoveStep(removeClause, context, functionFactory);
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
+          eagerness.observeWrite(removeClause);
         }
         break;
 
@@ -1878,6 +1897,8 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
             && SimpleCypherStatement.isWriteProcedureCall(callClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
+        if (SimpleCypherStatement.isWriteProcedureCall(callClause))
+          eagerness.observeWriteProcedure();
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -3234,6 +3255,20 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Hands a {@code SET} to the {@code CREATE} or {@code MERGE} step right before it when that step can write it with
+   * the node it creates, so a new node is saved once instead of twice (issue #8735).
+   *
+   * @return true when the step applies the clause and no step is to be added for it
+   */
+  private static boolean absorbsSet(final AbstractExecutionStep previous, final SetClause setClause) {
+    if (previous instanceof MergeStep mergeStep)
+      return mergeStep.absorbSet(setClause);
+    if (previous instanceof CreateStep createStep)
+      return createStep.absorbSet(setClause);
+    return false;
+  }
+
+  /**
    * Inserts the eager read/write barrier of issue #7171 ahead of a write clause: everything the pipeline has
    * read is drained into memory before the first row reaches the write, so no enumeration is still open while
    * the write adds entities it could match. Where the barrier is needed is decided by
@@ -3906,7 +3941,10 @@ public class CypherExecutionPlan {
     }
 
     // Step 5: SET clause - update properties
-    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null) {
+    if (statement.getSetClause() != null && !statement.getSetClause().isEmpty() && currentStep != null
+        && !absorbsSet(currentStep, statement.getSetClause())) {
+      if (eagerness.needsBarrier(statement.getSetClause()))
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final SetStep setStep = new SetStep(
           statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
@@ -3931,6 +3969,8 @@ public class CypherExecutionPlan {
     // Step 6a: REMOVE clauses - remove properties
     for (final RemoveClause removeClause : statement.getRemoveClauses()) {
       if (!removeClause.isEmpty() && currentStep != null) {
+        if (eagerness.needsBarrier(removeClause))
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
         removeStep.setPrevious(currentStep);
         currentStep = removeStep;
@@ -6632,18 +6672,6 @@ public class CypherExecutionPlan {
         directions[i] = Vertex.DIRECTION.BOTH;
     }
 
-    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when:
-    // (a) all edge types are disjoint, OR
-    // (b) there's an inequality filter
-    final Set<String> seenTypes = new HashSet<>();
-    boolean hasDuplicateTypes = false;
-    for (final String et : edgeTypes)
-      if (!seenTypes.add(et))
-        hasDuplicateTypes = true;
-
-    if (hasDuplicateTypes && inequalityVar1 == null)
-      return null;
-
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
     int inequalityIdxB = -1;
@@ -6662,10 +6690,48 @@ public class CypherExecutionPlan {
         return null;
     }
 
+    // Count-push-down does NOT enforce edge uniqueness, so it's only safe when no two hops can bind the same edge
+    if (!chainHopsAreUnique(db, edgeTypes, inequalityIdxA, inequalityIdxB))
+      return null;
+
     if (!correlation.isCorrelated())
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB);
 
     return seededChainOp(db, correlation, pathPattern, nodeLabels, edgeTypes, directions, inequalityVar1 != null);
+  }
+
+  /**
+   * Whether no two hops of a chain can bind the same edge, so that counting adjacency paths is counting relationship
+   * paths (issues #6322, #8426). Two hops can share an edge only when their types overlap, and overlap is
+   * inheritance-aware: a {@code KC} edge matches both {@code [:K]} and {@code [:KC]} when {@code KC EXTENDS K}.
+   * <p>
+   * The one thing that rescues an overlapping pair is an inequality between the vertices two hops apart: hops
+   * {@code i} and {@code i + 1} bind the same edge only when the vertices around them coincide, {@code v(i) = v(i + 2)}.
+   * It protects that pair alone. A pair further apart, or a second overlapping pair, is not protected by any single
+   * inequality (a three-hop chain with {@code WHERE a <> d} still lets its first and third hop bind one edge), so the
+   * chain is declined.
+   */
+  private static boolean chainHopsAreUnique(final Database db, final String[] edgeTypes, final int inequalityIdxA,
+      final int inequalityIdxB) {
+    int overlappingPairs = 0;
+    int overlapFirstHop = -1;
+    int overlapSecondHop = -1;
+    for (int i = 0; i < edgeTypes.length; i++)
+      for (int j = i + 1; j < edgeTypes.length; j++)
+        if (CypherOptimizer.edgeTypesMayOverlap(db.getSchema(), edgeTypes[i], edgeTypes[j])) {
+          ++overlappingPairs;
+          overlapFirstHop = i;
+          overlapSecondHop = j;
+        }
+
+    if (overlappingPairs == 0)
+      return true;
+    if (overlappingPairs > 1 || overlapSecondHop != overlapFirstHop + 1 || inequalityIdxA < 0)
+      return false;
+
+    final int low = Math.min(inequalityIdxA, inequalityIdxB);
+    final int high = Math.max(inequalityIdxA, inequalityIdxB);
+    return low == overlapFirstHop && high == overlapFirstHop + 2;
   }
 
   /**

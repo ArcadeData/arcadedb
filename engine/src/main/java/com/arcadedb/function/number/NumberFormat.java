@@ -21,6 +21,8 @@ package com.arcadedb.function.number;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
@@ -68,6 +70,12 @@ public class NumberFormat extends AbstractNumberFunction {
     final String pattern = args.length > 1 && args[1] != null ? args[1].toString() : DEFAULT_PATTERN;
 
     final DecimalFormat format = new DecimalFormat(pattern, DecimalFormatSymbols.getInstance(Locale.ROOT));
+    // Exact types are handed to DecimalFormat as they are instead of being rounded to the nearest double. Anything else
+    // (Float, Double and any other Number subclass, which DecimalFormat.format(Object) would refuse) goes through double.
+    if (number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte)
+      return format.format(number.longValue());
+    if (number instanceof BigInteger || number instanceof BigDecimal)
+      return format.format(number);
     return format.format(number.doubleValue());
   }
 }

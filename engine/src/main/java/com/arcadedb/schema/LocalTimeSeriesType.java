@@ -35,6 +35,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 
 /**
@@ -47,17 +49,21 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   public static final String KIND_CODE = "t";
 
-  private String                       timestampColumn;
-  private String                       precision;
-  private int                          shardCount;
-  private long                         retentionMs;
-  private long                         compactionBucketIntervalMs;
-  private int                          sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
+  // Volatile, like every mutable member of the LocalDocumentType family (issues #7299, #7866): the setters and
+  // fromJSON() write them under the schema lock, while queries and the maintenance scheduler read them lock-free.
+  private volatile String                 timestampColumn;
+  private volatile String                 precision;
+  private volatile int                    shardCount;
+  private volatile long                   retentionMs;
+  private volatile long                   compactionBucketIntervalMs;
+  private volatile int                    sealedFormatVersion  = TimeSeriesSealedStore.CURRENT_VERSION;
   // A type created by this build writes the current mutable row format; one restored from JSON keeps
   // whatever version wrote its pages, which is what lets a pre-#5519 database open unchanged.
-  private int                          mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
-  private final List<ColumnDefinition>  tsColumns         = new ArrayList<>();
-  private       List<DownsamplingTier> downsamplingTiers = new ArrayList<>();
+  private volatile int                    mutableFormatVersion = TimeSeriesBucket.CURRENT_VERSION;
+  private final    List<ColumnDefinition> tsColumns            = new ArrayList<>();
+  // Replaced, never mutated in place: TimeSeriesMaintenanceScheduler iterates the list it read with no lock held.
+  // Always an immutable copy, so no caller of getDownsamplingTiers() can mutate the published list either.
+  private volatile List<DownsamplingTier> downsamplingTiers    = List.of();
   private volatile TimeSeriesEngine    engine;
   /**
    * Set when schema load registered this type despite {@link #initEngine()} failing (issue #6356), so the type
@@ -66,6 +72,17 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    * absent engine.
    */
   private volatile String engineUnavailableReason;
+  /**
+   * The lock that stands in for the shard compaction locks while there is no engine to own them (issue #7475). A
+   * shard's {@code compactionLock} is what {@code TimeSeriesCompactionPause} (read side) and
+   * {@code TimeSeriesSealedInstallLock} (write side) exclude each other through, but it lives on
+   * {@code TimeSeriesShard} and there is no shard until {@link #initEngine()} has succeeded - which is exactly the
+   * state the HA sealed-store repair runs in. This lock belongs to the TYPE, so it outlives every engine the type
+   * ever has: the pause and the install lock take it BEFORE they look at the engine, and the repair that replaces
+   * a missing engine holds its write half across the file move and {@link #initEngine()}. Not a general engine guard: schema
+   * reload and snapshot install create and close engines without it.
+   */
+  private final ReadWriteLock engineLifecycleLock = new ReentrantReadWriteLock();
 
   public LocalTimeSeriesType(final LocalSchema schema, final String name) {
     super(schema, name);
@@ -146,6 +163,15 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
    */
   synchronized void markEngineUnavailable(final String reason) {
     this.engineUnavailableReason = reason != null ? reason : "unknown error";
+  }
+
+  /**
+   * The lock that excludes a copy of the database from the creation of this type's engine, see the field. Locking
+   * protocol: always acquired BEFORE any of the type's shard compaction locks, never while holding one, and in
+   * type-name order across types ({@code TimeSeriesShardOrder}).
+   */
+  public ReadWriteLock getEngineLifecycleLock() {
+    return engineLifecycleLock;
   }
 
   public boolean isEngineAvailable() {
@@ -310,7 +336,7 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
 
   public void setDownsamplingTiers(final List<DownsamplingTier> tiers) {
     checkForSchemaMutation();
-    this.downsamplingTiers = tiers != null ? new ArrayList<>(tiers) : new ArrayList<>();
+    this.downsamplingTiers = tiers != null ? List.copyOf(tiers) : List.of();
   }
 
   @Override
@@ -385,6 +411,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
           "Unsupported mutable bucket format version " + mutableFormatVersion + " (this build supports up to " +
               TimeSeriesBucket.CURRENT_VERSION + ") for TimeSeries type '" + name + "'");
 
+    // Refilled in place, unlike downsamplingTiers: fromJSON only runs on the fresh instance LocalSchema builds at
+    // schema load, before the type is registered and reachable by any reader.
     tsColumns.clear();
     final JSONArray colArray = json.getJSONArray("tsColumns", null);
     if (colArray != null) {
@@ -402,16 +430,18 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
       }
     }
 
-    downsamplingTiers.clear();
+    // Built aside and published with one volatile write, so a reader holding the previous list never sees it change.
+    final List<DownsamplingTier> tiers = new ArrayList<>();
     final JSONArray tierArray = json.getJSONArray("downsamplingTiers", null);
     if (tierArray != null) {
       for (int i = 0; i < tierArray.length(); i++) {
         final JSONObject tierJson = tierArray.getJSONObject(i);
-        downsamplingTiers.add(new DownsamplingTier(
+        tiers.add(new DownsamplingTier(
             tierJson.getLong("afterMs"),
             tierJson.getLong("granularityMs")
         ));
       }
     }
+    downsamplingTiers = List.copyOf(tiers);
   }
 }

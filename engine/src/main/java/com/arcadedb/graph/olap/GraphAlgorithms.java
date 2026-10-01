@@ -1216,7 +1216,7 @@ public final class GraphAlgorithms {
     if (snap.overlay != null)
       return dijkstraSingleSourceViaProvider(view, source, dist, weightProperty, direction, edgeTypes);
 
-    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes
+    final String[] types = edgeTypes != null && edgeTypes.length > 0 ? view.resolveEdgeTypes(edgeTypes)
         : snap.csrPerType.keySet().toArray(new String[0]);
 
     // Pre-load CSR arrays and weight columns for each edge type (avoid map lookups in hot loop)
@@ -1767,8 +1767,9 @@ public final class GraphAlgorithms {
   // --- Helpers ---
 
   private static String[] resolveEdgeTypes(final GraphAnalyticalView view, final String... edgeTypes) {
+    // A requested type brings its materialized sub-types along: the view keeps one slice per concrete type (#8426)
     if (edgeTypes != null && edgeTypes.length > 0)
-      return edgeTypes;
+      return view.resolveEdgeTypes(edgeTypes);
     return view.getEdgeTypes().toArray(new String[0]);
   }
 }

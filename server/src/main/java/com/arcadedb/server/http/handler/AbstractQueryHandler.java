@@ -350,7 +350,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     // Every write bounded (issue #7806): the stream grows with the result set, so a client that stops reading it
     // would otherwise hold this worker thread blocked in write() for as long as it keeps the connection open.
     try (final NdJsonResultStream stream = new NdJsonResultStream(streamedResponseOutput(exchange,
-        () -> "the streamed result of a query on database '" + (database != null ? database.getName() : null) + "'"))) {
+        () -> "the streamed result of a query on database '" + (database != null ? database.getName() : null) + "'"));
+         // Declared after the stream so it is closed first: the timer must be gone before the stream is (issue #8565)
+         final NdJsonKeepAlive keepAlive = NdJsonKeepAlive.start(exchange, stream, streamingKeepAliveInterval())) {
       final boolean truncated;
       try {
         while (qResult != null && qResult.hasNext()) {

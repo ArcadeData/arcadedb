@@ -278,6 +278,12 @@ public class TransactionContext implements Transaction {
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
   private       long                                 beginSequence         = -1;
+  /**
+   * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
+   * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
+   * begun by any other route reads as "unknown" and is never held to a schema it was not prepared under.
+   */
+  private       long                                 replicationBasePosition = -1L;
   private       boolean                              staleReadCheck;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
@@ -363,6 +369,7 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    replicationBasePosition = -1L;
     // Also in reset(): a context is reused across transactions, and whichever of the two runs first must move it on;
     // moving it twice only skips a transaction number, which nothing compares but for equality
     if (unidirectionalEdgeChanges != null)
@@ -893,6 +900,19 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * The position of the replication log this node had applied when the transaction began, or {@code -1} when unknown
+   * (issue #8686). A transaction stages its index changes as its records are saved, against the schema this node holds
+   * at that moment, so the position at begin is a lower bound of the schema the whole transaction was prepared under.
+   */
+  public long getReplicationBasePosition() {
+    return replicationBasePosition;
+  }
+
+  public void setReplicationBasePosition(final long replicationBasePosition) {
+    this.replicationBasePosition = replicationBasePosition;
+  }
+
+  /**
    * Whether a property write on a record read in this transaction is refused when a concurrent transaction committed a
    * change to that record since the read ({@link GlobalConfiguration#TX_STALE_READ_CHECK}, issue #8610).
    */
@@ -1001,6 +1021,11 @@ public class TransactionContext implements Transaction {
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
     return true;
+  }
+
+  /** Whether {@link #addUpdatedRecord(Record)} has already queued a deferred write for this RID in this transaction. */
+  public boolean isUpdateQueued(final RID rid) {
+    return updatedRecords != null && updatedRecords.containsKey(rid);
   }
 
   /**

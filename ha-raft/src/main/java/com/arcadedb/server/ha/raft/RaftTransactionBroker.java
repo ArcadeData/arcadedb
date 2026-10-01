@@ -90,7 +90,16 @@ public class RaftTransactionBroker {
    */
   public long replicateTransaction(final String dbName, final byte[] walData,
       final Map<Integer, Integer> bucketDeltas) {
-    final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas);
+    return replicateTransaction(dbName, walData, bucketDeltas, -1L);
+  }
+
+  /**
+   * As {@link #replicateTransaction(String, byte[], Map)}, stating the Raft log index the originator had applied when it
+   * prepared the transaction (issue #8686), or a negative value to state none.
+   */
+  public long replicateTransaction(final String dbName, final byte[] walData,
+      final Map<Integer, Integer> bucketDeltas, final long preparedAtIndex) {
+    final ByteString entry = RaftLogEntryCodec.encodeTxEntry(dbName, walData, bucketDeltas, preparedAtIndex);
     return groupCommitter.submitAndWait(entry.toByteArray());
   }
 

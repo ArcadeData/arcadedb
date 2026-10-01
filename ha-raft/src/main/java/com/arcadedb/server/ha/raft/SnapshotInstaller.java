@@ -55,6 +55,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,6 +104,12 @@ public final class SnapshotInstaller {
 
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
+  static final String SNAPSHOT_ORPHANS_DIR   = ".snapshot-orphans";
+  /**
+   * Written before a legacy rollback consumes the backup, and listing the live entries it found, so a crash before
+   * the quarantine of colliding snapshot files is resumed.
+   */
+  static final String SNAPSHOT_QUARANTINE_FILE = ".snapshot-quarantine";
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
@@ -1083,7 +1090,11 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry");
+          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
+          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
+          + "the only intact copy; delete the entries in the database directory that do not start with '.snapshot', "
+          + "move the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
+          + ".snapshot-pending");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
@@ -1514,12 +1525,36 @@ public final class SnapshotInstaller {
           completeSwapRecovery(dbDir);
           return;
         }
-        // Otherwise a live file may be an un-moved original OR an already-installed snapshot file. Re-running
-        // phase 1 would destroy the latter (#7769); leave ambiguous layouts intact.
+        // A live file may be an un-moved original OR an installed snapshot file, so classify the layout (#8304).
         if (hasLiveDatabaseFiles(dbDir)) {
-          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-              "Cannot determine the phase of the legacy snapshot swap for %s. Preserving the live files, "
-                  + "staging, backup and pending marker for manual recovery", null, dbDir);
+          if (liveFilesShareANameWithTheBackup(dbDir, snapshotBackup)) {
+            // Phase 1 renames, so a name in both places can only be a snapshot file installed over an original:
+            // phase 2 (assuming nothing recreated a backed-up name in the live directory since). Roll forward like
+            // a recorded INSTALLING phase.
+            LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+                "Resuming the legacy snapshot swap for %s, which was interrupted while installing the snapshot",
+                null, dbDir);
+            writeSwapPhase(dbDir, SwapPhase.INSTALLING);
+            atomicSwap(dbDir, snapshotNew, snapshotBackup);
+          } else {
+            // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
+            // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
+            // is dropped and the next install fetches a current one.
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
+                    + "database, to the retained backup", null, dbDir);
+            // The marker goes first: deleting the staging can remove its completion marker, after which a later
+            // pass takes the generic restore branch and needs the marker to finish the quarantine.
+            writeFileForced(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE), String.join("\n", liveEntryNames(dbDir)));
+            fsyncDirectory(dbDir);
+            snapshotSwapProgress("QUARANTINE_MARKED");
+            deleteDirectoryIfExists(snapshotNew);
+            restoreBackup(dbDir, snapshotBackup);
+            snapshotSwapProgress("RESTORED");
+            quarantineCollidingFiles(dbDir);
+          }
+          requireRecoveredDatabase(dbDir);
+          completeSwapRecovery(dbDir);
           return;
         }
         // No live files: phase 1 finished, so complete the swap from the staging, as recovery always has. (A legacy
@@ -1552,8 +1587,13 @@ public final class SnapshotInstaller {
         deleteDirectoryIfExists(snapshotNew);
         // Move backup contents back into dbDir
         restoreBackup(dbDir, snapshotBackup);
+        // Also where an interrupted legacy rollback (above) is finished by a later pass.
+        quarantineCollidingFiles(dbDir);
 
       } else {
+        // A legacy rollback that consumed its backup but crashed before the orphan quarantine: finish it first.
+        quarantineCollidingFiles(dbDir);
+
         // No completion marker and no backup. "The download was interrupted before the backup was created" is
         // only ONE way to reach this state, and it leaves dbDir intact. The other is "a backup was created, used
         // for a failed rollback, and is now gone", which leaves dbDir TORN - and this branch used to bless both,
@@ -1634,9 +1674,80 @@ public final class SnapshotInstaller {
     }
   }
 
+  /** Whether an entry of the database directory belongs to the database, rather than to the snapshot machinery. */
+  private static boolean isLiveDatabaseEntry(final Path entry) {
+    return !entry.getFileName().toString().startsWith(".snapshot");
+  }
+
+  /**
+   * Finishes a legacy rollback: moves the live entries that {@link #SNAPSHOT_QUARANTINE_FILE} recorded from before
+   * the backup was restored, and whose component file id is also held by another live file, into
+   * {@link #SNAPSHOT_ORPHANS_DIR}, then removes the marker. A no-op without the marker.
+   * <p>
+   * Those entries are originals after a phase-1 crash, so nothing happens then. After a phase-2 crash that moved
+   * only snapshot-only names they are snapshot files, and one whose file id collides with a restored original makes
+   * the engine refuse to open the database (file ids are unique per database, the file manager refuses a second
+   * file on one id). Judging by the id, rather than by what the schema lists, leaves every
+   * file that does not collide (standalone and external buckets included) where it is. Moved, not deleted.
+   */
+  private static void quarantineCollidingFiles(final Path dbDir) throws IOException {
+    final Path marker = dbDir.resolve(SNAPSHOT_QUARANTINE_FILE);
+    if (!Files.isRegularFile(marker))
+      return;
+    final Map<String, Integer> filesPerId = new HashMap<>();
+    for (final String name : liveEntryNames(dbDir)) {
+      final String id = componentFileId(name);
+      if (id != null)
+        filesPerId.merge(id, 1, Integer::sum);
+    }
+    final List<String> moved = new ArrayList<>();
+    for (final String name : Files.readAllLines(marker)) {
+      final String id = componentFileId(name);
+      if (id == null || filesPerId.getOrDefault(id, 0) < 2 || !Files.exists(dbDir.resolve(name)))
+        continue;
+      Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
+      Path target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name);
+      for (int suffix = 1; Files.exists(target); suffix++)
+        target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name + "." + suffix);
+      Files.move(dbDir.resolve(name), target);
+      moved.add(name);
+    }
+    if (!moved.isEmpty()) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Moved files of %s whose file id collides with a restored original to %s: %s. They are safe to delete "
+              + "once the database has been verified", null, dbDir, SNAPSHOT_ORPHANS_DIR, moved);
+    }
+    Files.deleteIfExists(marker);
+    fsyncDirectory(dbDir);
+  }
+
+  /** The file id of a component file named {@code <name>.<fileId>.<pageSize>.v<version>.<ext>} (see ComponentFile), or null. */
+  private static String componentFileId(final String fileName) {
+    final String[] parts = fileName.split("\\.");
+    return parts.length >= 5 && parts[parts.length - 2].startsWith("v") ? parts[parts.length - 4] : null;
+  }
+
+  private static List<String> liveEntryNames(final Path dbDir) throws IOException {
+    final List<String> names = new ArrayList<>();
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
+      for (final Path entry : live)
+        names.add(entry.getFileName().toString());
+    }
+    return names;
+  }
+
+  /** Whether any live database entry has the name of an entry in the backup. */
+  private static boolean liveFilesShareANameWithTheBackup(final Path dbDir, final Path backupDir) throws IOException {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
+      for (final Path entry : live)
+        if (Files.exists(backupDir.resolve(entry.getFileName().toString())))
+          return true;
+    }
+    return false;
+  }
+
   private static boolean hasLiveDatabaseFiles(final Path dbDir) throws IOException {
-    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
       return live.iterator().hasNext();
     }
   }

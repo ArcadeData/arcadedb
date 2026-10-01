@@ -259,7 +259,9 @@ public class BinaryCondition extends BooleanExpression {
       if (right.isEarlyCalculated(info.getContext())) {
         if (operator instanceof EqualsCompareOperator)
           return true;
-        else return info.allowsRange() && operator.isRangeOperator();
+        // A CI index probes with the lower-cased bound, so a range is the one the user wrote only when the bound is
+        // already lower case: name.toLowerCase() >= 'C' matches "anne", the probe >= 'c' does not (issue #8560)
+        return info.allowsRange() && operator.isRangeOperator() && isLowerCaseLiteral(right, info.getContext());
       }
     }
     return false;
@@ -362,13 +364,20 @@ public class BinaryCondition extends BooleanExpression {
       }
     }
   }
+
+  /** True when {@code expression} is a literal string that is its own lower-case form. */
+  public static boolean isLowerCaseLiteral(final Expression expression, final CommandContext context) {
+    return expression.isLiteral() && expression.execute((Result) null, context) instanceof final String string
+        && string.equals(string.toLowerCase(Locale.ROOT));
+  }
+
   /**
    * Checks if an expression matches the pattern: field.toLowerCase() — a base identifier
    * followed by a single toLowerCase() method call with no further chaining.
    * <p>
-   * Package-private so {@link BetweenCondition} can reuse it for the same CI-index optimization on ranges.
+   * Public so {@link BetweenCondition}, {@link InCondition} and the planner can reuse it for the same CI-index optimization.
    */
-  static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
+  public static boolean isFieldWithLowerCaseMethod(final Expression expr, final String expectedField) {
     if (expr == null || expr.getMathExpression() == null)
       return false;
     if (!(expr.getMathExpression() instanceof final BaseExpression base))
@@ -382,7 +391,7 @@ public class BinaryCondition extends BooleanExpression {
       return false;
     // Extract the field name and compare
     final String fieldName = base.identifier.toString();
-    return expectedField.equalsIgnoreCase(fieldName);
+    return expectedField.equals(fieldName);
   }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

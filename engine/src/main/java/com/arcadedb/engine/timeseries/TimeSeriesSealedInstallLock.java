@@ -20,13 +20,11 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 /**
@@ -80,28 +78,27 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
   }
 
   private final List<Lock> held;
+  private final int        lockedShards;
   private       boolean    released;
 
-  private TimeSeriesSealedInstallLock(final List<Lock> held) {
+  private TimeSeriesSealedInstallLock(final List<Lock> held, final int lockedShards) {
     this.held = held;
+    this.lockedShards = lockedShards;
   }
 
   /**
    * Takes the compaction WRITE lock of every shard named in {@code shards} that actually exists in
    * {@code database}, in the order {@link TimeSeriesCompactionPause} would take them.
    * <p>
-   * A reference that resolves to nothing - an unknown type, a non-TimeSeries type, a type whose engine never
-   * started (issue #6356), a shard index the engine does not have - is skipped rather than refused. The apply
+   * A reference that resolves to nothing - an unknown type, a non-TimeSeries type, a shard index the engine does not
+   * have - is skipped rather than refused. The apply
    * path has its own diagnostics for each of those and must keep making them; this class only locks what is
    * there, and a shard that does not exist cannot be torn.
    * <p>
-   * <b>The engine-unavailable case is a KNOWN GAP, not a safe skip</b> (CodeRabbit on PR #7474). When a type's
-   * engine never loaded, {@code ArcadeStateMachine.repairEngineWithSealedFile} installs the blob and re-runs
-   * {@code initEngine()} over it - with no lock, because the lock lives on {@code TimeSeriesShard} and there is
-   * no shard until the engine loads. {@link TimeSeriesCompactionPause} skips those types for the same reason and
-   * has since #7280. So a copy of the database taken across a repair can pair the same two images this class
-   * exists to keep apart. Closing it means moving the per-shard lock somewhere that outlives the engine, which
-   * is a change to who owns the engine's locking rather than a fix to this class, and is tracked separately.
+   * <b>A type whose engine never loaded is locked too</b> (issue #7475): {@code ArcadeStateMachine} then installs the
+   * blob and re-runs {@code initEngine()} over it, and there is no shard whose compaction lock could exclude a
+   * copy of the database from that. The type's own {@link LocalTimeSeriesType#getEngineLifecycleLock()} write lock
+   * does, and {@link TimeSeriesCompactionPause} holds its read half for every type, engine or not.
    *
    * @param database  the database whose schema resolves the references
    * @param shards    the shards this entry installs sealed bytes for; empty or {@code null} holds nothing
@@ -114,25 +111,32 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
   public static TimeSeriesSealedInstallLock acquire(final Database database, final Collection<ShardRef> shards,
       final long timeoutMs) {
     if (shards == null || shards.isEmpty())
-      return new TimeSeriesSealedInstallLock(new ArrayList<>());
+      return new TimeSeriesSealedInstallLock(new ArrayList<>(), 0);
 
     final List<Lock> acquired = new ArrayList<>(shards.size());
     final long deadline = System.currentTimeMillis() + timeoutMs;
+    int locked = 0;
     try {
       // Driven by {@link TimeSeriesShardOrder} rather than by the entry's own list, so this walk and the pause's
       // walk visit the shards in the same sequence. Ordering the entry's list instead would be ordering it by
       // something the pause knows nothing about, which is not an ordering at all for the purpose of a cycle.
-      for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.of(database)) {
-        if (!contains(shards, slot.typeName(), slot.shardIndex()))
+      for (final LocalTimeSeriesType tsType : TimeSeriesShardOrder.typesOf(database)) {
+        if (!names(shards, tsType.getName()))
           continue;
 
-        final Lock lock = slot.shard().getCompactionLock().writeLock();
-        final long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0 || !lock.tryLock(remaining, TimeUnit.MILLISECONDS))
-          throw new TimeoutException(
-              "Timeout of %dms expired while locking TimeSeries type '%s' shard %d for a sealed-store install".formatted(
-                  timeoutMs, slot.typeName(), slot.shardIndex()));
-        acquired.add(lock);
+        // The WRITE half of the type's lifecycle lock, for every type the entry names, engine or no engine (issue
+        // #7475): a type whose engine never loaded has no shard lock to take, and this is what a copy of the
+        // database - which holds the read half through TimeSeriesCompactionPause - is excluded from the repair by.
+        // It also keeps the engine from appearing or vanishing between here and the shard locks below.
+        TimeSeriesShardOrder.lockOrTimeOut(acquired, tsType.getEngineLifecycleLock().writeLock(), deadline, timeoutMs, tsType.getName(), -1, "locking");
+
+        for (final TimeSeriesShardOrder.ShardSlot slot : TimeSeriesShardOrder.shardsOf(tsType)) {
+          if (!contains(shards, slot.typeName(), slot.shardIndex()))
+            continue;
+          TimeSeriesShardOrder.lockOrTimeOut(acquired, slot.shard().getCompactionLock().writeLock(), deadline, timeoutMs, slot.typeName(),
+              slot.shardIndex(), "locking");
+          locked++;
+        }
       }
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -142,7 +146,14 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
       release(acquired);
       throw e;
     }
-    return new TimeSeriesSealedInstallLock(acquired);
+    return new TimeSeriesSealedInstallLock(acquired, locked);
+  }
+
+  private static boolean names(final Collection<ShardRef> shards, final String typeName) {
+    for (final ShardRef ref : shards)
+      if (ref.typeName().equals(typeName))
+        return true;
+    return false;
   }
 
   /**
@@ -156,9 +167,12 @@ public final class TimeSeriesSealedInstallLock implements AutoCloseable {
     return false;
   }
 
-  /** How many shards this lock is holding. Zero when the entry named none that resolved. */
+  /**
+   * How many shards this lock is holding. Zero when the entry named none that resolved, and for a type whose
+   * engine never loaded, which is held through its lifecycle lock instead (issue #7475).
+   */
   public int getLockedShards() {
-    return held.size();
+    return lockedShards;
   }
 
   /** Releases every shard. Idempotent, so a caller can close it from a try-with-resources after releasing early. */

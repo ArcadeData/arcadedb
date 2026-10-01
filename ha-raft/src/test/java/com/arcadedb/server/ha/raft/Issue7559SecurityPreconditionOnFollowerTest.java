@@ -48,7 +48,7 @@ import static org.mockito.Mockito.when;
  * over Bolt or {@code /api/v1/command} - are exactly the ones that do NOT forward to the leader, so they are the
  * ones not already serialised onto a single node, and therefore the ones that needed a compare-and-set most.
  * ({@code DeleteDropUserHandler}, which issue #7559's own table names as a fourth such door, turned out to be
- * constructed nowhere - issue #7829.)
+ * constructed nowhere, and was removed by issue #7829.)
  *
  * <h2>What the fix is</h2>
  *

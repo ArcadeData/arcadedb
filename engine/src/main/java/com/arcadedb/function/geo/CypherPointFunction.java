@@ -39,6 +39,10 @@ import java.util.Map;
  * <p>Also supports an ArcadeDB-specific 2-arg positional form {@code point(x, y)}, equivalent to
  * {@code point({longitude: x, latitude: y})} per the universal GIS {@code (x, y)} convention. Neo4j
  * has no such positional form.</p>
+ * <p>For the cartesian (x/y) form the {@code srid} and {@code crs} name are derived from each other (cartesian 7203 and
+ * cartesian-3D 9157, WGS-84 4326 and WGS-84-3D 4979), known names are matched case-insensitively and stored in canonical
+ * spelling, an unknown crs name is kept without an srid and an unknown srid gets the cartesian name (both unlike Neo4j,
+ * which rejects them), and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system.</p>
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
@@ -49,6 +53,11 @@ import java.util.Map;
  * argument error as an internal server fault (issue #5794).</p>
  */
 public class CypherPointFunction implements StatelessFunction {
+  private static final int SRID_CARTESIAN_2D = 7203;
+  private static final int SRID_CARTESIAN_3D = 9157;
+  private static final int SRID_WGS84_2D     = 4326;
+  private static final int SRID_WGS84_3D     = 4979;
+
   @Override
   public String getName() {
     return "point";
@@ -82,7 +91,7 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("x", x);
       result.put("y", y);
       result.put("crs", "WGS-84");
-      result.put("srid", 4326);
+      result.put("srid", SRID_WGS84_2D);
       return result;
     }
 
@@ -112,7 +121,7 @@ public class CypherPointFunction implements StatelessFunction {
       if (result.containsKey("z"))
         result.put("height", result.get("z"));
       result.put("crs", result.containsKey("z") ? "WGS-84-3D" : "WGS-84");
-      result.put("srid", result.containsKey("z") ? 4979 : 4326);
+      result.put("srid", result.containsKey("z") ? SRID_WGS84_3D : SRID_WGS84_2D);
     } else if (map.containsKey("x") || map.containsKey("y")) {
       // Cartesian coordinate system
       final Object xv = map.get("x");
@@ -125,24 +134,83 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("y", y);
       addOptionalZ(result, map);
       final Object crsObj = map.get("crs");
-      if (crsObj != null)
-        result.put("crs", crsObj.toString());
-      else
-        result.put("crs", result.containsKey("z") ? "cartesian-3D" : "cartesian");
+      if (crsObj != null && !(crsObj instanceof String))
+        throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
+      Integer srid = null;
       if (map.containsKey("srid")) {
         final Object sridObj = map.get("srid");
         // Same rationale as the non-map argument above: a non-numeric srid is a client error (issue #5910).
         if (!(sridObj instanceof Number))
           throw new CommandSemanticException(
               "point() 'srid' must be numeric, found " + describe(sridObj));
-        result.put("srid", ((Number) sridObj).intValue());
+        final double sridValue = ((Number) sridObj).doubleValue();
+        if (sridValue != Math.rint(sridValue) || sridValue < 0 || sridValue > Integer.MAX_VALUE)
+          throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + describe(sridObj));
+        srid = (int) sridValue;
       }
+      String crs = (String) crsObj;
+      // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
+      final boolean has3d = result.containsKey("z");
+      final Integer crsSrid = crs != null ? sridOfCrs(crs) : null;
+      // An explicit crs and srid that disagree are a client error, as in Neo4j. A known srid also contradicts an
+      // unrecognised crs name, since the pair must travel together.
+      if (srid != null && crs != null && (crsSrid != null ? !crsSrid.equals(srid) : isKnownSrid(srid)))
+        throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
+      if (srid == null) {
+        if (crs == null)
+          srid = has3d ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
+        else
+          srid = crsSrid;
+      }
+      // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
+      if (srid != null && isKnownSrid(srid) && is3dSrid(srid) != has3d)
+        throw new CommandSemanticException(
+            "point() " + (has3d ? "3D" : "2D") + " coordinates do not match the dimension of srid " + srid);
+      // A known name is stored in canonical spelling so case-sensitive consumers (point.distance, withinBBox, Bolt) agree
+      // with the srid; an unknown name is kept as given, without an srid, as before.
+      if (crs == null || crsSrid != null)
+        crs = crsOfSrid(srid, has3d);
+      result.put("crs", crs);
+      if (srid != null)
+        result.put("srid", srid);
     } else {
       // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
       throw new CommandSemanticException("point() map must contain x/y or longitude/latitude properties");
     }
 
     return result;
+  }
+
+  /** Neo4j SRID of a well-known CRS name, or null when the name is not one of the four Neo4j defines. */
+  private static Integer sridOfCrs(final String crs) {
+    if (crs.equalsIgnoreCase("cartesian"))
+      return SRID_CARTESIAN_2D;
+    if (crs.equalsIgnoreCase("cartesian-3D"))
+      return SRID_CARTESIAN_3D;
+    if (crs.equalsIgnoreCase("WGS-84"))
+      return SRID_WGS84_2D;
+    if (crs.equalsIgnoreCase("WGS-84-3D"))
+      return SRID_WGS84_3D;
+    return null;
+  }
+
+  private static boolean isKnownSrid(final int srid) {
+    return srid == SRID_CARTESIAN_2D || srid == SRID_CARTESIAN_3D || srid == SRID_WGS84_2D || srid == SRID_WGS84_3D;
+  }
+
+  private static boolean is3dSrid(final int srid) {
+    return srid == SRID_CARTESIAN_3D || srid == SRID_WGS84_3D;
+  }
+
+  /** CRS name of a well-known Neo4j SRID; an unknown SRID falls back to the cartesian name of the given dimension. */
+  private static String crsOfSrid(final int srid, final boolean is3d) {
+    return switch (srid) {
+      case SRID_WGS84_2D -> "WGS-84";
+      case SRID_WGS84_3D -> "WGS-84-3D";
+      case SRID_CARTESIAN_3D -> "cartesian-3D";
+      case SRID_CARTESIAN_2D -> "cartesian";
+      default -> is3d ? "cartesian-3D" : "cartesian";
+    };
   }
 
   private void addOptionalZ(final Map<String, Object> result, final Map<?, ?> map) {

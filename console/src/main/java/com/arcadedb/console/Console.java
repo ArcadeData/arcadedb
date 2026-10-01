@@ -242,10 +242,8 @@ public class Console {
                 final String propertyValue = pair == null ? "" : pair[1];
                 if (key.isEmpty())
                     System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
-                else {
-                    System.setProperty(key, propertyValue);
-                    setGlobalConfiguration(key, propertyValue, true);
-                }
+                else
+                    applyCommandLineSetting(key, propertyValue);
             } else if ("-b".equalsIgnoreCase(value)) {
                 batchMode = true;
             } else if ("-fae".equalsIgnoreCase(value)) {
@@ -470,7 +468,7 @@ public class Console {
                 outputLine(3, "Set maximum width to %d", maxWidth);
             }
             default -> {
-                if (!setGlobalConfiguration(key, value, false))
+                if (!setGlobalConfiguration(key, value))
                     outputLine(3, "Setting '%s' is not supported by the console", key);
             }
         }
@@ -1535,22 +1533,59 @@ public class Console {
         return StringUtils.splitKeyValue(pair);
     }
 
-    private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
+    /**
+     * The {@code SET} command's writer. A value the strict parse refuses ({@code yes} for a Boolean, issue #7870) is thrown,
+     * so it fails the command; {@code false} means the key is unknown or not available to the console.
+     */
+    private static boolean setGlobalConfiguration(final String key, final String value) {
         final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
-        if (cfg != null) {
-            if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
-                if (printError)
-                    System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
-            } else {
-                cfg.setValue(value);
-                return true;
-            }
-        } else {
-            if (printError)
-                System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+        if (cfg == null || cfg.getScope() == GlobalConfiguration.SCOPE.SERVER)
+            return false;
+
+        final Object coerced;
+        try {
+            coerced = cfg.coerceFromAdminCommand(value);
+        } catch (final IllegalArgumentException e) {
+            throw new ConsoleException(refusalMessage(e));
+        }
+        cfg.setValue(coerced);
+        return true;
+    }
+
+    /**
+     * The {@code -D<key>=<value>} writer. It never aborts the console: every refusal is printed and the setting ignored. A value
+     * the strict parse refuses is not published as a system property either, so no later reader can pick it up (issue #7870).
+     */
+    private static void applyCommandLineSetting(final String key, final String value) {
+        final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+        if (cfg == null) {
+            System.setProperty(key, value);
+            System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+            return;
+        }
+        if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
+            System.setProperty(key, value);
+            System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
+            return;
         }
 
-        return false;
+        try {
+            cfg.setValue(cfg.coerceFromAdminCommand(value));
+        } catch (final RuntimeException e) {
+            System.err.println(refusalMessage(e) + ". The setting will be ignored");
+            return;
+        }
+        // PUBLISHED ONLY ONCE STORED: A REFUSED VALUE NEVER REACHES THE SYSTEM PROPERTIES
+        System.setProperty(key, value);
+    }
+
+    /**
+     * The strict parse puts what it accepts ("only 'true' and 'false' are accepted") in the CAUSE: print both, so an operator
+     * who typed {@code yes} learns what to type instead.
+     */
+    private static String refusalMessage(final RuntimeException e) {
+        final Throwable cause = e.getCause();
+        return cause != null && cause.getMessage() != null ? e.getMessage() + " (" + cause.getMessage() + ")" : e.getMessage();
     }
 
     private boolean isRemoteDatabase() {

@@ -74,6 +74,8 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
     this.graph.tx().readWrite();
 
     final MutableEdge mutableElement = baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
     mutableElement.set(key, value);
     mutableElement.save();
 

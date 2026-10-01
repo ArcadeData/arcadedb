@@ -22,6 +22,9 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Thrown by {@link RaftGroupCommitter} when the Raft MAJORITY quorum was committed (meaning
  * Ratis already called {@code applyTransaction()} on the leader with the origin-skip) but the
@@ -40,12 +43,37 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
  * remotely failure the HTTP layer answers it 409 "do not retry" instead.
  */
 public class MajorityCommittedAllFailedException extends TransactionCommittedRemotelyException {
+  private static final Pattern LOG_INDEX = Pattern.compile("logIndex=(\\d{1,18})(?!\\d)");
 
+  private final long logIndex;
+
+  /** Also what a follower rebuilds the leader's exception with: the index is read back from the message. */
   public MajorityCommittedAllFailedException(final String message) {
-    super(message);
+    this(message, null, parseLogIndex(message));
   }
 
   public MajorityCommittedAllFailedException(final String message, final Throwable cause) {
+    this(message, cause, parseLogIndex(message));
+  }
+
+  /** @param logIndex the Raft log index the entry committed at, or {@code -1} when unknown (e.g. rebuilt from a remote reply) */
+  public MajorityCommittedAllFailedException(final String message, final Throwable cause, final long logIndex) {
     super(message, cause);
+    this.logIndex = logIndex;
+  }
+
+  /** The Raft log index the entry committed at, or {@code -1} when unknown. */
+  public long getLogIndex() {
+    return logIndex;
+  }
+
+  private static long parseLogIndex(final String message) {
+    if (message == null)
+      return -1L;
+    // The message may come from a remote reply: a longer, garbled number is rejected rather than truncated to a wrong
+    // index, and at most 18 digits always parse, so it cannot turn this "committed, do not retry" signal into a
+    // NumberFormatException.
+    final Matcher matcher = LOG_INDEX.matcher(message);
+    return matcher.find() ? Long.parseLong(matcher.group(1)) : -1L;
   }
 }
