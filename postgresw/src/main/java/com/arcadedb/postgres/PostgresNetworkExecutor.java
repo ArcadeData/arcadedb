@@ -167,8 +167,10 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
-  // Replaced once, by the TLS upgrade of the startup phase, hence volatile: close() can run on another thread.
-  private volatile ChannelBinaryServer      channel;
+  // Replaced once, by the TLS upgrade of the startup phase and before the session is registered in ACTIVE_SESSIONS, whose
+  // map publishes it to the cancel path. Not volatile, as it is read on every message. A stale reference could only be the
+  // pre-upgrade channel, and closing that closes the raw socket under the TLS one.
+  private ChannelBinaryServer               channel;
   private final PostgresSslHelper           sslHelper;
   private boolean                           tlsActive;
   private boolean                           gssEncRequestAnswered;
@@ -3685,13 +3687,14 @@ public class PostgresNetworkExecutor extends Thread {
           channel.writeByte((byte) 'N');
           channel.flush();
 
-          LogManager.instance().log(this, Level.INFO,
+          LogManager.instance().log(this, Level.FINE,
               "PSQL: received an SSL connection request but TLS is not enabled (" + GlobalConfiguration.POSTGRES_SSL.getKey()
                   + "). Telling the client to continue in plaintext");
         } else {
           // A client sends nothing before it has read the answer: bytes already buffered behind the SSLRequest were
           // sent in plaintext by someone who did not wait for it, and are refused rather than dropped silently or
-          // replayed into the session (the class of attack of CVE-2021-23222).
+          // replayed into the session (the class of attack of CVE-2021-23222). Only what has ALREADY arrived is seen: later
+          // plaintext goes into the TLS engine and fails the handshake, so this is not an exhaustive check, and it need not be.
           if (channel.inputHasData())
             throw new PostgresProtocolException("Unexpected data after SSL request");
 
@@ -3735,6 +3738,9 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       if (!tlsActive && sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.REQUIRED) {
+        // Read the rest of the packet (bounded by the length check above) before answering: closing a socket with unread
+        // data sends an RST that can make the client lose the error.
+        channel.readBytes(new byte[(int) (len - 8)]);
         writeError(ERROR_SEVERITY.FATAL, "SSL connection is required", "28000");
         return false;
       }

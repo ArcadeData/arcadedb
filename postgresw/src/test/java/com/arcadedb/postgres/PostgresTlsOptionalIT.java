@@ -46,7 +46,7 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
   public void setTestConfiguration() {
     super.setTestConfiguration();
     // The stalled-handshake test waits for this pre-authentication timeout to close the connection.
-    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(1500);
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(3000);
   }
 
   @Test
