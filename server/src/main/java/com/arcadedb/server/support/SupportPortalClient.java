@@ -112,11 +112,6 @@ public class SupportPortalClient {
     return call("GET", "/whoami", null);
   }
 
-  /** Registers this server as an installation of the workspace ({@code POST /installation}); the body is {@code {diagnostics}}. */
-  public String registerInstallation(final String jsonBody) {
-    return call("POST", "/installation", jsonBody);
-  }
-
   public String listIssues(final String status) {
     final String s = status == null || status.isBlank() ? "open" : status;
     if (!s.equals("open") && !s.equals("closed") && !s.equals("all"))

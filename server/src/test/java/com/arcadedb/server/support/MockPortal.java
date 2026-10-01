@@ -134,8 +134,6 @@ final class MockPortal implements AutoCloseable {
           "plan":{"entitled":true,"label":"Gold","units":2,"endsOn":1893456000000},\
           "sla":{"S1":"1 hour","S2":"4 hours","S3":"1 business day","S4":"2 business days","coverage":"24x7"},\
           "buyUrl":"https://arcadedb.com/pricing.html"}""");
-    if (path.equals("/api/v1/support/installation") && r.method().equals("POST"))
-      return new Response(200, "{\"status\":\"created\",\"installationId\":\"inst-1\",\"name\":\"arcadedb_0\",\"filled\":[],\"differs\":[]}");
     if (path.equals("/api/v1/support/issues") && r.method().equals("POST"))
       return new Response(201, "{\"number\":42,\"url\":\"https://portal.arcadedb.com/#/issues/42\",\"workspaceId\":\"ws-mock-1\"}");
     if (path.equals("/api/v1/support/issues") && r.method().equals("GET"))
