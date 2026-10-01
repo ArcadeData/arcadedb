@@ -50,7 +50,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private       String              logicName;
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
-  private       boolean             valid            = true;
+  private volatile boolean             valid            = true;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -120,10 +120,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     // Check if this is a full-text index to preserve scores
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.get(0) instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, -1);
 
       // For full-text indexes, collect entries with scores
@@ -175,10 +175,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     // Check if this is a full-text index to preserve scores
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.get(0) instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, limit);
 
       // For full-text indexes, collect entries with scores
@@ -363,7 +363,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isResultApproximate() {
     // Same definition across every bucket sub-index, so the first one answers for all of them.
-    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.get(0).isResultApproximate();
+    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
   }
 
   @Override
@@ -391,9 +391,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    indexesOnBuckets.clear();
-
+    // Invalid first, then emptied: a concurrent reader that sees the list empty must also see the index invalid (issue #8855)
     valid = false;
+    indexesOnBuckets.clear();
   }
 
   @Override
@@ -644,7 +644,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // Full-text queries contain search terms/phrases, not document property values, so bucket
     // selection based on hashing those keys would incorrectly query only one bucket.
     final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.get(0).getType() == Schema.INDEX_TYPE.FULL_TEXT;
+        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // Full-text searches must scan all buckets to ensure complete results
@@ -719,9 +719,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
-    if (indexesOnBuckets.isEmpty())
+    try {
+      return indexesOnBuckets.getFirst();
+    } catch (final NoSuchElementException e) {
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
-    return indexesOnBuckets.get(0);
+    }
   }
 
   public IndexMetadata getMetadata() {
