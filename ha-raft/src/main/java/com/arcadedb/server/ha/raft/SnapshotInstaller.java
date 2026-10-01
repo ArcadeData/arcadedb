@@ -120,8 +120,9 @@ public final class SnapshotInstaller {
     /**
      * The reopen that validates the installed snapshot returned a verdict - it failed - and the rollback it asks for
      * has not yet published ROLLING_BACK. Recovery must finish that rollback, not roll the bad snapshot forward (#8305).
+     * Unknown to older nodes, which refuse it and keep every file.
      */
-    VALIDATION_FAILED, ROLLING_BACK, RESTORING // VALIDATION_FAILED is unknown to older nodes, which refuse it and keep every file
+    VALIDATION_FAILED, ROLLING_BACK, RESTORING
   }
 
   /**
