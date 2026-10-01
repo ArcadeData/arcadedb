@@ -111,13 +111,22 @@ class Issue8811OrderByAliasIndexTest extends TestHelper {
 
   @Test
   void duplicateAliasDoesNotUseTheIndexAndMatchesTheUnindexedAnswer() {
-    final String query = "SELECT a, b AS a FROM V ORDER BY a ASC LIMIT 3";
     final List<Object> got = new ArrayList<>();
-    try (final ResultSet rs = database.query("sql", query)) {
+    try (final ResultSet rs = database.query("sql", "SELECT a, b AS a FROM V ORDER BY a ASC LIMIT 3")) {
       while (rs.hasNext())
         got.add(rs.next().getProperty("a"));
       assertThat(plan(rs)).doesNotContain("V[a]");
     }
-    assertThat(got).hasSize(3);
+    // the same sort over a type without the index
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.a LONG");
+    database.command("sql", "CREATE PROPERTY W.b LONG");
+    database.transaction(() -> database.command("sql", "INSERT INTO W SELECT a, b FROM V"));
+    final List<Object> expected = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT a, b AS a FROM W ORDER BY a ASC LIMIT 3")) {
+      while (rs.hasNext())
+        expected.add(rs.next().getProperty("a"));
+    }
+    assertThat(got).hasSize(3).isEqualTo(expected);
   }
 }
