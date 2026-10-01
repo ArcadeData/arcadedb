@@ -273,6 +273,10 @@ public class ServerControlPlane {
     // and the new peer would run with a stale user set, a stale group document and a stale token store until
     // the next cluster-wide change of each kind.
     //
+    // On Raft the request below is never issued: RaftHAPlugin.connectClusterAndReportSeed has already asked the
+    // leader, and pluginReport is that answer (issue #8077). What follows covers an implementation that leaves
+    // the seed to this verb.
+    //
     // ASKED OF THE LEADER rather than run here (issue #7834). This verb does not require the local node to be
     // the leader - only the membership change underneath it is routed there - while the leader already seeds
     // every membership change of its own accord (issue #7531). Two seeders meant two JVMs, each holding only
@@ -293,11 +297,13 @@ public class ServerControlPlane {
       // An implementation that reported no seed of its own (the HAServerPlugin default, so never Raft) gets the seed
       // this verb always ran for it. Within that, an empty Optional means it has no leader-side seeder either, and
       // the local seed is then what it has always been.
-      final List<String> failedSeeds = pluginReport.isPresent() ?
-          pluginReport.get() :
-          ha.seedSecurityStateForAdmission(serverAddress)
-              .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
-                  server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
+      final List<String> failedSeeds;
+      if (pluginReport.isPresent())
+        failedSeeds = pluginReport.get();
+      else
+        failedSeeds = ha.seedSecurityStateForAdmission(serverAddress)
+            .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+                server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
       if (!failedSeeds.isEmpty())
         LogManager.instance().log(this, Level.SEVERE,
             "Connect cluster joined '%s' but these security documents could not be seeded to it: %s. That peer is a "

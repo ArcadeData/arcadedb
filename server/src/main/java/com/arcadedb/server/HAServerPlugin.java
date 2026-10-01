@@ -563,6 +563,8 @@ public interface HAServerPlugin extends ServerPlugin {
    * reissues the seed, which is the remediation. A membership change that did <i>not</i> happen leaves by an
    * exception instead, exactly as {@link #connectCluster(String)} always has. An override must therefore never
    * throw once the membership change has happened: a seed it could not run is reported, as every document failing.
+   * A non-empty report is returned, not logged: the caller owns it, unlike the void {@code addPeer}, which has no
+   * caller to hand it to.
    * <p>
    * <b>An empty {@link Optional} is not an empty failure list</b>, with the meaning
    * {@link #seedSecurityStateForAdmission} gives it: this implementation reports no seed of its own, and the caller
