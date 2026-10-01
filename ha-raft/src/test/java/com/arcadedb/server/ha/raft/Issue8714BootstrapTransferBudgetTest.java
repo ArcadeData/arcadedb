@@ -23,7 +23,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -49,7 +48,17 @@ class Issue8714BootstrapTransferBudgetTest {
     election.transferToElectedSource("peer-b", 120_000L);
 
     verify(ha).transferLeadership("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L));
-    assertThat(RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)).isLessThan(120_000L);
+  }
+
+  @Test
+  void aSourceThatBecomesReachableAfterAFewPollsIsTransferredTo() {
+    final RaftHAServer ha = mock(RaftHAServer.class);
+    when(ha.followerContactPeers()).thenReturn(Set.of(), Set.of(), Set.of("peer-b"));
+    final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
+
+    election.transferToElectedSource("peer-b", 120_000L, 5_000L);
+
+    verify(ha).transferLeadership("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L));
   }
 
   @Test

@@ -63,8 +63,8 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.logging.Level;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLSession;
@@ -549,7 +549,9 @@ public class RemoteHttpComponent extends RWLockContext {
         // POST /server/users and POST /server/api-tokens answer 201, every other control-plane route 200
         if (response.statusCode() != 200 && !(controlPlane != null && response.statusCode() == 201)) {
           lastException = manageException(response, errorOperation);
-          if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())) {
+          // A control-plane write is never replayed on an empty answer: the server may have applied it
+          if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())
+              && (controlPlane == null || replayable)) {
             LogManager.instance()
                 .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
             continue;
