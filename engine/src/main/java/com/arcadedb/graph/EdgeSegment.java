@@ -92,6 +92,19 @@ public interface EdgeSegment extends Record {
 
   RID getRID(AtomicInteger currentPosition);
 
+  /**
+   * Returns the position of the first entry at or after {@code position} whose edge bucket {@code bucketMask}
+   * accepts, or {@link #getUsed()} if no entry left in this segment matches.
+   * <p>
+   * The rejected entries are skipped on the raw numbers stored in the segment, without being decoded into
+   * {@link RID} objects: a type-filtered walk over a vertex dominated by another edge type pays a few byte reads per
+   * foreign entry instead of two allocations (issue #8417).
+   *
+   * @param position   the position of an entry boundary, as kept by the iterators
+   * @param bucketMask the edge buckets of the requested types
+   */
+  int nextEntryInBuckets(int position, EdgeBucketMask bucketMask);
+
   int getRecordSize();
 
   long count(Set<Integer> fileIds);

@@ -516,6 +516,26 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
+  public int nextEntryInBuckets(final int position, final EdgeBucketMask bucketMask) {
+    final int used = getUsed();
+    int entryStart = position;
+
+    buffer.position(entryStart);
+    while (entryStart < used) {
+      if (bucketMask.matches(buffer.getNumber()))
+        return entryStart;
+
+      // SKIP EDGE POSITION AND VERTEX RID
+      buffer.getNumber();
+      buffer.getNumber();
+      buffer.getNumber();
+      entryStart = buffer.position();
+    }
+
+    return used;
+  }
+
+  @Override
   public int getRecordSize() {
     return buffer.size();
   }
