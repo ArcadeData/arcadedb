@@ -211,9 +211,9 @@ class Issue8304LegacySwapRecoveryTest {
     assertThat(db.resolve(".snapshot-quarantine")).doesNotExist();
   }
 
-  /** The original database caught mid schema rewrite names its buckets in schema.prev.json only. */
+  /** An original database caught mid schema rewrite has only schema.prev.json; recovery still restores it and quarantines. */
   @Test
-  void orphanQuarantineReadsSchemaPrevWhenSchemaIsAbsent(@TempDir final Path root) throws Exception {
+  void restoreAndQuarantineWorkWhenTheOriginalHasOnlySchemaPrev(@TempDir final Path root) throws Exception {
     final Path databases = root.resolve("databases");
     final Path db = databases.resolve("mydb");
     final Path staged = db.resolve(".snapshot-new");

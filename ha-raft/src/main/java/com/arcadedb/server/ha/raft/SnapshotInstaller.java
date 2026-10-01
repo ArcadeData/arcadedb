@@ -1706,7 +1706,10 @@ public final class SnapshotInstaller {
       if (id == null || filesPerId.getOrDefault(id, 0) < 2 || !Files.exists(dbDir.resolve(name)))
         continue;
       Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
-      Files.move(dbDir.resolve(name), dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name), StandardCopyOption.REPLACE_EXISTING);
+      Path target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name);
+      for (int suffix = 1; Files.exists(target); suffix++)
+        target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name + "." + suffix);
+      Files.move(dbDir.resolve(name), target);
       moved.add(name);
     }
     if (!moved.isEmpty()) {
@@ -1718,7 +1721,7 @@ public final class SnapshotInstaller {
     fsyncDirectory(dbDir);
   }
 
-  /** The file id of a component file named {@code <name>.<fileId>.<pageSize>.v<version>.<ext>}, or null. */
+  /** The file id of a component file named {@code <name>.<fileId>.<pageSize>.v<version>.<ext>} (see ComponentFile), or null. */
   private static String componentFileId(final String fileName) {
     final String[] parts = fileName.split("\\.");
     return parts.length >= 5 && parts[parts.length - 2].startsWith("v") ? parts[parts.length - 4] : null;
