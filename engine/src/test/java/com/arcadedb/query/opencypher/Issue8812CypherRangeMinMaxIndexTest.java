@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -105,6 +106,14 @@ class Issue8812CypherRangeMinMaxIndexTest extends TestHelper {
       assertThat(rs.next().<Object>getProperty("c")).isNull();
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  @Test
+  void aNullParameterBoundAnswersNull() {
+    final Map<String, Object> nullParam = new HashMap<>();
+    nullParam.put("lo", null);
+    assertAnswer("MATCH (v:V) WHERE v.a > $lo RETURN min(v.a) AS c", "MATCH (v:V) WHERE v.a + 0 > $lo RETURN min(v.a + 0) AS c", nullParam, null);
+    assertThat(scalar("MATCH (v:V) WHERE v.a > $lo RETURN min(v.a) AS c", nullParam)).isNull();
   }
 
   @Test
