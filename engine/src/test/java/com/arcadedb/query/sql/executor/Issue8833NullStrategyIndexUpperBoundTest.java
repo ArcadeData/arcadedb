@@ -79,6 +79,7 @@ class Issue8833NullStrategyIndexUpperBoundTest extends TestHelper {
     assertThat(values("SELECT n FROM T WHERE n <= 0 ORDER BY n LIMIT 1")).containsExactly(0L);
     assertThat(values("SELECT n FROM T WHERE n < 3 ORDER BY n DESC")).containsExactly(2L, 1L, 0L);
     assertThat(values("SELECT min(n) AS n FROM T WHERE n < 5")).containsExactly(0L);
+    assertThat(values("SELECT n FROM T WHERE n < 0 ORDER BY n DESC")).isEmpty();
   }
 
   @Test
