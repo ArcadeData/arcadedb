@@ -3476,11 +3476,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       reportNonUnitVectorsOnDotProduct(pageVectors, finalActiveVectorIds.length);
 
-      // Publish the build state under the write lock. The ordinal map is deliberately NOT published here (issue
-      // #8862): it describes the graph being built, while graphIndex still points at the PREVIOUS graph for as long
-      // as the build runs, and a search walking that graph resolves its ordinals through this map. Replacing it
-      // early scored every node of the old graph against another record's vector (recall@10 0.14-0.31 for the whole
-      // rebuild). It is published with the new graph below, so the two always change together (issue #4581).
+      // The ordinal map is NOT published here (issue #8862): graphIndex is still the previous graph, and a search
+      // walking it would resolve its ordinals through the new map. It goes out with the new graph below.
       lock.writeLock().lock();
       try {
         this.graphState = GraphState.MUTABLE;
