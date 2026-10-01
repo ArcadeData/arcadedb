@@ -133,6 +133,20 @@ class OtlpMetricsPluginTest {
   }
 
   @Test
+  void userInfoIsRedactedForLogging() {
+    assertThat(OtlpMetricsPlugin.redactUserInfo("http://user:pw@collector:4317")).isEqualTo("http://collector:4317");
+    assertThat(OtlpMetricsPlugin.redactUserInfo("http://collector:4317")).isEqualTo("http://collector:4317");
+    assertThat(OtlpMetricsPlugin.redactUserInfo(null)).isNull();
+  }
+
+  @Test
+  void grpcPortEndpointIsStillNormalizedWithThePath() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT, "http://collector:4317");
+    assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).url()).isEqualTo("http://collector:4317/v1/metrics");
+  }
+
+  @Test
   void otlpConfigAppendsPathToUserConfiguredEndpointWithoutPath() {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT, "http://collector:4318");
@@ -150,6 +164,8 @@ class OtlpMetricsPluginTest {
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel_collector:4317")).isTrue();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("https://host:4317/v1/metrics")).isTrue();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://host:43170")).isFalse();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://user:4317@host:4318/v1/metrics")).isFalse();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://user:pw@host:4317")).isTrue();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("not a url")).isFalse();
   }
 
