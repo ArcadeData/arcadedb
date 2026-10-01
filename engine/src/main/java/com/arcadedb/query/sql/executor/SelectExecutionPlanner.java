@@ -1828,12 +1828,14 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct)
       maxResults = null;
 
-    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty())
       plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
-      if (info.projectionAfterOrderBy != null) {
-        plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
-      }
-    }
+
+    // The projection that drops the aliases generated for the ORDER BY keys runs even when an index already ordered the rows
+    // (#8811): the generated columns are in the rows either way
+    if (info.projectionAfterOrderBy != null && info.orderBy != null && info.orderBy.getItems() != null
+        && !info.orderBy.getItems().isEmpty())
+      plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
   }
 
   /**
@@ -3669,7 +3671,7 @@ public class SelectExecutionPlanner {
             break;//ASC/DESC interleaved, cannot be used with index.
           }
         }
-        if (!indexField.equals(orderItem.getAlias())) {
+        if (!indexField.equals(resolveOrderByProperty(orderItem, info))) {
           indexFound = false;
           break;
         }
@@ -3728,6 +3730,37 @@ public class SelectExecutionPlanner {
       }
     }
     return false;
+  }
+
+  /**
+   * The record property an ORDER BY item sorts on, or null when it sorts on anything else (an expression, a computed
+   * projection, a record attribute, a path). A name that is a projection alias is resolved through that projection item, so
+   * {@code SELECT a AS c ... ORDER BY c} and the generated alias {@link #addOrderByProjections} gives an ORDER BY key the
+   * projection does not hold both resolve to {@code a}, while {@code SELECT b AS a ... ORDER BY a} resolves to {@code b} and
+   * not to the property {@code a} the alias shadows (#8811).
+   */
+  private static String resolveOrderByProperty(final OrderByItem item, final QueryPlanningInfo info) {
+    final String name = item.getAlias();
+    if (name == null || item.expression != null || item.getModifier() != null)
+      return null;
+
+    final Projection projection = info.projection;
+    if (projection == null || projection.getItems() == null)
+      return name;
+
+    ProjectionItem match = null;
+    for (final ProjectionItem projectionItem : projection.getItems()) {
+      if (projectionItem.isAll() || !name.equals(projectionItem.getProjectionAliasAsString()))
+        continue;
+      if (match != null)
+        // two items under one name: which one the sort sees is not for the index to guess
+        return null;
+      match = projectionItem;
+    }
+    if (match == null)
+      return name;
+    final Expression expression = match.getExpression();
+    return expression != null && expression.isBaseIdentifier() ? expression.getDefaultAlias().getStringValue() : null;
   }
 
   /**

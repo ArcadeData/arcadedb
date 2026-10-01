@@ -564,11 +564,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         if (pageInSeries >= rootPageCount)
           pageInSeries = rootPageCount - 1;
       } else if (resultInRootPage.found) {
-        if (ascendingOrder && !unique) {
+        if (ascendingOrder && !(unique && convertedFromKeys.length == binaryKeyTypes.length)) {
           // Start at the first matching leaf plus its possible shared predecessor. Legacy files can contain a key that began
           // on its predecessor and then overflowed; the bounded writer can also place a complete leading RID chunk there
-          // before later chunks move to matching leaves. A non-matching predecessor advances to the next page below. Unique
-          // indexes are exempt: a unique key holds one value and cannot span leaves.
+          // before later chunks move to matching leaves. A non-matching predecessor advances to the next page below. A unique
+          // index is exempt only for a FULL key: that key holds one value and cannot span leaves. A PARTIAL key (a prefix of
+          // a composite key) matches a run of distinct keys, which starts on the predecessor leaf whenever the leaf boundary
+          // falls inside the run: the root holds each leaf's MINIMUM key, so the first root entry matching the prefix names
+          // the first leaf that STARTS inside the run, not the leaf the run starts on (#8806).
           final int firstMatchingRootEntry = resultInRootPage.valueBeginPositions != null
               ? resultInRootPage.keyIndex - resultInRootPage.valueBeginPositions.length + 1
               : resultInRootPage.keyIndex;

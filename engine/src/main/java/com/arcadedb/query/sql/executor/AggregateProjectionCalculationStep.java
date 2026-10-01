@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
@@ -401,26 +400,13 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
    * that cannot merge partials, or an expression the engine cannot evaluate on several threads.
    */
   private ParallelInput parallelInput(final CommandContext context) {
-    ExecutionStepInternal step = prev;
-    Projection preProjection = null;
-    if (step != null && step.getClass() == ProjectionCalculationStep.class) {
-      preProjection = ((ProjectionCalculationStep) step).projection;
-      step = ((ProjectionCalculationStep) step).prev;
-    }
-
-    final List<String> types = new ArrayList<>();
-    final List<WhereClause> conditions = new ArrayList<>();
-    while (step != null) {
-      if (step.getClass() == FilterByTypeStep.class)
-        types.add(((FilterByTypeStep) step).getTypeName());
-      else if (step.getClass() == FilterStep.class)
-        conditions.add(((FilterStep) step).getWhereClause());
-      else
-        break;
-      step = ((AbstractExecutionStep) step).prev;
-    }
-    if (!(step instanceof ParallelAggregationSource source))
+    final ParallelRowPipeline pipeline = ParallelRowPipeline.of(prev);
+    if (pipeline == null)
       return null;
+    final ParallelAggregationSource source = pipeline.source();
+    final List<WhereClause> conditions = pipeline.conditions();
+    final Projection preProjection = pipeline.projection();
+    final List<String> types = pipeline.types();
 
     for (final ProjectionItem proj : projection.getItems())
       if (proj.isAggregate(context) && !proj.getAggregationContext(context).canMerge())
@@ -525,18 +511,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
     /** Whether the row passes the filters between the source and the aggregation, as their steps would decide. */
     private boolean matches(final Result row, final CommandContext context) {
-      if (types.length > 0) {
-        final DocumentType type = row.isElement() ? row.getElement().get().getType() : null;
-        if (type == null)
-          return false;
-        for (final String name : types)
-          if (!type.isSubTypeOf(name))
-            return false;
-      }
-      for (final WhereClause condition : conditions)
-        if (!condition.matchesFilters(row, context))
-          return false;
-      return true;
+      return ParallelRowPipeline.matches(types, conditions, row, context);
     }
 
     /** Folds one partition of another worker's groups into this one: the aggregations merge, the earliest first row wins. */
