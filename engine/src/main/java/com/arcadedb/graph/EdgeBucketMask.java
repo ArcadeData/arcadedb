@@ -45,10 +45,13 @@ public final class EdgeBucketMask {
    * type are skipped. Returns {@code null} when nothing is left to match.
    */
   public static EdgeBucketMask of(final DatabaseInternal database, final String[] edgeTypes) {
+    // ONE SCHEMA LOOKUP PER TYPE: THE FIRST PASS KEEPS THE (CACHED) BUCKET LISTS THE SECOND ONE FILLS THE MASK FROM
+    final List<?>[] perType = new List<?>[edgeTypes.length];
     int min = Integer.MAX_VALUE;
     int max = -1;
-    for (final String e : edgeTypes) {
-      final List<Integer> bucketIds = bucketIdsOf(database, e);
+    for (int t = 0; t < edgeTypes.length; t++) {
+      final List<Integer> bucketIds = bucketIdsOf(database, edgeTypes[t]);
+      perType[t] = bucketIds;
       if (bucketIds != null)
         for (final Integer bucketId : bucketIds) {
           if (bucketId < min)
@@ -62,16 +65,18 @@ public final class EdgeBucketMask {
       return null;
 
     final boolean[] mask = new boolean[max - min + 1];
-    for (final String e : edgeTypes) {
-      final List<Integer> bucketIds = bucketIdsOf(database, e);
+    for (final List<?> bucketIds : perType)
       if (bucketIds != null)
-        for (final Integer bucketId : bucketIds)
-          mask[bucketId - min] = true;
-    }
+        for (final Object bucketId : bucketIds)
+          mask[(Integer) bucketId - min] = true;
     return new EdgeBucketMask(min, mask);
   }
 
-  /** True if an entry whose edge lives in this bucket belongs to one of the requested types. */
+  /**
+   * True if an entry whose edge lives in this bucket belongs to one of the requested types. Takes a {@code long}
+   * because that is what the segment's VLQ decoding returns: narrowing it to {@code int} before the range check would
+   * let a corrupted, out-of-range number wrap into a valid bucket id.
+   */
   public boolean matches(final long bucketId) {
     final long index = bucketId - firstBucketId;
     return index >= 0 && index < mask.length && mask[(int) index];

@@ -536,6 +536,14 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
+  public void skipRID(final AtomicInteger currentPosition) {
+    buffer.position(currentPosition.get());
+    buffer.getNumber();
+    buffer.getNumber();
+    currentPosition.set(buffer.position());
+  }
+
+  @Override
   public int getRecordSize() {
     return buffer.size();
   }

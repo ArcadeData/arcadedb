@@ -105,6 +105,12 @@ public interface EdgeSegment extends Record {
    */
   int nextEntryInBuckets(int position, EdgeBucketMask bucketMask);
 
+  /**
+   * Advances {@code currentPosition} past one RID without decoding it, the allocation-free twin of
+   * {@link #getRID(AtomicInteger)} for a caller that only needs to step over it.
+   */
+  void skipRID(AtomicInteger currentPosition);
+
   int getRecordSize();
 
   long count(Set<Integer> fileIds);

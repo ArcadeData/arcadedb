@@ -55,7 +55,7 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
 
       if (position < used) {
         currentPosition.set(position);
-        currentContainer.getRID(currentPosition); // SKIP THE EDGE: ITS BUCKET ALREADY MATCHED
+        currentContainer.skipRID(currentPosition); // THE EDGE: ITS BUCKET ALREADY MATCHED, NOTHING ELSE OF IT IS NEEDED
         next = currentContainer.getRID(currentPosition);
         return true;
       } else {
