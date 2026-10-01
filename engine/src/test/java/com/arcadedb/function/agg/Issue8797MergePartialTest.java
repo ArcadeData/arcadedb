@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.agg;
 
+import com.arcadedb.function.StatelessFunction;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8797MergePartialTest {
-  private static void feed(final com.arcadedb.function.StatelessFunction function, final Object... values) {
+  private static void feed(final StatelessFunction function, final Object... values) {
     for (final Object value : values)
       function.execute(new Object[] { value }, null);
   }
