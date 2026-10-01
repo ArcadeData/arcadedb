@@ -91,6 +91,17 @@ class Issue8525GrpcAutoCommitUnavailableTest {
   }
 
   @Test
+  void aSelfReferencingCauseChainEnds() {
+    final Throwable selfCaused = new Throwable("self") {
+      @Override
+      public synchronized Throwable getCause() {
+        return this;
+      }
+    };
+    assertThat(GrpcClientErrorMapper.provablyNeverSent(Status.UNAVAILABLE.withCause(selfCaused).asRuntimeException())).isFalse();
+  }
+
+  @Test
   void otherStatusesOnAnAutoCommittedWriteKeepTheirMapping() {
     assertThat(GrpcClientErrorMapper.toAutoCommitWriteException(Status.ABORTED.asRuntimeException(), "UpdateRecord"))
         .isInstanceOf(ConcurrentModificationException.class);
@@ -106,13 +117,19 @@ class Issue8525GrpcAutoCommitUnavailableTest {
     final int port = StaticBaseServerTest.allocateFreePorts(1)[0];
     final ManagedChannel channel = NettyChannelBuilder.forAddress("localhost", port).usePlaintext().build();
     try {
-      final StatusRuntimeException e = catchThrowableOfType(StatusRuntimeException.class,
-          () -> ArcadeDbServiceGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS)
-              .executeCommand(ExecuteCommandRequest.newBuilder().setDatabase("none").setCommand("SELECT 1").build()));
+      // The second call runs on a channel already in TRANSIENT_FAILURE: gRPC fails it fast from the last connection
+      // error, and it must still carry the connect cause, or a client hammering a down server would flip from
+      // "retryable" to "unknown outcome" after its first attempt
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        final StatusRuntimeException e = catchThrowableOfType(StatusRuntimeException.class,
+            () -> ArcadeDbServiceGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS)
+                .executeCommand(ExecuteCommandRequest.newBuilder().setDatabase("none").setCommand("SELECT 1").build()));
 
-      assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.UNAVAILABLE);
-      assertThat(GrpcClientErrorMapper.provablyNeverSent(e)).isTrue();
-      assertThat(GrpcClientErrorMapper.toAutoCommitWriteException(e, "ExecuteCommand")).isInstanceOf(NeedRetryException.class);
+        assertThat(e.getStatus().getCode()).as("attempt %d", attempt).isEqualTo(Status.Code.UNAVAILABLE);
+        assertThat(GrpcClientErrorMapper.provablyNeverSent(e)).as("attempt %d", attempt).isTrue();
+        assertThat(GrpcClientErrorMapper.toAutoCommitWriteException(e, "ExecuteCommand")).as("attempt %d", attempt)
+            .isInstanceOf(NeedRetryException.class);
+      }
     } finally {
       channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
     }

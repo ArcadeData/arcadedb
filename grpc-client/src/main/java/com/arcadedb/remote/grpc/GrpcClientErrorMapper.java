@@ -153,13 +153,15 @@ final class GrpcClientErrorMapper {
    * other way applies a write twice. The walk is depth-bounded so a cyclic cause chain cannot hang it.
    */
   static boolean provablyNeverSent(final Throwable e) {
-    int depth = 0;
-    for (Throwable t = e; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
+    // The depth cap also ends a self-referencing or cyclic chain, so no identity check is needed
+    Throwable t = e;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++) {
       if (t instanceof ConnectException || t instanceof UnknownHostException)
         return true;
+      t = t.getCause();
+    }
     return false;
   }
-
 
   private static String describe(final Throwable e) {
     final Status status = Status.fromThrowable(e);
