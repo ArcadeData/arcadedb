@@ -151,7 +151,24 @@ public class SupportPortalClient {
   }
 
   public String addComment(final long number, final String body) {
-    return call("POST", "/issues/" + number + "/comments", new JSONObject().put("body", body).toString());
+    return addComment(number, body, List.of());
+  }
+
+  /** A reply that shows screenshots already attached to the issue ({@code files}: their names as the portal answered them). */
+  public String addComment(final long number, final String body, final List<String> files) {
+    final JSONObject json = new JSONObject().put("body", body);
+    if (!files.isEmpty())
+      json.put("files", new com.arcadedb.serializer.json.JSONArray(files));
+    return call("POST", "/issues/" + number + "/comments", json.toString());
+  }
+
+  /** Attaches screenshots to an existing issue. The answer lists what was stored in {@code added}. */
+  public String addScreenshots(final long number, final List<SupportScreenshots.Shot> shots) throws IOException {
+    final List<Part> parts = new ArrayList<>();
+    addShots(parts, shots);
+    if (parts.isEmpty())
+      throw new IllegalArgumentException("Nothing to send");
+    return callMultipart("/issues/" + number + "/attachments", parts);
   }
 
   /** Answers one support request: {@code {outcome, result? | text?, reason?, durationMs?}}; the portal makes it one client comment. */
@@ -174,20 +191,39 @@ public class SupportPortalClient {
    */
   public String createIssue(final JSONObject metadata, final Path logs, final Path diagnostics, final Path summary,
       final Path threads) throws IOException {
+    return createIssue(metadata, logs, diagnostics, summary, threads, List.of());
+  }
+
+  /** As above, with the screenshots the user added ({@code screenshot} parts). */
+  public String createIssue(final JSONObject metadata, final Path logs, final Path diagnostics, final Path summary,
+      final Path threads, final List<SupportScreenshots.Shot> shots) throws IOException {
     final List<Part> parts = new ArrayList<>();
     parts.add(Part.json("metadata", metadata.toString()));
     addFiles(parts, logs, diagnostics, summary, threads);
+    addShots(parts, shots);
     return callMultipart("/issues", parts);
   }
 
   /** Adds files to an existing issue. */
   public String addAttachments(final long number, final Path logs, final Path diagnostics, final Path summary,
       final Path threads) throws IOException {
+    return addAttachments(number, logs, diagnostics, summary, threads, List.of());
+  }
+
+  /** Adds files and screenshots to an existing issue. */
+  public String addAttachments(final long number, final Path logs, final Path diagnostics, final Path summary,
+      final Path threads, final List<SupportScreenshots.Shot> shots) throws IOException {
     final List<Part> parts = new ArrayList<>();
     addFiles(parts, logs, diagnostics, summary, threads);
+    addShots(parts, shots);
     if (parts.isEmpty())
       throw new IllegalArgumentException("Nothing to send");
     return callMultipart("/issues/" + number + "/attachments", parts);
+  }
+
+  private static void addShots(final List<Part> parts, final List<SupportScreenshots.Shot> shots) {
+    for (final SupportScreenshots.Shot shot : shots)
+      parts.add(new Part("screenshot", shot.filename(), shot.mediaType(), shot.bytes(), null));
   }
 
   private static void addFiles(final List<Part> parts, final Path logs, final Path diagnostics, final Path summary,

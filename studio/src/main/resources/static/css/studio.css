@@ -4306,18 +4306,40 @@ body.col-resizing * {
 }
 
 .support-timeline-entry {
-  border-left: 3px solid var(--border-ddd);
-  padding: 4px 0 4px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-ddd);
+  border-radius: 8px;
+  padding: 10px 14px;
   margin-bottom: 10px;
 }
 
-.support-timeline-entry.client {
-  border-left-color: var(--color-brand);
+/* ArcadeData's replies stand out with the brand color, like in the customer portal; the user's own messages stay neutral */
+.support-timeline-entry:not(.client) {
+  border-color: var(--color-brand);
 }
 
 .support-timeline-entry .support-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
   font-size: 0.78rem;
   color: var(--text-muted);
+}
+
+.support-timeline-entry .support-meta b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.support-timeline-entry .support-role {
+  background: var(--color-brand-light);
+  color: var(--color-brand);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .support-timeline-entry .support-body {
@@ -4657,4 +4679,44 @@ body.col-resizing * {
 
 .support-rq-table td.sp-rq-cell:hover {
   background-color: var(--table-hover);
+}
+
+/* ---- Support page: screenshots to send ---- */
+
+.support-shots-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.support-shot {
+  position: relative;
+  display: inline-block;
+  border: 1px solid var(--border-ddd);
+  border-radius: 4px;
+  background: var(--bg-input);
+  line-height: 0;
+}
+
+.support-shot img {
+  max-height: 110px;
+  max-width: 200px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.support-shot .sp-shot-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-ddd);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
 }

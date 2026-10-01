@@ -45,7 +45,7 @@ import java.util.logging.Level;
  */
 public class SupportHandler extends AbstractServerHttpHandler {
   public enum Action {
-    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
+    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, STAGE_SCREENSHOT, DISCARD_SCREENSHOT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
   }
 
   private final Action action;
@@ -79,7 +79,13 @@ public class SupportHandler extends AbstractServerHttpHandler {
         case CREATE_ISSUE -> new ExecutionResponse(201, service.createIssue(required(payload)));
         case LIST_ISSUES -> new ExecutionResponse(200, service.listIssues(getQueryParameter(exchange, "status", "open")));
         case GET_ISSUE -> new ExecutionResponse(200, service.getIssue(number(exchange)));
-        case COMMENT -> new ExecutionResponse(201, service.addComment(number(exchange), required(payload).getString("body", "")));
+        case COMMENT -> new ExecutionResponse(201, service.addComment(number(exchange), required(payload).getString("body", ""),
+            SupportService.screenshotIdsOf(payload)));
+        case STAGE_SCREENSHOT -> json(201, service.stageScreenshot(required(payload)));
+        case DISCARD_SCREENSHOT -> {
+          service.discardScreenshot(getQueryParameter(exchange, "id", ""));
+          yield new ExecutionResponse(204, "");
+        }
         case ANSWER_REQUEST -> new ExecutionResponse(201,
             service.answerRequest(number(exchange), getQueryParameter(exchange, "requestId", ""), required(payload)));
         case ANSWER_REQUESTS -> new ExecutionResponse(201, service.answerRequests(number(exchange), required(payload)));
@@ -90,7 +96,8 @@ public class SupportHandler extends AbstractServerHttpHandler {
           service.setOpen(number(exchange), body.getBoolean("open"));
           yield new ExecutionResponse(204, "");
         }
-        case ATTACH -> new ExecutionResponse(200, service.addAttachments(number(exchange), required(payload).getString("previewId", "")));
+        case ATTACH -> new ExecutionResponse(200, service.addAttachments(number(exchange), required(payload).getString("previewId", ""),
+            SupportService.screenshotIdsOf(payload)));
         case BUNDLE -> download(exchange, service, required(payload).getString("previewId", ""));
       };
     } catch (final SupportException e) {

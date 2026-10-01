@@ -150,8 +150,18 @@ final class MockPortal implements AutoCloseable {
       return new Response(201, "{\"side\":\"client\",\"authorLabel\":\"Studio: prod\",\"body\":\"**Total rows**\"}");
     if (path.matches("/api/v1/support/issues/\\d+/responses") && r.method().equals("POST"))
       return new Response(201, "{\"side\":\"client\",\"authorLabel\":\"Studio: prod\",\"body\":\"2 requests answered.\"}");
-    if (path.matches("/api/v1/support/issues/\\d+/attachments") && r.method().equals("POST"))
-      return new Response(200, "{\"attachments\":[{\"name\":\"logs.zip\"}]}");
+    if (path.matches("/api/v1/support/issues/\\d+/attachments") && r.method().equals("POST")) {
+      // what the platform answers for screenshots: the logical names this call stored
+      final String text = new String(r.body(), StandardCharsets.ISO_8859_1);
+      final StringBuilder added = new StringBuilder();
+      int from = 0;
+      int n = 0;
+      while ((from = text.indexOf("name=\"screenshot\"", from)) >= 0) {
+        added.append(n++ == 0 ? "" : ",").append("\"screenshot-0123abc").append(n).append(".png\"");
+        from++;
+      }
+      return new Response(200, "{\"attachments\":[{\"name\":\"logs.zip\"}],\"added\":[" + added + "]}");
+    }
     return new Response(404, error("not_found", "No such route"));
   }
 

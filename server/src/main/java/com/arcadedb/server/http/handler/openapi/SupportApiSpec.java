@@ -49,6 +49,8 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues", createIssuesPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}", createIssuePath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/comments", createCommentsPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/screenshots", createStageScreenshotPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/screenshots/{id}", createDiscardScreenshotPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/requests/{requestId}/response", createAnswerRequestPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/responses", createAnswerRequestsPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/attachments", createAttachmentsPath());
@@ -69,6 +71,7 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("SupportBundleRequest", createBundleRequestSchema());
     openAPI.getComponents().addSchemas("SupportCreateIssueRequest", createIssueRequestSchema());
     openAPI.getComponents().addSchemas("SupportCommentRequest", createCommentRequestSchema());
+    openAPI.getComponents().addSchemas("SupportScreenshotRequest", createScreenshotSchema());
     openAPI.getComponents().addSchemas("SupportAnswerRequest", createAnswerSchema(false));
     openAPI.getComponents().addSchemas("SupportAnswersRequest", createAnswersSchema());
     openAPI.getComponents().addSchemas("SupportSetOpenRequest", createSetOpenRequestSchema());
@@ -194,6 +197,37 @@ public class SupportApiSpec implements OpenApiContributor {
     post.setResponses(portalResponses("201", SpecBuilders.jsonResponse("The timeline entry, as the portal answers", null)));
     final PathItem item = new PathItem();
     item.setPost(post);
+    return item;
+  }
+
+  private PathItem createStageScreenshotPath() {
+    final Operation post = SpecBuilders.operation("stageSupportScreenshot", TAG, "Hold a screenshot until it is sent",
+        "A user pastes, drops or picks a picture of what they see (a query result, an error). It is held in memory for 15 minutes, "
+            + "checked by its first bytes (PNG, JPEG, GIF or WebP; never SVG), at most 5 MB, and answered by id so the issue, the reply "
+            + "or the files can refer to it in `screenshots`. Nothing is sent to ArcadeData until then. Restricted to the root user."
+            + ERRORS);
+    post.setRequestBody(SpecBuilders.jsonBody("The picture", "SupportScreenshotRequest", true));
+    final ApiResponses responses = new ApiResponses();
+    responses.addApiResponse("201", SpecBuilders.jsonResponse("{id, type, size}", null));
+    responses.addApiResponse("400", SpecBuilders.errorResponse("Not a PNG, JPEG, GIF or WebP image, or too many are waiting"));
+    responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden: only the root user"));
+    responses.addApiResponse("413", SpecBuilders.errorResponse("The picture is larger than 5 MB"));
+    post.setResponses(responses);
+    final PathItem item = new PathItem();
+    item.setPost(post);
+    return item;
+  }
+
+  private PathItem createDiscardScreenshotPath() {
+    final Operation delete = SpecBuilders.operation("discardSupportScreenshot", TAG, "Remove a held screenshot",
+        "The user removed it before sending. Unknown ids are not an error. Restricted to the root user.");
+    delete.addParametersItem(SpecBuilders.pathParam("id", "Screenshot id"));
+    final ApiResponses responses = new ApiResponses();
+    responses.addApiResponse("204", new ApiResponse().description("Removed"));
+    responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden: only the root user"));
+    delete.setResponses(responses);
+    final PathItem item = new PathItem();
+    item.setDelete(delete);
     return item;
   }
 
@@ -324,7 +358,15 @@ public class SupportApiSpec implements OpenApiContributor {
   private Schema<?> createCommentRequestSchema() {
     final Schema<Object> schema = SpecBuilders.object("A reply");
     schema.addProperty("body", SpecBuilders.string("At most 20000 characters"));
+    schema.addProperty("screenshots", SpecBuilders.object("Ids of held screenshots (at most 5) the reply shows: they are attached to the issue first"));
     schema.setRequired(List.of("body"));
+    return schema;
+  }
+
+  private Schema<?> createScreenshotSchema() {
+    final Schema<Object> schema = SpecBuilders.object("A screenshot");
+    schema.addProperty("data", SpecBuilders.string("The picture, base64 encoded (at most 5 MB decoded)"));
+    schema.setRequired(List.of("data"));
     return schema;
   }
 
