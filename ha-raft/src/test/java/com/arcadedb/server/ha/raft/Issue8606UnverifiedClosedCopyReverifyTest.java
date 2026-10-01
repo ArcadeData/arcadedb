@@ -204,7 +204,12 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   void aRoundThatLeavesTheCopyMarkedBacksOff() throws Exception {
     reverifyRound();
     assertThat(probes.get()).isEqualTo(1);
+    assertThat(failures()).isEqualTo(1);
 
+    // Pinned rather than left to the clock: with the round just claimed and the ladder at its top, the window is
+    // UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS long, so no JVM stall between the two calls can open it (#6260).
+    setFailures(16);
+    lastReverify().set(System.currentTimeMillis());
     sm.reverifyUnverifiedClosedCopies();
     sm.awaitLifecycleTasksForTesting(60_000);
 
@@ -215,6 +220,22 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
         .isEqualTo(2 * ArcadeStateMachine.UNVERIFIED_COPY_REVERIFY_INTERVAL_MS);
     assertThat(ArcadeStateMachine.unverifiedClosedCopyReverifyIntervalMs(Integer.MAX_VALUE))
         .isEqualTo(ArcadeStateMachine.UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS);
+  }
+
+  /**
+   * The leader closes the database between its answer and the download: the install gets the 404, the copy keeps its
+   * mark and stays refused, and the round counts as one that left it in place.
+   */
+  @Test
+  void aLeaderThatClosesTheDatabaseAfterAnsweringLeavesTheCopyMarked() throws Exception {
+    leaderHolds.add(DB_NAME); // says it serves it, but has no snapshot route for it: the download is answered 404
+
+    reverifyRound();
+
+    assertThat(probes.get()).isEqualTo(1);
+    assertThat(Files.exists(marker())).isTrue();
+    assertRefusedOnThisFollower();
+    assertThat(failures()).isEqualTo(1);
   }
 
   /** A new leader may hold what the previous one did not: it is asked at the next tick, whatever the backoff. */
@@ -385,17 +406,29 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
 
   /** Runs one round now, whatever the throttle says, and waits for it. */
   private void reverifyRound() throws Exception {
-    final Field f = ArcadeStateMachine.class.getDeclaredField("lastUnverifiedCopyReverifyMs");
-    f.setAccessible(true);
-    ((AtomicLong) f.get(sm)).set(0L);
+    lastReverify().set(0L);
     sm.reverifyUnverifiedClosedCopies();
     sm.awaitLifecycleTasksForTesting(60_000);
   }
 
-  private int failures() throws Exception {
+  private AtomicLong lastReverify() throws Exception {
+    final Field f = ArcadeStateMachine.class.getDeclaredField("lastUnverifiedCopyReverifyMs");
+    f.setAccessible(true);
+    return (AtomicLong) f.get(sm);
+  }
+
+  private AtomicInteger failureCounter() throws Exception {
     final Field f = ArcadeStateMachine.class.getDeclaredField("unverifiedCopyReverifyFailures");
     f.setAccessible(true);
-    return ((AtomicInteger) f.get(sm)).get();
+    return (AtomicInteger) f.get(sm);
+  }
+
+  private int failures() throws Exception {
+    return failureCounter().get();
+  }
+
+  private void setFailures(final int value) throws Exception {
+    failureCounter().set(value);
   }
 
   private void assertRefusedOnThisFollower() {

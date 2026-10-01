@@ -5646,9 +5646,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Asks the leader whether it would serve {@code dbName}'s snapshot ({@link UnverifiedClosedCopyCheck#SERVES}), through the {@code copyOf} form of the bootstrap-state
-   * RPC (issues #8605, #8606), answered from its registry alone: nothing is opened or hashed there. Bounded by
-   * {@link UnverifiedClosedCopyCheck#ROUND_TIMEOUT_MS}, and refused unless the leader itself answered.
+   * Asks the leader whether it would serve {@code dbName}'s snapshot ({@link UnverifiedClosedCopyCheck#SERVES}),
+   * through the {@code copyOf} form of the bootstrap-state RPC (issues #8605, #8606), answered from its registry alone:
+   * nothing is opened or hashed there. Bounded by {@link UnverifiedClosedCopyCheck#ROUND_TIMEOUT_MS}, and refused unless
+   * the leader itself answered.
    */
   private boolean leaderServesDatabase(final ArcadeDBServer localServer, final RaftHAServer raftHA,
       final RaftPeerId leaderId, final PeerDialAddress source, final String dbName, final String clusterToken)

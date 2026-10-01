@@ -143,13 +143,13 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       } catch (final IllegalArgumentException e) {
         return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
       }
+      final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
       final JSONObject response = new JSONObject();
       response.put("peerId", raftHAServer.getLocalPeerId().toString());
       response.put(UnverifiedClosedCopyCheck.COPY,
-          UnverifiedClosedCopyCheck.localCopyState(server, raftHAServer.getStateMachine(), copyOf).toJSON(copyOf));
+          UnverifiedClosedCopyCheck.localCopyState(server, stateMachine, copyOf).toJSON(copyOf));
       // Whether this node's snapshot endpoint would serve it - registered, and not quarantined (#8468): what a follower
       // re-verifying a copy asks (issue #8606).
-      final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
       response.put(UnverifiedClosedCopyCheck.SERVES,
           server.existsDatabase(copyOf) && (stateMachine == null || stateMachine.quarantineCause(copyOf) == null));
       return new ExecutionResponse(200, response.toString());
