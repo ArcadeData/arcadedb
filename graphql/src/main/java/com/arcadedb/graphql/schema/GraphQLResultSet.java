@@ -37,7 +37,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Predicate;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -47,6 +54,12 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphQLResultSet implements ResultSet {
+  /**
+   * The meta-field every object type answers (spec 4.4.1, "Type Name Introspection"). Names starting with {@code __} are
+   * reserved for introspection, so it is never read from a record property of the same name. See issue #8745.
+   */
+  private static final String TYPENAME_FIELD = "__typename";
+
   private final GraphQLSchema        schema;
   private final ResultSet            resultSet;
   private final List<Selection>      projections;
@@ -65,16 +78,85 @@ public class GraphQLResultSet implements ResultSet {
   private final GraphQLFragments fragments;
 
   /**
-   * The projections built for a selection list, by identity, reused for every record that list is resolved against.
-   * Only a list whose projections cannot differ from one record to the next is cached: one that no fragment type
-   * condition was evaluated for, reached through a chain of lists that were all cached too. A list merged for one
-   * record only (see {@link #mapBySelections}) is never a key, so the cache is bounded by the size of the document, not
-   * by the number of records.
+   * The projections built for a selection list, by identity, reused for every record that list is resolved against
+   * (issue #8623). What they can depend on is the outcome of the fragment type conditions evaluated while the list was
+   * expanded (the {@code @skip} and {@code @include} conditions read the operation's variables, the same for every
+   * record), and that outcome depends only on the schema type the list is written against and on the database type of
+   * the record. So the projections are cached once for all records when every condition evaluated was decided by the
+   * schema type alone, and once per database type otherwise: a document written with fragments, the default output of
+   * Apollo, Relay and codegen clients, no longer expands a level again for every record.
+   * <p>
+   * Only a list reached through a chain of cached lists is a key: a list merged for one record only (see
+   * {@link #mapBySelections}) never is, so the cache is bounded by the size of the document times the number of
+   * database types, not by the number of records.
    */
   private final IdentityHashMap<List<Selection>, CachedProjections> projectionCache = new IdentityHashMap<>();
 
-  private record CachedProjections(ObjectTypeDefinition parentType, List<Projection> projections) {
+  /**
+   * The projections of one selection list written against {@code parentType}: {@code shared} when they are the same for
+   * every record, otherwise one entry per database type of the records met, {@code null} standing for a record that has
+   * no database type.
+   * <p>
+   * The same list can be resolved against more than one schema type - a named fragment spread under fields of different
+   * types shares its selection lists - so the entries for the other types are chained through {@code next}. Replacing
+   * the entry instead made the two types evict each other on every record, and every rebuild minted new merged lists that
+   * the level below then cached as new keys.
+   */
+  private static final class CachedProjections {
+    private final ObjectTypeDefinition                            parentType;
+    private final CachedProjections                               next;
+    private       List<Projection>                                shared;
+    private       IdentityHashMap<DocumentType, List<Projection>> byRecordType;
+
+    private CachedProjections(final ObjectTypeDefinition parentType, final CachedProjections next) {
+      this.parentType = parentType;
+      this.next = next;
+    }
+
+    private CachedProjections forParentType(final ObjectTypeDefinition type) {
+      for (CachedProjections entry = this; entry != null; entry = entry.next)
+        if (entry.parentType == type)
+          return entry;
+      return null;
+    }
+
+    private List<Projection> get(final Result record) {
+      if (shared != null)
+        return shared;
+      return byRecordType != null ? byRecordType.get(recordTypeOf(record)) : null;
+    }
+
+    private void put(final Result record, final boolean dependsOnRecord, final List<Projection> projections) {
+      if (!dependsOnRecord) {
+        shared = projections;
+        byRecordType = null;
+        return;
+      }
+      if (byRecordType == null)
+        byRecordType = new IdentityHashMap<>(4);
+      byRecordType.put(recordTypeOf(record), projections);
+    }
   }
+
+  /**
+   * The type conditions of the level being expanded, evaluated against its record. One instance serves every level:
+   * the expansion of a level completes, and {@link #dependsOnRecord} is read, before the level below is expanded.
+   */
+  private final TypeConditions typeConditions = new TypeConditions();
+
+  /**
+   * The {@code __typename} of a record by the schema type it is resolved against, then by its database type, see
+   * {@link #typeNameOf}: it depends only on the two types and on the SDL, fixed for the life of the result set, so a
+   * client that selects {@code __typename} everywhere (Apollo does) walks the type hierarchy once per pair of types
+   * rather than once per record.
+   */
+  private final IdentityHashMap<ObjectTypeDefinition, IdentityHashMap<DocumentType, String>> typeNames =
+      new IdentityHashMap<>(4);
+
+  /**
+   * How many times the projections of a level were built rather than taken from {@link #projectionCache}, for tests.
+   */
+  private long projectionBuilds;
 
   /**
    * The types currently being expanded from the schema by {@link #mapByReturnType}, innermost last. It guards the
@@ -95,9 +177,11 @@ public class GraphQLResultSet implements ResultSet {
    * @param type        the object type this field returns, when the schema declares one
    * @param set         the sub-selections written in the query document, if any
    * @param cacheable   whether {@code set} is the same list for every record, so its projections can be cached
+   * @param typeName    whether the field is the {@code __typename} meta-field, resolved from the type of the object
+   *                    rather than from a property: see issue #8745
    */
   private record Projection(String name, String fieldName, AbstractField field, FieldDefinition schemaField,
-                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable) {
+                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable, boolean typeName) {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
@@ -138,9 +222,10 @@ public class GraphQLResultSet implements ResultSet {
           continue;
 
         projections.add(
-            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false));
+            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false,
+                false));
       }
-      return mapProjections(current, projections);
+      return mapProjections(current, projections, type);
     } finally {
       expansionPath.removeLast();
     }
@@ -152,21 +237,27 @@ public class GraphQLResultSet implements ResultSet {
    */
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections,
       final ObjectTypeDefinition parentType, final boolean cacheable) {
+    CachedProjections cached = null;
     if (cacheable) {
-      final CachedProjections cached = projectionCache.get(definedProjections);
-      if (cached != null && cached.parentType() == parentType)
-        return mapProjections(current, cached.projections());
+      final CachedProjections head = projectionCache.get(definedProjections);
+      cached = head != null ? head.forParentType(parentType) : null;
+      if (cached == null) {
+        cached = new CachedProjections(parentType, head);
+        projectionCache.put(definedProjections, cached);
+      } else {
+        final List<Projection> projections = cached.get(current);
+        if (projections != null)
+          return mapProjections(current, projections, parentType);
+      }
     }
 
     // A FRAGMENT SPREAD OR AN INLINE FRAGMENT HAS NO FIELD NAME OF ITS OWN: IT IS REPLACED BY THE FIELDS IT SELECTS, IF
     // ITS TYPE CONDITION APPLIES TO THIS RECORD. LEFT IN, IT DROPPED THOSE FIELDS AND TURNED INTO A NULL RESPONSE KEY
     // THAT NO SERIALIZER CAN RENDER. SEE ISSUE #7770
-    final boolean[] typeConditionEvaluated = { false };
-    final List<Selection> selections = fragments.expand(definedProjections, typeCondition -> {
-      typeConditionEvaluated[0] = true;
-      return typeConditionApplies(typeCondition, current, parentType);
-    });
-    final boolean cache = cacheable && !typeConditionEvaluated[0];
+    typeConditions.reset(current, parentType);
+    final List<Selection> selections = fragments.expand(definedProjections, typeConditions);
+    final boolean dependsOnRecord = typeConditions.dependsOnRecord;
+    ++projectionBuilds;
 
     final List<Projection> projections = new ArrayList<>(selections.size());
     for (final Selection selection : selections) {
@@ -192,7 +283,7 @@ public class GraphQLResultSet implements ResultSet {
           merged.addAll(first.set());
           merged.addAll(set.getSelections());
           projections.set(existing, new Projection(first.name(), first.fieldName(), first.field(), first.schemaField(),
-              first.type(), merged, cache));
+              first.type(), merged, cacheable, first.typeName()));
         }
         continue;
       }
@@ -200,19 +291,57 @@ public class GraphQLResultSet implements ResultSet {
       final FieldDefinition schemaField = parentType != null ? parentType.getFieldDefinitionByName(fieldName) : null;
       final ObjectTypeDefinition subType = schemaField != null ? schema.getTypeFromField(schemaField) : null;
 
+      // THE PROJECTIONS OF A CACHED LEVEL ARE BUILT ONCE PER CACHE ENTRY, SO THE LISTS THEY HOLD, A MERGED ONE INCLUDED,
+      // ARE THE SAME OBJECTS FOR EVERY RECORD THAT ENTRY SERVES: THE LEVEL BELOW IS CACHED BY THEIR IDENTITY TOO
       projections.add(new Projection(responseKey, fieldName, field, schemaField, subType,
-          set != null ? set.getSelections() : null, cache));
+          set != null ? set.getSelections() : null, cacheable, TYPENAME_FIELD.equals(fieldName)));
     }
 
-    if (cache)
-      projectionCache.put(definedProjections, new CachedProjections(parentType, projections));
+    if (cached != null)
+      cached.put(current, dependsOnRecord, projections);
 
-    return mapProjections(current, projections);
+    return mapProjections(current, projections, parentType);
   }
 
   /**
-   * Whether a fragment written {@code on typeCondition} applies to {@code current}: it does when it names the schema type
-   * the selections are written against, or the database type of the record or one of its super types.
+   * The fragment type conditions of one level, against one record. Records whether any of them had to look at the
+   * record, rather than being decided by the schema type the level is written against: only then can the outcome differ
+   * for a record of another database type.
+   */
+  private final class TypeConditions implements Predicate<String> {
+    private Result               current;
+    private ObjectTypeDefinition parentType;
+    private boolean              dependsOnRecord;
+
+    private void reset(final Result current, final ObjectTypeDefinition parentType) {
+      this.current = current;
+      this.parentType = parentType;
+      this.dependsOnRecord = false;
+    }
+
+    @Override
+    public boolean test(final String typeCondition) {
+      if (parentType != null && typeCondition.equals(parentType.getName()))
+        return true;
+      dependsOnRecord = true;
+      return typeConditionApplies(typeCondition, recordTypeOf(current), parentType);
+    }
+  }
+
+  /** The database type of the record a result wraps, or null when it wraps none (a map, a projection) or it has none. */
+  private static DocumentType recordTypeOf(final Result result) {
+    final Document element = result.isElement() ? result.toElement() : null;
+    return element != null ? element.getType() : null;
+  }
+
+  /** @see #projectionBuilds */
+  long getProjectionBuilds() {
+    return projectionBuilds;
+  }
+
+  /**
+   * Whether a fragment written {@code on typeCondition} applies to a record of {@code recordType}: it does when it names
+   * the schema type the selections are written against, or the database type of the record or one of its super types.
    * <p>
    * Otherwise it is refuted only when the condition names a concrete type this module can reason about - an object type
    * of the SDL or a type of the database - and the type of what is being resolved is known. A condition on anything
@@ -220,20 +349,16 @@ public class GraphQLResultSet implements ResultSet {
    * membership of, is applied rather than silently dropping the fields it selects. So is any condition when neither the
    * schema type nor the record type is known.
    */
-  private boolean typeConditionApplies(final String typeCondition, final Result current,
+  private boolean typeConditionApplies(final String typeCondition, final DocumentType recordType,
       final ObjectTypeDefinition parentType) {
     boolean typeKnown = parentType != null;
     if (typeKnown && typeCondition.equals(parentType.getName()))
       return true;
 
-    if (current.getElement().isPresent()) {
-      final Document element = current.getElement().get();
-      final DocumentType recordType = element.getType();
-      if (recordType != null) {
-        if (recordType.instanceOf(typeCondition))
-          return true;
-        typeKnown = true;
-      }
+    if (recordType != null) {
+      if (recordType.instanceOf(typeCondition))
+        return true;
+      typeKnown = true;
     }
 
     if (!typeKnown)
@@ -318,7 +443,51 @@ public class GraphQLResultSet implements ResultSet {
     return projectionValue;
   }
 
-  private GraphQLResult mapProjections(final Result current, final List<Projection> projections) {
+  /**
+   * The value of {@code __typename} for a record resolved against {@code parentType}: the most specific object type of
+   * the SDL the record is an instance of that the field can return - its database type, or the nearest super type of
+   * it, that the SDL declares and that is {@code parentType} or a sub type of it - so a record of a database sub type of
+   * the type the field returns reports its own type when the SDL declares it. Otherwise {@code parentType}, also when the
+   * record is of an unrelated type, as a native query directive can return: naming a type the field cannot return
+   * breaks clients that check it against the possible types of the field (Apollo's {@code possibleTypes}). With no
+   * schema type at this level, the nearest declared type of the record, or its database type.
+   * <p>
+   * The hierarchy is walked level by level, so with multiple inheritance a declared direct parent wins over a declared
+   * grandparent reached through another parent; within one level the order of the super types decides. The other fields
+   * of a record are resolved against {@code parentType} either way.
+   */
+  private String typeNameOf(final Result current, final ObjectTypeDefinition parentType) {
+    final DocumentType recordType = recordTypeOf(current);
+    if (recordType == null)
+      return parentType != null ? parentType.getName() : null;
+
+    final IdentityHashMap<DocumentType, String> byRecordType = typeNames.computeIfAbsent(parentType,
+        k -> new IdentityHashMap<>(4));
+    String typeName = byRecordType.get(recordType);
+    if (typeName == null) {
+      typeName = parentType != null ? parentType.getName() : recordType.getName();
+      final List<DocumentType> level = new ArrayList<>(2);
+      level.add(recordType);
+      for (int i = 0; i < level.size(); i++) {
+        final DocumentType candidate = level.get(i);
+        if (schema.isObjectType(candidate.getName()) && (parentType == null || candidate.instanceOf(parentType.getName()))) {
+          typeName = candidate.getName();
+          break;
+        }
+        for (final DocumentType superType : candidate.getSuperTypes())
+          if (!level.contains(superType))
+            level.add(superType);
+      }
+      byRecordType.put(recordType, typeName);
+    }
+    return typeName;
+  }
+
+  /**
+   * @param parentType the schema type the projections are resolved against, or {@code null} when the SDL declares none
+   */
+  private GraphQLResult mapProjections(final Result current, final List<Projection> projections,
+      final ObjectTypeDefinition parentType) {
     final Map<String, Object> map = new HashMap<>();
 
     if (current.getElement().isPresent()) {
@@ -333,6 +502,11 @@ public class GraphQLResultSet implements ResultSet {
     for (final Projection entry : projections) {
       final String projName = entry.name();
       final String realName = entry.fieldName();
+
+      if (entry.typeName()) {
+        map.put(projName, typeNameOf(current, parentType));
+        continue;
+      }
 
       Object projectionValue = current.getProperty(realName);
 
