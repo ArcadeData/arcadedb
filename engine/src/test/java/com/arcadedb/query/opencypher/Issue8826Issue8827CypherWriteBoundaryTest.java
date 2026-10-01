@@ -170,4 +170,36 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
       assertThat(rs.next().toString()).doesNotContain("EagerStep");
     }
   }
+
+  @Test
+  void standaloneForeachBeforeWithAndReturnLimit() {
+    seedItems();
+    drain("MATCH (a:Src) FOREACH (i IN [1, 2] | CREATE (:Fe)) WITH a LIMIT 1 RETURN a");
+    assertThat(count("MATCH (f:Fe) RETURN count(f) AS c")).isEqualTo(1000L);
+    drain("MATCH (a:Src) FOREACH (i IN [1] | CREATE (:Fr)) RETURN a LIMIT 1");
+    assertThat(count("MATCH (f:Fr) RETURN count(f) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void writingSubqueryBeforeLimit() {
+    seedItems();
+    drain("MATCH (a:Src) CALL (a) { CREATE (:Sq {i: a.i}) RETURN 1 AS one } WITH a LIMIT 1 RETURN a");
+    assertThat(count("MATCH (s:Sq) RETURN count(s) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void orderByAndAggregationLimitStillWriteForEveryRow() {
+    seedItems();
+    drain("MATCH (a:Src) CREATE (:Ob {i: a.i}) WITH a ORDER BY a.i LIMIT 1 RETURN a");
+    assertThat(count("MATCH (o:Ob) RETURN count(o) AS c")).isEqualTo(500L);
+    drain("MATCH (a:Src) CREATE (:Ag {i: a.i}) RETURN count(a) AS n LIMIT 1");
+    assertThat(count("MATCH (o:Ag) RETURN count(o) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void writeBeforeLimitPlansTheBarrier() {
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (a:Src) SET a.x = 1 RETURN a LIMIT 1")) {
+      assertThat(rs.next().toString()).contains("EagerStep");
+    }
+  }
 }

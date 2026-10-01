@@ -158,6 +158,9 @@ public final class CypherEagernessAnalyzer {
    * {@code RETURN ... LIMIT n}) that follows a write must see all of that write's rows, as Neo4j's {@code Eager} makes it
    * do. Without the barrier the write ran for as many rows as the pull-model batches had already carried past it (issues
    * #8826 and #8827: 1000 {@code FOREACH} creations instead of 2000, 4 deleted vertices instead of 5).
+   * <p>
+   * The cost is memory: the barrier buffers every row ahead of the {@code LIMIT} (bounded by the operation heap limit), where a
+   * streaming pull kept one batch. Keeping only the first N rows would flatten it for a literal LIMIT and is a possible follow-up.
    */
   public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
     // ORDER BY and an aggregation already drain their whole input
