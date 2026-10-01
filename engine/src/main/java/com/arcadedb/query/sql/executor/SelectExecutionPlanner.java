@@ -61,8 +61,8 @@ import com.arcadedb.query.sql.parser.IsNotNullCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
-import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
@@ -151,6 +151,8 @@ public class SelectExecutionPlanner {
   private void init(final CommandContext context) {
     //copying the content, so that it can be manipulated and optimized
     info = new QueryPlanningInfo();
+    rangeMinMaxSource = null;
+    rangeMinMaxAlias = null;
     info.projection = this.statement.getProjection() == null ? null : this.statement.getProjection().copy();
     info.projection = translateDistinct(info.projection);
     info.distinct = info.projection != null && info.projection.isDistinct();

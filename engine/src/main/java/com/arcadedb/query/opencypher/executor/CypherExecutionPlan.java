@@ -5428,13 +5428,10 @@ public class CypherExecutionPlan {
       return false;
 
     ComparisonExpression.Operator operator = comparison.getOperator();
-    final Expression propertySide;
     final Expression valueSide;
-    if (isPropertyOf(comparison.getLeft(), variable, property)) {
-      propertySide = comparison.getLeft();
+    if (isPropertyOf(comparison.getLeft(), variable, property))
       valueSide = comparison.getRight();
-    } else if (isPropertyOf(comparison.getRight(), variable, property)) {
-      propertySide = comparison.getRight();
+    else if (isPropertyOf(comparison.getRight(), variable, property)) {
       valueSide = comparison.getLeft();
       operator = switch (operator) {
         case LESS_THAN -> ComparisonExpression.Operator.GREATER_THAN;
@@ -5444,8 +5441,6 @@ public class CypherExecutionPlan {
         default -> operator;
       };
     } else
-      return false;
-    if (propertySide == null)
       return false;
 
     if (operator != ComparisonExpression.Operator.LESS_THAN && operator != ComparisonExpression.Operator.GREATER_THAN

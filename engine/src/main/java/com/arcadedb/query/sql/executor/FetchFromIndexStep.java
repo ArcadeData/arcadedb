@@ -530,6 +530,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
+      // A comparison with null is never true (issue #8812): a null bound of a range matches no row, where the key it leaves
+      // behind (a null slot) would read as "no bound" and return the whole index
+      if (isRangeCondition() && (endsWithNull(convertedFrom) || endsWithNull(convertedTo)))
+        continue;
+
       if (!valuesConvertToIndexKeyTypes(convertedFrom) || !valuesConvertToIndexKeyTypes(convertedTo))
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
@@ -566,6 +571,29 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  private static boolean endsWithNull(final Object[] key) {
+    return key != null && key.length > 0 && key[key.length - 1] == null;
+  }
+
+  /**
+   * Whether the last key position is bounded by {@code <}, {@code <=}, {@code >}, {@code >=} or {@code BETWEEN}, as opposed
+   * to being matched exactly.
+   */
+  private boolean isRangeCondition() {
+    if (additionalRangeCondition != null)
+      return true;
+    if (!(condition instanceof AndBlock andBlock) || andBlock.getSubBlocks().isEmpty())
+      return false;
+    final BooleanExpression last = andBlock.getSubBlocks().getLast();
+    if (last instanceof BetweenCondition)
+      return true;
+    if (!(last instanceof BinaryCondition binary))
+      return false;
+    final BinaryCompareOperator operator = binary.getOperator();
+    return operator instanceof GtOperator || operator instanceof GeOperator || operator instanceof LtOperator
+        || operator instanceof LeOperator;
   }
 
   /**
