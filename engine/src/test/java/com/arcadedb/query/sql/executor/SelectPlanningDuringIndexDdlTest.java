@@ -51,6 +51,7 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   // WHERE with an index, ORDER BY served by an index, min/max served by an index, and a CONTAINSTEXT that may meet a full-text index
   private static final String[] QUERIES = {
       "SELECT count(*) AS c FROM Person WHERE id < ?",
+      "SELECT count(*) AS c FROM Person WHERE id = ?",
       "SELECT id FROM Person WHERE id > ? ORDER BY id LIMIT 5",
       "SELECT id FROM Person WHERE id >= ? ORDER BY id DESC LIMIT 5",
       "SELECT min(id) AS m, max(id) AS x FROM Person WHERE id >= ?",
@@ -114,6 +115,11 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
       for (int i = 0; i < ROUNDS; i++) {
         database.command("sql", "CREATE PROPERTY Person.p" + i + (indexKind.equals("FULL_TEXT") ? " STRING" : " LONG"));
         database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + indexKind);
+        // a composite index sharing the permanent one's first property ties with it when ranking WHERE id = ?
+        if (!indexKind.equals("FULL_TEXT")) {
+          database.command("sql", "CREATE INDEX ON Person (id, p" + i + ") NOTUNIQUE");
+          database.command("sql", "DROP INDEX `Person[id,p" + i + "]`");
+        }
         database.command("sql", "DROP INDEX `Person[p" + i + "]`");
       }
     } finally {
