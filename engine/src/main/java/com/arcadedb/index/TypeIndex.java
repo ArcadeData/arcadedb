@@ -746,7 +746,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** The first sub-index, or null when none (yet, or any more): a single read, so it cannot race with a concurrent clear(). */
   private IndexInternal firstOrNull() {
-    // CopyOnWriteArrayList#getFirst reads the backing array once: no allocation, and no race with a concurrent clear()
+    // CopyOnWriteArrayList#getFirst reads the backing array once, so it cannot race with a concurrent clear() and allocates
+    // nothing when the list is populated (the exception below only happens on the rare empty state)
     try {
       return indexesOnBuckets.getFirst();
     } catch (final NoSuchElementException e) {
