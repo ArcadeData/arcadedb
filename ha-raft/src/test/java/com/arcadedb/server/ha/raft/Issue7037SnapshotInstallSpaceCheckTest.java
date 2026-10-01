@@ -156,7 +156,7 @@ class Issue7037SnapshotInstallSpaceCheckTest {
   }
 
   @Test
-  void leaderEstimateCoversEveryShippedFile() {
+  void leaderEstimateCoversEveryShippedFile() throws Exception {
     final String path = "./target/databases/issue7037-estimate";
     FileUtils.deleteRecursively(new File(path));
     final Database db = new DatabaseFactory(path).create();
@@ -167,18 +167,27 @@ class Issue7037SnapshotInstallSpaceCheckTest {
           db.newDocument("Doc").set("id", i).set("payload", "x".repeat(200)).save();
       });
 
-      // List.of(): this fixture has no TimeSeries type, so the sealed set the ship would stream is empty. Named
-      // rather than listed off the filesystem (issue #7726), which says what the file set under test IS.
-      final long estimate = SnapshotHttpHandler.estimateUncompressedBytes((DatabaseInternal) db, null, List.of());
+      // Read inside the frozen window the ship uses (issue #8145): the commit only queues its pages for the async flush.
+      final DatabaseInternal dbInternal = (DatabaseInternal) db;
+      final long[] estimate = { -1L };
+      final long[] pageFiles = { -1L };
+      dbInternal.getPageManager().suspendFlushAndExecute(db, () -> {
+        // List.of(): no TimeSeries type, so the sealed set is empty (named, not listed off the filesystem: #7726).
+        estimate[0] = SnapshotHttpHandler.estimateUncompressedBytes(dbInternal, null, List.of());
 
-      // The archive ships the registered page files (not the WAL, which the install discards), so that is the floor.
-      long pageFiles = 0L;
-      for (final ComponentFile file : ((DatabaseInternal) db).getFileManager().getFiles())
-        if (file != null)
-          pageFiles += file.getOSFile().length();
-      assertThat(pageFiles).isGreaterThan(0L);
-      assertThat(estimate).as("the estimate covers every page file plus the schema and configuration")
-          .isGreaterThan(pageFiles);
+        // The archive ships the registered page files (not the WAL, which the install discards): that is the floor.
+        long total = 0L;
+        for (final ComponentFile file : dbInternal.getFileManager().getFiles())
+          if (file != null)
+            total += file.getOSFile().length();
+        pageFiles[0] = total;
+      });
+
+      // suspendFlushAndExecute swallows callback exceptions: these two make a swallowed failure read as one.
+      assertThat(pageFiles[0]).as("the page files were measured inside the window").isGreaterThan(0L);
+      assertThat(estimate[0]).as("the estimate was computed inside the window").isGreaterThan(0L);
+      assertThat(estimate[0]).as("the estimate covers every page file plus the schema and configuration")
+          .isGreaterThan(pageFiles[0]);
     } finally {
       db.drop();
       FileUtils.deleteRecursively(new File(path));
