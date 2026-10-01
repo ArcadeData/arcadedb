@@ -566,6 +566,11 @@ public interface HAServerPlugin extends ServerPlugin {
    * A non-empty report is returned, not logged: the caller owns it, unlike the void {@code addPeer}, which has no
    * caller to hand it to.
    * <p>
+   * <b>It waits for the seed report</b>, which {@link #connectCluster(String)} does not: on Raft that is the bounded
+   * wait {@code addPeer} documents ({@code arcadedb.ha.securitySeedRetryTimeout} plus a fixed margin), seconds in
+   * the worst case. An embedder on a latency-sensitive thread that does not need the report keeps calling
+   * {@link #connectCluster(String)}.
+   * <p>
    * <b>An empty {@link Optional} is not an empty failure list</b>, with the meaning
    * {@link #seedSecurityStateForAdmission} gives it: this implementation reports no seed of its own, and the caller
    * that wants one runs it - which is what the default does, so an implementation predating this method keeps the
