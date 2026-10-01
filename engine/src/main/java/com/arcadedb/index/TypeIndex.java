@@ -394,7 +394,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    // Invalid first, then emptied: a concurrent reader that sees the list empty must also see the index invalid
+    // Invalid before the sub-indexes are cleared, so a reader that finds them gone has a good chance to see it invalid too
     valid = false;
     indexesOnBuckets.clear();
   }
