@@ -27,11 +27,9 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
   private static final int RECORDS = 100_000;
 
-  private Set<Thread> readersBefore = Set.of();
+  private int readersBefore;
 
   @Override
   protected void beginTest() {
@@ -77,7 +75,7 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
     // a scan abandoned in a transaction (never drained, never closed) must not keep its reader thread for ever
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
     final List<ResultSet> abandoned = new ArrayList<>();
-    readersBefore = readerThreads();
+    readersBefore = ParallelScanProducerPool.getActiveDedicatedReaders();
     try {
       for (int i = 0; i < maxThreads; i++) {
         final ResultSet rs = database.query("sql", "SELECT FROM Rating");
@@ -146,19 +144,12 @@ class Issue8775SaturatedPoolTransactionScanTest extends TestHelper {
     }
   }
 
-  private static Set<Thread> readerThreads() {
-    return Thread.getAllStackTraces().keySet().stream()
-        .filter(t -> t.getName().startsWith("ArcadeDB-parallel-scan-unit-reader") && t.isAlive()).collect(Collectors.toSet());
-  }
-
   private long liveReaders() {
-    final Set<Thread> now = readerThreads();
-    now.removeAll(readersBefore);
-    return now.size();
+    return ParallelScanProducerPool.getActiveDedicatedReaders() - readersBefore;
   }
 
   private long scanWhilePoolIsHeld(final boolean writeAfterFirstRow) throws Exception {
-    readersBefore = readerThreads();
+    readersBefore = ParallelScanProducerPool.getActiveDedicatedReaders();
     final int maxThreads = ParallelScanProducerPool.getInstance().getMaxParallelism();
     final List<ResultSet> abandoned = new ArrayList<>();
     try {

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.query.ParallelScanProducerPool;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
@@ -90,6 +91,15 @@ class PoolMetricsTest {
       assertThat(registry.find(gaugeName).tag("pool", "query").meter())
           .as("split-decision gauge '%s' must NOT be registered for pools that never split", gaugeName).isNull();
     }
+  }
+
+  @Test
+  void dedicatedReadersGaugeFollowsTheProducerPoolCounter() {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    new PoolMetrics().bindTo(registry);
+
+    assertThat(registry.find("arcadedb.executor.dedicated_readers").tag("pool", "parallel_scan").gauge().value())
+        .isEqualTo(ParallelScanProducerPool.getActiveDedicatedReaders());
   }
 
   /**

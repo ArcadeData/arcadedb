@@ -608,6 +608,8 @@ final class ParallelTypeScan {
             // A BOUNDED WAIT, NOT A take(): A RESULT SET ABANDONED WHILE THE READER IS IDLE WOULD OTHERWISE KEEP ITS THREAD FOR EVER
             final Integer next = claimed.poll(1, TimeUnit.SECONDS);
             if (next == null) {
+              // THE READER ENDS BUT readerUnits AND dedicatedReader STAY SET: SAFE ONLY BECAUSE recordFailure() MAKES THE CONSUMER
+              // THROW BEFORE ITS NEXT CLAIM, SO NO UNIT IS EVER QUEUED FOR A READER THAT IS GONE
               if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - lastConsumed > abandonedTimeoutMs) {
                 // LIKE A WORKER: THE SCAN FAILS ON THE CONSUMER'S NEXT ACCESS, IT DOES NOT WAIT FOR A UNIT NOBODY READS ANY MORE
                 recordFailure(new CommandExecutionException(
@@ -678,7 +680,11 @@ final class ParallelTypeScan {
     return database.isTransactionActive() ? database.getTransaction() : null;
   }
 
-  /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
+  /**
+   * Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it.
+   * A row without an identity (a projection, a partial aggregate) is never filtered: those steps drain the scan before they
+   * return, so the transaction cannot delete anything between the first pull and the last.
+   */
   private boolean deletedByTransaction(final Result row) {
     // NOTHING DELETED, THE COMMON CASE: NO LOOKUP, NO Optional
     if (!filterTx.hasDeletedRecords())

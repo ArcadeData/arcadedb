@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.ParallelScanProducerPool;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,6 +64,26 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
       assertThat(sqlPlan()).contains("(parallel)");
       assertThat(cypherPlan()).contains("[parallel]");
       assertThat(count()).isEqualTo(expected);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void unsaturatedScanInATransactionNeverStartsADedicatedReader() {
+    final int before = ParallelScanProducerPool.getActiveDedicatedReaders();
+    database.begin();
+    try {
+      assertThat(count()).isEqualTo(expected);
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E")) {
+        int rows = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+        assertThat(rows).isEqualTo(ROWS);
+      }
+      assertThat(ParallelScanProducerPool.getActiveDedicatedReaders()).isEqualTo(before);
     } finally {
       database.rollback();
     }
