@@ -3360,6 +3360,7 @@ public class CypherExecutionPlan {
       final Expression skip, final Expression limit) {
     if (dropsRows)
       return -1;
+    // evaluated again by the LimitStep / WithStep: both evaluations must agree, which holds for the literals and parameters allowed
     final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
     final long limitVal = evaluator.evaluateSkipLimit(limit, new ResultInternal(), context);
     final long skipVal = skip != null ? evaluator.evaluateSkipLimit(skip, new ResultInternal(), context) : 0L;
