@@ -39,15 +39,31 @@ public class RWLockContext {
   private final int                      stripeMask;
   private       boolean                  enableLocking = true;
 
+  /**
+   * Single lock, the cheapest choice for components whose readers are not hot (HTTP sessions, remote clients).
+   */
   public RWLockContext() {
-    int n = 4;
-    final int cpus = Runtime.getRuntime().availableProcessors();
-    while (n < cpus && n < MAX_STRIPES)
+    this(1);
+  }
+
+  /**
+   * @param stripeCount number of lock stripes, rounded up to a power of two and capped at {@link #MAX_STRIPES}
+   */
+  protected RWLockContext(final int stripeCount) {
+    int n = 1;
+    while (n < stripeCount && n < MAX_STRIPES)
       n <<= 1;
     stripes = new ReentrantReadWriteLock[n];
     for (int i = 0; i < n; i++)
       stripes[i] = new ReentrantReadWriteLock(true);
     stripeMask = n - 1;
+  }
+
+  /**
+   * Stripe count that fits the CPUs of this JVM, fixed when the lock is built.
+   */
+  protected static int defaultStripeCount() {
+    return Math.max(4, Runtime.getRuntime().availableProcessors());
   }
 
   protected ReentrantReadWriteLock.ReadLock readLock() {
@@ -70,9 +86,17 @@ public class RWLockContext {
 
     final ReentrantReadWriteLock.WriteLock[] wl = new ReentrantReadWriteLock.WriteLock[stripes.length];
     // ALWAYS IN THE SAME ORDER, SO TWO WRITERS CANNOT DEADLOCK EACH OTHER
-    for (int i = 0; i < stripes.length; i++) {
-      wl[i] = stripes[i].writeLock();
-      wl[i].lock();
+    int i = 0;
+    try {
+      for (; i < stripes.length; i++) {
+        wl[i] = stripes[i].writeLock();
+        wl[i].lock();
+      }
+    } catch (final Throwable t) {
+      // NEVER LEAK THE STRIPES ALREADY TAKEN: THEIR READERS WOULD BLOCK FOREVER
+      for (int k = i - 1; k >= 0; k--)
+        wl[k].unlock();
+      throw t;
     }
     return wl;
   }
