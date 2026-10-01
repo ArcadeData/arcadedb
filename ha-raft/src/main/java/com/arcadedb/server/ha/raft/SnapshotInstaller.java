@@ -28,6 +28,8 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
@@ -57,6 +59,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -104,6 +107,7 @@ public final class SnapshotInstaller {
 
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
+  static final String SNAPSHOT_ORPHANS_DIR   = ".snapshot-orphans";
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
@@ -1519,41 +1523,31 @@ public final class SnapshotInstaller {
           completeSwapRecovery(dbDir);
           return;
         }
-        // Otherwise a live file may be an un-moved original OR an already-installed snapshot file. Re-running
-        // phase 1 would destroy the latter (#7769), so the layout is classified first (issue #8304) rather than
-        // preserved forever: a database that never comes up on this node, behind an install path that refuses to
-        // run over it, is a worse outcome than either resolution below.
+        // A live file may be an un-moved original OR an installed snapshot file, so classify the layout (#8304).
         if (hasLiveDatabaseFiles(dbDir)) {
           if (liveFilesShareANameWithTheBackup(dbDir, snapshotBackup)) {
-            // Phase 1 MOVES each original into the backup, so no name can be in both places after a phase-1 crash.
-            // A name in both can only be a snapshot file already installed over an original, which is phase 2:
-            // every original is in the backup and the snapshot is part-way in. Roll forward exactly as a recorded
-            // INSTALLING phase does, by recording it and resuming; the backup stays until the result is validated.
+            // Phase 1 renames, so a name in both places can only be a snapshot file installed over an original:
+            // phase 2. Roll forward like a recorded INSTALLING phase.
             LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
                 "Resuming the legacy snapshot swap for %s, which was interrupted while installing the snapshot",
                 null, dbDir);
             writeSwapPhase(dbDir, SwapPhase.INSTALLING);
             atomicSwap(dbDir, snapshotNew, snapshotBackup);
           } else {
-            // Disjoint names: the crash was part-way through phase 1 (the backup holds the originals that moved,
-            // the live directory the ones that did not), or, much less likely, in phase 2 with only files whose
-            // names no original had. Moving the backup over the live directory without clearing it rebuilds the
-            // complete original database in the first case; in the second it can leave a file that belongs only to
-            // the snapshot, a weaker hazard than a database that never opens. The staging is stale either way: the
-            // node reopens on the originals and the next install fetches a current snapshot.
+            // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
+            // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
+            // is dropped and the next install fetches a current one.
             LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
             deleteDirectoryIfExists(snapshotNew);
             final List<String> liveBeforeRestore = liveEntryNames(dbDir);
             restoreBackup(dbDir, snapshotBackup);
-            final List<String> orphans = deleteOrphanBucketFiles(dbDir, liveBeforeRestore);
+            final List<String> orphans = quarantineOrphanBucketFiles(dbDir, liveBeforeRestore);
             LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-                "Legacy snapshot swap for %s restored from the backup over these live entries, which are original "
-                    + "files if the crash was in the backup step and snapshot-only files otherwise: %s. Bucket files "
-                    + "the restored schema does not reference were removed (%s); if the database still does not open, "
-                    + "delete the entries the restored schema does not reference", null, dbDir, liveBeforeRestore,
-                orphans);
+                "Legacy snapshot swap for %s restored from the backup over these live entries: %s. Bucket files the "
+                    + "restored schema does not name were moved to %s (%s); other snapshot-only files, if any, "
+                    + "stay in place", null, dbDir, liveBeforeRestore, SNAPSHOT_ORPHANS_DIR, orphans);
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1677,34 +1671,41 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Deletes, among {@code candidates}, the bucket files whose bucket the restored {@code schema.json} does not name.
+   * Moves, among {@code candidates}, the bucket files whose bucket the restored {@code schema.json} does not name
+   * into {@link #SNAPSHOT_ORPHANS_DIR}, and returns their names.
    * <p>
-   * A snapshot-only bucket that reached the live directory before a phase-2 crash is not harmless: the file id is
-   * part of the file name, and one that collides with an original's id makes the engine refuse to open the database
-   * at all. An original bucket is always named by the original schema, so this never touches one. Only buckets are
-   * judged: index files are named by an index name the schema lists differently, and are left for the warning.
-   *
-   * @return the names of the files removed
+   * A snapshot-only bucket that reached the live directory before a phase-2 crash stops the database opening when
+   * its file id collides with an original's (the id is part of the file name). Quarantined rather than deleted, and
+   * only when the schema parses and lists at least one bucket, so a doubtful schema never costs a file. Index files
+   * are not judged.
    */
-  private static List<String> deleteOrphanBucketFiles(final Path dbDir, final List<String> candidates)
+  private static List<String> quarantineOrphanBucketFiles(final Path dbDir, final List<String> candidates)
       throws IOException {
-    final List<String> removed = new ArrayList<>();
+    final List<String> moved = new ArrayList<>();
     final Path schemaFile = dbDir.resolve("schema.json");
     if (!Files.isRegularFile(schemaFile))
-      return removed;
-    final String schema = Files.readString(schemaFile);
-    for (final String name : candidates) {
-      if (!name.endsWith(".bucket"))
-        continue;
-      final String bucketName = name.substring(0, name.indexOf('.'));
-      if (!schema.contains("\"" + bucketName + "\"")) {
-        Files.deleteIfExists(dbDir.resolve(name));
-        removed.add(name);
-      }
+      return moved;
+    final Set<String> known = new HashSet<>();
+    try {
+      final JSONObject types = new JSONObject(Files.readString(schemaFile)).getJSONObject("types", new JSONObject());
+      for (final String type : types.keySet())
+        for (final Object bucket : types.getJSONObject(type).getJSONArray("buckets", new JSONArray()).toList())
+          known.add(String.valueOf(bucket));
+    } catch (final RuntimeException e) {
+      return moved;
     }
-    if (!removed.isEmpty())
+    if (known.isEmpty())
+      return moved;
+    for (final String name : candidates) {
+      if (!name.endsWith(".bucket") || known.contains(name.substring(0, name.indexOf('.'))))
+        continue;
+      Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
+      Files.move(dbDir.resolve(name), dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name), StandardCopyOption.REPLACE_EXISTING);
+      moved.add(name);
+    }
+    if (!moved.isEmpty())
       fsyncDirectory(dbDir);
-    return removed;
+    return moved;
   }
 
   private static List<String> liveEntryNames(final Path dbDir) throws IOException {
