@@ -873,10 +873,10 @@ public final class SnapshotInstaller {
         } catch (final IllegalArgumentException e) {
           continue; // getDatabase would refuse to open it under this name, so nothing serves it
         }
-        try (final DirectoryStream<Path> content = Files.newDirectoryStream(entry)) {
-          if (content.iterator().hasNext())
-            names.add(name);
-        }
+        // A database holds a schema file; a directory with an interrupted install's marker is one too (the boot scan
+        // deferred it). Anything else is not a database whatever it contains (issue #8805).
+        if (ArcadeDBServer.holdsDatabase(entry.toFile()) || Files.exists(entry.resolve(SNAPSHOT_PENDING_FILE)))
+          names.add(name);
       }
     }
     return names;

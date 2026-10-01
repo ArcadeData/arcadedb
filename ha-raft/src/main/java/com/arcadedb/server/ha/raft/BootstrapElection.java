@@ -963,7 +963,7 @@ class BootstrapElection {
   private List<String> collectLocalDatabaseNames() {
     final List<String> out = new ArrayList<>();
     for (final String dbName : server.getDatabaseNames())
-      if (!dbName.startsWith("."))
+      if (!ArcadeDBServer.isReservedDatabaseName(dbName))
         out.add(dbName);
     return out;
   }

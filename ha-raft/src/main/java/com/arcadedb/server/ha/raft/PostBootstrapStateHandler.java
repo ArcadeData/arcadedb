@@ -163,7 +163,7 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     for (final String dbName : server.getDatabaseNames()) {
       // Reserved internal databases (e.g. ".raft") are not part of the operator-visible state and
       // their fingerprint would be meaningless to a peer that's about to seed itself; skip them.
-      if (dbName.startsWith("."))
+      if (ArcadeDBServer.isReservedDatabaseName(dbName))
         continue;
 
       try {
