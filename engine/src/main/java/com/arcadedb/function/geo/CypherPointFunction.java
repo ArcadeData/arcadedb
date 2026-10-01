@@ -24,6 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -158,11 +159,11 @@ public class CypherPointFunction implements StatelessFunction {
 
   /** Neo4j SRID of a well-known CRS name, or null when the name is not one of the four Neo4j defines. */
   private static Integer sridOfCrs(final String crs) {
-    return switch (crs) {
+    return switch (crs.toLowerCase(Locale.ROOT)) {
       case "cartesian" -> SRID_CARTESIAN_2D;
-      case "cartesian-3D" -> SRID_CARTESIAN_3D;
-      case "WGS-84" -> SRID_WGS84_2D;
-      case "WGS-84-3D" -> SRID_WGS84_3D;
+      case "cartesian-3d" -> SRID_CARTESIAN_3D;
+      case "wgs-84" -> SRID_WGS84_2D;
+      case "wgs-84-3d" -> SRID_WGS84_3D;
       default -> null;
     };
   }
