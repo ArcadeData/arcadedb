@@ -28,8 +28,6 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
@@ -59,7 +57,6 @@ import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -108,7 +105,10 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
   static final String SNAPSHOT_ORPHANS_DIR   = ".snapshot-orphans";
-  /** Written before a legacy rollback consumes the backup, so a crash before the orphan quarantine is resumed. */
+  /**
+   * Written before a legacy rollback consumes the backup, and listing the live entries it found, so a crash before
+   * the quarantine of colliding snapshot files is resumed.
+   */
   static final String SNAPSHOT_QUARANTINE_FILE = ".snapshot-quarantine";
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
@@ -1543,11 +1543,11 @@ public final class SnapshotInstaller {
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
             deleteDirectoryIfExists(snapshotNew);
-            writeMarkerDurable(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
+            writeFileForced(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE), String.join("\n", liveEntryNames(dbDir)));
+            fsyncDirectory(dbDir);
             restoreBackup(dbDir, snapshotBackup);
             snapshotSwapProgress("RESTORED");
-            quarantineOrphanBucketFiles(dbDir);
-            Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
+            quarantineCollidingFiles(dbDir);
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1584,15 +1584,11 @@ public final class SnapshotInstaller {
         // Move backup contents back into dbDir
         restoreBackup(dbDir, snapshotBackup);
         // Also where an interrupted legacy rollback (above) is finished by a later pass.
-        quarantineOrphanBucketFiles(dbDir);
-        Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
+        quarantineCollidingFiles(dbDir);
 
       } else {
         // A legacy rollback that consumed its backup but crashed before the orphan quarantine: finish it first.
-        if (Files.exists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE))) {
-          quarantineOrphanBucketFiles(dbDir);
-          Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
-        }
+        quarantineCollidingFiles(dbDir);
 
         // No completion marker and no backup. "The download was interrupted before the backup was created" is
         // only ONE way to reach this state, and it leaves dbDir intact. The other is "a backup was created, used
@@ -1680,49 +1676,47 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Moves the live bucket files that the restored {@code schema.json} does not name into
-   * {@link #SNAPSHOT_ORPHANS_DIR}, safe to delete once the database is verified.
+   * Finishes a legacy rollback: moves the live entries that {@link #SNAPSHOT_QUARANTINE_FILE} recorded from before
+   * the backup was restored, and whose component file id is also held by another live file, into
+   * {@link #SNAPSHOT_ORPHANS_DIR}, then removes the marker. A no-op without the marker.
    * <p>
-   * A snapshot-only bucket that reached the live directory before a phase-2 crash stops the database opening when
-   * its file id collides with an original's (the id is part of the file name). Quarantined rather than deleted, and
-   * only when the schema parses and lists at least one bucket (bucket names never contain a dot, and every bucket
-   * belongs to a type), so a doubtful schema never costs a file. Index files are not judged.
+   * Those entries are originals after a phase-1 crash, so nothing happens then. After a phase-2 crash that moved
+   * only snapshot-only names they are snapshot files, and one whose file id collides with a restored original makes
+   * the engine refuse to open the database. Judging by the id, rather than by what the schema lists, leaves every
+   * file that does not collide (standalone and external buckets included) where it is. Moved, not deleted.
    */
-  private static void quarantineOrphanBucketFiles(final Path dbDir) throws IOException {
-    // The engine's own choice: schema.json, or schema.prev.json when a rewrite was interrupted.
-    Path schemaFile = dbDir.resolve("schema.json");
-    if (!Files.isRegularFile(schemaFile))
-      schemaFile = dbDir.resolve("schema.prev.json");
-    if (!Files.isRegularFile(schemaFile))
+  private static void quarantineCollidingFiles(final Path dbDir) throws IOException {
+    final Path marker = dbDir.resolve(SNAPSHOT_QUARANTINE_FILE);
+    if (!Files.isRegularFile(marker))
       return;
-    final Set<String> known = new HashSet<>();
-    try {
-      final JSONObject types = new JSONObject(Files.readString(schemaFile)).getJSONObject("types", new JSONObject());
-      for (final String type : types.keySet())
-        for (final Object bucket : types.getJSONObject(type).getJSONArray("buckets", new JSONArray()).toList())
-          known.add(String.valueOf(bucket));
-    } catch (final RuntimeException e) {
-      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Cannot read the bucket names from the schema of %s, so no orphan bucket file was looked for: %s", null,
-          dbDir, e.getMessage());
-      return;
-    }
-    if (known.isEmpty())
-      return;
-    final List<String> moved = new ArrayList<>();
+    final Map<String, Integer> filesPerId = new HashMap<>();
     for (final String name : liveEntryNames(dbDir)) {
-      if (!name.endsWith(".bucket") || known.contains(name.substring(0, name.indexOf('.'))))
+      final String id = componentFileId(name);
+      if (id != null)
+        filesPerId.merge(id, 1, Integer::sum);
+    }
+    final List<String> moved = new ArrayList<>();
+    for (final String name : Files.readAllLines(marker)) {
+      final String id = componentFileId(name);
+      if (id == null || filesPerId.getOrDefault(id, 0) < 2 || !Files.exists(dbDir.resolve(name)))
         continue;
       Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
       Files.move(dbDir.resolve(name), dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name), StandardCopyOption.REPLACE_EXISTING);
       moved.add(name);
     }
-    if (moved.isEmpty())
-      return;
+    if (!moved.isEmpty()) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Moved files of %s whose file id collides with a restored original to %s: %s. They are safe to delete "
+              + "once the database has been verified", null, dbDir, SNAPSHOT_ORPHANS_DIR, moved);
+    }
+    Files.deleteIfExists(marker);
     fsyncDirectory(dbDir);
-    LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-        "Moved bucket files that the restored schema of %s does not name to %s: %s. They are safe to delete once the "
-            + "database has been verified", null, dbDir, SNAPSHOT_ORPHANS_DIR, moved);
+  }
+
+  /** The file id of a component file named {@code <name>.<fileId>.<pageSize>.v<version>.<ext>}, or null. */
+  private static String componentFileId(final String fileName) {
+    final String[] parts = fileName.split("\\.");
+    return parts.length >= 5 && parts[parts.length - 2].startsWith("v") ? parts[parts.length - 4] : null;
   }
 
   private static List<String> liveEntryNames(final Path dbDir) throws IOException {
