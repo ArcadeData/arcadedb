@@ -4622,11 +4622,19 @@ public class SelectExecutionPlanner {
    * go away right after it: the callers read an index's metadata under a try/catch of IndexException, and any new planner
    * path that reads index metadata must do the same.
    */
+  private static boolean isPlannable(final Index index) {
+    try {
+      return (!(index instanceof IndexInternal internal) || internal.isValid()) && index.getType() != null;
+    } catch (final IndexException e) {
+      return false;
+    }
+  }
+
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
     final List<TypeIndex> result = new ArrayList<>(indexes.size());
     for (final TypeIndex index : indexes) {
       try {
-        if (index.isValid() && index.getType() != null)
+        if (isPlannable(index))
           result.add(index);
       } catch (final IndexException e) {
         // Dropped or rebuilt while checking
@@ -4669,9 +4677,22 @@ public class SelectExecutionPlanner {
     // is redundant, just discard it)
     //descriptors = removePrefixIndexes(descriptors);
 
-    if (descriptors.isEmpty())
-      return null;
+    // Ranking reads the metadata of the candidates again: one dropped meanwhile is discarded and the ranking restarts
+    while (true) {
+      if (descriptors.isEmpty())
+        return null;
+      try {
+        return pickBestDescriptor(context, descriptors);
+      } catch (final IndexException e) {
+        final List<IndexSearchDescriptor> stillValid = descriptors.stream().filter(d -> isPlannable(d.index)).toList();
+        if (stillValid.size() == descriptors.size())
+          throw e;
+        descriptors = stillValid;
+      }
+    }
+  }
 
+  private IndexSearchDescriptor pickBestDescriptor(final CommandContext context, List<IndexSearchDescriptor> descriptors) {
     // First, prefer indexes that cover more conditions (more subBlocks)
     // This ensures composite indexes are preferred over single-property indexes
     final int maxSubBlocks = descriptors.stream()
