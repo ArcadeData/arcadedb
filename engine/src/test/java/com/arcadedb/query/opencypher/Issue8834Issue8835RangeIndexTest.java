@@ -97,4 +97,22 @@ class Issue8834Issue8835RangeIndexTest extends TestHelper {
     assertThat(longs("MATCH (n:NQ) WHERE n.a < 25 RETURN n.a AS v ORDER BY v")).containsExactly(20L);
     assertThat(longs("MATCH (n:NR) WHERE n.a >= 0 RETURN n.a AS v")).containsExactly(30L);
   }
+
+  @Test
+  void rangeUnderAMidLevelLabelOfADeeperHierarchy() {
+    database.command("sql", "CREATE VERTEX TYPE GP");
+    database.command("sql", "CREATE VERTEX TYPE GM EXTENDS GP");
+    database.command("sql", "CREATE VERTEX TYPE GC EXTENDS GM");
+    database.command("sql", "CREATE VERTEX TYPE GS EXTENDS GP");
+    database.command("sql", "CREATE PROPERTY GP.a LONG");
+    database.command("sql", "CREATE INDEX ON GP (a) NOTUNIQUE");
+    database.transaction(() -> {
+      database.newVertex("GP").set("a", 10L).save();
+      database.newVertex("GM").set("a", 20L).save();
+      database.newVertex("GC").set("a", 30L).save();
+      database.newVertex("GS").set("a", 40L).save();
+    });
+    assertThat(longs("MATCH (n:GM) WHERE n.a > 0 RETURN n.a AS v ORDER BY v")).containsExactly(20L, 30L);
+    assertThat(longs("MATCH (n:GC) WHERE n.a > 0 RETURN n.a AS v")).containsExactly(30L);
+  }
 }

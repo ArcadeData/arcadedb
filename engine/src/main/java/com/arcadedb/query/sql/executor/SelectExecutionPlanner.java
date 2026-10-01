@@ -4255,6 +4255,15 @@ public class SelectExecutionPlanner {
     return refersToLet(Collections.singletonList(condition), info.perRecordLetClause);
   }
 
+  /**
+   * The property an ORDER BY item sorts on, or its record attribute name; null when it sorts on a derived value.
+   */
+  private static String orderByPropertyName(final OrderByItem item, final QueryPlanningInfo info) {
+    if (item.getModifier() != null)
+      return null;
+    return item.getAlias() != null ? resolveOrderByProperty(item, info) : item.getName();
+  }
+
   private boolean fullySorted(final QueryPlanningInfo info, final AndBlock conditions, final Index idx) {
     if (!idx.supportsOrderedIterations() || holdsFoldedKeys(idx))
       return false;
@@ -4276,7 +4285,7 @@ public class SelectExecutionPlanner {
       // stay (issue #6926).
       // A name that is a projection alias is the property it renames (SELECT a AS c ... ORDER BY c), or the one it shadows
       // (SELECT b AS a ... ORDER BY a sorts on b), as in handleClassWithIndexForSortOnly (#8836)
-      final String name = item.getModifier() == null ? (item.getAlias() != null ? resolveOrderByProperty(item, info) : item.getName()) : null;
+      final String name = orderByPropertyName(item, info);
       if (name == null)
         return false;
 

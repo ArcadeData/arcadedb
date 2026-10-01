@@ -300,7 +300,7 @@ public class AnchorSelector {
 
         // Check if there's an index on this property
         // A hash index cannot be read in key order, so it never serves a range (issue #8835)
-        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName, true);
+        final IndexStatistics indexStats = findOrderedIndexForProperty(indexes, propertyName);
 
         // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
         // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
@@ -487,6 +487,11 @@ public class AnchorSelector {
    */
   private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
     return findIndexForProperty(indexes, propertyName, false);
+  }
+
+  /** Same as {@link #findIndexForProperty(List, String)}, skipping the indexes that cannot be read in key order (a hash index). */
+  private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
+    return findIndexForProperty(indexes, propertyName, true);
   }
 
   private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,

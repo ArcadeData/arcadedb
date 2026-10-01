@@ -442,6 +442,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         if (!(typeIndex instanceof RangeIndex))
           return false;
 
+        // A hash index is a RangeIndex by type only: the planner never offers one to a range (issue #8835), so a plan that
+        // reaches it was built before the schema changed
+        if (!typeIndex.supportsOrderedIterations())
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' cannot be read in key order now: re-plan the query");
+
         rangeIndex = (RangeIndex) typeIndex;
         inheritedIndex = Labels.isInheritedIndex(typeIndex, label);
 

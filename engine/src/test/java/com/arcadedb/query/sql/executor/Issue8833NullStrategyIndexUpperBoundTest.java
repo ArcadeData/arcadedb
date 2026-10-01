@@ -97,4 +97,20 @@ class Issue8833NullStrategyIndexUpperBoundTest extends TestHelper {
     assertThat(values("SELECT a AS n FROM C WHERE a < 3 ORDER BY a ASC")).containsExactly(0L, 1L, 2L);
     assertThat(values("SELECT a AS n FROM C WHERE a < 3 ORDER BY a DESC")).containsExactly(2L, 1L, 0L);
   }
+
+  @Test
+  void compositeIndexUpperBoundOnLaterColumnExcludesNullKeys() {
+    database.command("sql", "CREATE VERTEX TYPE D");
+    database.command("sql", "CREATE PROPERTY D.a LONG");
+    database.command("sql", "CREATE PROPERTY D.b LONG");
+    database.command("sql", "CREATE INDEX ON D (a, b) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      for (long i = 0; i < 5; i++)
+        database.newVertex("D").set("a", 5L, "b", i).save();
+      for (int i = 0; i < 3; i++)
+        database.newVertex("D").set("a", 5L).save(); // b is null
+    });
+    assertThat(values("SELECT b AS n FROM D WHERE a = 5 AND b < 3")).containsExactlyInAnyOrder(0L, 1L, 2L);
+    assertThat(values("SELECT b AS n FROM D WHERE a = 5 AND b < 3 ORDER BY b DESC")).containsExactly(2L, 1L, 0L);
+  }
 }
