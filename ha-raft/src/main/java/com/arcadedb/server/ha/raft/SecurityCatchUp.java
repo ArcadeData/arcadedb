@@ -190,14 +190,14 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
-   * Takes the once-per-start latch whether or not somebody holds it, displacing the holder: the caller's request
+   * Takes the once-per-start latch whether or not somebody holds it, displacing the holder (the latest takeover wins): the caller's request
    * is the one whose outcome now decides the latch, and the displaced attempt's late release is a no-op.
    *
    * @return the new request's token
    */
   long takeOverRequest() {
     final long token = tokenSequence.incrementAndGet();
-    requestOwner.set(token);
+    requestOwner.accumulateAndGet(token, Math::max);
     return token;
   }
 

@@ -198,6 +198,34 @@ class Issue8304LegacySwapRecoveryTest {
     assertThat(db.resolve(".snapshot-pending")).doesNotExist();
   }
 
+  /**
+   * The quarantine judges by file id, not by what the schema lists: a standalone bucket and a bucket with a dotted
+   * name are never recorded under a type, and must stay live.
+   */
+  @Test
+  void bucketsNotListedUnderATypeStayLive(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    try (final DatabaseFactory factory = new DatabaseFactory(backup.toString()); final Database original = factory.open()) {
+      original.getSchema().createBucket("Standalone");
+      original.getSchema().createBucket("dotted.name");
+    }
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    moveSnapshotOnlyBucketToLive(root, db);
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).anyMatch(n -> n.startsWith("Standalone."));
+    assertThat(fileNames(db)).anyMatch(n -> n.startsWith("dotted.name."));
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
+  }
+
   private static void moveSnapshotOnlyBucketToLive(final Path root, final Path db) throws IOException {
     createDatabase(root.resolve("other"), "other", "SnapshotOnly");
     for (final String name : fileNames(root.resolve("other")))
@@ -213,23 +241,11 @@ class Issue8304LegacySwapRecoveryTest {
     final Path db = databases.resolve("mydb");
     final Path staged = db.resolve(".snapshot-new");
     final Path backup = db.resolve(".snapshot-backup");
-    createDatabase(db, "old");
+    createDatabase(backup, "old");
     createDatabase(staged, "new");
-    Files.createDirectories(backup);
     Files.writeString(db.resolve(".snapshot-pending"), "");
     Files.writeString(staged.resolve(".snapshot-complete"), "");
-    createDatabase(root.resolve("other"), "other", "SnapshotOnly");
-    for (final String name : fileNames(root.resolve("other")))
-      if (name.startsWith("SnapshotOnly_"))
-        Files.move(root.resolve("other").resolve(name), db.resolve(name));
-    boolean first = true;
-    for (final String name : fileNames(db)) {
-      if (name.startsWith(".snapshot") || name.startsWith("SnapshotOnly_"))
-        continue;
-      if (first || name.startsWith("schema"))
-        Files.move(db.resolve(name), backup.resolve(name));
-      first = false;
-    }
+    moveSnapshotOnlyBucketToLive(root, db);
     final AtomicBoolean crashed = new AtomicBoolean();
     SnapshotInstaller.swapProgressForTesting = point -> {
       if (point.startsWith("RESTORING:") && crashed.compareAndSet(false, true))
