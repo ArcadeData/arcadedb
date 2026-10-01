@@ -80,6 +80,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
+import java.net.http.HttpClient;
 import java.nio.ByteBuffer;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -98,6 +99,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -701,6 +703,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Per-probe HTTP ceiling, matching BootstrapElection's own per-attempt cap: an unreachable or slow
   // leader must cost one bounded attempt, not park the lifecycle executor until the next check window.
   private static final long BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS  = 5_000L;
+
+  /**
+   * Re-verification of the closed copies this node keeps marked unverified (issue #8606): the first retry follows the
+   * previous attempt by this much, and each round that leaves a copy still marked doubles it, up to
+   * {@link #UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS}. A new leader, and a request this node refused for a marked copy,
+   * restart the ladder, so the next health tick after this interval asks again.
+   */
+  static final long UNVERIFIED_COPY_REVERIFY_INTERVAL_MS     = 30_000L;
+  static final long UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS = 600_000L;
+
+  // Wall-clock of the last re-verification round claimed by reverifyUnverifiedClosedCopies(); 0 = ask at the next tick.
+  private final    AtomicLong    lastUnverifiedCopyReverifyMs     = new AtomicLong();
+  // Rounds in a row that left a marked copy in place. Written by the lifecycle executor and by a refused request.
+  private final    AtomicInteger unverifiedCopyReverifyFailures   = new AtomicInteger();
+  // The leader the ladder above was climbed against: a different one may hold the database, so it starts over.
+  private volatile RaftPeerId    unverifiedCopyReverifyLeader;
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -5490,6 +5508,206 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (previous != 0 && now - previous < intervalMs)
       return false;
     return lastBootstrapReplacementRetryMs.compareAndSet(previous, now);
+  }
+
+  /**
+   * Periodic re-verification of every closed copy this node keeps marked unverified (issue #8606), driven by the
+   * {@link HealthMonitor} tick. The mark is written when a resync found the leader not holding the database (issue
+   * #8589), and only an install or a drop removes it. Without this, the only things that tried an install again were a
+   * later full resync, a Ratis-initiated install or a replicated entry for the database, so once the leader held the
+   * database again - its 404 was transient, or an operator reopened it there - a database that is only read stayed
+   * refused on this follower for good.
+   * <p>
+   * The marks are read from disk, so a copy marked by any path - the full and targeted resyncs and both reconciles - and
+   * one restored after a restart are all found. For each, the leader is asked first whether it holds the database
+   * registered ({@link UnverifiedClosedCopyCheck#REGISTERED}), the condition under which its snapshot
+   * endpoint serves it: a leader that still does not costs one small request, not a download retried with backoff.
+   * When it does, the copy is reinstalled with the same targeted install a quarantine gets, which replaces the mark with
+   * the copy; it stays marked when anything fails, so this never reopens a copy the leader did not send.
+   * <p>
+   * No-op on the leader (it reopens a marked copy on demand, after asking its peers - issue #8605), while a download is
+   * running, and while no leader address is usable. Otherwise one round per
+   * {@link #unverifiedClosedCopyReverifyIntervalMs(int)} after the previous one, on the {@code lifecycleExecutor}; with
+   * nothing marked a round is one listing of the databases directory.
+   */
+  public void reverifyUnverifiedClosedCopies() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA == null || server == null || raftHA.isLeader())
+      return;
+    if (snapshotDownloadInProgress.get())
+      return;
+    // The same precheck the other retries make, so a tick with no usable leader does not spend the slot.
+    final RaftPeerId leaderId = raftHA.getLeaderId();
+    if (leaderId == null)
+      return;
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(leaderId);
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
+      return;
+    if (!leaderId.equals(unverifiedCopyReverifyLeader)) {
+      // A new leader may hold what the previous one did not: ask it now rather than at the end of the old ladder.
+      unverifiedCopyReverifyLeader = leaderId;
+      restartUnverifiedClosedCopyReverification();
+      lastUnverifiedCopyReverifyMs.set(0L);
+    }
+    final long now = System.currentTimeMillis();
+    final long previous = lastUnverifiedCopyReverifyMs.get();
+    if (previous != 0 && now - previous < unverifiedClosedCopyReverifyIntervalMs(unverifiedCopyReverifyFailures.get()))
+      return;
+    if (!lastUnverifiedCopyReverifyMs.compareAndSet(previous, now))
+      return;
+    try {
+      lifecycleExecutor.submit(this::reverifyUnverifiedClosedCopiesNow);
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot schedule the re-verification of unverified closed copies: executor is shut down");
+    }
+  }
+
+  /**
+   * Restarts the re-verification ladder of {@link #reverifyUnverifiedClosedCopies()}: the next health tick runs a round
+   * once {@link #UNVERIFIED_COPY_REVERIFY_INTERVAL_MS} has passed since the previous one. Called when this node refused a
+   * request for a marked copy (issue #8606): someone wants the database now, so the wait is no longer the long end of
+   * the ladder. Cheap and bounded however often it is called: it never starts a round itself.
+   */
+  public void restartUnverifiedClosedCopyReverification() {
+    unverifiedCopyReverifyFailures.set(0);
+  }
+
+  /**
+   * The wait after a round for the next one, given how many rounds in a row left a marked copy in place: doubling from
+   * {@link #UNVERIFIED_COPY_REVERIFY_INTERVAL_MS} up to {@link #UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS}.
+   */
+  static long unverifiedClosedCopyReverifyIntervalMs(final int consecutiveFailures) {
+    final int doublings = Math.min(Math.max(consecutiveFailures, 0), 16);
+    return Math.min(UNVERIFIED_COPY_REVERIFY_INTERVAL_MS << doublings, UNVERIFIED_COPY_REVERIFY_MAX_INTERVAL_MS);
+  }
+
+  /** One round of {@link #reverifyUnverifiedClosedCopies()}, on the {@code lifecycleExecutor}. */
+  private void reverifyUnverifiedClosedCopiesNow() {
+    final ArcadeDBServer localServer = this.server;
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (localServer == null || raftHA == null)
+      return;
+    final List<String> marked = new ArrayList<>();
+    try {
+      for (final String dbName : SnapshotInstaller.closedDatabaseNames(localServer))
+        if (SnapshotInstaller.isUnverifiedClosedCopy(localServer, dbName))
+          marked.add(dbName);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot list the databases directory to re-verify unverified closed copies: %s", e.getMessage());
+      unverifiedCopyReverifyFailures.incrementAndGet();
+      return;
+    }
+    if (marked.isEmpty()) {
+      unverifiedCopyReverifyFailures.set(0);
+      return;
+    }
+
+    final RaftPeerId leaderId = raftHA.getLeaderId();
+    final PeerDialAddress source = resolveSnapshotSource(leaderId);
+    if (leaderId == null || source.refused()) {
+      HALog.log(this, HALog.BASIC, "Not re-verifying unverified closed copies %s: %s", marked,
+          leaderId == null ? "no leader is known" : source.refusal());
+      unverifiedCopyReverifyFailures.incrementAndGet();
+      return;
+    }
+    final String clusterToken = raftHA.getClusterToken();
+    boolean anyLeft = false;
+    for (final String dbName : marked) {
+      final boolean leaderHoldsIt;
+      try {
+        leaderHoldsIt = leaderHoldsDatabaseRegistered(raftHA, leaderId, source, dbName, clusterToken);
+      } catch (final Exception e) {
+        if (e instanceof InterruptedException)
+          Thread.currentThread().interrupt();
+        HALog.log(this, HALog.BASIC, "Could not ask the leader about database '%s', closed and unverified here: %s",
+            dbName, e.getMessage());
+        anyLeft = true;
+        continue;
+      }
+      if (!leaderHoldsIt) {
+        HALog.log(this, HALog.BASIC,
+            "Database '%s' stays closed and unverified on this follower: the leader still does not hold it", dbName);
+        anyLeft = true;
+        continue;
+      }
+      if (!reinstallUnverifiedClosedCopy(raftHA, source, dbName, clusterToken))
+        anyLeft = true;
+    }
+    if (anyLeft)
+      unverifiedCopyReverifyFailures.incrementAndGet();
+    else
+      unverifiedCopyReverifyFailures.set(0);
+  }
+
+  /**
+   * Asks the leader whether it holds {@code dbName} registered, through the {@code copyOf} form of the bootstrap-state
+   * RPC (issues #8605, #8606), answered from its registry alone: nothing is opened or hashed there. Bounded by
+   * {@link UnverifiedClosedCopyCheck#ROUND_TIMEOUT_MS}, and refused unless the leader itself answered.
+   */
+  private boolean leaderHoldsDatabaseRegistered(final RaftHAServer raftHA, final RaftPeerId leaderId,
+      final PeerDialAddress source, final String dbName, final String clusterToken) throws Exception {
+    final boolean useSSL = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String url = BootstrapElection.chooseUrl(source.httpAddress(), source.httpsAddress(), useSSL);
+    if (url == null)
+      throw new IOException("no address of the leader this node may dial");
+    final HttpClient client = url.startsWith("https://") ? raftHA.getHttpsClients().clientFor(server) : BootstrapElection.HTTP;
+    final CompletableFuture<Boolean> answer =
+        UnverifiedClosedCopyCheck.askWhetherRegistered(client, leaderId.toString(), url, dbName, clusterToken);
+    try {
+      return answer.get(UnverifiedClosedCopyCheck.ROUND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    } catch (final ExecutionException e) {
+      throw e.getCause() instanceof Exception cause ? cause : e;
+    } finally {
+      answer.cancel(true);
+    }
+  }
+
+  /**
+   * Replaces the closed, unverified copy of {@code dbName} with the leader's, under the same single-flight protocol as
+   * {@link #triggerDatabaseResync}, and settles it as that resync settles a success.
+   *
+   * @return whether the copy was installed; {@code false} leaves it closed and marked
+   */
+  private boolean reinstallUnverifiedClosedCopy(final RaftHAServer raftHA, final PeerDialAddress source,
+      final String dbName, final String clusterToken) {
+    if (!snapshotDownloadInProgress.compareAndSet(false, true))
+      return false; // a download is running; the next round asks again
+    try {
+      if (!snapshotDownloadLock.tryLock())
+        return false;
+      try {
+        // Re-checked under the single flight: an install, a drop or an operator may have settled it since the listing.
+        if (server.existsDatabase(dbName) || !SnapshotInstaller.isUnverifiedClosedCopy(server, dbName))
+          return true;
+        try {
+          installLeaderCopy(dbName, source.httpAddress(), source.httpsAddress(), clusterToken);
+        } catch (final LeaderDoesNotHoldDatabaseException e) {
+          // The leader closed it again between its answer and the download: the copy keeps its mark.
+          HALog.log(this, HALog.BASIC, "Database '%s' stays closed and unverified on this follower: %s", dbName,
+              e.getMessage());
+          return false;
+        }
+        LogManager.instance().log(this, Level.INFO,
+            "Database '%s', closed on this follower and unverified since the leader did not hold it, has been "
+                + "reinstalled from the leader, which holds it again: it is served again (issue #8606)", dbName);
+        reconciler.clearLeaderMissing(dbName);
+        clearDivergedDatabase(dbName);
+        clearBootstrapUnreconciled(dbName);
+        settleBootstrapReplacement(dbName);
+        return true;
+      } finally {
+        snapshotDownloadLock.unlock();
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Re-installing database '%s', closed and unverified on this follower, from the leader failed: %s. It stays "
+              + "closed and the next health check retries it", dbName, e.getMessage());
+      return false;
+    } finally {
+      snapshotDownloadInProgress.set(false);
+    }
   }
 
   /**

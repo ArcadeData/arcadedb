@@ -554,6 +554,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return s.getUnverifiedClosedCopyCheck().check(databaseName);
   }
 
+  /** Someone wants the database now: the next health tick re-verifies the copy (issue #8606). */
+  @Override
+  public void onUnverifiedClosedCopyRefused(final String databaseName) {
+    final RaftHAServer s = raftHAServer;
+    final ArcadeStateMachine sm = s != null ? s.getStateMachine() : null;
+    if (sm != null)
+      sm.restartUnverifiedClosedCopyReverification();
+  }
+
   @Override
   public HAReplicationStats getHAReplicationStats() {
     final RaftHAServer s = raftHAServer;

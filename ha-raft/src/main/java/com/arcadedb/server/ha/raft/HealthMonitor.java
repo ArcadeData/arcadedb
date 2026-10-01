@@ -193,6 +193,18 @@ public final class HealthMonitor {
     }
 
     /**
+     * Re-verifies, against the leader, every closed copy this node keeps marked unverified because a resync found the
+     * leader not holding its database (issues #8589, #8606), and reinstalls the ones the leader holds again. No-op on
+     * the leader, between throttled attempts (backing off while the leader still does not hold them), and while no
+     * leader is reachable.
+     * <p>
+     * Its own hook because nothing else retries: the node is ready and applies every entry it is sent, and a database
+     * that is only read never produces the replicated entry whose refused apply would re-arm an install.
+     */
+    default void reverifyUnverifiedClosedCopies() {
+    }
+
+    /**
      * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
      * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
      * write to it fails while it stays leader. Likewise for a leader missing a database the bootstrap baseline
@@ -515,6 +527,9 @@ public final class HealthMonitor {
     // The replacement the bootstrap baseline ordered and that has failed so far (issue #8367): the node holds itself
     // out of the Service until it lands, so something has to keep trying. Self-throttled, free when nothing is pending.
     target.retryPendingBootstrapReplacements();
+    // A closed copy kept unverified because the leader did not hold its database (issue #8606): nothing else re-checks
+    // it once the leader holds the database again. Self-throttled with backoff, free on the leader.
+    target.reverifyUnverifiedClosedCopies();
     // Before the early returns below, so a node that goes CLOSED or whose log writer fails drops a stall it was
     // reporting instead of keeping it until it recovers (issue #8342). It reads the leader commit index the
     // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.

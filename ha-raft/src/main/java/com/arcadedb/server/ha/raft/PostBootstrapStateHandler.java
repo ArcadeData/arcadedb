@@ -147,6 +147,8 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       response.put("peerId", raftHAServer.getLocalPeerId().toString());
       response.put(UnverifiedClosedCopyCheck.COPY,
           UnverifiedClosedCopyCheck.localCopyState(server, raftHAServer.getStateMachine(), copyOf).toJSON(copyOf));
+      // Whether this node's snapshot endpoint would serve it: what a follower re-verifying a copy asks (issue #8606).
+      response.put(UnverifiedClosedCopyCheck.REGISTERED, server.existsDatabase(copyOf));
       return new ExecutionResponse(200, response.toString());
     }
 

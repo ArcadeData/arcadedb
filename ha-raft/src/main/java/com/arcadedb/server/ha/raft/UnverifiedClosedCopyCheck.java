@@ -66,6 +66,14 @@ final class UnverifiedClosedCopyCheck {
   static final String COPY_OF = "copyOf";
   /** Response member carrying the {@link CopyState} of the database {@link #COPY_OF} named. */
   static final String COPY    = "copy";
+  /**
+   * Response member beside {@link #COPY}: whether the answering node holds the database {@link #COPY_OF} named in its
+   * server registry, which is exactly when its snapshot endpoint serves it rather than answering 404
+   * ({@code SnapshotHttpHandler} gates on {@code existsDatabase}). A follower asks its leader before reinstalling a copy
+   * it keeps closed and unverified (issue #8606). Absent from the answer of a server that predates it, which reads as
+   * {@code false}: no install is attempted on it.
+   */
+  static final String REGISTERED = "registered";
 
   /**
    * Budget of one round: every peer is asked at once, and the round ends when all have answered or this much time has
@@ -332,6 +340,38 @@ final class UnverifiedClosedCopyCheck {
         throw new CompletionException(e);
       }
     });
+  }
+
+  /**
+   * Asks one peer, expected to be {@code expectedPeerId}, whether it holds {@code databaseName} registered: see
+   * {@link #REGISTERED}. Answered from the peer's registry alone, nothing opened or hashed there. Package-private for
+   * tests.
+   */
+  static CompletableFuture<Boolean> askWhetherRegistered(final HttpClient client, final String expectedPeerId,
+      final String url, final String databaseName, final String clusterToken) {
+    final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, ROUND_TIMEOUT_MS,
+        new JSONObject().put(COPY_OF, databaseName).toString());
+    return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
+      try {
+        return parseRegistered(response.statusCode(), response.body(), expectedPeerId, url);
+      } catch (final IOException e) {
+        throw new CompletionException(e);
+      }
+    });
+  }
+
+  /**
+   * The {@link #REGISTERED} member of a peer's answer, refused unless the answer names {@code expectedPeerId} as its
+   * author (issue #8658): the address may reach a node other than the one this follower would install from.
+   * Package-private for tests.
+   */
+  static boolean parseRegistered(final int statusCode, final String body, final String expectedPeerId,
+      final String url) throws IOException {
+    if (statusCode != 200)
+      throw new IOException("HTTP " + statusCode);
+    final JSONObject json = new JSONObject(body);
+    LeaderDatabaseQuery.requireAnsweredBy(json, expectedPeerId, url);
+    return json.getBoolean(REGISTERED, false);
   }
 
   /**

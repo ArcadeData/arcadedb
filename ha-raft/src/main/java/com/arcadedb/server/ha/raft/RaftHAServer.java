@@ -1782,6 +1782,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public void reverifyUnverifiedClosedCopies() {
+    if (raftServer == null || shutdownRequested)
+      return;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm != null)
+      sm.reverifyUnverifiedClosedCopies();
+  }
+
+  @Override
   public void handOffLeadershipWhileReplacingDatabase() {
     if (raftServer == null || shutdownRequested)
       return;
