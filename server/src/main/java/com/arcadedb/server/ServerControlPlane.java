@@ -68,6 +68,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -249,8 +250,12 @@ public class ServerControlPlane {
       throw new OperationNotAvailableException("Cannot connect '" + serverAddress
           + "' to the cluster: ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
 
+    // The plugin's own seed report, when it has one (issue #8077): the Raft implementation runs the join and asks the
+    // leader for the seed itself, so its embedded API reports what this verb reports, and this verb consumes that
+    // report instead of asking a second time - one seed request per connect cluster, as issue #7834 requires.
+    final Optional<List<String>> pluginReport;
     try {
-      ha.connectCluster(serverAddress);
+      pluginReport = ha.connectClusterAndReportSeed(serverAddress);
     } catch (final UnsupportedOperationException e) {
       // What this is for is HAServerPlugin.connectCluster's default - an HA implementation with no
       // runtime membership - which is a precondition of this server and must not reach gRPC as
@@ -267,6 +272,10 @@ public class ServerControlPlane {
     // under <server-root>/config/, outside the database directory, so snapshot install covers none of them
     // and the new peer would run with a stale user set, a stale group document and a stale token store until
     // the next cluster-wide change of each kind.
+    //
+    // On Raft the request below is never issued: RaftHAPlugin.connectClusterAndReportSeed has already asked the
+    // leader, and pluginReport is that answer (issue #8077). What follows covers an implementation that leaves
+    // the seed to this verb.
     //
     // ASKED OF THE LEADER rather than run here (issue #7834). This verb does not require the local node to be
     // the leader - only the membership change underneath it is routed there - while the leader already seeds
@@ -285,11 +294,16 @@ public class ServerControlPlane {
     // failed join, because by this point the peer is a committed member. That now includes the IOException the
     // request itself can raise when the leader cannot be reached.
     try {
-      // An empty Optional means this HA implementation has no leader-side seeder; the local seed is then what it
-      // has always been. On Raft it is never empty.
-      final List<String> failedSeeds = ha.seedSecurityStateForAdmission(serverAddress)
-          .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
-              server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
+      // An implementation that reported no seed of its own (the HAServerPlugin default, so never Raft) gets the seed
+      // this verb always ran for it. Within that, an empty Optional means it has no leader-side seeder either, and
+      // the local seed is then what it has always been.
+      final List<String> failedSeeds;
+      if (pluginReport.isPresent())
+        failedSeeds = pluginReport.get();
+      else
+        failedSeeds = ha.seedSecurityStateForAdmission(serverAddress)
+            .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+                server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
       if (!failedSeeds.isEmpty())
         LogManager.instance().log(this, Level.SEVERE,
             "Connect cluster joined '%s' but these security documents could not be seeded to it: %s. That peer is a "
