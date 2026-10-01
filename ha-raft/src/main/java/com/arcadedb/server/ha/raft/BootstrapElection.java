@@ -272,6 +272,13 @@ class BootstrapElection {
   }
 
   void transferToElectedSource(final String sourceId, final long timeoutMs, final long reachabilityWaitMs) {
+    transferToElectedSource(sourceId, timeoutMs, reachabilityWaitMs, () -> {
+    });
+  }
+
+  /** As above, running {@code beforeTransfer} once the source is proven reachable and just before the transfer is issued. */
+  void transferToElectedSource(final String sourceId, final long timeoutMs, final long reachabilityWaitMs,
+      final Runnable beforeTransfer) {
     final long budgetMs = RaftClusterManager.candidateTransferBudgetMs(timeoutMs, timeoutMs);
     final long reachabilityDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.min(budgetMs, reachabilityWaitMs));
     // Follower contact only, not the service-gap screen of handoffReachablePeers(): during bootstrap every node may
@@ -286,6 +293,7 @@ class BootstrapElection {
         throw new IllegalStateException("interrupted while waiting for elected source " + sourceId, e);
       }
     }
+    beforeTransfer.run();
     haServer.transferLeadership(sourceId, budgetMs);
   }
 
@@ -1038,10 +1046,13 @@ class BootstrapElection {
       final Set<String> toHold = new HashSet<>(states.keySet());
       toHold.addAll(held);
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
-      if (stateMachine != null)
-        stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
+      // Announced only once the source is proven reachable, so a screen that refuses leaves the unbounded self-hold alone
+      final Runnable announce = () -> {
+        if (stateMachine != null)
+          stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
+      };
       try {
-        transferToElectedSource(source.toString(), timeoutMs);
+        transferToElectedSource(source.toString(), timeoutMs, REACHABILITY_WAIT_MS, announce);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Bootstrap: leadership transfer to %s failed: %s; will retry next term", source, e.getMessage());

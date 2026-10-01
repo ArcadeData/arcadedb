@@ -22,7 +22,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -67,7 +69,10 @@ class Issue8714BootstrapTransferBudgetTest {
     when(ha.followerContactPeers()).thenReturn(Set.of("peer-c"));
     final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
 
-    assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L)).isInstanceOf(IllegalStateException.class);
+    final AtomicBoolean announced = new AtomicBoolean();
+    assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L, () -> announced.set(true)))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(announced).as("the hold is not replaced when no transfer is issued").isFalse();
 
     verify(ha, never()).transferLeadership(anyString(), anyLong());
   }
