@@ -620,7 +620,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcWriteException(e, "DeleteRecord", req.getTransaction().getTransactionId().isEmpty());
+      handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -651,7 +651,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getDeleted();
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcWriteException(e, "DeleteRecord", req.getTransaction().getTransactionId().isEmpty());
+      handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -744,7 +744,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return resultSet;
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcWriteException(e, "ExecuteCommand", !requestBuilder.hasTransaction());
+      handleGrpcWriteException(e, "ExecuteCommand", commitsOnItsOwn(requestBuilder.getTransaction()));
       return new InternalResultSet();
     }
   }
@@ -917,7 +917,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // Otherwise, treat non-exception as success.
         return rid;
       } catch (StatusRuntimeException | StatusException e) {
-        handleGrpcWriteException(e, "UpdateRecord", !updateBuilder.hasTransaction());
+        handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(updateBuilder.getTransaction()));
         return null;
       }
     } else {
@@ -949,7 +949,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         trackCreatedRecord(record);
         return newRID;
       } catch (StatusRuntimeException | StatusException e) {
-        handleGrpcWriteException(e, "CreateRecord", !request.hasTransaction());
+        handleGrpcWriteException(e, "CreateRecord", commitsOnItsOwn(request.getTransaction()));
         return null;
       }
     }
@@ -2230,8 +2230,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   /**
-   * Whether {@code tx} makes the server commit the request on its own: no context at all, or one that names no
-   * client transaction ({@link #txBeginCommit()} asks for begin+commit inside the call).
+   * Whether {@code tx} makes the server commit the request on its own: no context at all (an unset proto field reads
+   * as the default instance), or one that names no client transaction ({@link #txBeginCommit()} asks for begin+commit
+   * inside the call). The single test every write site uses, so the decision cannot drift between them.
    */
   private static boolean commitsOnItsOwn(final TransactionContext tx) {
     return tx == null || tx.getTransactionId().isEmpty();

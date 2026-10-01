@@ -116,7 +116,7 @@ final class GrpcClientErrorMapper {
     if (!responseMayHaveBeenLost(e))
       return toException(e);
     return new RemoteException("Error on executing remote operation '" + operation
-        + "': the connection failed after the request was sent (" + describe(e)
+        + "': the connection failed and the request may already have reached the server (" + describe(e)
         + "), so the server may already have applied it. It is not reported as retryable, because a replay could apply"
         + " it twice", e);
   }
@@ -141,13 +141,20 @@ final class GrpcClientErrorMapper {
    * does - a refused connection ({@link ConnectException}, which Netty's annotated variant extends) or a host that
    * does not resolve ({@link UnknownHostException}). gRPC carries that cause on the {@code UNAVAILABLE} status of a
    * call that could not get a transport.
+   * <p>
+   * Deliberately narrow: a {@code NoRouteToHostException} or a connect-phase {@code SocketTimeoutException} is not a
+   * {@link ConnectException} and stays an unknown outcome. Erring that way costs a caller a retry decision; erring the
+   * other way applies a write twice. The walk is depth-bounded so a cyclic cause chain cannot hang it.
    */
   static boolean provablyNeverSent(final Throwable e) {
-    for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause())
+    int depth = 0;
+    for (Throwable t = e; t != null && depth < MAX_CAUSE_DEPTH; t = t.getCause() == t ? null : t.getCause(), depth++)
       if (t instanceof ConnectException || t instanceof UnknownHostException)
         return true;
     return false;
   }
+
+  private static final int MAX_CAUSE_DEPTH = 32;
 
   private static String describe(final Throwable e) {
     final Status status = Status.fromThrowable(e);

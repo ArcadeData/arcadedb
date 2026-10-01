@@ -27,6 +27,7 @@ import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.timeseries.TimeSeriesPoint;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.InsertOptions;
+import com.arcadedb.server.grpc.TransactionContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -200,6 +202,48 @@ class Issue8525GrpcAutoCommitLostResponseIT extends BaseGrpcClientServerTest {
     database.dropping.clear();
     assertThat(executions.get()).as("the scope is retried").isEqualTo(3);
     assertThat(count()).as("no attempt reached its commit").isZero();
+  }
+
+  /**
+   * {@code executeCommand} with an explicit client transaction id is not self-committing, so a lost response keeps the
+   * retryable mapping, and the write is not durable until a commit that never comes.
+   */
+  @Test
+  void executeCommandInsideAClientTransactionStaysRetryable() throws ReflectiveOperationException {
+    database.begin();
+    // The id is private state of RemoteGrpcDatabase and the session-id getter is package-private to com.arcadedb.remote
+    final Field transactionId = RemoteGrpcDatabase.class.getDeclaredField("transactionId");
+    transactionId.setAccessible(true);
+    final TransactionContext tx = TransactionContext.newBuilder().setTransactionId((String) transactionId.get(database))
+        .setDatabase(getDatabaseName()).build();
+
+    database.dropping.add(ArcadeDbServiceGrpc.getExecuteCommandMethod().getFullMethodName());
+    try {
+      assertThatThrownBy(() -> database.executeCommand("sql", "INSERT INTO " + TYPE + " SET name = 'Alice'", Map.of(), false, 0, tx,
+          30_000)).isInstanceOf(NeedRetryException.class);
+    } finally {
+      database.dropping.clear();
+    }
+    database.rollback();
+    assertThat(count()).isZero();
+  }
+
+  /**
+   * A {@code validate_only} bulk insert is a dry run that commits nothing, so replaying it is safe and a lost response
+   * keeps the retryable mapping.
+   */
+  @Test
+  void validateOnlyBulkInsertStaysRetryable() {
+    final InsertOptions options = InsertOptions.newBuilder().setTargetClass(TYPE).setValidateOnly(true).build();
+
+    database.dropping.add(ArcadeDbServiceGrpc.getBulkInsertMethod().getFullMethodName());
+    try {
+      assertThatThrownBy(() -> database.insertBulkAsListOfMaps(options, List.of(Map.of("name", "Alice")), 30_000))
+          .isInstanceOf(NeedRetryException.class);
+    } finally {
+      database.dropping.clear();
+    }
+    assertThat(count()).isZero();
   }
 
   private void assertUnknownOutcome(final MethodDescriptor<?, ?> method, final ThrowingCallable call) {
