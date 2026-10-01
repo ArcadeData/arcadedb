@@ -186,6 +186,60 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
   }
 
   @Test
+  void everyFormOfANullRangeBoundMatchesNothingOnASingleAndACompositeIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE K");
+      database.command("sql", "CREATE PROPERTY K.a LONG");
+      database.command("sql", "CREATE PROPERTY K.b LONG");
+      database.command("sql", "CREATE INDEX ON K (a, b) NOTUNIQUE");
+      for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 10; b++)
+          database.command("sql", "CREATE VERTEX K SET a = " + a + ", b = " + b);
+    });
+    final HashMap<String, Object> nullParam = new HashMap<>();
+    nullParam.put("p", null);
+    for (final String where : new String[] { "a >= :p", "a <= :p", "a BETWEEN :p AND :p", "a = 1 AND b >= :p", "a = 1 AND b <= :p",
+        "a = 1 AND b BETWEEN :p AND :p" })
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM K WHERE " + where, nullParam);
+          final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM K WHERE " + where.replaceAll("\\b(a|b)\\b(?= [>=<B])", "$1 + 0"),
+              nullParam)) {
+        assertThat(rs.next().<Long>getProperty("c")).as(where).isEqualTo(scan.next().<Long>getProperty("c")).isEqualTo(0L);
+      }
+    // a null in the equality slot keeps what it did before: it is the same on the index and on a scan
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM K WHERE a = :p AND b > 5", nullParam);
+        final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM K WHERE a + 0 = :p AND b + 0 > 5", nullParam)) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(scan.next().<Long>getProperty("c"));
+    }
+  }
+
+  @Test
+  void aParentIndexWithRecordsInASubtypeAnswersAsTheScanAndACaseInsensitiveIndexKeepsTheAggregate() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE P");
+      database.command("sql", "CREATE PROPERTY P.a LONG");
+      database.command("sql", "CREATE INDEX ON P (a) NOTUNIQUE");
+      database.command("sql", "CREATE VERTEX TYPE S EXTENDS P");
+      for (int i = 0; i < 50; i++) {
+        database.command("sql", "CREATE VERTEX P SET a = " + (i * 2));
+        database.command("sql", "CREATE VERTEX S SET a = " + (i * 2 + 1));
+      }
+      database.command("sql", "CREATE VERTEX TYPE T");
+      database.command("sql", "CREATE PROPERTY T.s STRING");
+      database.command("sql", "CREATE INDEX ON T (s COLLATE CI) NOTUNIQUE");
+      for (final String s : new String[] { "b", "C", "a", "D", "E" })
+        database.command("sql", "CREATE VERTEX T SET s = '" + s + "'");
+    });
+    assertAnswer("SELECT min(a) AS c FROM P WHERE a > 10", "SELECT min(a + 0) AS c FROM P WHERE a + 0 > 10", 11L);
+    assertAnswer("SELECT max(a) AS c FROM P WHERE a < 10", "SELECT max(a + 0) AS c FROM P WHERE a + 0 < 10", 9L);
+    assertAnswer("SELECT min(a) AS c FROM S WHERE a > 10", "SELECT min(a + 0) AS c FROM S WHERE a + 0 > 10", 11L);
+    // a case-insensitive index holds folded keys, so its order is not the order of the values: the rewrite is not used
+    for (final String sql : new String[] { "SELECT min(s) AS c FROM T WHERE s > 'B'", "SELECT max(s) AS c FROM T WHERE s < 'D'" })
+      try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
+        assertThat(rs.next().<String>getProperty("executionPlanAsString")).doesNotContain("FIRST ROW VALUE");
+      }
+  }
+
+  @Test
   void anEqualityNullPrefixOfACompositeIndexIsNotANullRangeBound() {
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE N");

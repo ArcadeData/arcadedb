@@ -152,10 +152,12 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
   private Object readEndOfRange(final CommandContext context, final TypeIndex index) {
     // a comparison with null is never true: a null parameter bound leaves nothing to find, so do not walk the index for it
     for (final RangePredicate predicate : range)
-      if (predicate.isParameter() && (context.getInputParameters() == null
-          || context.getInputParameters().get((String) predicate.getValue()) == null))
+      if (predicate.isParameter() && context.getInputParameters() != null
+          && context.getInputParameters().containsKey((String) predicate.getValue())
+          && context.getInputParameters().get((String) predicate.getValue()) == null)
         return null;
 
+    // cost and cardinality estimates are for the optimizer: this scan is built by hand
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, typeName, propertyName, range, index.getName(),
         List.of(propertyName), 0, 0);
     scan.setIndexOrder(!max, NodeIndexRangeScan.NullKeys.NONE);
