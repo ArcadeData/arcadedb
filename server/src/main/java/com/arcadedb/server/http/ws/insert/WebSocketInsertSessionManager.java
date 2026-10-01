@@ -74,6 +74,15 @@ public class WebSocketInsertSessionManager {
   /** Set by {@link #close()}, so a frame racing the shutdown cannot open a session nothing will ever roll back. */
   private volatile boolean                              closed;
   /**
+   * Test-only hook run by {@link #start} on the calling thread right after the channel claim is released and before
+   * the session is registered - the window a concurrent {@link #closeChannelSessions} has to land in to find a claim
+   * but no session (issue #7471). {@code null} in production, where the only cost is one reference read per
+   * {@code start} frame. A regression test cannot reach that window by timing: a thread parked on the claim's map
+   * bin is not handed the bin when the claim releases it, and the starting thread usually takes it back first
+   * (issue #7975).
+   */
+  volatile Runnable                                     afterChannelClaimForTesting;
+  /**
    * Notified when a session is rolled back by something other than its own client, so the client can be told.
    * Its write is one of several independent senders on a {@code /ws} channel; {@code WebSocketFrameSender}
    * records why they need no lock between them (issue #7423).
@@ -177,6 +186,11 @@ public class WebSocketInsertSessionManager {
     final DatabaseInternal database;
     final WebSocketInsertSession session;
     try {
+      // Inside the try, so a hook that throws releases the claim like any other failure here.
+      final Runnable afterClaimHook = afterChannelClaimForTesting;
+      if (afterClaimHook != null)
+        afterClaimHook.run();
+
       database = server.getDatabase(databaseName, false, false);
       session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession);
       // Before it is registered, not after: a session the sweep can see must already know where to send its

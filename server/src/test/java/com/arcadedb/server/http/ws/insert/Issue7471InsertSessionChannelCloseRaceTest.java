@@ -28,7 +28,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -124,35 +124,34 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
    * close fires once per connection, so that session was then orphaned until the idle sweep, which is the exact
    * symptom this test class exists for, on microseconds instead of on an arbitrarily delayed frame.
    * <p>
-   * Driven deterministically rather than by repetition: the close is launched from inside the claim itself and
-   * waited for until it is BLOCKED on the very map key {@code start} is holding, so it is guaranteed to run in the
-   * window the instant the claim is released.
+   * Driven through the manager's post-claim hook rather than by timing (issue #7975): the close runs to completion
+   * in the window on every run, so the claim re-read is the only thing that can notice it.
    */
   @Test
-  void aCloseLandingBetweenTheClaimAndTheRegistrationLeavesNothingOrphaned() throws Exception {
+  void aCloseLandingBetweenTheClaimAndTheRegistrationLeavesNothingOrphaned() {
     final WebSocketInsertSessionManager manager = getServer(0).getHttpServer().getInsertSessionManager();
     final UUID channelId = UUID.randomUUID();
     final WebSocketChannel channel = openChannel();
 
-    final AtomicReference<Thread> closer = new AtomicReference<>();
-    // getAttribute is called exactly once by start(), from inside the byChannel claim. Launching the close there
-    // and waiting for it to block puts it first in line for the key the claim is about to release.
-    when(channel.getAttribute(anyString())).thenAnswer(invocation -> {
-      if (closer.get() == null) {
-        final Thread thread = new Thread(() -> manager.closeChannelSessions(channel, channelId), "issue7471-closer");
-        closer.set(thread);
-        thread.start();
-        awaitBlocked(thread);
-      }
-      return null;
-    });
+    final AtomicBoolean closed = new AtomicBoolean();
+    // The claim's map bin is already released when the hook runs, so the close can run on this very thread.
+    manager.afterChannelClaimForTesting = () -> {
+      manager.closeChannelSessions(channel, channelId);
+      closed.set(true);
+    };
 
-    assertThatThrownBy(() -> manager.start(rootUser(), channel, channelId, getDatabaseName(), null, options(), null))
-        .as("a start whose connection closed underneath it must refuse rather than return an untracked session")
-        .isInstanceOf(IllegalStateException.class);
+    try {
+      assertThatThrownBy(() -> manager.start(rootUser(), channel, channelId, getDatabaseName(), null, options(), null))
+          .as("a start whose connection closed underneath it must refuse rather than return an untracked session")
+          .isInstanceOf(IllegalStateException.class)
+          // The re-read of the claim is what refuses it, not the channel check inside the claim: the close ran
+          // after the claim was taken, so the claim is the only place it could have been noticed.
+          .hasMessageContaining("closed while the insert session was being opened");
+    } finally {
+      manager.afterChannelClaimForTesting = null;
+    }
 
-    closer.get().join(30_000);
-
+    assertThat(closed.get()).as("the close must have run inside the window").isTrue();
     assertThat(manager.getOpenSessionCount())
         .as("no session may be left registered, and none may be left holding a transaction").isZero();
   }
@@ -190,17 +189,6 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
 
     manager.closeChannelSessions(channel, channelId);
     assertThat(manager.getOpenSessionCount()).isZero();
-  }
-
-  /** Waits until {@code thread} is parked on a monitor - the ConcurrentHashMap bin the claim is holding. */
-  private static void awaitBlocked(final Thread thread) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 10_000;
-    while (System.currentTimeMillis() < deadline) {
-      final Thread.State state = thread.getState();
-      if (state == Thread.State.BLOCKED || state == Thread.State.WAITING || state == Thread.State.TERMINATED)
-        return;
-      Thread.sleep(1);
-    }
   }
 
   /** A mocked channel whose attribute map is real, so the close marker behaves as it does on a live connection. */
