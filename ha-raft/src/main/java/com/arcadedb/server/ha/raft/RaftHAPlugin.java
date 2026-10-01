@@ -1028,6 +1028,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Not leader-routed, matching the add-peer route and {@code PostServerCommandHandler}, which forwards
    * neither half of the cluster pair: the Ratis client underneath {@code addPeer} sends the
    * configuration change to the leader itself.
+   * <p>
+   * The membership change alone: a residual security-seed failure is reported by
+   * {@link #connectClusterAndReportSeed}, which is what {@code ServerControlPlane.connectCluster} and an embedder
+   * that needs the outcome call (issue #8077).
    */
   @Override
   public void connectCluster(final String serverAddress) {
@@ -1046,6 +1050,20 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // A declared HTTP port goes in with it, so it is in place before the commit starts the security seed whose
     // capability probe dials it (issue #8330).
     raft.addPeer(target.peer(), target.name(), target.httpAddress());
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * The join first, the seed report second, exactly as {@link #addPeerAndReportSeed} does it (issue #8077): the
+   * seed is asked of the leader, which already seeds every membership change of its own accord (issues #7531 and
+   * #7834), and nothing raised while asking can turn the committed join back into a failed one. Never an empty
+   * {@code Optional}, so {@code ServerControlPlane.connectCluster} reports this result and does not ask again.
+   */
+  @Override
+  public Optional<List<String>> connectClusterAndReportSeed(final String serverAddress) {
+    connectCluster(serverAddress);
+    return Optional.of(seedReportForAdmission(serverAddress));
   }
 
   @Override

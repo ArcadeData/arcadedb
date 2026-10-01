@@ -549,6 +549,46 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * {@link #connectCluster(String)} for a caller that needs the outcome of the cluster security seed, and not only
+   * the membership change (issue #8077, the {@code connect cluster} counterpart of {@link #addPeerAndReportSeed}).
+   * <p>
+   * {@code ServerControlPlane.connectCluster} - the front door both wire transports reach - has reported a residual
+   * seed failure since issue #7532, and it does so by consuming this method, so there is exactly one seed request
+   * per {@code connect cluster} (issue #7834). An embedding application that calls the plugin directly, through
+   * {@code server.getHA()}, calls this one to get the same report; {@link #connectCluster(String)} stays the
+   * membership change alone.
+   * <p>
+   * <b>The peer is a member whenever this returns</b>, failing documents or not. A non-empty list is not a failed
+   * join and must not be retried as one; re-issuing the same join is idempotent on the membership change and
+   * reissues the seed, which is the remediation. A membership change that did <i>not</i> happen leaves by an
+   * exception instead, exactly as {@link #connectCluster(String)} always has. An override must therefore never
+   * throw once the membership change has happened: a seed it could not run is reported, as every document failing.
+   * A non-empty report is returned, not logged: the caller owns it, unlike the void {@code addPeer}, which has no
+   * caller to hand it to.
+   * <p>
+   * <b>It waits for the seed report</b>, which {@link #connectCluster(String)} does not: on Raft that is the bounded
+   * wait {@code addPeer} documents ({@code arcadedb.ha.securitySeedRetryTimeout} plus a fixed margin), seconds in
+   * the worst case. An embedder on a latency-sensitive thread that does not need the report keeps calling
+   * {@link #connectCluster(String)}.
+   * <p>
+   * <b>An empty {@link Optional} is not an empty failure list</b>, with the meaning
+   * {@link #seedSecurityStateForAdmission} gives it: this implementation reports no seed of its own, and the caller
+   * that wants one runs it - which is what the default does, so an implementation predating this method keeps the
+   * seed {@code ServerControlPlane.connectCluster} always ran for it, through {@link #seedSecurityStateForAdmission}
+   * or locally.
+   *
+   * @param serverAddress one entry of {@code arcadedb.ha.serverList}, as for {@link #connectCluster(String)}
+   *
+   * @return the names of the security documents that could not be seeded to the joined server, in the order
+   * {@code ServerSecurity.seedSecurityStateClusterWide} reports them - empty for a clean join - or an empty
+   * {@code Optional} when this implementation leaves the seed to its caller
+   */
+  default Optional<List<String>> connectClusterAndReportSeed(final String serverAddress) {
+    connectCluster(serverAddress);
+    return Optional.empty();
+  }
+
+  /**
    * Adds a new peer to the cluster at runtime.
    */
   default void addPeer(final String peerId, final String address) {
