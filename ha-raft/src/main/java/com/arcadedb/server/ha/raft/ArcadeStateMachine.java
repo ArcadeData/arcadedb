@@ -2690,15 +2690,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // re-checks against the restored state instead of the floor (issue #6111).
       clearStaleSnapshotFloor();
 
+      final Set<String> leaderMissing = reconcileResult.leaderMissing();
+      // A LEADER_MISSING database is named, so an operator reading this line sees why the node may stay out of the
+      // Service although the install itself succeeded (issue #8702).
       LogManager.instance().log(this, Level.INFO,
-          "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
-          notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
+          "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d%s",
+          notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex,
+          leaderMissing == null || leaderMissing.isEmpty() ? "" :
+              ", kept without refresh because the leader does not hold them: " + leaderMissing);
       // A database this install reinstalled no longer holds the copy the bootstrap overwrite guard had kept, so its
       // divergence mark goes (issue #6124), and so does its pending bootstrap replacement with the readiness holder it
       // owns (issue #8367). Two kinds of present database were NOT reinstalled and still hold that copy: one the
       // reconcile gave up on (issue #6760) and one the leader does not hold (LEADER_MISSING, issues #8559/#8588).
       // Both keep their mark and their pending replacement, as in downloadAllDatabasesFrom (issue #8702).
-      final Set<String> leaderMissing = reconcileResult.leaderMissing();
       if (notInstalled.isEmpty() && (leaderMissing == null || leaderMissing.isEmpty())) {
         clearAllBootstrapUnreconciled();
         settleBootstrapReplacementsExcept(null);
