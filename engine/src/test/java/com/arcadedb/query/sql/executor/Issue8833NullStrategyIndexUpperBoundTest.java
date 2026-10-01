@@ -113,4 +113,38 @@ class Issue8833NullStrategyIndexUpperBoundTest extends TestHelper {
     assertThat(values("SELECT b AS n FROM D WHERE a = 5 AND b < 3")).containsExactlyInAnyOrder(0L, 1L, 2L);
     assertThat(values("SELECT b AS n FROM D WHERE a = 5 AND b < 3 ORDER BY b DESC")).containsExactly(2L, 1L, 0L);
   }
+
+  @Test
+  void boundedBothSidesOnLaterColumnStillWorks() {
+    database.command("sql", "CREATE VERTEX TYPE E");
+    database.command("sql", "CREATE PROPERTY E.a LONG");
+    database.command("sql", "CREATE PROPERTY E.b LONG");
+    database.command("sql", "CREATE INDEX ON E (a, b) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      for (long i = 0; i < 5; i++)
+        database.newVertex("E").set("a", 5L, "b", i).save();
+      database.newVertex("E").set("a", 5L).save();
+    });
+    assertThat(values("SELECT b AS n FROM E WHERE a = 5 AND b > 1 AND b < 4")).containsExactlyInAnyOrder(2L, 3L);
+  }
+
+  @Test
+  void stringKeyAndUniqueIndexExcludeNullKeys() {
+    database.command("sql", "CREATE VERTEX TYPE S");
+    database.command("sql", "CREATE PROPERTY S.s STRING");
+    database.command("sql", "CREATE INDEX ON S (s) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.command("sql", "CREATE VERTEX TYPE U");
+    database.command("sql", "CREATE PROPERTY U.n LONG");
+    database.command("sql", "CREATE INDEX ON U (n) UNIQUE NULL_STRATEGY INDEX");
+    database.transaction(() -> {
+      for (final String v : List.of("a", "b", "c"))
+        database.newVertex("S").set("s", v).save();
+      database.newVertex("S").save();
+      for (long i = 0; i < 5; i++)
+        database.newVertex("U").set("n", i).save();
+      database.newVertex("U").save();
+    });
+    assertThat(values("SELECT s AS n FROM S WHERE s < 'c' ORDER BY s")).containsExactly("a", "b");
+    assertThat(values("SELECT n FROM U WHERE n < 3 ORDER BY n")).containsExactly(0L, 1L, 2L);
+  }
 }

@@ -96,6 +96,8 @@ class Issue8834Issue8835RangeIndexTest extends TestHelper {
     assertThat(longs("MATCH (n:NQ) WHERE n.a > 5 RETURN n.a AS v ORDER BY v")).containsExactly(20L);
     assertThat(longs("MATCH (n:NQ) WHERE n.a < 25 RETURN n.a AS v ORDER BY v")).containsExactly(20L);
     assertThat(longs("MATCH (n:NR) WHERE n.a >= 0 RETURN n.a AS v")).containsExactly(30L);
+    assertThat(longs("MATCH (n:NQ) WHERE n.a > 5 RETURN n.a AS v ORDER BY v DESC")).containsExactly(20L);
+    assertThat(longs("MATCH (n:NQ) RETURN n.a AS v ORDER BY n.a DESC LIMIT 1")).isNotEmpty();
   }
 
   @Test
