@@ -881,7 +881,7 @@ public class SelectExecutionPlanner {
         }
       } catch (final IndexException e) {
         // Dropped or rebuilt while reading it: not a candidate
-        LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
+        logSkippedIndex(index, e);
       }
     }
     return null;
@@ -3899,7 +3899,7 @@ public class SelectExecutionPlanner {
         nullStrategy = idx.getNullStrategy();
       } catch (final IndexException e) {
         // Dropped or rebuilt while reading it: not a candidate
-        LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", idx.getName(), e.getMessage());
+        logSkippedIndex(idx, e);
         continue;
       }
       if (indexFields.size() < info.orderBy.getItems().size()) {
@@ -4624,6 +4624,10 @@ public class SelectExecutionPlanner {
    * go away right after it: the callers read an index's metadata under a try/catch of IndexException, and any new planner
    * path that reads index metadata must do the same.
    */
+  private void logSkippedIndex(final Index index, final IndexException e) {
+    LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
+  }
+
   private static boolean isPlannable(final Index index) {
     try {
       return (!(index instanceof IndexInternal internal) || internal.isValid()) && index.getType() != null;
@@ -4635,12 +4639,8 @@ public class SelectExecutionPlanner {
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
     final List<TypeIndex> result = new ArrayList<>(indexes.size());
     for (final TypeIndex index : indexes) {
-      try {
-        if (isPlannable(index))
-          result.add(index);
-      } catch (final IndexException e) {
-        // Dropped or rebuilt while checking
-      }
+      if (isPlannable(index))
+        result.add(index);
     }
     return result;
   }
@@ -4832,7 +4832,7 @@ public class SelectExecutionPlanner {
       return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
     } catch (final IndexException e) {
       // Dropped or rebuilt after plannableIndexes()
-      LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
+      logSkippedIndex(index, e);
       return null;
     }
   }
@@ -4918,7 +4918,7 @@ public class SelectExecutionPlanner {
       return buildIndexSearchDescriptorInternal(context, index, block, clazz);
     } catch (final IndexException e) {
       // Dropped or rebuilt between plannableIndexes() and here: not a candidate for this plan
-      LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
+      logSkippedIndex(index, e);
       return null;
     }
   }
