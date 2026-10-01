@@ -25,7 +25,8 @@ package com.arcadedb.engine.timeseries;
  * The buckets are multiples of the granularity counted from the Unix epoch, shifted by {@code offsetMs} (issue #8798,
  * see {@link TimeBucketGrid}): zero keeps the epoch-aligned grid, and {@code -8 hours} makes daily buckets start at
  * local midnight in UTC+8. It should be the same offset the queries over the type bucket with, so a downsampled
- * block does not straddle two of their buckets.
+ * block does not straddle two of their buckets. Blocks already downsampled to this granularity are not re-bucketed, so
+ * changing the offset of an existing tier only affects data downsampled afterwards.
  *
  * @param afterMs       age threshold in milliseconds (must be > 0)
  * @param granularityMs target resolution in milliseconds (must be > 0)
