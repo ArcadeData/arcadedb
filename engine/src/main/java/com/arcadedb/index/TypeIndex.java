@@ -741,9 +741,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // Return stored metadata if available, otherwise delegate to first underlying bucket index
     if (metadata != null)
       return metadata;
-    if (!indexesOnBuckets.isEmpty())
-      return getFirstUnderlyingIndex().getMetadata();
-    return null;
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getMetadata();
   }
 
   @Override
@@ -753,8 +752,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // for all of them.
     if (metadata != null)
       return metadata;
-    if (!indexesOnBuckets.isEmpty())
-      return getFirstUnderlyingIndex().getMetadataForNewFile();
-    return null;
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getMetadataForNewFile();
   }
 }
