@@ -45,6 +45,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and issue #8021). It only shows on a GraalVM JDK and only for one class order, so no single run catches it; the rule
  * is held by reading the sources instead. A test mocks these types through {@link SubclassMocks}, either explicitly or
  * by statically importing {@code SubclassMocks.mock} in place of {@code Mockito.mock}.
+ * <p>
+ * The import is a file-level exemption: once a file imports {@code SubclassMocks.mock}, every bare {@code mock(...)} in
+ * it is a subclass mock, whatever type it names, and stays one only while that import does. {@code Mockito.mock(...)}
+ * is flagged regardless. The scan is a regular-expression approximation, not a parser: a mock or spy built through a
+ * helper that receives the class as a variable, or a {@code spy(instance)} of a variable, is out of its reach.
  */
 class InlineMocksOfJitWarmTypesTest {
 
@@ -59,17 +64,31 @@ class InlineMocksOfJitWarmTypesTest {
    */
   private static final String GUARDED_TYPES = "LocalDatabase|TransactionContext|TransactionManager|LocalSchema|FileManager|ComponentFile";
 
-  /** A mock call whose own settings pick a mock maker ({@code withSettings().mockMaker(SUBCLASS)}) is not flagged. */
+  /** A guarded type by its simple or fully qualified name ({@code com.arcadedb.database.LocalDatabase}). */
+  private static final String GUARDED_TYPE = "(?:[a-z_]\\w*\\.)*(?:" + GUARDED_TYPES + ")";
+
+  /**
+   * A mock call whose own settings pick a mock maker ({@code withSettings().mockMaker(SUBCLASS)}) is not flagged. An
+   * approximation: it exempts the call when {@code mockMaker} appears anywhere before the statement's next {@code ;},
+   * so a second mock call or a lambda body on the same statement could hide an inline mock.
+   */
   private static final String NO_EXPLICIT_MAKER = "\\.class\\b(?![^;]*mockMaker)";
 
   /** {@code Mockito.mock(LocalDatabase.class...)}: the inline maker whatever this file imports. */
-  private static final Pattern QUALIFIED_MOCK = Pattern.compile("\\bMockito\\.mock\\(\\s*(?:" + GUARDED_TYPES + ")" + NO_EXPLICIT_MAKER);
+  private static final Pattern QUALIFIED_MOCK = Pattern.compile("\\bMockito\\.mock\\(\\s*" + GUARDED_TYPE + NO_EXPLICIT_MAKER);
 
   /** {@code mock(LocalDatabase.class...)}: the inline maker when {@code mock} is {@code Mockito.mock}. */
-  private static final Pattern BARE_MOCK = Pattern.compile("(?<![\\w.])mock\\(\\s*(?:" + GUARDED_TYPES + ")" + NO_EXPLICIT_MAKER);
+  private static final Pattern BARE_MOCK = Pattern.compile("(?<![\\w.])mock\\(\\s*" + GUARDED_TYPE + NO_EXPLICIT_MAKER);
+
+  /**
+   * {@code spy(LocalDatabase.class)} or {@code spy(new LocalDatabase(...))}, bare or {@code Mockito.}-qualified: an
+   * inline spy retransforms the class exactly like an inline mock. {@code SubclassMocks.spy(instance)} is the way out.
+   */
+  private static final Pattern INLINE_SPY = Pattern.compile(
+      "(?<![\\w.]|SubclassMocks\\.)(?:Mockito\\.)?spy\\(\\s*(?:new\\s+" + GUARDED_TYPE + "\\s*\\(|" + GUARDED_TYPE + "\\.class\\b)");
 
   /** {@code @Mock LocalDatabase database;}: the extension builds it with the configured (inline) maker. */
-  private static final Pattern ANNOTATED_MOCK = Pattern.compile("@Mock\\b[^;=]*?\\b(?:" + GUARDED_TYPES + ")\\s+\\w+\\s*;");
+  private static final Pattern ANNOTATED_MOCK = Pattern.compile("@(?:Mock|Spy)\\b[^;=]*?\\b(?:" + GUARDED_TYPES + ")\\s+\\w+\\s*[;=]");
 
   /** The static import that turns every bare {@code mock(...)} of a file into a subclass mock. */
   private static final Pattern SUBCLASS_MOCK_IMPORT = Pattern.compile("import\\s+static\\s+com\\.arcadedb\\.utility\\.SubclassMocks\\.(?:mock|\\*)\\s*;");
@@ -104,6 +123,16 @@ class InlineMocksOfJitWarmTypesTest {
     sources.put("a/Qualified.java", """
         import static com.arcadedb.utility.SubclassMocks.mock;
         class Qualified { @Test void t() { TransactionManager tm = Mockito.mock(TransactionManager.class); } }""");
+    sources.put("a/FullyQualified.java", """
+        import static org.mockito.Mockito.mock;
+        class FullyQualified { @Test void t() { Object db = mock(com.arcadedb.database.LocalDatabase.class); } }""");
+    sources.put("a/SpyOfClass.java", """
+        class SpyOfClass { @Test void t() { LocalDatabase db = Mockito.spy(LocalDatabase.class); } }""");
+    sources.put("a/SpyOfNew.java", """
+        import static org.mockito.Mockito.spy;
+        class SpyOfNew { @Test void t() { TransactionManager tm = spy(new TransactionManager(db)); } }""");
+    sources.put("a/AnnotatedSpy.java", """
+        class AnnotatedSpy { @Spy private FileManager files = new FileManager(); @Test void t() { } }""");
     sources.put("a/Annotated.java", """
         class Annotated { @Mock private LocalSchema schema; @Test void t() { } }""");
 
@@ -117,12 +146,15 @@ class InlineMocksOfJitWarmTypesTest {
         class Imported { @Test void t() { FileManager fm = mock(FileManager.class); ComponentFile f = mock(ComponentFile.class); } }""");
     sources.put("b/OwnSettings.java", """
         class OwnSettings { @Test void t() { LocalDatabase db = Mockito.mock(LocalDatabase.class, withSettings().mockMaker(MockMakers.SUBCLASS)); } }""");
+    sources.put("b/SubclassSpy.java", """
+        class SubclassSpy { @Test void t() { LocalDatabase db = SubclassMocks.spy(real); } }""");
     sources.put("b/Unguarded.java", """
         import static org.mockito.Mockito.mock;
         class Unguarded { @Test void t() { LocalDatabaseFactory f = mock(LocalDatabaseFactory.class); } }""");
 
     final List<String> offenders = offenders(sources);
-    for (final String name : List.of("Bare", "BareWithAnswer", "Qualified", "Annotated"))
+    for (final String name : List.of("Bare", "BareWithAnswer", "Qualified", "FullyQualified", "SpyOfClass", "SpyOfNew", "AnnotatedSpy",
+        "Annotated"))
       assertThat(offenders).as("the scan must flag %s", name).anyMatch(o -> o.startsWith("a/" + name + ".java"));
     assertThat(offenders).as("the scan must not flag a shape that is fine").noneMatch(o -> o.startsWith("b/"));
   }
@@ -157,7 +189,8 @@ class InlineMocksOfJitWarmTypesTest {
       report(offenders, name, source, QUALIFIED_MOCK.matcher(source), "Mockito.mock(...) of a JIT-warm engine type");
       if (!SUBCLASS_MOCK_IMPORT.matcher(source).find())
         report(offenders, name, source, BARE_MOCK.matcher(source), "inline mock(...) of a JIT-warm engine type");
-      report(offenders, name, source, ANNOTATED_MOCK.matcher(source), "@Mock of a JIT-warm engine type");
+      report(offenders, name, source, INLINE_SPY.matcher(source), "inline spy(...) of a JIT-warm engine type");
+      report(offenders, name, source, ANNOTATED_MOCK.matcher(source), "@Mock/@Spy of a JIT-warm engine type");
     }
     return offenders;
   }
