@@ -180,7 +180,17 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
     failure = () -> new IllegalStateException("engine fault");
     final JSONObject error = streamedError(postStream("query"));
     assertThat(error.getInt("status")).as("error line: %s", error).isEqualTo(500);
-    assertThat(error.has("exception")).isTrue();
+    assertThat(error.getString("exception")).isEqualTo(IllegalStateException.class.getName());
+    assertThat(error.getString("message")).isEqualTo("engine fault");
+  }
+
+  /** A failure with no message still says something: its simple class name, as the line always did. */
+  @Test
+  void aFailureWithNoMessageReportsItsClassName() throws Exception {
+    failure = IllegalStateException::new;
+    final JSONObject error = streamedError(postStream("query"));
+    assertThat(error.getInt("status")).as("error line: %s", error).isEqualTo(500);
+    assertThat(error.getString("message")).isEqualTo(IllegalStateException.class.getSimpleName());
   }
 
   /**
