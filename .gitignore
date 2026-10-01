@@ -579,3 +579,5 @@ notes.txt
 /server/chats
 config/ai.json
 config/support.json
+config/instance.id
+config/mcp-config.json
