@@ -678,8 +678,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
+      // #8817: the transaction lane is keyed by the LOGICAL name of the owning LSMTreeIndex, which is what
+      // LSMTreeIndex.get() and addIndexKeyLock() use. The mutable file's own name is NOT that name once a compaction
+      // has swapped in a new mutable file, so looking the lane up by it found nothing and the range cursor
+      // dropped every pending ADD/REMOVE of the transaction.
+      final LSMTreeIndex mainIndex = index.getMainIndex();
       final TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = index.getDatabase()
-          .getTransaction().getIndexChanges().getIndexKeys(index.getName());
+          .getTransaction().getIndexChanges().getIndexKeys(mainIndex != null ? mainIndex.getName() : index.getName());
       if (indexChanges != null) {
         Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
         // #4947: biased navigation keys, never plain ComparableKeys. A PARTIAL key compares equal to every
