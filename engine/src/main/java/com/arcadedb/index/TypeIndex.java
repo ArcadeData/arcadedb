@@ -50,7 +50,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private       String              logicName;
   private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
-  private       boolean             valid            = true;
+  private volatile boolean             valid            = true;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -391,9 +391,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    indexesOnBuckets.clear();
-
+    // Invalid first, then emptied: a concurrent reader that sees the list empty must also see the index invalid (issue #8855)
     valid = false;
+    indexesOnBuckets.clear();
   }
 
   @Override
@@ -719,9 +719,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
-    if (indexesOnBuckets.isEmpty())
+    try {
+      return indexesOnBuckets.getFirst();
+    } catch (final NoSuchElementException e) {
       throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
-    return indexesOnBuckets.getFirst();
+    }
   }
 
   public IndexMetadata getMetadata() {

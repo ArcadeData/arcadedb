@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
@@ -4603,8 +4604,27 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> indexes,
+  /**
+   * Snapshot of the indexes of a type that can be planned on. DDL on the same type runs concurrently: an index being created is
+   * already registered before its per-bucket sub-indexes exist (it has no type yet) and one being dropped stays registered after
+   * it was invalidated, neither is a candidate for a query that does not name it (issue #8855).
+   */
+  private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
+    final List<TypeIndex> result = new ArrayList<>(indexes.size());
+    for (final TypeIndex index : indexes) {
+      try {
+        if (index.isValid() && index.getType() != null)
+          result.add(index);
+      } catch (final IndexException e) {
+        // Dropped or rebuilt while checking
+      }
+    }
+    return result;
+  }
+
+  private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> allIndexes,
       final AndBlock block, final DocumentType clazz) {
+    final List<TypeIndex> indexes = plannableIndexes(allIndexes);
 
     // get all valid index descriptors
     List<IndexSearchDescriptor> descriptors = indexes.stream()
@@ -4615,8 +4635,7 @@ public class SelectExecutionPlanner {
         .collect(Collectors.toList());
 
     final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream()
-        .filter(idx -> idx.getType().equals(FULL_TEXT))
-        .map(idx -> buildIndexSearchDescriptorForFulltext(context, idx, block, clazz))
+        .map(idx -> buildIndexSearchDescriptorForFulltextSafely(context, idx, block, clazz))
         .filter(Objects::nonNull)
         .filter(x -> x.keyCondition != null)
         .filter(x -> !x.getSubBlocks().isEmpty())
@@ -4789,6 +4808,16 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
+  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltextSafely(final CommandContext context, final TypeIndex index,
+      final AndBlock block, final DocumentType clazz) {
+    try {
+      return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
+    } catch (final IndexException e) {
+      // Dropped or rebuilt after plannableIndexes() (issue #8855)
+      return null;
+    }
+  }
+
   private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext context, final Index index,
       final AndBlock block, final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
@@ -4839,13 +4868,25 @@ public class SelectExecutionPlanner {
    */
   private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext context, final Index index, final AndBlock block,
       final DocumentType clazz) {
+    try {
+      return buildIndexSearchDescriptorInternal(context, index, block, clazz);
+    } catch (final IndexException e) {
+      // Dropped or rebuilt between plannableIndexes() and here (issue #8855): not a candidate for this plan
+      return null;
+    }
+  }
+
+  private IndexSearchDescriptor buildIndexSearchDescriptorInternal(final CommandContext context, final Index index,
+      final AndBlock block, final DocumentType clazz) {
     // Only a key index answers "the value equals the key". A FULL_TEXT index - BY ITEM included - answers by analyzer
     // token (so `txt = 'two'` also matched the item 'two words' and 'Two') and parses the key as a query (so '--', '-two'
     // or 'a:b' find nothing), and the vector and geospatial families answer a similarity or a shape. Handing them `=`,
     // IN, CONTAINS, CONTAINSANY, CONTAINSALL and dropping the condition from the residual filter was answering them
     // wrong in both directions; a recheck could remove the extra rows but never bring back the missing ones. CONTAINSTEXT
     // reaches a FULL_TEXT index through buildIndexSearchDescriptorForFulltext instead (issues #8435, #8438).
-    if (!index.getType().isExactKeyLookup())
+    final Schema.INDEX_TYPE indexType = index.getType();
+    // null: sub-indexes emptied by a concurrent drop or rebuild after plannableIndexes() (issue #8855)
+    if (indexType == null || !indexType.isExactKeyLookup())
       return null;
 
     final List<String> indexFields = index.getPropertyNames();

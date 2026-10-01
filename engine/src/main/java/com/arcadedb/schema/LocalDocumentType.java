@@ -91,7 +91,7 @@ public class LocalDocumentType implements DocumentType {
   // mutation sees a weakly consistent view of it rather than a corrupt one (#6799).
   protected final Map<String, Property>             properties                   = new ConcurrentHashMap<>();
   protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
-  protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
+  protected final Map<List<String>, TypeIndex>      indexesByProperties          = new ConcurrentHashMap<>();
   protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   // The four bucket lists are copy-on-write: reassigned under the schema mutation lock and read lock-free by query
