@@ -16,8 +16,8 @@
 */
 
 /**
- * Issue #7312: Studio's Vector tab drives POST /api/v1/vector/{database}/search against a database with a dense
- * LSM_VECTOR index. The panel must list the index with the dimension count the server reports, refuse a query vector
+ * Issue #7312: Studio's Vector, Hybrid and Full-text query languages drive POST /api/v1/vector/{database}/search against a database with a dense
+ * LSM_VECTOR index. The form must offer the index with the dimension count the server reports, refuse a query vector
  * of the wrong length without a round trip, and render the returned rows with their distance and the truncation flag.
  */
 
@@ -46,7 +46,9 @@ async function sql(request: APIRequestContext, command: string): Promise<void> {
   expect(response.ok(), `${command}: ${await response.text()}`).toBeTruthy();
 }
 
-test.describe('Studio Vector tab', () => {
+const RUN = '[data-testid="execute-query-button"]';
+
+test.describe('Studio index search languages', () => {
   test.beforeAll(async ({ request }) => {
     await serverCommand(request, `drop database ${DATABASE}`, false);
     await serverCommand(request, `create database ${DATABASE}`);
@@ -64,19 +66,25 @@ test.describe('Studio Vector tab', () => {
     await serverCommand(request, `drop database ${DATABASE}`, false);
   });
 
-  test('lists the index, catches a wrong-length vector, and renders distance and truncation', async ({ page }) => {
+  test('there is no Vector tab: the searches are languages of the Query panel', async ({ page }) => {
+    const helper = new ArcadeStudioTestHelper(page);
+    await helper.login(DATABASE);
+    await expect(page.locator('#tab-vector-sel')).toHaveCount(0);
+    await expect(page.locator('#inputLanguage option[value="vector"]')).toHaveCount(1);
+    await expect(page.locator('#inputLanguage option[value="hybrid"]')).toHaveCount(1);
+    await expect(page.locator('#inputLanguage option[value="fulltext"]')).toHaveCount(1);
+    await page.locator('#inputLanguage').selectOption('vector');
+    await expect(page.locator('#searchFormArea')).toBeVisible();
+    await page.locator('#inputLanguage').selectOption('sql');
+    await expect(page.locator('#searchFormArea')).toBeHidden();
+  });
+
+  test('catches a wrong-length vector, and renders distance and truncation in the Query result', async ({ page }) => {
     const helper = new ArcadeStudioTestHelper(page);
     await helper.login(DATABASE);
 
-    await page.locator('#tab-vector-sel').click();
-    await expect(page.locator('#vecDbSelectContainer .db-name')).toHaveText(DATABASE);
-
-    // The index is listed with the dimension count schema:types reports for it
-    const indexRow = page.locator(`#vecIndexesTable tbody tr[data-index="${INDEX}"]`);
-    await expect(indexRow).toBeVisible({ timeout: 15000 });
-    await expect(indexRow.locator('.vec-index-dims')).toHaveText('3');
-    await expect(indexRow).toContainText('distance, lower is better (COSINE)');
-
+    await page.locator('#inputLanguage').selectOption('vector');
+    await expect(page.locator(`#vecIndexName option[value="${INDEX}"]`)).toHaveCount(1, { timeout: 15000 });
     await page.locator('#vecIndexName').selectOption(INDEX);
     await expect(page.locator('#vecIndexHint')).toContainText('3 dimensions');
 
@@ -89,7 +97,7 @@ test.describe('Studio Vector tab', () => {
       if (req.url().includes('/api/v1/vector/')) searchRequests++;
     });
     await page.locator('#vecQueryVector').fill('[1, 0]');
-    await page.locator('#vecExecuteBtn').click();
+    await page.locator(RUN).click();
     await expect(page.locator('#vecError')).toContainText("has 2 dimensions, but index 'Doc7312[embedding]' has 3");
     expect(searchRequests).toBe(0);
 
@@ -97,45 +105,35 @@ test.describe('Studio Vector tab', () => {
     await page.locator('#vecQueryVector').fill('[1, 0, 0]');
     await page.locator('#vecK').fill('2');
     const responsePromise = page.waitForResponse((r) => r.url().includes(`/api/v1/vector/${DATABASE}/search`));
-    await page.locator('#vecExecuteBtn').click();
+    await page.locator(RUN).click();
     const response = await responsePromise;
     expect(response.status()).toBe(200);
-    const body = await response.json();
-    expect(body.truncated).toBe(true);
+    expect((await response.json()).truncated).toBe(true);
 
     await expect(page.locator('#vecError')).toBeHidden();
-    const rows = page.locator('#vecResultsTable tbody tr.vec-result-row');
+    const rows = page.locator('#result tbody tr');
     await expect(rows).toHaveCount(2);
-    await expect(page.locator('#vecResultsTable thead .vec-score-header')).toHaveText('distance');
-    for (let i = 0; i < 2; i++) {
-      const cell = rows.nth(i).locator('.vec-score');
-      await expect(cell).toHaveAttribute('data-score-label', 'distance');
-      await expect(cell).toHaveText(/^-?\d+(\.\d+)?(E-?\d+)?$/i);
-    }
+    await expect(page.locator('#result thead')).toContainText('distance');
     // the nearest neighbor of [1, 0, 0] is doc0 itself
     await expect(rows.nth(0)).toContainText('doc0');
+    await expect(page.locator('#result-num')).toContainText('truncated');
 
-    await expect(page.locator('#vecTruncated')).toBeVisible();
-    await expect(page.locator('#vecTruncated')).toContainText('Truncated');
-    await expect(page.locator('#vecTruncated')).toContainText("Raise 'k'");
-
-    // Raising k past the number of records leaves the window short, so the flag reads complete instead
+    // Raising k past the number of records leaves the window short, so the flag goes away
     await page.locator('#vecK').fill('10');
     const secondResponse = page.waitForResponse((r) => r.url().includes(`/api/v1/vector/${DATABASE}/search`));
-    await page.locator('#vecExecuteBtn').click();
+    await page.locator(RUN).click();
     expect((await (await secondResponse).json()).truncated).toBe(false);
     await expect(rows).toHaveCount(5);
-    await expect(page.locator('#vecTruncated')).toContainText('Complete');
+    await expect(page.locator('#result-num')).not.toContainText('truncated');
   });
 
-  test('the hybrid and full-text modes reach their endpoints and render what those return', async ({ page }) => {
+  test('the hybrid and full-text languages reach their endpoints and render what those return', async ({ page }) => {
     const helper = new ArcadeStudioTestHelper(page);
     await helper.login(DATABASE);
-    await page.locator('#tab-vector-sel').click();
-    await expect(page.locator(`#vecIndexesTable tbody tr[data-index="${INDEX}"]`)).toBeVisible({ timeout: 15000 });
 
     // Hybrid: vector leg plus a full-text leg; the fusion strategies are offered from the OpenAPI document
-    await page.locator('#vecModeHybrid').click();
+    await page.locator('#inputLanguage').selectOption('hybrid');
+    await expect(page.locator(`#vecIndexName option[value="${INDEX}"]`)).toHaveCount(1, { timeout: 15000 });
     await expect(page.locator('#vecFusionStrategy option[value="RRF"]')).toHaveCount(1);
     await page.locator('#vecIndexName').selectOption(INDEX);
     await page.locator('#vecQueryVector').fill('1, 0, 0');
@@ -143,24 +141,42 @@ test.describe('Studio Vector tab', () => {
     await page.locator('#vecFulltextIndexName').selectOption('Doc7312[title]');
     await page.locator('#vecFulltextQuery').fill('doc3');
     const hybrid = page.waitForResponse((r) => r.url().includes(`/api/v1/vector/${DATABASE}/hybrid`));
-    await page.locator('#vecExecuteBtn').click();
+    await page.locator(RUN).click();
     expect((await hybrid).status()).toBe(200);
     await expect(page.locator('#vecError')).toBeHidden();
-    await expect(page.locator('#vecResultsTable thead')).toContainText('Sources');
-    await expect(page.locator('#vecResultsTable tbody tr.vec-result-row')).toHaveCount(3);
-    await expect(page.locator('#vecNotes')).toContainText('Rows per leg');
+    await expect(page.locator('#result thead')).toContainText('sources');
+    await expect(page.locator('#result tbody tr')).toHaveCount(3);
 
-    // Full-text: scored hits, and no truncation flag, because that endpoint reports none
-    await page.locator('#vecModeFulltext').click();
+    // Full-text: scored hits
+    await page.locator('#inputLanguage').selectOption('fulltext');
     await page.locator('#vecFtIndexName').selectOption('Doc7312[title]');
     await page.locator('#vecQueryText').fill('doc1');
     const fulltext = page.waitForResponse((r) => r.url().includes(`/api/v1/vector/${DATABASE}/fulltext`));
-    await page.locator('#vecExecuteBtn').click();
+    await page.locator(RUN).click();
     expect((await fulltext).status()).toBe(200);
-    const rows = page.locator('#vecResultsTable tbody tr.vec-result-row');
+    const rows = page.locator('#result tbody tr');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText('doc1');
-    await expect(rows.first().locator('.vec-score')).toHaveAttribute('data-score-label', 'score');
-    await expect(page.locator('#vecTruncated')).toBeHidden();
+    await expect(page.locator('#result thead')).toContainText('score');
+  });
+
+  test('a search lands in the history and replays from it', async ({ page }) => {
+    const helper = new ArcadeStudioTestHelper(page);
+    await helper.login(DATABASE);
+    await page.locator('#inputLanguage').selectOption('fulltext');
+    await expect(page.locator('#vecFtIndexName option[value="Doc7312[title]"]')).toHaveCount(1, { timeout: 15000 });
+    await page.locator('#vecFtIndexName').selectOption('Doc7312[title]');
+    await page.locator('#vecQueryText').fill('doc2');
+    await page.locator(RUN).click();
+    await expect(page.locator('#result tbody tr')).toHaveCount(1);
+
+    // Switching to SQL and back must not leak the form into the SQL editor, and the form must come back from history
+    await page.locator('#inputLanguage').selectOption('sql');
+    await expect(page.locator('#inputCommand')).toHaveValue('');
+    await page.locator('#inputLanguage').selectOption('fulltext');
+    await page.locator('#vecQueryText').fill('');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => (window as any).historyPrevious());
+    await expect(page.locator('#vecQueryText')).toHaveValue('doc2');
   });
 });
