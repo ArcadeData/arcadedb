@@ -531,7 +531,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         convertedTo = null;
 
       // A comparison with null is never true (issue #8812): a null bound of a range matches no row, where the key it leaves
-      // behind (a null slot) would read as "no bound" and return the whole index
+      // behind (a null slot) would read as "no bound" and return the whole index. Only the last key slot is a range bound: a
+      // null in an earlier equality slot of a composite key is left as it was
       if (isRangeCondition() && (endsWithNull(convertedFrom) || endsWithNull(convertedTo)))
         continue;
 
