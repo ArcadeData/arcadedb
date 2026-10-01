@@ -2376,14 +2376,15 @@ public class LocalDocumentType implements DocumentType {
       // (a) re-key this map's primary entry, (b) rename the paired '<oldName>_ext' bucket file to
       // '<newName>_ext' to keep the naming convention consistent, and (c) re-save the schema so the JSON
       // mirrors the new state. A grep for "TODO(rename-bucket)" surfaces every site that needs updating.
-      final JSONObject extBuckets = new JSONObject();
+      // NAME ORDER, NOT HASH-MAP ORDER, SO REPLICAS WRITE THE SAME FILE (ISSUE #8206): SEE LocalSchema.toJSON()
+      final Map<String, String> extBucketNames = new TreeMap<>();
       for (final Map.Entry<Integer, Integer> e : externalBucketIdByPrimaryBucketId.entrySet()) {
         final LocalBucket primary = schema.getBucketById(e.getKey(), false);
         final LocalBucket external = schema.getBucketById(e.getValue(), false);
         if (primary != null && external != null)
-          extBuckets.put(primary.getName(), external.getName());
+          extBucketNames.put(primary.getName(), external.getName());
       }
-      type.put("externalBuckets", extBuckets);
+      type.put("externalBuckets", new JSONObject(extBucketNames));
     }
 
     type.put("aliases", aliases);
@@ -2391,8 +2392,10 @@ public class LocalDocumentType implements DocumentType {
     final JSONObject properties = new JSONObject();
     type.put("properties", properties);
 
-    for (final String propName : getPropertyNames())
-      properties.put(propName, getProperty(propName).toJSON());
+    // Properties, indexes and custom values are written in name order, not hash-map order (issue #8206): see
+    // LocalSchema.toJSON().
+    for (final Property property : new TreeMap<>(this.properties).values())
+      properties.put(property.getName(), property.toJSON());
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);
@@ -2407,6 +2410,7 @@ public class LocalDocumentType implements DocumentType {
     if (needsRepartition.get())
       type.put("needsRepartition", true);
 
+    final Map<String, JSONObject> indexesByFileName = new TreeMap<>();
     for (final TypeIndex i : getAllIndexes(false)) {
       // Persist a user-supplied TypeIndex name once per bucket entry (issue #4139). Stored on the
       // bucket-level JSON because that is what {@link LocalSchema#load} iterates and feeds back to
@@ -2419,11 +2423,13 @@ public class LocalDocumentType implements DocumentType {
         final JSONObject indexJSON = entry.toJSON();
         if (custom != null)
           indexJSON.put("typeIndexName", custom);
-        indexes.put(entry.getMostRecentFileName(), indexJSON);
+        indexesByFileName.put(entry.getMostRecentFileName(), indexJSON);
       }
     }
+    for (final Map.Entry<String, JSONObject> entry : indexesByFileName.entrySet())
+      indexes.put(entry.getKey(), entry.getValue());
 
-    type.put("custom", new JSONObject(custom));
+    type.put("custom", new JSONObject(new TreeMap<>(custom)));
     return type;
   }
 

@@ -339,7 +339,8 @@ public abstract class AbstractProperty implements Property {
     if (regexp != null)
       json.put("regexp", regexp);
 
-    json.put("custom", new JSONObject(custom));
+    // Name order, not hash-map order, so replicas write the same schema file (issue #8206).
+    json.put("custom", new JSONObject(new TreeMap<>(custom)));
 
     return json;
   }

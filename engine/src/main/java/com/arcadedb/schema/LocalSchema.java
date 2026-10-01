@@ -4057,10 +4057,14 @@ public class LocalSchema implements Schema {
     settings.put("dateFormat", dateFormat);
     settings.put("dateTimeFormat", dateTimeFormat);
 
+    // Every name-keyed map below is written in NAME order, not in the map's iteration order (issue #8206). Those maps
+    // are hash maps, whose order depends on their table capacity - which a map grown by DDL keeps after a drop, and a
+    // map rebuilt from this file by a reload (a reopen, or a Raft follower applying a schema entry) sizes afresh. Two
+    // replicas holding the same schema would otherwise write different files.
     final JSONObject types = new JSONObject();
     root.put("types", types);
 
-    for (final DocumentType t : typeMap().values())
+    for (final DocumentType t : new TreeMap<>(typeMap()).values())
       types.put(t.getName(), t.toJSON());
 
     final JSONObject triggersJson = new JSONObject();
@@ -4071,7 +4075,7 @@ public class LocalSchema implements Schema {
     final StagedMembers members = isStagingPublication() && stagedMembers != null && stagedMembers.restored ?
         stagedMembers : null;
 
-    for (final Trigger trigger : (members != null ? members.triggers : this.triggers).values())
+    for (final Trigger trigger : new TreeMap<>(members != null ? members.triggers : this.triggers).values())
       triggersJson.put(trigger.getName(), trigger.toJSON());
 
     // Serialize materialized views
@@ -4091,7 +4095,8 @@ public class LocalSchema implements Schema {
     // Serialize user-defined function libraries (DEFINE FUNCTION) so they survive a restart (issue #5121). Libraries
     // backed by native Java code are not persistable and return null from toJSON(): they are skipped here.
     final JSONObject functionsJSON = new JSONObject();
-    for (final FunctionLibraryDefinition library : (members != null ? members.functionLibraries : functionLibraries).values()) {
+    for (final FunctionLibraryDefinition library : new TreeMap<>(
+        members != null ? members.functionLibraries : functionLibraries).values()) {
       final JSONObject libraryJSON = library.toJSON();
       if (libraryJSON != null)
         functionsJSON.put(library.getName(), libraryJSON);
@@ -4112,7 +4117,7 @@ public class LocalSchema implements Schema {
     final Map<Integer, Integer> migratedToWrite = members != null ? members.migratedFileIds : migratedFileIds;
     if (!migratedToWrite.isEmpty()) {
       final JSONObject migratedJSON = new JSONObject();
-      for (final Map.Entry<Integer, Integer> entry : migratedToWrite.entrySet())
+      for (final Map.Entry<Integer, Integer> entry : new TreeMap<>(migratedToWrite).entrySet())
         migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
       root.put("migratedFileIds", migratedJSON);
     }
