@@ -4617,25 +4617,26 @@ public class SelectExecutionPlanner {
     }
   }
 
-  /**
-   * Snapshot of the indexes of a type that can be planned on. DDL on the same type runs concurrently: an index being created is
-   * already registered before its per-bucket sub-indexes exist (it has no type yet) and one being dropped stays registered after
-   * it was invalidated, neither is a candidate for a query that does not name it. The check is a best effort, an index can still
-   * go away right after it: the callers read an index's metadata under a try/catch of IndexException, and any new planner
-   * path that reads index metadata must do the same.
-   */
   private void logSkippedIndex(final Index index, final IndexException e) {
     LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
   }
 
   private static boolean isPlannable(final Index index) {
     try {
+      if (index instanceof TypeIndex typeIndex)
+        return typeIndex.isReadyForQueries();
       return (!(index instanceof IndexInternal internal) || internal.isValid()) && index.getType() != null;
     } catch (final IndexException e) {
       return false;
     }
   }
 
+  /**
+   * Snapshot of the indexes of a type that can be planned on, see {@link TypeIndex#isReadyForQueries()}: neither an index being
+   * created nor one being dropped by a concurrent DDL is a candidate for a query that does not name it. The check is a best
+   * effort: the callers read an index's metadata under a try/catch of IndexException, and any new planner path that reads
+   * index metadata must do the same.
+   */
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
     final List<TypeIndex> result = new ArrayList<>(indexes.size());
     for (final TypeIndex index : indexes) {
@@ -4679,7 +4680,8 @@ public class SelectExecutionPlanner {
     // is redundant, just discard it)
     //descriptors = removePrefixIndexes(descriptors);
 
-    // Ranking reads the metadata of the candidates again: one dropped meanwhile is discarded and the ranking restarts
+    // Ranking reads the metadata of the candidates again: one dropped meanwhile is discarded and the ranking restarts. It
+    // ends: every pass returns, rethrows, or leaves strictly fewer candidates
     while (true) {
       if (descriptors.isEmpty())
         return null;

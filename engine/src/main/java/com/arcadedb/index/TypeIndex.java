@@ -391,9 +391,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
-    // The wrapper must stay valid while its sub-indexes are dropped: LocalSchema#dropIndex resolves and unregisters the
-    // wrapper through them. A reader that meets the half-dropped index finds the sub-indexes gone and gets an IndexException
-    // (or a null type), which the planner treats as "not a candidate"; invalid goes first so the window after it is closed.
+    // Order: sub-indexes dropped, then valid = false, then the list cleared. The wrapper must stay valid during the first step
+    // (LocalSchema#dropIndex resolves and unregisters the wrapper through its sub-indexes), so until valid = false a reader
+    // sees a valid wrapper with some sub-indexes missing: it gets an IndexException or a null type, which the callers treat
+    // as "not a candidate".
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
@@ -715,6 +716,19 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isValid() {
     return valid;
+  }
+
+  /**
+   * True when a query can use this index: it was not dropped or rebuilt and its per-bucket sub-indexes exist. DDL runs
+   * concurrently with queries: an index being created is registered before its sub-indexes exist (no type yet) and one being
+   * dropped stays registered for a while after it was invalidated. Best effort, the index can still go away right after the
+   * call, so a caller that reads the metadata of an index must also be ready for an {@link IndexException}. Never throws.
+   */
+  public boolean isReadyForQueries() {
+    if (!valid)
+      return false;
+    final IndexInternal first = firstOrNull();
+    return first != null && first.getType() != null;
   }
 
   private void checkIsValid() {
