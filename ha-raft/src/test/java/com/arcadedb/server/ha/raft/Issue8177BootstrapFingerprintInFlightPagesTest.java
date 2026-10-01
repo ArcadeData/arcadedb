@@ -101,10 +101,19 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
   private String commitAndSampleWhileItsPagesAreInFlight() throws Exception {
     final AtomicReference<String> sampled = new AtomicReference<>();
     localDb.getPageManager().suspendFlushAndExecute(localDb, () -> {
-      localDb.transaction(() -> localDb.newDocument("Seed").set("k", 1).save());
+      commitOneSeed();
       sampled.set(BootstrapFingerprint.compute(new File(DB_PATH)));
     });
     return sampled.get();
+  }
+
+  /** The same commit with the flush held, and no sample: only the in-flight pages are wanted. */
+  private void commitWhileTheFlushIsHeld() throws Exception {
+    localDb.getPageManager().suspendFlushAndExecute(localDb, this::commitOneSeed);
+  }
+
+  private void commitOneSeed() {
+    localDb.transaction(() -> localDb.newDocument("Seed").set("k", 1).save());
   }
 
   private static RaftLogEntryCodec.DecodedEntry baseline(final String fingerprint, final long lastTxId) {
@@ -121,7 +130,9 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
     final String inFlight = commitAndSampleWhileItsPagesAreInFlight();
 
     assertThat(SettledBootstrapFingerprint.of(localDb))
-        .as("the commit's pages reached the disk after the sample was taken, so the directory hashes differently now")
+        .as("the commit's pages reached the disk after the sample was taken, so the directory hashes differently now. "
+            + "If this fails, suspendFlushAndExecute no longer defers the pages of a commit made inside its window, and "
+            + "this test no longer reproduces the race")
         .isNotEqualTo(inFlight);
 
     final ArcadeStateMachine sm = stateMachine();
@@ -140,7 +151,7 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
    */
   @Test
   void aBaselineSampledFromTheSettledCopyMatchesThePeer() throws Exception {
-    commitAndSampleWhileItsPagesAreInFlight();
+    commitWhileTheFlushIsHeld();
 
     final String settled = SettledBootstrapFingerprint.of(localDb);
     final ArcadeStateMachine sm = stateMachine();
