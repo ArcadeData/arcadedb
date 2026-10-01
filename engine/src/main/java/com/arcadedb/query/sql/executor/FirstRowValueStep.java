@@ -43,6 +43,7 @@ public class FirstRowValueStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
+    // always one row, whatever nRecords asks for: the previous step is pulled for its first row only
     checkForPrevious();
     return new ResultSet() {
       @Override
