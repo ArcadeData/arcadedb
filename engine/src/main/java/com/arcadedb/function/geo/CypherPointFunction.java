@@ -41,7 +41,8 @@ import java.util.Map;
  * has no such positional form.</p>
  * <p>For the cartesian (x/y) form the {@code srid} and {@code crs} name are derived from each other (cartesian 7203 and
  * cartesian-3D 9157, WGS-84 4326 and WGS-84-3D 4979), known names are matched case-insensitively and stored in canonical
- * spelling, and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
+ * spelling, an unknown crs name is kept without an srid and an unknown srid gets the cartesian name (both unlike Neo4j,
+ * which rejects them), and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system.</p>
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
@@ -133,6 +134,8 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("y", y);
       addOptionalZ(result, map);
       final Object crsObj = map.get("crs");
+      if (crsObj != null && !(crsObj instanceof String))
+        throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
       Integer srid = null;
       if (map.containsKey("srid")) {
         final Object sridObj = map.get("srid");
@@ -142,11 +145,9 @@ public class CypherPointFunction implements StatelessFunction {
               "point() 'srid' must be numeric, found " + describe(sridObj));
         final double sridValue = ((Number) sridObj).doubleValue();
         if (sridValue != Math.rint(sridValue) || sridValue < 0 || sridValue > Integer.MAX_VALUE)
-          throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + sridObj);
+          throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + describe(sridObj));
         srid = (int) sridValue;
       }
-      if (crsObj != null && !(crsObj instanceof String))
-        throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
       String crs = (String) crsObj;
       // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
       final boolean has3d = result.containsKey("z");

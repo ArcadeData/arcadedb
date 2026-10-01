@@ -188,4 +188,26 @@ class Issue3993PointSridTest extends TestHelper {
     assertThat(p.get("crs")).isEqualTo("WGS-84");
     assertThat(p.containsKey("z")).isFalse();
   }
+
+  @Test
+  void threeDimensionalSridOrCrsWithoutZIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 9157})")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("dimension");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'WGS-84-3D'})")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("dimension");
+  }
+
+  @Test
+  void mixedCaseCrsWithMatchingSridIsCanonicalized() {
+    final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'wgs-84', srid: 4326})");
+    assertThat(p.get("crs")).isEqualTo("WGS-84");
+    assertThat(p.get("srid")).isEqualTo(4326);
+  }
+
+  @Test
+  void nullCrsIsAbsentAndNullSridIsRejected() {
+    assertThat(point("point({x: 1, y: 2, crs: null})").get("srid")).isEqualTo(7203);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: null})")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("srid");
+  }
 }
