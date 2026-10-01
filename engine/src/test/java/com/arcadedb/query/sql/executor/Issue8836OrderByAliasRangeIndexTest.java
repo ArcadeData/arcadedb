@@ -84,4 +84,35 @@ class Issue8836OrderByAliasRangeIndexTest extends TestHelper {
       assertThat(got).isEqualTo(List.of(801L, 802L, 803L));
     }
   }
+
+  @Test
+  void computedAliasShadowingTheKeyKeepsTheSort() {
+    try (final ResultSet rs = database.query("sql", "SELECT a * -1 AS a FROM V WHERE a > 100 ORDER BY a ASC LIMIT 3")) {
+      final List<Long> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().<Number>getProperty("a").longValue());
+      assertThat(got).isEqualTo(List.of(-199L, -198L, -197L));
+    }
+  }
+
+  @Test
+  void duplicateAliasKeepsTheSort() {
+    try (final ResultSet rs = database.query("sql", "SELECT a, b AS a FROM V WHERE a > 100 ORDER BY a ASC LIMIT 3")) {
+      final List<Object> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("a"));
+      assertThat(got).hasSize(3);
+      assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("ORDER BY");
+    }
+  }
+
+  @Test
+  void distinctWithUnprojectedSortKey() {
+    try (final ResultSet rs = database.query("sql", "SELECT DISTINCT b FROM V WHERE a > 100 ORDER BY a ASC LIMIT 3")) {
+      final List<Long> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().<Number>getProperty("b").longValue());
+      assertThat(got).isEqualTo(List.of(899L, 898L, 897L));
+    }
+  }
 }

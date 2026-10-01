@@ -548,12 +548,17 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       boolean fromIncluded = fromKeyIncluded;
       final IndexCursor cursor;
 
-      // A range with no lower bound starts at the first key, and an index that holds the null keys (NULL_STRATEGY INDEX)
-      // sorts them lowest: the range would return the records with no value, for which a comparison is never true
-      // (issue #8833). Start past them
-      if (convertedFrom == null && convertedTo != null && index.supportsOrderedIterations()
-          && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
-        convertedFrom = new Object[] { null };
+      // A range with no lower bound on its last column starts at the first key of that column, and an index that holds the null
+      // keys (NULL_STRATEGY INDEX) sorts them lowest: the range would return the records with no value, for which a comparison
+      // is never true (issue #8833). Start past them: with no lower bound at all, and with a prefix of equalities followed by
+      // an upper bound on the next column (a = 5 AND b < 3 skips the entries (5, null))
+      if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length)
+          && index.supportsOrderedIterations() && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
+        final int prefix = convertedFrom == null ? 0 : convertedFrom.length;
+        final Object[] extended = new Object[prefix + 1];
+        if (prefix > 0)
+          System.arraycopy(convertedFrom, 0, extended, 0, prefix);
+        convertedFrom = extended;
         fromIncluded = false;
       }
 
