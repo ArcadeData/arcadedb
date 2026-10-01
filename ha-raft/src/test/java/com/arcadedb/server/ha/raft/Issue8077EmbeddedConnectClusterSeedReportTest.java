@@ -113,6 +113,26 @@ class Issue8077EmbeddedConnectClusterSeedReportTest {
     assertThat(plugin.steps).containsExactly("join " + ADDRESS);
   }
 
+  /**
+   * The same rule against the production {@code connectCluster} rather than the stub: with no Raft server running the
+   * real join refuses, and no seed is asked for.
+   */
+  @Test
+  void aRealJoinThatFailedIsNotFollowedByASeed() {
+    final List<String> seeds = new ArrayList<>();
+    final RaftHAPlugin plugin = new RaftHAPlugin() {
+      @Override
+      public Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) {
+        seeds.add(admittedPeer);
+        return Optional.of(List.of());
+      }
+    };
+
+    assertThatThrownBy(() -> plugin.connectClusterAndReportSeed(ADDRESS)).hasMessageContaining("not started");
+
+    assertThat(seeds).as("nothing joined, so nothing is seeded").isEmpty();
+  }
+
   /** The leader cannot be reached: the join stands and the outcome is reported as unknown, i.e. all three. */
   @Test
   void aSeedThatCouldNotBeRunNeverFailsTheJoin() {

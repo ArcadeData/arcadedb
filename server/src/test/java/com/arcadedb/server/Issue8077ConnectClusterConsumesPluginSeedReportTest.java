@@ -124,11 +124,29 @@ class Issue8077ConnectClusterConsumesPluginSeedReportTest {
         .hasMessageContaining(PEER_ADDRESS);
   }
 
+  /** The precondition mapping also covers a plugin that overrides the reporting form and refuses the join. */
+  @Test
+  void aReportingPluginThatCannotChangeMembershipIsRefusedAsAPrecondition() {
+    final HAServerPlugin ha = new BaseHAPlugin() {
+      @Override
+      public Optional<List<String>> connectClusterAndReportSeed(final String serverAddress) {
+        throw new UnsupportedOperationException("no runtime membership here");
+      }
+    };
+    when(server.getHA()).thenReturn(ha);
+
+    assertThatThrownBy(() -> new ServerControlPlane(server).connectCluster(PEER_ADDRESS))
+        .isInstanceOf(OperationNotAvailableException.class)
+        .hasMessageContaining(PEER_ADDRESS)
+        .hasMessageContaining("no runtime membership here");
+    verify(security, never()).seedSecurityStateClusterWide(anyLong());
+  }
+
   /** Overrides the reporting form, as the Raft implementation does. */
   private static class RecordingHAPlugin extends BaseHAPlugin {
-    final List<String>             steps = new ArrayList<>();
-    final Optional<List<String>>   report;
-    Optional<List<String>>         leaderSeed = Optional.of(List.of());
+    final List<String>           steps      = new ArrayList<>();
+    final Optional<List<String>> report;
+    Optional<List<String>>       leaderSeed = Optional.of(List.of());
 
     RecordingHAPlugin(final Optional<List<String>> report) {
       this.report = report;

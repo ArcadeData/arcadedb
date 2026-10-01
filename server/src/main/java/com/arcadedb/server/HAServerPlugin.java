@@ -561,7 +561,8 @@ public interface HAServerPlugin extends ServerPlugin {
    * <b>The peer is a member whenever this returns</b>, failing documents or not. A non-empty list is not a failed
    * join and must not be retried as one; re-issuing the same join is idempotent on the membership change and
    * reissues the seed, which is the remediation. A membership change that did <i>not</i> happen leaves by an
-   * exception instead, exactly as {@link #connectCluster(String)} always has.
+   * exception instead, exactly as {@link #connectCluster(String)} always has. An override must therefore never
+   * throw once the membership change has happened: a seed it could not run is reported, as every document failing.
    * <p>
    * <b>An empty {@link Optional} is not an empty failure list</b>, with the meaning
    * {@link #seedSecurityStateForAdmission} gives it: this implementation reports no seed of its own, and the caller
