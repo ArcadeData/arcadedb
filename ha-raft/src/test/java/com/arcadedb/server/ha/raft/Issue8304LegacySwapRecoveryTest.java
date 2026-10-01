@@ -156,9 +156,13 @@ class Issue8304LegacySwapRecoveryTest {
     Files.createDirectories(backup);
     Files.writeString(db.resolve(".snapshot-pending"), "");
     Files.writeString(staged.resolve(".snapshot-complete"), "");
+    createDatabase(root.resolve("other"), "other", "SnapshotOnly");
+    for (final String name : fileNames(root.resolve("other")))
+      if (name.startsWith("SnapshotOnly_"))
+        Files.move(root.resolve("other").resolve(name), db.resolve(name));
     boolean first = true;
     for (final String name : fileNames(db)) {
-      if (name.startsWith(".snapshot"))
+      if (name.startsWith(".snapshot") || name.startsWith("SnapshotOnly_"))
         continue;
       if (first || name.startsWith("schema"))
         Files.move(db.resolve(name), backup.resolve(name));
@@ -180,6 +184,7 @@ class Issue8304LegacySwapRecoveryTest {
     SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
 
     assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
     assertThat(db.resolve(".snapshot-pending")).doesNotExist();
     assertThat(backup).doesNotExist();
   }
