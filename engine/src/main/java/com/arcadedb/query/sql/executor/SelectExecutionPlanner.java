@@ -4607,12 +4607,6 @@ public class SelectExecutionPlanner {
     return results;
   }
 
-  /**
-   * Snapshot of the indexes of a type that can be planned on. DDL on the same type runs concurrently: an index being created is
-   * already registered before its per-bucket sub-indexes exist (it has no type yet) and one being dropped stays registered after
-   * it was invalidated, neither is a candidate for a query that does not name it. The check is a best effort, an index can still
-   * go away right after it: the callers read an index's metadata under a try/catch of IndexException.
-   */
   private static boolean isFullText(final Index index) {
     try {
       return index.getType() == FULL_TEXT;
@@ -4621,6 +4615,12 @@ public class SelectExecutionPlanner {
     }
   }
 
+  /**
+   * Snapshot of the indexes of a type that can be planned on. DDL on the same type runs concurrently: an index being created is
+   * already registered before its per-bucket sub-indexes exist (it has no type yet) and one being dropped stays registered after
+   * it was invalidated, neither is a candidate for a query that does not name it. The check is a best effort, an index can still
+   * go away right after it: the callers read an index's metadata under a try/catch of IndexException.
+   */
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
     final List<TypeIndex> result = new ArrayList<>(indexes.size());
     for (final TypeIndex index : indexes) {
