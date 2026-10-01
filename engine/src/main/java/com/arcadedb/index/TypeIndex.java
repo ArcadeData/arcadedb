@@ -393,8 +393,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     // Order: sub-indexes dropped, then valid = false, then the list cleared. The wrapper must stay valid during the first step
     // (LocalSchema#dropIndex resolves and unregisters the wrapper through its sub-indexes), so until valid = false a reader
-    // sees a valid wrapper with some sub-indexes missing: it gets an IndexException or a null type, which the callers treat
-    // as "not a candidate".
+    // sees a valid wrapper with some sub-indexes missing: it usually gets an IndexException or a null type, which the callers
+    // treat as "not a candidate". A query that already chose this index and reads it in that instant can miss the rows of the
+    // sub-indexes already dropped: the index is going away, and that query was planned before the drop completed.
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
@@ -746,11 +747,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** The first sub-index, or null when none (yet, or any more): a single read, so it cannot race with a concurrent clear(). */
   private IndexInternal firstOrNull() {
-    // CopyOnWriteArrayList#getFirst reads the backing array once, so it cannot race with a concurrent clear() and allocates
-    // nothing when the list is populated (the exception below only happens on the rare empty state)
+    // A single read of the backing array (CopyOnWriteArrayList#get), so it cannot race with a concurrent clear(), and it
+    // allocates nothing when the list is populated: the exception below only happens on the rare empty state
     try {
-      return indexesOnBuckets.getFirst();
-    } catch (final NoSuchElementException e) {
+      return indexesOnBuckets.get(0);
+    } catch (final IndexOutOfBoundsException e) {
       return null;
     }
   }
