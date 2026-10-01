@@ -50,7 +50,8 @@ import java.util.Properties;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 abstract class PostgresTlsTestBase extends PostgresWireProtocolTestBase {
-  static final  int    SSL_REQUEST_CODE = 80877103;
+  static final  int    SSL_REQUEST_CODE    = 80877103;
+  static final  int    GSSENC_REQUEST_CODE = 80877104;
   private static final String STORE_PASSWORD = "testPassword123";
   private static Path keystorePath;
   private static Path truststorePath;

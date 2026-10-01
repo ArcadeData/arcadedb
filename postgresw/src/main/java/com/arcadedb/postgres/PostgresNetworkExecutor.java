@@ -170,7 +170,8 @@ public class PostgresNetworkExecutor extends Thread {
   // Replaced once, by the TLS upgrade of the startup phase, hence volatile: close() can run on another thread.
   private volatile ChannelBinaryServer      channel;
   private final PostgresSslHelper           sslHelper;
-  private volatile boolean                  tlsActive;
+  private boolean                           tlsActive;
+  private boolean                           gssEncRequestAnswered;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
@@ -3659,7 +3660,15 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private void upgradeToTls() throws IOException {
     final ContextConfiguration configuration = server.getConfiguration();
-    channel = new ChannelBinaryServer(sslHelper.wrapWithTls(channel.socket), configuration);
+    try {
+      channel = new ChannelBinaryServer(sslHelper.wrapWithTls(channel.socket), configuration);
+    } catch (final IOException e) {
+      // Nothing else says why a client could not get a session (an untrusted or unsupported-version peer, a scanner),
+      // and the caller only logs the closed connection at FINE.
+      LogManager.instance().log(this, Level.INFO, "PSQL: TLS handshake with %s failed: %s", channel.socket.getRemoteSocketAddress(),
+          e.getMessage());
+      throw e;
+    }
     tlsActive = true;
   }
 
@@ -3702,6 +3711,17 @@ public class PostgresNetworkExecutor extends Thread {
 
         // THE REAL STARTUP MESSAGE FOLLOWS
         return readStartupMessage(false);
+      } else if (protocolVersion == 80877104) {
+        // GSSAPI ENCRYPTION REQUEST: NOT SUPPORTED. libpq sends it before the SSLRequest when it has Kerberos
+        // credentials (gssencmode=prefer, its default) and carries on with the SSLRequest or a plain startup after
+        // the N, so answering anything else - or taking it for a startup packet - fails stock clients.
+        if (gssEncRequestAnswered || tlsActive)
+          throw new PostgresProtocolException("Unexpected GSSAPI encryption request");
+        gssEncRequestAnswered = true;
+
+        channel.writeByte((byte) 'N');
+        channel.flush();
+        return readStartupMessage(firstPacket);
       } else if (protocolVersion == 80877102) {
         // CANCEL REQUEST, IGNORE IT
         final long pid = channel.readUnsignedInt();
