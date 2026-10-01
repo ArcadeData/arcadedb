@@ -46,6 +46,7 @@ import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.JsonItem;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.FunctionCall;
@@ -3254,6 +3255,20 @@ public class SelectExecutionPlanner {
     return false;
   }
 
+  private static boolean isLiteralOptions(final Expression expression) {
+    if (expression.isLiteral())
+      return true;
+    if (expression.json != null) {
+      for (final JsonItem item : expression.json.items)
+        if (!item.right.isLiteral())
+          return false;
+      return true;
+    }
+    // the parser wraps a map literal in a BaseExpression around the Expression that holds it
+    return expression.mathExpression instanceof BaseExpression base && base.modifier == null && base.expression != null
+        && isLiteralOptions(base.expression);
+  }
+
   /**
    * Attempts to push down aggregation into the TimeSeries engine.
    * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
@@ -3315,15 +3330,16 @@ public class SelectExecutionPlanner {
         if (funcCall.getParams().size() > 3)
           return false;
         if (funcCall.getParams().size() == 3) {
+          // Only a literal, or a JSON object of literals, is resolved once here: anything that reads the record (a column,
+          // coalesce(col, ...)) would be evaluated against no record and bucket differently from the generic plan
+          final Expression optionsExpression = funcCall.getParams().get(2);
+          if (!isLiteralOptions(optionsExpression))
+            return false;
           try {
             bucketOptions = funcCall.getParams().get(2).execute((Identifiable) null, context);
           } catch (final CommandExecutionException | IllegalArgumentException e) {
             return false;
           }
-          // A field reference evaluates to null without a record, which would silently read as the epoch grid: an
-          // options value, or a member of it, that came out null is per-row and belongs to the generic path
-          if (bucketOptions == null || (bucketOptions instanceof Map<?, ?> options && options.containsValue(null)))
-            return false;
         }
       } else {
         // Must be an aggregate function

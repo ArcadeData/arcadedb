@@ -6946,8 +6946,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final List<SQLParser.DownsamplingTierClauseContext> tierCtxs) {
     final List<DownsamplingTier> tiers = new ArrayList<>(tierCtxs.size());
     for (final SQLParser.DownsamplingTierClauseContext tierCtx : tierCtxs) {
-      final long afterMs = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
-      final long granMs = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
+      final long afterMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(0)));
+      final long granMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(1)));
       long offsetMs = 0L;
       if (tierCtx.OFFSET() != null) {
         offsetMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(2).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(2)));

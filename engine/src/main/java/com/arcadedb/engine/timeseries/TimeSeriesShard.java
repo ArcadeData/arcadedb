@@ -888,6 +888,8 @@ public class TimeSeriesShard implements AutoCloseable {
       return false;
 
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    // As retention and downsampling do: the local swap lands first and the replication record follows it, so a failure
+    // between the two is repaired by the next sealed change shipped for this shard
     compactionLock.writeLock().lock();
     try {
       if (!sealedStore.commitMerge(plan))
