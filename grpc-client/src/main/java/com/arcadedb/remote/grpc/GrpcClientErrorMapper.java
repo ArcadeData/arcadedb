@@ -31,6 +31,8 @@ import com.arcadedb.server.grpc.LeaderRedirectProtocol;
 import io.grpc.Metadata;
 import io.grpc.Status;
 
+import java.net.ConnectException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -53,6 +55,8 @@ final class GrpcClientErrorMapper {
       Metadata.ASCII_STRING_MARSHALLER);
   static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final int MAX_CAUSE_DEPTH = 32;
 
   private GrpcClientErrorMapper() {
   }
@@ -88,19 +92,80 @@ final class GrpcClientErrorMapper {
    * {@link #toException} for a failed {@code CommitTransaction}. A status-only {@code UNAVAILABLE} does not prove the
    * commit never landed, because the channel can drop after the request went out, so it is an unknown outcome and a
    * non-retryable {@link TransactionException}: {@code transaction()} must not re-run a scope whose first run may
-   * already be durable (issue #8711). The HTTP client draws the same line. An error the server itself classified (a
-   * class-name trailer, e.g. a conflict or a refusal by a follower) was produced before anything was applied and keeps
-   * its type.
+   * already be durable (issues #8711, #8525). The HTTP client draws the same line. An error the server itself
+   * classified (a class-name trailer, e.g. a conflict or a refusal by a follower) was produced before anything was
+   * applied and keeps its type, and so does a failure to connect, which proves the request never left this client.
    */
   static RuntimeException toCommitException(final Throwable e) {
-    final RuntimeException mapped = toException(e);
-    if (mapped.getClass() == NeedRetryException.class && Status.fromThrowable(e).getCode() == Status.Code.UNAVAILABLE) {
-      final Metadata trailers = Status.trailersFromThrowable(e);
-      if (trailers == null || trailers.get(EXCEPTION_CLASS_KEY) == null)
-        return new TransactionException("Error on transaction commit: the connection was lost and the outcome is unknown, "
-            + "the transaction may have been committed (" + mapped.getMessage() + ")", e);
+    if (!responseMayHaveBeenLost(e))
+      return toException(e);
+    return new TransactionException("Error on transaction commit: the connection was lost and the outcome is unknown, "
+        + "the transaction may have been committed (" + describe(e) + ")", e);
+  }
+
+  /**
+   * {@link #toException} for a failed RPC that applies and commits a write on its own, outside any client
+   * transaction: a command, a record create/update/delete, a bulk insert or a time-series write sent without a
+   * transaction id (issue #8525). Same line as {@link #toCommitException}: a status-only {@code UNAVAILABLE} that is
+   * not a failure to connect may have been raised after the server applied the write and only its response was lost,
+   * so it must not surface as a {@link NeedRetryException} - a caller honouring that type would apply the write a
+   * second time and report success. It becomes a {@link RemoteException} saying the outcome is unknown, the message
+   * the HTTP client raises for the same failure (issue #8136).
+   *
+   * @param operation the RPC name, for the message only
+   */
+  static RuntimeException toAutoCommitWriteException(final Throwable e, final String operation) {
+    if (!responseMayHaveBeenLost(e))
+      return toException(e);
+    return new RemoteException("Error on executing remote operation '" + operation
+        + "': the connection failed and the request may already have reached the server (" + describe(e)
+        + "), so the server may already have applied it. It is not reported as retryable, because a replay could apply"
+        + " it twice", e);
+  }
+
+  /**
+   * Whether {@code e} is a status-only {@code UNAVAILABLE} that may have been raised after the server received the
+   * request. A class-name trailer means the server answered, so it did not apply anything it was not reporting; a
+   * failure to connect means the request never left this client. Everything else - a reset, a GOAWAY, a channel
+   * shut down mid-call - can follow a request the server already applied.
+   * <p>
+   * Over-reporting is deliberate: a client-side {@code Channel shutdown invoked} or a TLS handshake failure also lands
+   * here although nothing went out, because the status alone cannot prove it. Reporting an unapplied write as "maybe
+   * applied" costs the caller a check; narrowing this to save that check would let a replay apply a write twice.
+   */
+  static boolean responseMayHaveBeenLost(final Throwable e) {
+    if (Status.fromThrowable(e).getCode() != Status.Code.UNAVAILABLE)
+      return false;
+    final Metadata trailers = Status.trailersFromThrowable(e);
+    if (trailers != null && trailers.get(EXCEPTION_CLASS_KEY) != null)
+      return false;
+    return !provablyNeverSent(e);
+  }
+
+  /**
+   * Whether the failure proves the request never reached the server: only a failure to establish the connection
+   * does - a refused connection ({@link ConnectException}, which Netty's annotated variant extends) or a host that
+   * does not resolve ({@link UnknownHostException}). gRPC carries that cause on the {@code UNAVAILABLE} status of a
+   * call that could not get a transport.
+   * <p>
+   * Deliberately narrow: a {@code NoRouteToHostException} or a connect-phase {@code SocketTimeoutException} is not a
+   * {@link ConnectException} and stays an unknown outcome. Erring that way costs a caller a retry decision; erring the
+   * other way applies a write twice. The walk is depth-bounded so a cyclic cause chain cannot hang it.
+   */
+  static boolean provablyNeverSent(final Throwable e) {
+    // The depth cap also ends a self-referencing or cyclic chain, so no identity check is needed
+    Throwable t = e;
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      if (t instanceof ConnectException || t instanceof UnknownHostException)
+        return true;
+      t = t.getCause();
     }
-    return mapped;
+    return false;
+  }
+
+  private static String describe(final Throwable e) {
+    final Status status = Status.fromThrowable(e);
+    return status.getDescription() != null ? status.getDescription() : status.getCode().name();
   }
 
   private static RuntimeException reconstructFromClassName(final String exceptionClass, final String msg,

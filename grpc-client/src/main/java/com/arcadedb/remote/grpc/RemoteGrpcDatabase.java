@@ -620,7 +620,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       }
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // rethrows mapped domain exception
+      handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -651,7 +651,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getDeleted();
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // rethrows mapped domain exception
+      handleGrpcWriteException(e, "DeleteRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -744,7 +744,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
       return resultSet;
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e);
+      handleGrpcWriteException(e, "ExecuteCommand", commitsOnItsOwn(requestBuilder.getTransaction()));
       return new InternalResultSet();
     }
   }
@@ -858,7 +858,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return callUnary("ExecuteCommand",
           () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
     } catch (StatusException | StatusRuntimeException e) {
-      // handleGrpcException already called in callUnary, this is unreachable
+      // callUnary does not map: before issue #8525 this threw a bare "unreachable" IllegalStateException for every failure
+      handleGrpcWriteException(e, "ExecuteCommand", commitsOnItsOwn(tx));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -879,7 +880,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return callUnary("ExecuteCommand",
           () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).executeCommand(reqB.build()));
     } catch (StatusException | StatusRuntimeException e) {
-      // handleGrpcException already called in callUnary, this is unreachable
+      // callUnary does not map: before issue #8525 this threw a bare "unreachable" IllegalStateException for every failure
+      handleGrpcWriteException(e, "ExecuteCommand", commitsOnItsOwn(tx));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -914,11 +916,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // If your proto has flags, you can check response.getSuccess()/getUpdated()
         // Otherwise, treat non-exception as success.
         return rid;
-      } catch (StatusRuntimeException e) {
-        handleGrpcException(e);
-        return null;
-      } catch (StatusException e) {
-        handleGrpcException(e);
+      } catch (StatusRuntimeException | StatusException e) {
+        handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(updateBuilder.getTransaction()));
         return null;
       }
     } else {
@@ -950,7 +949,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         trackCreatedRecord(record);
         return newRID;
       } catch (StatusRuntimeException | StatusException e) {
-        handleGrpcException(e);
+        handleGrpcWriteException(e, "CreateRecord", commitsOnItsOwn(request.getTransaction()));
         return null;
       }
     }
@@ -1314,7 +1313,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getRid(); // e.g. "#12:0"
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // rethrows mapped domain exception
+      // The request carries no transaction, so the server commits it on its own
+      handleGrpcWriteException(e, "CreateRecord", true);
       throw new IllegalStateException("unreachable");
     }
   }
@@ -1334,7 +1334,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getRid();
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e);
+      handleGrpcWriteException(e, "CreateRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -1379,7 +1379,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getSuccess();
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // rethrows mapped domain exception
+      handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -1412,7 +1412,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       return res.getSuccess();
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // rethrows mapped domain exception
+      handleGrpcWriteException(e, "UpdateRecord", commitsOnItsOwn(req.getTransaction()));
       throw new IllegalStateException("unreachable");
     }
   }
@@ -1559,7 +1559,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
           () -> blockingStub().withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS).bulkInsert(req));
 
     } catch (StatusRuntimeException | StatusException e) {
-      handleGrpcException(e); // maps to your domain exceptions and rethrows
+      // BulkInsert carries no client transaction: the server commits the rows itself, unless it is a dry run
+      handleGrpcWriteException(e, "BulkInsert", !newOptions.getValidateOnly());
       throw new IllegalStateException("unreachable"); // keep compiler happy
     }
   }
@@ -2218,6 +2219,25 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return out;
   }
 
+  /**
+   * {@link #handleGrpcException} for a write RPC. When the write commits on its own ({@code autoCommitted}: no client
+   * transaction carries it), a lost response is an unknown outcome rather than a retryable failure (issue #8525). A
+   * write inside a client transaction keeps the retryable mapping: nothing it did is durable until the commit, which
+   * {@link GrpcClientErrorMapper#toCommitException} guards, so {@code transaction()} re-running the scope is safe.
+   */
+  void handleGrpcWriteException(final Throwable e, final String operation, final boolean autoCommitted) {
+    throw autoCommitted ? GrpcClientErrorMapper.toAutoCommitWriteException(e, operation) : GrpcClientErrorMapper.toException(e);
+  }
+
+  /**
+   * Whether {@code tx} makes the server commit the request on its own: no context at all (an unset proto field reads
+   * as the default instance), or one that names no client transaction ({@link #txBeginCommit()} asks for begin+commit
+   * inside the call). The single test every write site uses, so the decision cannot drift between them.
+   */
+  private static boolean commitsOnItsOwn(final TransactionContext tx) {
+    return tx == null || tx.getTransactionId().isEmpty();
+  }
+
   void handleGrpcException(Throwable e) {
     // Reconstruct the exact engine exception type from the server's status + trailers so type-driven
     // behavior (e.g. RemoteDatabase.transaction() retry on NeedRetryException) works over gRPC exactly as
@@ -2461,7 +2481,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
               .timeSeriesWrite(request.build()));
       return toWriteSummary(response);
     } catch (final StatusRuntimeException | StatusException e) {
-      handleGrpcException(e);
+      // The request has no transaction field, so the server commits the points on its own
+      handleGrpcWriteException(e, "TimeSeriesWrite", true);
       throw new IllegalStateException("unreachable");
     }
   }
