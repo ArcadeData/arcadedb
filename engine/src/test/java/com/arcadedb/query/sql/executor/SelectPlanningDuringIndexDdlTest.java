@@ -48,14 +48,16 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   private static final int READERS = 6;
   private static final int ROUNDS  = 120;
 
-  // WHERE with an index, ORDER BY served by an index, min/max served by an index, and a CONTAINSTEXT that may meet a full-text index
+  // WHERE with an index, ORDER BY served by an index, min/max served by an index, a CONTAINSTEXT that may meet a full-text index, MATCH
   private static final String[] QUERIES = {
       "SELECT count(*) AS c FROM Person WHERE id < ?",
       "SELECT count(*) AS c FROM Person WHERE id = ?",
       "SELECT id FROM Person WHERE id > ? ORDER BY id LIMIT 5",
       "SELECT id FROM Person WHERE id >= ? ORDER BY id DESC LIMIT 5",
       "SELECT min(id) AS m, max(id) AS x FROM Person WHERE id >= ?",
-      "SELECT count(*) AS c FROM Person WHERE id < ? AND name CONTAINSTEXT 'x'" };
+      "SELECT count(*) AS c FROM Person WHERE id < ? AND name CONTAINSTEXT 'x'",
+      // MATCH estimates the filter against the indexes of the type once the type has more than its threshold of records
+      "MATCH {type: Person, as: p, where: (id = ?)} RETURN p.id AS id" };
 
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
@@ -112,7 +114,7 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
             else if (q == 1 && (count == null || count != 1))
               failures.computeIfAbsent("wrong count for id = " + bound, k -> new AtomicLong()).incrementAndGet();
             answered.incrementAndGet();
-          } catch (final Exception e) {
+          } catch (final Throwable e) {
             failures.computeIfAbsent(e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()).split("\n")[0],
                 k -> new AtomicLong()).incrementAndGet();
           }
