@@ -94,4 +94,37 @@ class Issue8814UpdateHalloweenTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(5);
     }
   }
+
+  @Test
+  void returnAfterAndCompoundIndex() {
+    database.transaction(() -> {
+      final var type = database.getSchema().createVertexType("W");
+      type.createProperty("a", Type.LONG);
+      type.createProperty("c", Type.LONG);
+      database.getSchema().buildTypeIndex("W", new String[] { "a", "c" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false).create();
+      for (int i = 0; i < 500; i++)
+        database.newVertex("W").set("a", (long) i, "c", 1L).save();
+    });
+    database.begin();
+    long rows = 0;
+    try (final ResultSet rs = database.command("sql", "UPDATE W SET a = a + 10, c = c + 1 RETURN AFTER WHERE a >= 0 AND a <= 100")) {
+      while (rs.hasNext()) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2);
+        ++rows;
+      }
+    }
+    database.commit();
+    assertThat(rows).isEqualTo(101);
+  }
+
+  @Test
+  void barrierOnlyWhenTheStatementRewritesTheWalkedKey() {
+    load();
+    try (final ResultSet rs = database.query("sql", "EXPLAIN UPDATE V SET b = 5 WHERE a BETWEEN 0 AND 10")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).doesNotContain("MATERIALIZE");
+    }
+    try (final ResultSet rs = database.query("sql", "EXPLAIN UPDATE V SET a = a + 1 WHERE a BETWEEN 0 AND 10")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("MATERIALIZE");
+    }
+  }
 }
