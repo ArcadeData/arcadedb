@@ -109,6 +109,53 @@ class Issue8304LegacySwapRecoveryTest {
     assertThat(backup).doesNotExist();
   }
 
+  /**
+   * Disjoint names that are really a phase-2 crash: the only snapshot file that moved is one no original had. The
+   * originals are restored and the node opens on them; the stray snapshot-only file is left in place (and named in
+   * the log) rather than guessed at.
+   */
+  @Test
+  void disjointLayoutFromAPhase2CrashStillRestoresTheOriginalDatabase(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(db.resolve("SnapshotOnly_0.9.65536.v0.bucket"), "stray");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(staged).doesNotExist();
+    assertThat(backup).doesNotExist();
+  }
+
+  /** A restore that does not produce a database keeps the pending marker, so nothing is accepted as healthy. */
+  @Test
+  void rollbackThatRecoversNoDatabaseKeepsThePendingMarker(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    Files.createDirectories(staged);
+    Files.createDirectories(backup);
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(staged.resolve("C.0.bucket"), "new-C");
+    Files.writeString(backup.resolve("A.0.bucket"), "old-A");
+    Files.writeString(db.resolve("B.0.bucket"), "old-B");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertThat(db.resolve("A.0.bucket")).hasContent("old-A");
+    assertThat(db.resolve("B.0.bucket")).hasContent("old-B");
+    assertThat(db.resolve(".snapshot-pending")).exists();
+  }
+
   private static List<String> fileNames(final Path dir) throws IOException {
     final List<String> names = new ArrayList<>();
     try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
