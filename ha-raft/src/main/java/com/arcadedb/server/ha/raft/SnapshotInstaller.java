@@ -1529,7 +1529,8 @@ public final class SnapshotInstaller {
         if (hasLiveDatabaseFiles(dbDir)) {
           if (liveFilesShareANameWithTheBackup(dbDir, snapshotBackup)) {
             // Phase 1 renames, so a name in both places can only be a snapshot file installed over an original:
-            // phase 2. Roll forward like a recorded INSTALLING phase.
+            // phase 2 (assuming nothing recreated a backed-up name in the live directory since). Roll forward like
+            // a recorded INSTALLING phase.
             LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
                 "Resuming the legacy snapshot swap for %s, which was interrupted while installing the snapshot",
                 null, dbDir);
@@ -1542,9 +1543,12 @@ public final class SnapshotInstaller {
             LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
-            deleteDirectoryIfExists(snapshotNew);
+            // The marker goes first: deleting the staging can remove its completion marker, after which a later
+            // pass takes the generic restore branch and needs the marker to finish the quarantine.
             writeFileForced(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE), String.join("\n", liveEntryNames(dbDir)));
             fsyncDirectory(dbDir);
+            snapshotSwapProgress("QUARANTINE_MARKED");
+            deleteDirectoryIfExists(snapshotNew);
             restoreBackup(dbDir, snapshotBackup);
             snapshotSwapProgress("RESTORED");
             quarantineCollidingFiles(dbDir);
@@ -1682,7 +1686,8 @@ public final class SnapshotInstaller {
    * <p>
    * Those entries are originals after a phase-1 crash, so nothing happens then. After a phase-2 crash that moved
    * only snapshot-only names they are snapshot files, and one whose file id collides with a restored original makes
-   * the engine refuse to open the database. Judging by the id, rather than by what the schema lists, leaves every
+   * the engine refuse to open the database (file ids are unique per database, the file manager refuses a second
+   * file on one id). Judging by the id, rather than by what the schema lists, leaves every
    * file that does not collide (standalone and external buckets included) where it is. Moved, not deleted.
    */
   private static void quarantineCollidingFiles(final Path dbDir) throws IOException {

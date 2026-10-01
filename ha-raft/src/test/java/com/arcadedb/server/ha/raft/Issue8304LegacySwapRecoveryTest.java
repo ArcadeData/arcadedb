@@ -144,6 +144,40 @@ class Issue8304LegacySwapRecoveryTest {
     assertThat(backup).doesNotExist();
   }
 
+  /** A crash after the quarantine marker but before the staging delete still quarantines on the next pass. */
+  @Test
+  void crashBetweenTheMarkerAndTheStagingDeleteIsResumed(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    moveSnapshotOnlyBucketToLive(root, db);
+    final AtomicBoolean crashed = new AtomicBoolean();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if (point.equals("QUARANTINE_MARKED") && crashed.compareAndSet(false, true))
+        throw new SimulatedCrash();
+    };
+    try {
+      assertThatThrownBy(() -> SnapshotInstaller.recoverPendingSnapshotSwaps(databases))
+          .isInstanceOf(SimulatedCrash.class);
+    } finally {
+      SnapshotInstaller.swapProgressForTesting = null;
+    }
+    assertThat(crashed).isTrue();
+    // The worst case for the next pass: the staging lost its completion marker before the crash.
+    Files.deleteIfExists(staged.resolve(".snapshot-complete"));
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+  }
+
   /** A crash after the backup was consumed but before the orphan quarantine still gets the orphan moved aside. */
   @Test
   void crashBetweenTheRestoreAndTheQuarantineIsResumed(@TempDir final Path root) throws Exception {
