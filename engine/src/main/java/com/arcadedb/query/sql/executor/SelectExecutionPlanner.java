@@ -3446,6 +3446,10 @@ public class SelectExecutionPlanner {
           } catch (final CommandExecutionException | IllegalArgumentException e) {
             return false;
           }
+          // A field reference evaluates to null without a record, which would silently read as the epoch grid: an
+          // options value, or a member of it, that came out null is per-row and belongs to the generic path
+          if (bucketOptions == null || (bucketOptions instanceof Map<?, ?> options && options.containsValue(null)))
+            return false;
         }
       } else {
         // Must be an aggregate function

@@ -2098,6 +2098,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * run still sits inside one bucket: those type options exist so that a block never straddles a boundary, and the
    * merge must not undo that. A run of one block is not a merge and is not reported.
    */
+  // The bucket check uses the epoch grid on purpose: that is the grid compaction aligns its blocks to, whatever offset queries use.
   static List<int[]> planMergeGroups(final List<BlockEntry> blocks, final int targetSamples, final long bucketIntervalMs) {
     final List<int[]> groups = new ArrayList<>();
     int start = -1;
@@ -2154,7 +2155,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * that appends need while the file is written. If anything rewrote the store meanwhile, the next read notices the
    * version moved and the whole pass is dropped, to be retried by the next maintenance tick.
    * <p>
-   *The temp file is the merge's own, so it needs no serialisation against retention or downsampling; the caller serialises merges
+   * The temp file is the merge's own, so it needs no serialisation against retention or downsampling; the caller serialises merges
    * with each other and with compaction ({@code TimeSeriesShard.compactionMutex}).
    */
   MergePlan prepareMerge(final int targetSamples, final long bucketIntervalMs, final int minBlocksSaved) throws IOException {
