@@ -85,4 +85,28 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
       return null;
     });
   }
+
+  /**
+   * Issue #8745: {@code __typename} on an object returned by a native query directive is the type the field returns.
+   */
+  @Test
+  public void typenameOnNativeQueryResult() {
+    executeTest(database -> {
+      defineTypes(database);
+
+      try (final ResultSet resultSet = database.query("graphql",
+          "{ bookByName(bookNameParameter: \"Mr. brain\"){ __typename name authors { __typename lastName } } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        final Result record = resultSet.next();
+        assertThat(record.<String>getProperty("__typename")).isEqualTo("Book");
+        assertThat(record.<String>getProperty("name")).isEqualTo("Mr. brain");
+        final Collection<Result> authors = record.getProperty("authors");
+        assertThat(authors).hasSize(1);
+        assertThat(authors.iterator().next().<String>getProperty("__typename")).isEqualTo("Author");
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+
+      return null;
+    });
+  }
 }
