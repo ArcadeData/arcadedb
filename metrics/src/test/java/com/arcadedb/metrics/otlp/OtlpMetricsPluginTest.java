@@ -96,6 +96,41 @@ class OtlpMetricsPluginTest {
   }
 
   /**
+   * Issue #7294: Micrometer exports OTLP over HTTP/protobuf, so the default must be the collector's HTTP receiver
+   * (port 4318, path /v1/metrics), not the gRPC port 4317 that the metrics registry cannot speak.
+   */
+  @Test
+  void defaultEndpointIsTheOtlpHttpMetricsReceiver() {
+    assertThat(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getDefValue()).isEqualTo("http://localhost:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.otlpConfig(new ContextConfiguration(), Map.of()).url()).isEqualTo("http://localhost:4318/v1/metrics");
+  }
+
+  /**
+   * Issue #7294: a base URL with no path (what the gRPC-style documentation example looked like) would be POSTed to the
+   * collector root and answered with 404, so the standard OTLP/HTTP metrics path is appended. An explicit path is kept.
+   */
+  @Test
+  void endpointWithoutPathGetsTheStandardMetricsPath() {
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://otel-collector:4318")).isEqualTo("http://otel-collector:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://otel-collector:4318/")).isEqualTo("http://otel-collector:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://otel-collector:4318/v1/metrics")).isEqualTo("http://otel-collector:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("https://ingest.example.com/otlp/v1/metrics?x=1"))
+        .isEqualTo("https://ingest.example.com/otlp/v1/metrics?x=1");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("https://ingest.example.com/custom")).isEqualTo("https://ingest.example.com/custom");
+  }
+
+  /**
+   * Issue #7294: the gRPC port 4317 is the classic misconfiguration; it is recognised so the plugin can warn about it.
+   */
+  @Test
+  void grpcPortIsRecognised() {
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4317")).isTrue();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4317/")).isTrue();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4318/v1/metrics")).isFalse();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("not a url")).isFalse();
+  }
+
+  /**
    * Issue #7295: OTEL_SERVICE_NAME wins over a service.name in OTEL_RESOURCE_ATTRIBUTES, as the OpenTelemetry
    * specification requires. Micrometer's default resolution did the opposite.
    */

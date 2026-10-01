@@ -29,6 +29,8 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -85,7 +87,12 @@ public class OtlpMetricsPlugin implements ServerPlugin {
    * {@code unknown_service}.
    */
   static OtlpConfig otlpConfig(final ContextConfiguration configuration, final Map<String, String> environment) {
-    final String endpoint = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
+    final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
+    if (looksLikeGrpcEndpoint(configured))
+      LogManager.instance().log(OtlpMetricsPlugin.class, Level.WARNING,
+          "OTLP metrics endpoint '%s' uses the OTLP/gRPC port 4317, but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
+          configured);
+    final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
     return new OtlpConfig() {
       @Override
@@ -98,6 +105,41 @@ public class OtlpMetricsPlugin implements ServerPlugin {
         return resourceAttributes;
       }
     };
+  }
+
+  /**
+   * Micrometer POSTs to the configured URL as is, so a base URL without a path reaches the collector root and is
+   * answered with 404. The standard OTLP/HTTP metrics path is appended in that case; an explicit path is kept (issue #7294).
+   */
+  static String normalizeEndpoint(final String endpoint) {
+    if (endpoint == null)
+      return null;
+    try {
+      final URI uri = new URI(endpoint.trim());
+      final String path = uri.getRawPath();
+      if (uri.getHost() != null && (path == null || path.isEmpty() || "/".equals(path))) {
+        final String base = endpoint.trim();
+        final int cut = base.indexOf('?') >= 0 ? base.indexOf('?') : base.length();
+        final String head = base.substring(0, cut);
+        return (head.endsWith("/") ? head.substring(0, head.length() - 1) : head) + "/v1/metrics" + base.substring(cut);
+      }
+    } catch (final URISyntaxException e) {
+      // leave it untouched, the exporter reports the bad URL
+    }
+    return endpoint;
+  }
+
+  /**
+   * True for an endpoint on the OTLP/gRPC port 4317, which the HTTP-based metrics registry cannot talk to.
+   */
+  static boolean looksLikeGrpcEndpoint(final String endpoint) {
+    if (endpoint == null)
+      return false;
+    try {
+      return new URI(endpoint.trim()).getPort() == 4317;
+    } catch (final URISyntaxException e) {
+      return false;
+    }
   }
 
   /**
