@@ -34,9 +34,11 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -928,6 +930,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public PermissionRefreshMetrics.Snapshot getPermissionRefreshStats() {
     return permissionRefreshMetrics.snapshot();
+  }
+
+  /**
+   * Load of {@link #permissionsRefreshExecutor}, published as the {@code pool=security_refresh} executor row
+   * (issue #7856). Its {@code tasks.coalesced} column is {@link PermissionRefreshMetrics.Snapshot#refreshesCoalesced},
+   * the count this pool's rejection handler already keeps.
+   */
+  public PoolStats getPermissionsRefreshPoolStats() {
+    return PoolMetrics.statsOf(permissionsRefreshExecutor);
   }
 
   /**

@@ -19,6 +19,8 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.util.ArrayList;
@@ -36,6 +38,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -89,6 +92,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   static final long REUSE_WINDOW_MS = 5_000L;
 
   static final String THREAD_NAME = "arcadedb-raft-security-seed";
+
+  /** The executor row of a pool that has no worker to report on: no thread, nothing queued, the one slot free. */
+  static final PoolStats EMPTY_POOL_STATS = new PoolStats(0, 0, 0, 1, 0L, 0L, 0L);
 
   private final BooleanSupplier  isLeader;
   private final LongSupplier     retryBudgetMs;
@@ -146,6 +152,12 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * result must not repopulate the slot this node has just abandoned.
    */
   private       boolean                          closed;
+  /**
+   * Seed requests that did not get a run of their own (issue #7856): folded into the outstanding seed, answered by
+   * one that finished moments ago, or refused because the node is stopping. The {@code tasks.coalesced} column of
+   * the {@code pool=security_seed} executor row.
+   */
+  private final AtomicLong                       coalescedSeeds = new AtomicLong();
   /** What {@link #runSeed} was last entered for; read back by a test that the reason is not hardcoded. */
   private       String                           lastRunReason;
 
@@ -167,15 +179,10 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * outstanding task covers every change folded into it - and the caller that folded in gets that task's
    * result, which is what lets an admission report a seed it did not itself run (issue #7834).
    * <p>
-   * <b>Not registered with {@code PoolMetrics}.</b> That binder is a {@code MeterBinder} over the engine's
-   * process-wide singletons, bound once through their {@code getInstance()} accessors; it has no surface for
-   * a per-server pool such as this one, which belongs to a state-machine instance. The module's other
-   * housekeeping executor is excluded from that binder too ({@code RaftLogCompactionScheduler}), but on a
-   * different ground and not a precedent for this one: that pool is excluded because it is uninteresting - one
-   * bounded task every few minutes, no queue to back up - whereas this one has a one-slot queue and drops on
-   * saturation, so its drop count is exactly what an operator would want and the obstacle is structural rather
-   * than editorial. Surfacing this pool and {@code ServerSecurity.permissionsRefreshExecutor} - the pool this
-   * one is shaped after, and which is not surfaced either - is tracked as issue #7856.
+   * <b>Published as the {@code pool=security_seed} executor row</b> (issue #7856), through
+   * {@code PoolMetrics.bindInstancePool} - the registration path for a pool that belongs to an instance rather
+   * than to the JVM. {@code RaftHAPlugin} registers it and resolves this seeder through the live state machine on
+   * every scrape, see {@link #getPoolStats()} and {@link #getCoalescedSeeds()}.
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
@@ -374,12 +381,14 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       // A DONE future does not block the next schedule, so the slot never has to be cleared: whoever comes
       // next simply installs their own. That is what lets the refusal below answer rather than undo.
       if (outstandingSeed != null && !outstandingSeed.isDone()) {
+        coalescedSeeds.incrementAndGet();
         LogManager.instance().log(this, Level.FINE,
             "A cluster security seed is already outstanding; the one for %s folds into it", reason);
         return outstandingSeed;
       }
       if (mayReuseRecentSeed && lastCompletedSeed != null
           && System.currentTimeMillis() - lastCompletedSeedAt <= REUSE_WINDOW_MS) {
+        coalescedSeeds.incrementAndGet();
         LogManager.instance().log(this, Level.FINE,
             "A cluster security seed finished %dms ago; %s reports its outcome instead of running a second one",
             System.currentTimeMillis() - lastCompletedSeedAt, reason);
@@ -396,6 +405,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     } catch (final RejectedExecutionException e) {
       // Completed rather than left dangling: a caller that folded into this future before the refusal is owed
       // an answer, and a future nobody will ever complete is a caller parked until its own timeout.
+      coalescedSeeds.incrementAndGet();
       seed.completeExceptionally(new IllegalStateException(
           "this node is stopping; the cluster security seed for " + reason + " was not scheduled"));
       LogManager.instance().log(this, Level.FINE,
@@ -453,6 +463,20 @@ public class MembershipSecuritySeeder implements AutoCloseable {
           "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
               + "members serving requests against their own security documents", t, reason, t.getMessage());
     }
+  }
+
+  /**
+   * Load of the owned worker, for the {@code pool=security_seed} executor row (issue #7856). All zeros when this
+   * instance runs on an executor it was handed rather than one it built - the test seam - since that executor's
+   * load is its owner's to report, not this seeder's.
+   */
+  public PoolStats getPoolStats() {
+    return ownedExecutor instanceof ThreadPoolExecutor owned ? PoolMetrics.statsOf(owned) : EMPTY_POOL_STATS;
+  }
+
+  /** Cumulative seed requests that did not get a run of their own; see {@link #coalescedSeeds}. */
+  public long getCoalescedSeeds() {
+    return coalescedSeeds.get();
   }
 
   /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */

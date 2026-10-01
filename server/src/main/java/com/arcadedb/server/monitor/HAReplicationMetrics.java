@@ -123,8 +123,9 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * {@code last_sweep_at} is what turns that into a duration.
    * <p>
    * Registered on this binder rather than on {@code PoolMetrics} even though one of them describes an executor:
-   * {@code PoolMetrics} binds JVM-wide singleton pools with no server to reach, while these come from
-   * <em>this</em> server's {@code ServerSecurity}. They are {@code arcadedb.ha.*} because what makes them worth
+   * the worker's LOAD is published there, as the {@code pool=security_refresh} instance row (issue #7856, whose
+   * {@code tasks.coalesced} is {@code refreshes_coalesced} below), while these say what <em>this</em> server's
+   * {@code ServerSecurity} did with the replicated changes it received. They are {@code arcadedb.ha.*} because what makes them worth
    * scraping is replication - on a standalone server every one of them stays at 0 except the sweeps the
    * {@code server-groups.json} watcher runs, which is the correct reading of a node that receives no replicated
    * group changes.
