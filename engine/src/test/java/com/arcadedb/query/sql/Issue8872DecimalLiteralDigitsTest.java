@@ -82,6 +82,53 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     }
   }
 
+  @Test
+  void indexedDecimalAndDoubleLookups() {
+    database.command("sql", "CREATE DOCUMENT TYPE I");
+    database.command("sql", "CREATE PROPERTY I.k STRING");
+    database.command("sql", "CREATE PROPERTY I.dec DECIMAL");
+    database.command("sql", "CREATE PROPERTY I.dbl DOUBLE");
+    database.command("sql", "CREATE INDEX ON I (dec) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON I (dbl) NOTUNIQUE");
+    final BigDecimal v = new BigDecimal(EXACT);
+    database.transaction(() -> {
+      database.newDocument("I").set("k", "exact", "dec", v, "dbl", 1.5d).save();
+      database.newDocument("I").set("k", "above", "dec", v.add(BigDecimal.ONE), "dbl", 2.5d).save();
+    });
+    assertThat(keys("SELECT k FROM I WHERE dec = " + EXACT)).containsExactly("exact");
+    assertThat(keys("SELECT k FROM I WHERE dec > " + EXACT)).containsExactly("above");
+    assertThat(keys("SELECT k FROM I WHERE dec >= " + EXACT)).containsExactlyInAnyOrder("exact", "above");
+    assertThat(keys("SELECT k FROM I WHERE dbl = 1.5000000000000000")).containsExactly("exact");
+    assertThat(keys("SELECT k FROM I WHERE dbl > 1.5000000000000000000001")).containsExactly("above");
+  }
+
+  @Test
+  void arithmeticWithLongLiteral() {
+    try (final ResultSet rs = database.query("sql", "SELECT " + EXACT + " + 1 AS a")) {
+      assertThat((BigDecimal) rs.next().getProperty("a")).isEqualByComparingTo(new BigDecimal(EXACT).add(BigDecimal.ONE));
+    }
+  }
+
+  @Test
+  void literalsADoubleHoldsStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0.1000000000000000 AS a, 1.2345678901234567890e5 AS b, 123456789012345.5 AS c")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(0.1d);
+      assertThat(r.<Object>getProperty("b")).isInstanceOf(BigDecimal.class);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(123456789012345.5d);
+    }
+  }
+
+  @Test
+  void hexAndExtremeExponentsStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 0x1.0000000000000p0 AS a, 1e999999999 AS b, 1e-999999999 AS c")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(1d);
+      assertThat(r.<Object>getProperty("b")).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(r.<Object>getProperty("c")).isEqualTo(0d);
+    }
+  }
+
   private List<String> keys(final String sql) {
     final List<String> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql)) {
