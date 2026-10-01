@@ -93,6 +93,17 @@ class Issue8814UpdateHalloweenTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE b > 0")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(5);
     }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V WHERE b = 1")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(5);
+    }
+  }
+
+  @Test
+  void nonSetOperationsKeepTheBarrier() {
+    load();
+    try (final ResultSet rs = database.query("sql", "EXPLAIN UPDATE V REMOVE b WHERE a BETWEEN 0 AND 10")) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("MATERIALIZE");
+    }
   }
 
   @Test
