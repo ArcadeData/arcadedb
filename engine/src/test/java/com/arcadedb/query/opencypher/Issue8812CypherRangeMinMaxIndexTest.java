@@ -115,6 +115,21 @@ class Issue8812CypherRangeMinMaxIndexTest extends TestHelper {
   }
 
   @Test
+  void changesOfTheOpenTransactionAreSeen() {
+    database.begin();
+    try {
+      database.command("sql", "CREATE VERTEX V SET a = 1003");
+      database.command("sql", "DELETE FROM V WHERE a = 1002");
+      assertAnswer("MATCH (v:V) WHERE v.a > 1001 RETURN min(v.a) AS c", "MATCH (v:V) WHERE v.a + 0 > 1001 RETURN min(v.a + 0) AS c", Map.of(),
+          1003L);
+    } finally {
+      database.rollback();
+    }
+    assertAnswer("MATCH (v:V) WHERE v.a > 1001 RETURN min(v.a) AS c", "MATCH (v:V) WHERE v.a + 0 > 1001 RETURN min(v.a + 0) AS c", Map.of(),
+        1002L);
+  }
+
+  @Test
   void anythingElseInTheWhereKeepsTheScan() {
     assertThat(profile("MATCH (v:V) WHERE v.a > 100 AND v.a <> 500 RETURN min(v.a) AS c", Map.of())).doesNotContain("MIN FROM INDEX");
     assertThat(profile("MATCH (v:V) WHERE v.a > 100 OR v.a < 5 RETURN min(v.a) AS c", Map.of())).doesNotContain("MIN FROM INDEX");

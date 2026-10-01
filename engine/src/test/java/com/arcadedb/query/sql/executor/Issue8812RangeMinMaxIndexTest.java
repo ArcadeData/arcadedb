@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -133,7 +134,7 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > :lo", Map.of("lo", Long.MIN_VALUE))) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo(0L);
     }
-    final java.util.HashMap<String, Object> nullParam = new java.util.HashMap<>();
+    final HashMap<String, Object> nullParam = new HashMap<>();
     nullParam.put("lo", null);
     final Object viaIndex;
     try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > :lo", nullParam)) {
@@ -146,7 +147,7 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
 
   @Test
   void aNullBoundOfARangeMatchesNothing() {
-    final java.util.HashMap<String, Object> nullParam = new java.util.HashMap<>();
+    final HashMap<String, Object> nullParam = new HashMap<>();
     nullParam.put("lo", null);
     // a comparison with null is never true, through the index as through a scan: the null bound used to read as "no bound"
     try (final ResultSet rs = database.query("sql", "SELECT a FROM V WHERE a > :lo ORDER BY a LIMIT 1", nullParam)) {
@@ -158,6 +159,30 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT a FROM V WHERE a BETWEEN :lo AND 10", nullParam)) {
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  @Test
+  void aNullBoundOnACompositeIndexMatchesNothingAndRealBoundsStillWork() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE C");
+      database.command("sql", "CREATE PROPERTY C.x LONG");
+      database.command("sql", "CREATE PROPERTY C.y LONG");
+      database.command("sql", "CREATE INDEX ON C (x, y) NOTUNIQUE");
+      for (int x = 0; x < 3; x++)
+        for (int y = 0; y < 10; y++)
+          database.command("sql", "CREATE VERTEX C SET x = " + x + ", y = " + y);
+    });
+    final HashMap<String, Object> nullParam = new HashMap<>();
+    nullParam.put("p", null);
+    for (final String where : new String[] { "x = 1 AND y > :p", "x = 1 AND y < :p", "x = 1 AND y >= :p", "x = 1 AND y BETWEEN :p AND 5" })
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM C WHERE " + where, nullParam)) {
+        assertThat(rs.next().<Long>getProperty("c")).as(where).isEqualTo(0L);
+      }
+    for (final String where : new String[] { "x = 1 AND y > 4", "x = 1 AND y <= 4", "x = 1 AND y BETWEEN 2 AND 5" })
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM C WHERE " + where);
+          final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM C WHERE " + where.replace("y", "y + 0"))) {
+        assertThat(rs.next().<Long>getProperty("c")).as(where).isEqualTo(scan.next().<Long>getProperty("c"));
+      }
   }
 
   @Test
