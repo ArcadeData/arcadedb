@@ -145,12 +145,13 @@ public class GraphQLResultSet implements ResultSet {
   private final TypeConditions typeConditions = new TypeConditions();
 
   /**
-   * The {@code __typename} of a record by its database type, see {@link #declaredObjectTypeOf}: it depends only on the
-   * type and on the SDL, fixed for the life of the result set, so a client that selects {@code __typename} everywhere
-   * (Apollo does) walks the type hierarchy once per database type rather than once per record. A {@code null} value
-   * stands for a type with no declared ancestor.
+   * The {@code __typename} of a record by the schema type it is resolved against, then by its database type, see
+   * {@link #typeNameOf}: it depends only on the two types and on the SDL, fixed for the life of the result set, so a
+   * client that selects {@code __typename} everywhere (Apollo does) walks the type hierarchy once per pair of types
+   * rather than once per record.
    */
-  private final IdentityHashMap<DocumentType, String> declaredObjectTypes = new IdentityHashMap<>(4);
+  private final IdentityHashMap<ObjectTypeDefinition, IdentityHashMap<DocumentType, String>> typeNames =
+      new IdentityHashMap<>(4);
 
   /**
    * How many times the projections of a level were built rather than taken from {@link #projectionCache}, for tests.
@@ -444,52 +445,42 @@ public class GraphQLResultSet implements ResultSet {
 
   /**
    * The value of {@code __typename} for a record resolved against {@code parentType}: the most specific object type of
-   * the SDL the record is an instance of - its database type, or the nearest super type of it, that the SDL declares -
-   * so a record of a database sub type of the type the field returns reports its own type when the SDL declares it.
-   * Otherwise the schema type the selections are written against. With neither known, the database type of the record
-   * is the only type there is to report.
+   * the SDL the record is an instance of that the field can return - its database type, or the nearest super type of
+   * it, that the SDL declares and that is {@code parentType} or a sub type of it - so a record of a database sub type of
+   * the type the field returns reports its own type when the SDL declares it. Otherwise {@code parentType}, also when the
+   * record is of an unrelated type, as a native query directive can return: naming a type the field cannot return
+   * breaks clients that check it against the possible types of the field (Apollo's {@code possibleTypes}). With no
+   * schema type at this level, the nearest declared type of the record, or its database type.
    * <p>
-   * The declared type of the record is reported only when the record is an instance of {@code parentType}: a native
-   * query directive can return records of an unrelated type, and naming a type the field cannot return breaks clients
-   * that check it against the possible types of the field (Apollo's {@code possibleTypes}). The other fields of a record
-   * are resolved against {@code parentType} either way.
+   * The hierarchy is walked level by level, so with multiple inheritance a declared direct parent wins over a declared
+   * grandparent reached through another parent; within one level the order of the super types decides. The other fields
+   * of a record are resolved against {@code parentType} either way.
    */
   private String typeNameOf(final Result current, final ObjectTypeDefinition parentType) {
     final DocumentType recordType = recordTypeOf(current);
-    if (recordType != null) {
-      final String declared = declaredObjectTypeOf(recordType);
-      if (parentType == null)
-        return declared != null ? declared : recordType.getName();
-      if (declared != null && recordType.instanceOf(parentType.getName()))
-        return declared;
-    }
-    return parentType != null ? parentType.getName() : null;
-  }
+    if (recordType == null)
+      return parentType != null ? parentType.getName() : null;
 
-  /**
-   * The name of {@code type}, or of its nearest super type, that the SDL declares as an object type; null if none. The
-   * hierarchy is walked level by level, so with multiple inheritance a declared direct parent wins over a declared
-   * grandparent reached through another parent; within one level the order of the super types decides.
-   */
-  private String declaredObjectTypeOf(final DocumentType type) {
-    String declared = declaredObjectTypes.get(type);
-    if (declared != null || declaredObjectTypes.containsKey(type))
-      return declared;
-
-    final List<DocumentType> level = new ArrayList<>(2);
-    level.add(type);
-    for (int i = 0; i < level.size(); i++) {
-      final DocumentType candidate = level.get(i);
-      if (schema.isObjectType(candidate.getName())) {
-        declared = candidate.getName();
-        break;
+    final IdentityHashMap<DocumentType, String> byRecordType = typeNames.computeIfAbsent(parentType,
+        k -> new IdentityHashMap<>(4));
+    String typeName = byRecordType.get(recordType);
+    if (typeName == null) {
+      typeName = parentType != null ? parentType.getName() : recordType.getName();
+      final List<DocumentType> level = new ArrayList<>(2);
+      level.add(recordType);
+      for (int i = 0; i < level.size(); i++) {
+        final DocumentType candidate = level.get(i);
+        if (schema.isObjectType(candidate.getName()) && (parentType == null || candidate.instanceOf(parentType.getName()))) {
+          typeName = candidate.getName();
+          break;
+        }
+        for (final DocumentType superType : candidate.getSuperTypes())
+          if (!level.contains(superType))
+            level.add(superType);
       }
-      for (final DocumentType superType : candidate.getSuperTypes())
-        if (!level.contains(superType))
-          level.add(superType);
+      byRecordType.put(recordType, typeName);
     }
-    declaredObjectTypes.put(type, declared);
-    return declared;
+    return typeName;
   }
 
   /**

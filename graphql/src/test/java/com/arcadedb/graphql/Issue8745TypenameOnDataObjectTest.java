@@ -179,8 +179,27 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
   @Test
   void typenameWithMultipleInheritanceIsTheDeclaredDirectParentBeforeAGrandparent() {
     executeTest(database -> {
-      // Hybrid -> [Paper, Novel], Paper -> Book: Book (A GRANDPARENT, FIRST IN SUPER TYPE ORDER) AND Novel (A DIRECT
-      // PARENT) ARE BOTH DECLARED, AND THE NEAREST ONE WINS
+      // Hybrid -> [Paper, Novel], Paper -> Book, Novel -> Book: Book (A GRANDPARENT, FIRST IN SUPER TYPE ORDER) AND Novel
+      // (A DIRECT PARENT) ARE BOTH DECLARED, AND THE NEAREST ONE WINS
+      database.getSchema().createVertexType("Paper").addSuperType("Book");
+      database.getSchema().createVertexType("Novel").addSuperType("Book");
+      database.getSchema().createVertexType("Hybrid").addSuperType("Paper").addSuperType("Novel");
+      final MutableVertex hybrid = database.newVertex("Hybrid");
+      hybrid.set("id", "hybrid-1");
+      hybrid.save();
+
+      defineTypes(database);
+      database.command("graphql", "type Novel { id: String }");
+      assertBook(database, "{ bookById(id: \"hybrid-1\") { __typename } }",
+          record -> assertThat(record.<String>getProperty("__typename")).isEqualTo("Novel"));
+      return null;
+    });
+  }
+
+  @Test
+  void typenameWithMultipleInheritanceNeverNamesADeclaredTypeTheFieldCannotReturn() {
+    executeTest(database -> {
+      // Hybrid -> [Paper, Novel], Paper -> Book, Novel UNRELATED TO Book: Novel IS NEARER BUT A Book FIELD CANNOT RETURN IT
       database.getSchema().createVertexType("Paper").addSuperType("Book");
       database.getSchema().createVertexType("Novel");
       database.getSchema().createVertexType("Hybrid").addSuperType("Paper").addSuperType("Novel");
@@ -191,7 +210,7 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
       defineTypes(database);
       database.command("graphql", "type Novel { id: String }");
       assertBook(database, "{ bookById(id: \"hybrid-1\") { __typename } }",
-          record -> assertThat(record.<String>getProperty("__typename")).isEqualTo("Novel"));
+          record -> assertThat(record.<String>getProperty("__typename")).isEqualTo("Book"));
       return null;
     });
   }
