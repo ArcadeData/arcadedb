@@ -895,9 +895,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * still be a status code, is what keeps the streaming encoding from being a weaker contract than the buffered
    * one.
    * <p>
-   * On the two POST operations - whose {@code requiresTransaction()} is true - it also closes two transactional
-   * hazards that {@code GET /query} does not have, since {@code GetQueryHandler.requiresTransaction()} returns
-   * false:
+   * On {@code POST /command}, and on {@code POST /query} when the request asks for the auto-commit wrapper with
+   * {@code autoCommit: true} - the wrapper is otherwise off for {@code POST /query} since #8775, like for
+   * {@code GET /query} - it also closes two transactional hazards that {@code GET /query} does not have, since
+   * {@code GetQueryHandler.requiresTransaction()} returns false:
    * <ul>
    * <li>A failure reported in band lets the auto-commit wrapper see a clean return, so it commits whatever the
    * half-executed statement already wrote. The buffered encoding propagates the exception and rolls back.</li>

@@ -38,6 +38,26 @@ public class PostQueryHandler extends PostCommandHandler {
     return false;
   }
 
+  /**
+   * A query cannot write ({@code database.query} refuses a statement that is not idempotent), so there is nothing for an
+   * auto-commit transaction to commit, and inside one a full scan is sequential to keep isolation: the parallel scan is
+   * available only outside a transaction (#8775). Same as {@code GET /query}. A request in a session still runs in the
+   * session's transaction.
+   */
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * Still true, though {@link #requiresTransaction()} is not: a session id this server cannot resolve must be refused, not
+   * silently turned into a request outside the transaction its caller believes it is in (#7402).
+   */
+  @Override
+  protected boolean rejectsUnresolvableSession() {
+    return true;
+  }
+
   @Override
   protected ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
