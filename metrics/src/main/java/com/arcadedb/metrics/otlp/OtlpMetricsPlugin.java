@@ -90,7 +90,7 @@ public class OtlpMetricsPlugin implements ServerPlugin {
     final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
     if (looksLikeGrpcEndpoint(configured))
       LogManager.instance().log(OtlpMetricsPlugin.class, Level.WARNING,
-          "OTLP metrics endpoint '%s' uses the OTLP/gRPC port 4317, but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
+          "OTLP metrics endpoint '%s' looks like the OTLP/gRPC port (4317), but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
           configured);
     final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);

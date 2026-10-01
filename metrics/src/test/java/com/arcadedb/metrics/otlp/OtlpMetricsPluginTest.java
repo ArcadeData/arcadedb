@@ -124,6 +124,8 @@ class OtlpMetricsPluginTest {
     assertThat(OtlpMetricsPlugin.normalizeEndpoint(null)).isNull();
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("")).isEmpty();
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318?x=1")).isEqualTo("http://h:4318/v1/metrics?x=1");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://[::1]:4318")).isEqualTo("http://[::1]:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://user:pw@h:4318")).isEqualTo("http://user:pw@h:4318/v1/metrics");
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318#x")).isEqualTo("http://h:4318/v1/metrics#x");
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318/?x=1")).isEqualTo("http://h:4318/v1/metrics?x=1");
   }
