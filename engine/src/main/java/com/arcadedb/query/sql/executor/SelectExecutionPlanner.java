@@ -4273,7 +4273,7 @@ public class SelectExecutionPlanner {
     String order = null;
 
     for (final OrderByItem item : info.orderBy.getItems()) {
-      if (order == null) {
+        if (order == null) {
         order = item.getType();
       } else if (!order.equals(item.getType())) {
         return false;
