@@ -459,6 +459,43 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void edgesCreatedToAVertexTheScanReachesLaterSurviveTheCommit() {
+    // a vertex handed out by the scan after the transaction has linked it must not overwrite that link when the loop adds
+    // an edge of its own to it: checked with the parallel scan on (default) and off
+    for (final boolean parallel : new boolean[] { true, false }) {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION, parallel);
+      final String type = "Node" + parallel;
+      database.getSchema().createVertexType(type, 1);
+      database.getSchema().createEdgeType("Link" + parallel);
+      database.transaction(() -> {
+        for (int i = 0; i < 2_000; i++)
+          database.newVertex(type).set("id", i).save();
+      });
+      final String edge = "Link" + parallel;
+      database.transaction(() -> {
+        final Vertex last = database.query("sql", "SELECT FROM " + type + " WHERE id = 1999").next().getVertex().get();
+        final Vertex other = database.query("sql", "SELECT FROM " + type + " WHERE id = 0").next().getVertex().get();
+        long rows = 0;
+        try (final ResultSet rs = database.query("sql", "SELECT FROM " + type + " WHERE id >= 1")) {
+          while (rs.hasNext()) {
+            final Vertex v = rs.next().getVertex().get();
+            if (rows++ == 0)
+              other.newEdge(edge, last).save(); // link the vertex the scan reaches last
+            if ((int) v.get("id") == 1999)
+              v.newEdge(edge, other).save(); // and now the scan's copy of it gets an edge of its own
+          }
+        }
+      });
+      final Vertex last = database.query("sql", "SELECT FROM " + type + " WHERE id = 1999").next().getVertex().get();
+      final Vertex other = database.query("sql", "SELECT FROM " + type + " WHERE id = 0").next().getVertex().get();
+      assertThat(other.countEdges(Vertex.DIRECTION.OUT, edge)).as("parallel=" + parallel).isEqualTo(1);
+      assertThat(other.countEdges(Vertex.DIRECTION.IN, edge)).as("parallel=" + parallel).isEqualTo(1);
+      assertThat(last.countEdges(Vertex.DIRECTION.IN, edge)).as("parallel=" + parallel).isEqualTo(1);
+      assertThat(last.countEdges(Vertex.DIRECTION.OUT, edge)).as("parallel=" + parallel).isEqualTo(1);
+    }
+  }
+
+  @Test
   void aggregationInACleanTransactionRunsInParallelAndAnswersTheSame() {
     final String aggregate = "SELECT count(*) AS n, sum(id) AS total FROM E WHERE grp = 5";
     final long outsideTotal;

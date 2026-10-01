@@ -508,7 +508,7 @@ final class ParallelTypeScan {
             final List<Result> fetched = fetchBatch(consumerStep, consumerContext, consumerCursor, maxBatchBytes);
             if (fetched != null) {
               consumerBatch = fetched;
-              filterTx = database.isTransactionActive() ? database.getTransaction() : null;
+              filterTx = transactionOrNull();
               consumerBatchIndex = 0;
             } else {
               chargeProfile(units.get(consumerUnit), consumerStep, consumerContext);
@@ -558,7 +558,7 @@ final class ParallelTypeScan {
             ++consumerUnit;
           } else if (polled != null) {
             consumerBatch = polled;
-            filterTx = database.isTransactionActive() ? database.getTransaction() : null;
+            filterTx = transactionOrNull();
             consumerBatchIndex = 0;
           }
         }
@@ -671,6 +671,10 @@ final class ParallelTypeScan {
   }
 
   /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
+  private TransactionContext transactionOrNull() {
+    return database.isTransactionActive() ? database.getTransaction() : null;
+  }
+
   private boolean deletedByTransaction(final Result row) {
     // NOTHING DELETED, THE COMMON CASE: NO LOOKUP, NO Optional
     if (!filterTx.hasDeletedRecords())
