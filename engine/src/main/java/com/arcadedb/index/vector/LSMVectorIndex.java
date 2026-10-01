@@ -1653,6 +1653,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Loads the graph of this index now instead of on the first search (issue #8852), so a service can pay the cost
+   * of a restart before the first user query arrives. A no-op when the graph is already resident. Safe to call
+   * from any thread and concurrently with searches: it goes through the same one-owner protocol a search does.
+   */
+  public void warmUp() {
+    ensureGraphAvailable();
+  }
+
+  /**
    * Ensure graph is available for searching. Lazy-loads from disk if needed.
    * This is the entry point for all search operations.
    * <p>
@@ -1836,7 +1845,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // check this index has always made for a faster reopen. Deletions are the case where the walk's answer is
     // WRONG rather than merely slower, and that is the case taken here.
     if (vectorIndex().getDeletedCount() > 0) {
-      final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf);
+      final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, false);
       if (viaOrdinalMap != null)
         return viaOrdinalMap;
 
@@ -1849,6 +1858,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
           indexName, getDatabase().getName(), vectorIndex().getDeletedCount(), liveVectors, liveVectors);
       return PersistedGraphCheck.UNUSABLE;
     }
+
+    // ISSUE #8852: nothing deleted, so the ordinal map recorded next to the graph (issue #7842) is still the array
+    // the graph was built with, and the location index can vouch for it without the per-vector document read the
+    // walk below performs. That read was the whole cost of the first search after a reopen: O(N) document
+    // deserializations on the calling thread (2.8 s at 1M vectors, 17.9 s at 10M). Only an exact cover is taken
+    // here - a live set the map does not cover completely (vectors added since, or ones the build dropped as
+    // unusable) still goes through the walk, which is the one that knows how to tell those apart.
+    final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, true);
+    if (viaOrdinalMap != null)
+      return viaOrdinalMap;
 
     try {
       final var loadedGraph = gf.loadGraph();
@@ -2096,11 +2115,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code REBUILD_SEMAPHORE}. Putting the walk itself under admission control would gate the cheap thing on the
    * machinery built for the expensive one; the rebuild path's own gap is issue #7814 and stays there.
    *
-   * @param gf the component holding the persisted graph, already known to have one
+   * Also the no-deletions fast path of issue #8852: with {@code exactCoverOnly} it answers only when the map covers
+   * the live set exactly and every ordinal is live, which is the common restart, and returns {@code null} for
+   * anything else so the caller's own walk decides.
+   *
+   * @param gf             the component holding the persisted graph, already known to have one
+   * @param exactCoverOnly refuse (return {@code null}) when live vectors exist that the map does not cover, instead
+   *                       of reusing the graph as a prefix
    *
    * @return the decision, or {@code null} when this path cannot make one and the caller should rebuild
    */
-  private PersistedGraphCheck reusePersistedGraphDespiteDeletions(final LSMVectorIndexGraphFile gf) {
+  private PersistedGraphCheck reusePersistedGraphDespiteDeletions(final LSMVectorIndexGraphFile gf,
+      final boolean exactCoverOnly) {
     if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
       // PQ codes are addressed by the same ordinal and are produced, wholesale, by the rebuild this path avoids.
       // Reusing a graph whose ordinal space has holes would pair it with a codebook built over a dense one, so
@@ -2129,6 +2155,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final VectorLocationIndex locations = vectorIndex();
     final int[] mapVectorIds = persistedMap.vectorIds();
+    if (exactCoverOnly) {
+      // The two sidecars are written as a pair, but they are separate files: a map that is not the one the manifest
+      // certifies (a restored or swapped graph, issue #6106) must not vouch for these pages. Recomputing the
+      // fingerprint from the map's own words costs no location read and no allocation.
+      long fingerprint = LSMVectorIndexGraphManifest.fingerprintSeed(mapVectorIds.length);
+      for (int ordinal = 0; ordinal < mapVectorIds.length; ordinal++)
+        fingerprint = persistedMap.hasRid(ordinal) ?
+            LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, mapVectorIds[ordinal],
+                persistedMap.bucketIds()[ordinal], persistedMap.positions()[ordinal]) :
+            LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, mapVectorIds[ordinal], null);
+      if (fingerprint != manifest.fingerprint())
+        return null;
+    }
     int liveOrdinals = 0;
     for (int ordinal = 0; ordinal < mapVectorIds.length; ordinal++) {
       final int vectorId = mapVectorIds[ordinal];
@@ -2182,6 +2221,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // whatever is left over is exactly the gap.
     final int gap = locations.size() - liveOrdinals;
     final String vectorProp = vectorPropertyName();
+
+    if (gap > 0 && exactCoverOnly)
+      return null;
 
     if (gap > 0) {
       // Deletions AND later insertions: the stale-prefix reuse of issue #6655, which until now could not be
@@ -2253,6 +2295,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.writeLock().unlock();
     }
 
+    if (deadOrdinals == 0 && exactCoverOnly) {
+      metrics.incrementGraphLoadsFromOrdinalMap();
+      LogManager.instance().log(this, Level.FINE,
+          "Loaded the persisted graph of index %s through its ordinal map: %d nodes validated against the location "
+              + "index, no vector document read (issue #8852)", indexName, mapVectorIds.length);
+      return PersistedGraphCheck.LOADED;
+    }
     if (deadOrdinals > 0)
       metrics.incrementGraphReusesWithTombstonedNodes();
     LogManager.instance().log(this, Level.INFO,

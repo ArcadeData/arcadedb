@@ -177,13 +177,18 @@ public class LSMVectorIndexGraphManifest {
    * that record would fingerprint the same.
    */
   static long fingerprintAccumulate(final long hash, final int vectorId, final RID rid) {
-    long next = mixInt(hash, vectorId);
-    if (rid == null) {
-      next = mixInt(next, -1);
-      return mixLong(next, -1L);
-    }
-    next = mixInt(next, rid.getBucketId());
-    return mixLong(next, rid.getPosition());
+    if (rid == null)
+      return fingerprintAccumulate(hash, vectorId, -1, -1L);
+    return fingerprintAccumulate(hash, vectorId, rid.getBucketId(), rid.getPosition());
+  }
+
+  /**
+   * {@link #fingerprintAccumulate(long, int, RID)} for a caller holding the two words of the RID, which spares it one
+   * allocation per ordinal (issue #8852). {@code -1, -1} is the unresolvable-RID marker.
+   */
+  static long fingerprintAccumulate(final long hash, final int vectorId, final int bucketId, final long position) {
+    final long next = mixInt(hash, vectorId);
+    return mixLong(mixInt(next, bucketId), position);
   }
 
   private static long mixInt(long hash, final int value) {
