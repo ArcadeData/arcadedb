@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 
 import org.junit.jupiter.api.Test;
@@ -124,7 +125,12 @@ class Issue8304LegacySwapRecoveryTest {
     createDatabase(staged, "new");
     Files.writeString(db.resolve(".snapshot-pending"), "");
     Files.writeString(staged.resolve(".snapshot-complete"), "");
-    Files.writeString(db.resolve("SnapshotOnly_0.9.65536.v0.bucket"), "stray");
+    // A real orphan: the bucket of a type only the snapshot has, moved over before the crash.
+    createDatabase(root.resolve("other"), "other", "SnapshotOnly");
+    for (final String name : fileNames(root.resolve("other")))
+      if (name.startsWith("SnapshotOnly_"))
+        Files.move(root.resolve("other").resolve(name), db.resolve(name));
+    assertThat(fileNames(db)).anyMatch(n -> n.startsWith("SnapshotOnly_"));
 
     SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
 
@@ -166,16 +172,20 @@ class Issue8304LegacySwapRecoveryTest {
   }
 
   private static void createDatabase(final Path path, final String value) {
-    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final var db = factory.create()) {
+    createDatabase(path, value, "Item");
+  }
+
+  private static void createDatabase(final Path path, final String value, final String typeName) {
+    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final Database db = factory.create()) {
       db.transaction(() -> {
-        db.getSchema().createDocumentType("Item", 1);
-        db.newDocument("Item").set("value", value).save();
+        db.getSchema().createDocumentType(typeName, 1);
+        db.newDocument(typeName).set("value", value).save();
       });
     }
   }
 
   private static void assertDatabaseValue(final Path path, final String value) {
-    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final var db = factory.open()) {
+    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final Database db = factory.open()) {
       assertThat(db.countType("Item", false)).isEqualTo(1);
       assertThat(db.iterateType("Item", false).next().asDocument().getString("value")).isEqualTo(value);
     }

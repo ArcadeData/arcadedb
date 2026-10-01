@@ -214,7 +214,13 @@ final class SecurityCatchUp implements AutoCloseable {
     requestOwner.compareAndSet(token, FREE);
   }
 
-  /** A task the executor had no room for: its request was never made, so its own hold on the latch goes. */
+  /**
+   * A task the executor had no room for: its request was never made, so its own hold on the latch goes.
+   * <p>
+   * Known, accepted gap: if the rejected request had displaced an older one that is still queued or in flight and
+   * later settles {@link Outcome#ASKED}, the latch ends up free after a request that was made, so one extra
+   * catch-up can happen on the next leader change. The request is idempotent, and the queued task covers the work.
+   */
   void onRejected(final Runnable task) {
     if (task instanceof Attempt attempt)
       rearm(attempt.token);

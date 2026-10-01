@@ -1547,11 +1547,13 @@ public final class SnapshotInstaller {
             deleteDirectoryIfExists(snapshotNew);
             final List<String> liveBeforeRestore = liveEntryNames(dbDir);
             restoreBackup(dbDir, snapshotBackup);
+            final List<String> orphans = deleteOrphanBucketFiles(dbDir, liveBeforeRestore);
             LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
                 "Legacy snapshot swap for %s restored from the backup over these live entries, which are original "
-                    + "files if the crash was in the backup step and snapshot-only files otherwise: %s. If the "
-                    + "database does not open, delete the entries the restored schema does not reference",
-                null, dbDir, liveBeforeRestore);
+                    + "files if the crash was in the backup step and snapshot-only files otherwise: %s. Bucket files "
+                    + "the restored schema does not reference were removed (%s); if the database still does not open, "
+                    + "delete the entries the restored schema does not reference", null, dbDir, liveBeforeRestore,
+                orphans);
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1669,10 +1671,45 @@ public final class SnapshotInstaller {
     }
   }
 
+  /** Whether an entry of the database directory belongs to the database, rather than to the snapshot machinery. */
+  private static boolean isLiveDatabaseEntry(final Path entry) {
+    return !entry.getFileName().toString().startsWith(".snapshot");
+  }
+
+  /**
+   * Deletes, among {@code candidates}, the bucket files whose bucket the restored {@code schema.json} does not name.
+   * <p>
+   * A snapshot-only bucket that reached the live directory before a phase-2 crash is not harmless: the file id is
+   * part of the file name, and one that collides with an original's id makes the engine refuse to open the database
+   * at all. An original bucket is always named by the original schema, so this never touches one. Only buckets are
+   * judged: index files are named by an index name the schema lists differently, and are left for the warning.
+   *
+   * @return the names of the files removed
+   */
+  private static List<String> deleteOrphanBucketFiles(final Path dbDir, final List<String> candidates)
+      throws IOException {
+    final List<String> removed = new ArrayList<>();
+    final Path schemaFile = dbDir.resolve("schema.json");
+    if (!Files.isRegularFile(schemaFile))
+      return removed;
+    final String schema = Files.readString(schemaFile);
+    for (final String name : candidates) {
+      if (!name.endsWith(".bucket"))
+        continue;
+      final String bucketName = name.substring(0, name.indexOf('.'));
+      if (!schema.contains("\"" + bucketName + "\"")) {
+        Files.deleteIfExists(dbDir.resolve(name));
+        removed.add(name);
+      }
+    }
+    if (!removed.isEmpty())
+      fsyncDirectory(dbDir);
+    return removed;
+  }
+
   private static List<String> liveEntryNames(final Path dbDir) throws IOException {
     final List<String> names = new ArrayList<>();
-    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
       for (final Path entry : live)
         names.add(entry.getFileName().toString());
     }
@@ -1681,8 +1718,7 @@ public final class SnapshotInstaller {
 
   /** Whether any live database entry has the name of an entry in the backup. */
   private static boolean liveFilesShareANameWithTheBackup(final Path dbDir, final Path backupDir) throws IOException {
-    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
       for (final Path entry : live)
         if (Files.exists(backupDir.resolve(entry.getFileName().toString())))
           return true;
@@ -1691,8 +1727,7 @@ public final class SnapshotInstaller {
   }
 
   private static boolean hasLiveDatabaseFiles(final Path dbDir) throws IOException {
-    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
       return live.iterator().hasNext();
     }
   }
