@@ -237,4 +237,10 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
     });
     assertThat(count("MATCH (o:Out) RETURN count(o) AS c")).isEqualTo(500L);
   }
+
+  @Test
+  void repeatedLimitsAfterWriteStillWriteForEveryRow() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Lz {i: i}) WITH i LIMIT 1 WITH i LIMIT 0 RETURN i");
+    assertThat(count("MATCH (a:Lz) RETURN count(a) AS c")).isEqualTo(500L);
+  }
 }
