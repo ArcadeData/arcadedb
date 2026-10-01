@@ -43,7 +43,6 @@ import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -74,22 +73,24 @@ class Issue6965LocalCommitHandshakeTest {
 
   @BeforeEach
   void setUp() {
-    proxied = mock(LocalDatabase.class);
+    // Subclass mocks for every class the commit path is handed: see SubclassMocks (issue #8021).
+    proxied = SubclassMocks.mock(LocalDatabase.class);
     when(proxied.getDatabasePath()).thenReturn(dbPath);
     when(proxied.getName()).thenReturn(DB_NAME);
-    when(proxied.getTransactionManager()).thenReturn(mock(TransactionManager.class));
+    when(proxied.getTransactionManager()).thenReturn(SubclassMocks.mock(TransactionManager.class));
+    // An interface mock is already a generated class, so the inline maker's retransformation never applies to it.
     when(proxied.getSchema()).thenReturn(mock(Schema.class, RETURNS_DEEP_STUBS));
     when(proxied.executeInReadLock(any())).thenAnswer(inv -> ((Callable<?>) inv.getArgument(0)).call());
 
-    broker = mock(RaftTransactionBroker.class);
-    raftServer = mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
+    broker = SubclassMocks.mock(RaftTransactionBroker.class);
+    raftServer = SubclassMocks.mock(RaftHAServer.class, RETURNS_DEEP_STUBS);
     when(raftServer.isLeader()).thenReturn(true);
     when(raftServer.getTransactionBroker()).thenReturn(broker);
     when(raftServer.getQuorumTimeout()).thenReturn(1_000L);
     stateMachine = new ArcadeStateMachine();
     when(raftServer.getStateMachine()).thenReturn(stateMachine);
 
-    tx = mock(TransactionContext.class);
+    tx = SubclassMocks.mock(TransactionContext.class);
     DatabaseContext.INSTANCE.init(proxied, tx);
     database = new RaftReplicatedDatabase(null, proxied, raftServer);
     payload = new RaftReplicatedDatabase.ReplicationPayload(tx, null, walTransactionBytes(WAL_TX_ID), Map.of());
@@ -98,6 +99,19 @@ class Issue6965LocalCommitHandshakeTest {
   @AfterEach
   void tearDown() {
     DatabaseContext.INSTANCE.removeContext(dbPath);
+  }
+
+  /**
+   * Issue #8021: an inline mock IS an instance of the mocked class, and the Graal JIT can keep code compiled against
+   * its unmocked methods; a subclass mock is a generated class. Fails on every JVM if an inline mock creeps back in.
+   */
+  @Test
+  void theCommitPathIsHandedSubclassMocks() {
+    assertThat(proxied.getClass()).isNotEqualTo(LocalDatabase.class);
+    assertThat(tx.getClass()).isNotEqualTo(TransactionContext.class);
+    assertThat(proxied.getTransactionManager().getClass()).isNotEqualTo(TransactionManager.class);
+    assertThat(broker.getClass()).isNotEqualTo(RaftTransactionBroker.class);
+    assertThat(raftServer.getClass()).isNotEqualTo(RaftHAServer.class);
   }
 
   /** The common case: the entry is acknowledged after the apply thread published its pages. */
@@ -347,7 +361,8 @@ class Issue6965LocalCommitHandshakeTest {
   /** Issue #8781: a closed state machine applies nothing more, so the committing thread publishes. */
   @Test
   void anUnclaimedEntryIsPublishedByTheCommittingThreadWhenTheStateMachineIsClosed() {
-    final ArcadeStateMachine closed = spy(stateMachine);
+    final ArcadeStateMachine closed = SubclassMocks.spy(stateMachine);
+    assertThat(closed.getClass()).as("a subclass spy (issue #8021)").isNotEqualTo(ArcadeStateMachine.class);
     doReturn(true).when(closed).isClosed();
     when(raftServer.getStateMachine()).thenReturn(closed);
     when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(7L);
