@@ -45,7 +45,7 @@ import java.util.logging.Level;
  */
 public class SupportHandler extends AbstractServerHttpHandler {
   public enum Action {
-    STATUS, REGISTER, UNREGISTER, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, SET_OPEN, ATTACH, BUNDLE
+    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, SET_OPEN, ATTACH, BUNDLE
   }
 
   private final Action action;
@@ -74,6 +74,7 @@ public class SupportHandler extends AbstractServerHttpHandler {
           service.unregister();
           yield new ExecutionResponse(204, "");
         }
+        case REGISTER_INSTALLATION -> new ExecutionResponse(200, service.registerInstallation());
         case PREVIEW -> json(200, service.preview(required(payload)));
         case CREATE_ISSUE -> new ExecutionResponse(201, service.createIssue(required(payload)));
         case LIST_ISSUES -> new ExecutionResponse(200, service.listIssues(getQueryParameter(exchange, "status", "open")));

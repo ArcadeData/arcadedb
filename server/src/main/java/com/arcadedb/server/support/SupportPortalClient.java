@@ -112,6 +112,11 @@ public class SupportPortalClient {
     return call("GET", "/whoami", null);
   }
 
+  /** Registers this server as an installation of the workspace ({@code POST /installation}); the body is {@code {diagnostics}}. */
+  public String registerInstallation(final String jsonBody) {
+    return call("POST", "/installation", jsonBody);
+  }
+
   public String listIssues(final String status) {
     final String s = status == null || status.isBlank() ? "open" : status;
     if (!s.equals("open") && !s.equals("closed") && !s.equals("all"))
@@ -270,7 +275,8 @@ public class SupportPortalClient {
       };
     // A code we do not know of is kept as "portal_error": Studio switches on the known ones
     if (!List.of("invalid_key", "client_mismatch", "scope_denied", "support_not_active", "not_found", "too_large", "rate_limited",
-        "bad_request").contains(code))
+        "bad_request", "not_supported", "no_workspace", "forbidden", "key_has_no_owner", "instance_id.taken", "invalid_instance_id",
+        "invalid_version").contains(code))
       code = "portal_error";
 
     long retryAfter = 0L;
@@ -298,6 +304,12 @@ public class SupportPortalClient {
       case "rate_limited" -> "Too many requests to the portal" + (retryAfter > 0 ? ": retry in " + retryAfter + " seconds" : ": retry later")
           + ".";
       case "bad_request" -> "The portal refused the request" + detail + ".";
+      case "not_supported" -> "This portal cannot register servers from Studio yet.";
+      case "no_workspace", "forbidden", "key_has_no_owner" -> "The person who created this key can no longer register servers in the "
+          + "workspace (they left it, or are only a viewer). Create a new key in the customer portal with an owner or admin account.";
+      case "instance_id.taken" -> "The instance id of this server is already registered in the portal. If it is yours, contact "
+          + "ArcadeData support.";
+      case "invalid_instance_id", "invalid_version" -> "The portal refused the identity this server reported" + detail + ".";
       default -> "The support portal answered with an error (HTTP " + status + ")" + detail + ".";
     };
   }
