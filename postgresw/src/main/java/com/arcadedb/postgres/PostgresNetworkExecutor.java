@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
@@ -166,7 +167,13 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
-  private final ChannelBinaryServer         channel;
+  // Replaced once, by the TLS upgrade of the startup phase and before the session is registered in ACTIVE_SESSIONS, whose
+  // map publishes it to the cancel path. Not volatile, as it is read on every message. A stale reference could only be the
+  // pre-upgrade channel, and closing that closes the raw socket under the TLS one.
+  private ChannelBinaryServer               channel;
+  private final PostgresSslHelper           sslHelper;
+  private boolean                           tlsActive;
+  private boolean                           gssEncRequestAnswered;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
@@ -243,17 +250,14 @@ public class PostgresNetworkExecutor extends Thread {
     void write() throws IOException;
   }
 
-  public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database) throws IOException {
-    this(server, socket, database, null);
-  }
-
   public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database,
-      final PreAuthConnectionGate.Ticket preAuthTicket) throws IOException {
+      final PreAuthConnectionGate.Ticket preAuthTicket, final PostgresSslHelper sslHelper) throws IOException {
     setName(Constants.PRODUCT + "-postgres/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
     this.database = database;
     this.preAuthTicket = preAuthTicket;
+    this.sslHelper = sslHelper;
     this.DEBUG = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_DEBUG);
     this.QUOTED_IDENTIFIERS = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS);
 
@@ -3642,7 +3646,26 @@ public class PostgresNetworkExecutor extends Thread {
     return true;
   }
 
-  private boolean readStartupMessage(final boolean no2ssl) {
+  /**
+   * Layers TLS over the connection after the {@code S} answer to an SSLRequest, and carries on with a channel over the
+   * encrypted socket. The previous channel is dropped without being closed: closing it would close the socket the TLS
+   * socket is layered on.
+   */
+  private void upgradeToTls() throws IOException {
+    final ContextConfiguration configuration = server.getConfiguration();
+    try {
+      channel = new ChannelBinaryServer(sslHelper.wrapWithTls(channel.socket), configuration);
+    } catch (final IOException e) {
+      // FINE like the closed connection the caller logs: a scanner or a health probe controls what reaches this line
+      // before authenticating, so it must not be able to fill the log at the default level.
+      LogManager.instance().log(this, Level.FINE, "PSQL: TLS handshake with %s failed: %s", channel.socket.getRemoteSocketAddress(),
+          e.getMessage());
+      throw e;
+    }
+    tlsActive = true;
+  }
+
+  private boolean readStartupMessage(final boolean firstPacket) {
     try {
       final long len = channel.readUnsignedInt();
       // The declared length used to be read and then ignored, so the parameter loop below ran until the
@@ -3655,19 +3678,44 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long protocolVersion = channel.readUnsignedInt();
       if (protocolVersion == 80877103) {
-        // REQUEST FOR SSL, NOT SUPPORTED
-        if (no2ssl) {
+        // REQUEST FOR SSL. Only the first request of a connection is honored: a second one, or one inside TLS, is a
+        // protocol violation.
+        if (!firstPacket)
+          throw new PostgresProtocolException("Unexpected SSL request");
+
+        if (sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.DISABLED) {
           channel.writeByte((byte) 'N');
           channel.flush();
 
-          LogManager.instance().log(this, Level.INFO,
-              "PSQL: received not supported SSL connection request. Sending back error message to the client");
+          LogManager.instance().log(this, Level.FINE,
+              "PSQL: received an SSL connection request but TLS is not enabled (" + GlobalConfiguration.POSTGRES_SSL.getKey()
+                  + "). Telling the client to continue in plaintext");
+        } else {
+          // A client sends nothing before it has read the answer: bytes already buffered behind the SSLRequest were
+          // sent in plaintext by someone who did not wait for it, and are refused rather than dropped silently or
+          // replayed into the session (the class of attack of CVE-2021-23222). Only what has ALREADY arrived is seen: later
+          // plaintext goes into the TLS engine and fails the handshake, so this is not an exhaustive check, and it need not be.
+          if (channel.inputHasData())
+            throw new PostgresProtocolException("Unexpected data after SSL request");
 
-          // REPEAT
-          return readStartupMessage(false);
+          channel.writeByte((byte) 'S');
+          channel.flush();
+          upgradeToTls();
         }
 
-        throw new PostgresProtocolException("SSL authentication is not supported");
+        // THE REAL STARTUP MESSAGE FOLLOWS
+        return readStartupMessage(false);
+      } else if (protocolVersion == 80877104) {
+        // GSSAPI ENCRYPTION REQUEST: NOT SUPPORTED. libpq sends it before the SSLRequest when it has Kerberos
+        // credentials (gssencmode=prefer, its default) and carries on with the SSLRequest or a plain startup after
+        // the N, so answering anything else - or taking it for a startup packet - fails stock clients.
+        if (gssEncRequestAnswered || tlsActive)
+          throw new PostgresProtocolException("Unexpected GSSAPI encryption request");
+        gssEncRequestAnswered = true;
+
+        channel.writeByte((byte) 'N');
+        channel.flush();
+        return readStartupMessage(firstPacket);
       } else if (protocolVersion == 80877102) {
         // CANCEL REQUEST, IGNORE IT
         final long pid = channel.readUnsignedInt();
@@ -3686,6 +3734,14 @@ public class PostgresNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO, "PSQL: Session " + pid + " not found");
 
         close();
+        return false;
+      }
+
+      if (!tlsActive && sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.REQUIRED) {
+        // Read the rest of the packet (bounded by the length check above) before answering: closing a socket with unread
+        // data sends an RST that can make the client lose the error.
+        channel.readBytes(new byte[(int) (len - 8)]);
+        writeError(ERROR_SEVERITY.FATAL, "SSL connection is required", "28000");
         return false;
       }
 

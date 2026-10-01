@@ -2834,6 +2834,10 @@ public enum GlobalConfiguration {
   POSTGRES_HOST("arcadedb.postgres.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
+  POSTGRES_SSL("arcadedb.postgres.ssl", SCOPE.SERVER,
+      "TLS mode for Postgres wire protocol connections, negotiated through the protocol's own SSLRequest handshake and using the shared SSL key/trust store settings (arcadedb.ssl.*): DISABLED (no TLS, default), OPTIONAL (TLS or plaintext, the client chooses), REQUIRED (TLS only, plaintext startup is refused)",
+      String.class, "DISABLED"),
+
   POSTGRES_DEBUG("arcadedb.postgres.debug", SCOPE.SERVER,
       "Enables the printing of Postgres protocol to the console. Default is false", Boolean.class, false),
 

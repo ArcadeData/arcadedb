@@ -40,7 +40,8 @@ public class PostgresProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
-    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), host, portRange);
+    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), new PostgresSslHelper(server.getConfiguration()), host,
+        portRange);
   }
 
   /**

@@ -21,22 +21,14 @@ package com.arcadedb.bolt;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
-import com.arcadedb.network.binary.SocketFactory;
-import com.arcadedb.server.http.ssl.KeystoreType;
 import com.arcadedb.server.http.ssl.SslUtils;
-import com.arcadedb.server.http.ssl.TlsProtocol;
 
-import javax.net.ssl.KeyManager;
-import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.security.KeyStore;
 import java.util.Locale;
 
 /**
@@ -69,40 +61,7 @@ public class BoltSslHelper {
       return;
     }
 
-    try {
-      final String keystorePath = getRequiredProperty(configuration, GlobalConfiguration.NETWORK_SSL_KEYSTORE,
-          "BOLT TLS is enabled but SSL key store path is not configured (" + GlobalConfiguration.NETWORK_SSL_KEYSTORE.getKey() + ")");
-      final String keystorePassword = getRequiredProperty(configuration, GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD,
-          "BOLT TLS is enabled but SSL key store password is not configured (" + GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD.getKey() + ")");
-      final String truststorePath = getRequiredProperty(configuration, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE,
-          "BOLT TLS is enabled but SSL trust store path is not configured (" + GlobalConfiguration.NETWORK_SSL_TRUSTSTORE.getKey() + ")");
-      final String truststorePassword = getRequiredProperty(configuration, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD,
-          "BOLT TLS is enabled but SSL trust store password is not configured (" + GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD.getKey() + ")");
-
-      final KeyStore keyStore = SslUtils.loadKeystoreFromStream(
-          SocketFactory.getAsStream(keystorePath), keystorePassword,
-          SslUtils.getDefaultKeystoreTypeForKeystore(() -> KeystoreType.PKCS12));
-
-      final KeyStore trustStore = SslUtils.loadKeystoreFromStream(
-          SocketFactory.getAsStream(truststorePath), truststorePassword,
-          SslUtils.getDefaultKeystoreTypeForTruststore(() -> KeystoreType.JKS));
-
-      final KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-      keyManagerFactory.init(keyStore, keystorePassword.toCharArray());
-      final KeyManager[] keyManagers = keyManagerFactory.getKeyManagers();
-
-      final TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-      trustManagerFactory.init(trustStore);
-      final TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
-
-      this.sslContext = SSLContext.getInstance(TlsProtocol.getLatestTlsVersion().getTlsVersion());
-      this.sslContext.init(keyManagers, trustManagers, null);
-
-    } catch (final ConfigurationException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ConfigurationException("Failed to initialize SSL context for BOLT TLS", e);
-    }
+    this.sslContext = SslUtils.createServerSslContext(configuration, "BOLT");
   }
 
   public TlsMode getTlsMode() {
@@ -127,13 +86,5 @@ public class BoltSslHelper {
     sslSocket.setUseClientMode(false);
     sslSocket.startHandshake();
     return sslSocket;
-  }
-
-  private static String getRequiredProperty(final ContextConfiguration configuration,
-      final GlobalConfiguration key, final String errorMessage) {
-    final String value = configuration.getValueAsString(key);
-    if (value == null || value.isEmpty())
-      throw new ConfigurationException(errorMessage);
-    return value;
   }
 }
