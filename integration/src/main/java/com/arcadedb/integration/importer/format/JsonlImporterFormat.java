@@ -902,9 +902,48 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private Map<String, Set<RID>> loadProperties(DatabaseInternal database, MutableDocument imported, JSONObject properties) {
     Map<String, Object> json2map = json2map(database, properties);
+    restoreNumberFidelity(imported.getType(), properties, json2map);
     final Map<String, Set<RID>> unresolved = remapLinkProperties(imported.getType(), json2map);
     imported.fromMap(json2map);
     return unresolved;
+  }
+
+  /**
+   * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
+   * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
+   * are decoded back, and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from their JSON text instead of the
+   * double the parse produced, which dropped every digit past the 17th.
+   */
+  private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
+    if (type == null)
+      return;
+
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Property property = type.getPolymorphicPropertyIfExists(entry.getKey());
+      if (property == null || entry.getValue() == null)
+        continue;
+
+      final Type propertyType = property.getType();
+      if (propertyType == Type.FLOAT || propertyType == Type.DOUBLE) {
+        if (entry.getValue() instanceof String text) {
+          final Double marker = NonFiniteNumbers.decode(text);
+          if (marker != null)
+            entry.setValue(marker);
+        }
+      } else if (propertyType == Type.DECIMAL) {
+        if (!json.isNull(entry.getKey()) && !(entry.getValue() instanceof String))
+          entry.setValue(json.getBigDecimal(entry.getKey()));
+      } else if (propertyType == Type.LIST && Type.DECIMAL.name().equalsIgnoreCase(property.getOfType())
+          && entry.getValue() instanceof List<?> list) {
+        final JSONArray array = json.getJSONArray(entry.getKey());
+        if (array.length() == list.size()) {
+          final List<Object> restored = new ArrayList<>(list.size());
+          for (int i = 0; i < list.size(); ++i)
+            restored.add(list.get(i) instanceof Number ? array.getBigDecimal(i) : list.get(i));
+          entry.setValue(restored);
+        }
+      }
+    }
   }
 
   /**
