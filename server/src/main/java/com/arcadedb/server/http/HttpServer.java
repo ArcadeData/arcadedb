@@ -212,8 +212,10 @@ public class HttpServer implements ServerPlugin {
     CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
     CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
     final PostBatchHandler batchHandler = postBatchHandler;
-    if (batchHandler != null)
+    if (batchHandler != null) {
       CodeUtils.executeIgnoringExceptions(batchHandler::close, "Error on releasing the batch handler's HTTP client", true);
+      postBatchHandler = null;
+    }
     CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
         "Error on releasing the leader command forwarder's HTTP client", true);
   }
