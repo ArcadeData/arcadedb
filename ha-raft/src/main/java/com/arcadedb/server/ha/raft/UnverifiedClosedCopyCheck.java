@@ -96,10 +96,13 @@ final class UnverifiedClosedCopyCheck {
     }
   }
 
-  /** How a peer is asked, without blocking the caller; an asynchronous HTTP round trip in production. */
+  /**
+   * How a peer is asked, without blocking the caller; an asynchronous HTTP round trip in production. {@code peerId} is
+   * the peer the question is meant for: an answer written by any other node is not that peer's (issue #8703).
+   */
   @FunctionalInterface
   interface PeerQuestion {
-    CompletableFuture<CopyState> ask(String url, String databaseName);
+    CompletableFuture<CopyState> ask(String peerId, String url, String databaseName);
   }
 
   private record Refusal(String reason, long atMs) {
@@ -143,13 +146,13 @@ final class UnverifiedClosedCopyCheck {
       PlainHttpFallbackNotice.sayOnce(UnverifiedClosedCopyCheck.class, "asking about an unverified closed copy");
 
     final String clusterToken = raftHAServer.getClusterToken();
-    return check(databaseName, localCopyState(server, stateMachine, databaseName), urls, (url, name) -> {
+    return check(databaseName, localCopyState(server, stateMachine, databaseName), urls, (peerId, url, name) -> {
       try {
         // The node's cached peer clients (issue #7301): this runs on the request path, so no client is built per call.
         final HttpClient client = url.startsWith("https://") ?
             raftHAServer.getHttpsClients().clientFor(server) :
             BootstrapElection.HTTP;
-        return askOverHttp(client, url, name, clusterToken);
+        return askOverHttp(client, peerId, url, name, clusterToken);
       } catch (final IOException e) {
         return CompletableFuture.failedFuture(e);
       }
@@ -187,7 +190,7 @@ final class UnverifiedClosedCopyCheck {
       if (entry.getValue() == null)
         unanswered.add(peer + " (no HTTP address this node may dial)");
       else
-        pending.put(peer, question.ask(entry.getValue(), databaseName));
+        pending.put(peer, question.ask(peer, entry.getValue(), databaseName));
     }
 
     // Every peer is asked at once and the round shares ONE deadline, so the worst case is one budget rather than one
@@ -321,13 +324,13 @@ final class UnverifiedClosedCopyCheck {
    * 21-25 stops at the response headers; the round's deadline in {@link #round} bounds a body that stalls after them.
    * Package-private for tests.
    */
-  static CompletableFuture<CopyState> askOverHttp(final HttpClient client, final String url, final String databaseName,
-      final String clusterToken) {
+  static CompletableFuture<CopyState> askOverHttp(final HttpClient client, final String peerId, final String url,
+      final String databaseName, final String clusterToken) {
     final HttpRequest request = BootstrapElection.bootstrapStateRequestTo(url, clusterToken, ROUND_TIMEOUT_MS,
         new JSONObject().put(COPY_OF, databaseName).toString());
     return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
       try {
-        return parseAnswer(response.statusCode(), response.body());
+        return parseAnswer(response.statusCode(), response.body(), peerId, url);
       } catch (final IOException e) {
         throw new CompletionException(e);
       }
@@ -337,11 +340,20 @@ final class UnverifiedClosedCopyCheck {
   /**
    * A peer's answer. One that predates issue #8605 ignores {@link #COPY_OF} and lists its open databases instead, which
    * says nothing about a closed copy, so an answer without {@link #COPY} is not an answer. Package-private for tests.
+   * <p>
+   * The answer must also be written by {@code expectedPeerId} (issue #8703), the check every other reader of the
+   * endpoint makes ({@link LeaderDatabaseQuery#requireAnsweredBy}). The round files answers under the peer it meant to
+   * ask, so an address that resolves to another node - or to this leader, which would answer with its own copy at its
+   * own index - would otherwise pass as that peer's answer, and the peer that may hold the newer copy is never asked.
+   * The refusal fails this peer's question, so the round counts it as unanswered and the copy is not reopened.
    */
-  static CopyState parseAnswer(final int statusCode, final String body) throws IOException {
+  static CopyState parseAnswer(final int statusCode, final String body, final String expectedPeerId, final String url)
+      throws IOException {
     if (statusCode != 200)
       throw new IOException("HTTP " + statusCode);
-    final JSONObject copy = new JSONObject(body).getJSONObject(COPY, null);
+    final JSONObject json = new JSONObject(body);
+    LeaderDatabaseQuery.requireAnsweredBy(json, expectedPeerId, url);
+    final JSONObject copy = json.getJSONObject(COPY, null);
     if (copy == null)
       throw new IOException("the server does not report a single database's copy (older version)");
     return CopyState.fromJSON(copy);

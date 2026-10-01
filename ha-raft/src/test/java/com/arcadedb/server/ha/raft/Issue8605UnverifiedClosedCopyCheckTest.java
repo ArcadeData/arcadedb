@@ -153,16 +153,16 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     urls.put(PEER_1, "http://peer-1/api/v1/cluster/bootstrap-state");
     urls.put(PEER_2, null);
 
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(false, -1L))))
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> done(new CopyState(false, -1L))))
         .contains("peer-2").contains("no HTTP address");
 
     urls.put(PEER_2, "http://peer-2/api/v1/cluster/bootstrap-state");
     check.refusalReuseMs = 0L;
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> url.contains("peer-2") ?
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> url.contains("peer-2") ?
         CompletableFuture.failedFuture(new IOException("HTTP 503")) :
         done(new CopyState(false, -1L)))).contains("peer-2").contains("HTTP 503");
 
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> {
       assertThat(name).isEqualTo(DB_NAME);
       return done(new CopyState(true, 5L));
     })).isNull();
@@ -176,7 +176,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     check.refusalReuseMs = 0L;
     final Map<RaftPeerId, String> urls = Map.of(PEER_1, "http://peer-1/x");
 
-    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(true, 9L)));
+    check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> done(new CopyState(true, 9L)));
     assertThat(check.getRefusals()).containsOnlyKeys(DB_NAME);
 
     final JSONArray alerts = new JSONArray();
@@ -189,10 +189,10 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     ClusterAlerts.addUnverifiedClosedCopyRefusedAlert(check.getRefusals(), Set.of("other"), true, hidden);
     assertThat(hidden.length()).as("a database the caller cannot see raises nothing").isZero();
 
-    check.check(DB_NAME, new CopyState(true, 9L), urls, (url, name) -> done(new CopyState(true, 9L)));
+    check.check(DB_NAME, new CopyState(true, 9L), urls, (peer, url, name) -> done(new CopyState(true, 9L)));
     assertThat(check.getRefusals()).as("verified: the refusal no longer stands").isEmpty();
 
-    check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> done(new CopyState(true, 9L)));
+    check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> done(new CopyState(true, 9L)));
     Files.delete(marker());
     assertThat(check.getRefusals()).as("the operator removed the mark: the refusal no longer stands").isEmpty();
   }
@@ -205,11 +205,11 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     final Map<RaftPeerId, String> urls = Map.of(PEER_1, "http://peer-1/x");
     final AtomicInteger asked = new AtomicInteger();
 
-    final String first = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+    final String first = check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> {
       asked.incrementAndGet();
       return done(new CopyState(true, 9L));
     });
-    final String second = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+    final String second = check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> {
       asked.incrementAndGet();
       return done(new CopyState(true, 5L));
     });
@@ -227,7 +227,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
     final AtomicInteger asked = new AtomicInteger();
 
-    assertThat(check.check(DB_NAME, new CopyState(true, 5L), Map.of(PEER_1, "http://peer-1/x"), (url, name) -> {
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), Map.of(PEER_1, "http://peer-1/x"), (peer, url, name) -> {
       asked.incrementAndGet();
       return done(new CopyState(true, 9L));
     })).isNull();
@@ -245,7 +245,7 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     urls.put(PEER_2, "http://peer-2/x");
     final AtomicInteger asked = new AtomicInteger();
 
-    final String refusal = check.check(DB_NAME, new CopyState(true, 5L), urls, (url, name) -> {
+    final String refusal = check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> {
       asked.incrementAndGet();
       return new CompletableFuture<>();
     });
@@ -273,8 +273,8 @@ class Issue8605UnverifiedClosedCopyCheckTest {
     try {
       final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
       check.refusalReuseMs = 0L;
-      final UnverifiedClosedCopyCheck.PeerQuestion http = (url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
-          BootstrapElection.HTTP, url, name, null);
+      final UnverifiedClosedCopyCheck.PeerQuestion http = (peer, url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
+          BootstrapElection.HTTP, peer, url, name, null);
 
       final String newer = check.check(DB_NAME, new CopyState(true, 10L), Map.of(PEER_1, urlOf(current)), http);
       assertThat(newer).contains("peer-1").contains("42");
@@ -295,13 +295,82 @@ class Issue8605UnverifiedClosedCopyCheckTest {
   @Test
   void anAnswerWithoutTheCopyIsNotAnAnswer() throws IOException {
     assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(200,
-        new JSONObject().put("databases", new JSONArray()).put("peerId", "peer-1").toString()))
+        new JSONObject().put("databases", new JSONArray()).put("peerId", "peer-1").toString(), "peer-1", "http://x"))
         .isInstanceOf(IOException.class).hasMessageContaining("older version");
-    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(403, "{}")).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(403, "{}", "peer-1", "http://x"))
+        .isInstanceOf(IOException.class);
 
-    final CopyState parsed = UnverifiedClosedCopyCheck.parseAnswer(200, new JSONObject()
-        .put(UnverifiedClosedCopyCheck.COPY, new CopyState(true, 77L).toJSON(DB_NAME)).toString());
+    final CopyState parsed = UnverifiedClosedCopyCheck.parseAnswer(200, new JSONObject().put("peerId", "peer-1")
+        .put(UnverifiedClosedCopyCheck.COPY, new CopyState(true, 77L).toJSON(DB_NAME)).toString(), "peer-1", "http://x");
     assertThat(parsed).isEqualTo(new CopyState(true, 77L));
+  }
+
+  // ---------------------------------------------------------------------------------------------- who answered (#8703)
+
+  /**
+   * Issue #8703: an answer counts as the peer's only when the peer wrote it - not another node behind its address, not
+   * the leader itself, not a node that names nobody. The same check every other reader of the endpoint makes.
+   */
+  @Test
+  void anAnswerWrittenByAnotherNodeIsNotThePeersAnswer() {
+    final String copy = new CopyState(false, -1L).toJSON(DB_NAME).toString();
+
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(200,
+        "{\"peerId\":\"peer-3\",\"copy\":" + copy + "}", "peer-1", "http://peer-1/x"))
+        .isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class)
+        .hasMessageContaining("peer-1").hasMessageContaining("peer-3").hasMessageContaining("http://peer-1/x");
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(200,
+        "{\"peerId\":\"local\",\"copy\":" + copy + "}", "peer-1", "http://peer-1/x"))
+        .as("the leader answering its own question").isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class);
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseAnswer(200, "{\"copy\":" + copy + "}", "peer-1",
+        "http://peer-1/x")).as("an answer that names nobody")
+        .isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class).hasMessageContaining("names no peer");
+  }
+
+  /** The round hands every question the peer it is meant for, so the answer can be checked against it. */
+  @Test
+  void eachPeerIsAskedUnderItsOwnId() throws IOException {
+    createClosedCopy(true);
+    final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+    final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
+    urls.put(PEER_1, "http://peer-1/x");
+    urls.put(PEER_2, "http://peer-2/x");
+    final Map<String, String> askedFor = new LinkedHashMap<>();
+
+    assertThat(check.check(DB_NAME, new CopyState(true, 5L), urls, (peer, url, name) -> {
+      askedFor.put(url, peer);
+      return done(new CopyState(false, -1L));
+    })).isNull();
+    assertThat(askedFor).containsEntry("http://peer-1/x", "peer-1").containsEntry("http://peer-2/x", "peer-2");
+  }
+
+  /**
+   * The issue's two consequences end to end over HTTP: peer-1's address answered by peer-3, which does not hold the
+   * database, and by the leader itself, at the leader's own index. Either used to count as peer-1's answer and let the
+   * leader reopen a copy peer-1 may hold a newer version of; now the peer counts as unanswered and the reopen is refused.
+   */
+  @Test
+  void aStrangerOrTheLeaderItselfAnsweringForAPeerRefusesTheReopen() throws IOException {
+    createClosedCopy(true);
+    final com.sun.net.httpserver.HttpServer stranger = peer(exchange -> new JSONObject().put("peerId", "peer-3")
+        .put(UnverifiedClosedCopyCheck.COPY, new CopyState(false, -1L).toJSON(DB_NAME)).toString());
+    final com.sun.net.httpserver.HttpServer itself = peer(exchange -> new JSONObject().put("peerId", "local")
+        .put(UnverifiedClosedCopyCheck.COPY, new CopyState(true, 42L).toJSON(DB_NAME)).toString());
+    try {
+      final UnverifiedClosedCopyCheck check = new UnverifiedClosedCopyCheck(raft, server);
+      check.refusalReuseMs = 0L;
+      final UnverifiedClosedCopyCheck.PeerQuestion http = (peer, url, name) -> UnverifiedClosedCopyCheck.askOverHttp(
+          BootstrapElection.HTTP, peer, url, name, null);
+
+      assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_1, urlOf(stranger)), http))
+          .contains("could not all be asked").contains("peer-1").contains("peer-3");
+      assertThat(check.check(DB_NAME, new CopyState(true, 42L), Map.of(PEER_1, urlOf(itself)), http))
+          .contains("could not all be asked").contains("peer-1").contains("'local'");
+      assertThat(check.getRefusals()).containsOnlyKeys(DB_NAME);
+    } finally {
+      stranger.stop(0);
+      itself.stop(0);
+    }
   }
 
   /** The peer's side: a closed copy is reported from disk and the persisted index, and is not opened to answer. */
