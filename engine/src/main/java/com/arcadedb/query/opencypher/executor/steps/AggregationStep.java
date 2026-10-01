@@ -67,6 +67,9 @@ public class AggregationStep extends AbstractExecutionStep {
   // ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
 
+  // HOW MANY WORKERS THE LAST EXECUTION AGGREGATED WITH, FOR THE EXPLAIN OF THE PLAN THAT RAN: 0 WHEN IT AGGREGATED ON THE CALLER
+  private volatile int parallelWorkers;
+
   public AggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
     super(context);
@@ -79,6 +82,7 @@ public class AggregationStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("AggregationStep requires a previous step");
     heapLimit = OperationHeapLimit.of(context, "aggregation");
+    parallelWorkers = 0;
     try {
       return aggregate(context, nRecords);
     } catch (final RuntimeException e) {
@@ -134,6 +138,13 @@ public class AggregationStep extends AbstractExecutionStep {
       } else {
         nonAggregationItems.add(item.getOutputName());
       }
+    }
+
+    // The aggregates that merge partial states aggregate in the workers of a parallel label scan (issue #8797)
+    if (complexAggregations.isEmpty()) {
+      final ResultInternal parallel = aggregateInParallel(context);
+      if (parallel != null)
+        return resultSet(List.of(parallel));
     }
 
     // Process all rows, feeding data to aggregators
@@ -227,7 +238,45 @@ public class AggregationStep extends AbstractExecutionStep {
     // Return single aggregated row
     final List<Result> results = new ArrayList<>();
     results.add(aggregatedResult);
+    return resultSet(results);
+  }
 
+  /**
+   * The one row of the aggregation, aggregated in the workers of a parallel scan, or {@code null} when the rows are not
+   * the ones of one or an aggregate or expression cannot run there, or this execution cannot run in parallel.
+   */
+  private ResultInternal aggregateInParallel(final CommandContext context) {
+    final List<FunctionCallExpression> aggregates = new ArrayList<>();
+    final List<String> outputNames = new ArrayList<>();
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems())
+      if (item.getExpression().isAggregation() && item.getExpression() instanceof FunctionCallExpression function) {
+        aggregates.add(function);
+        outputNames.add(item.getOutputName());
+      }
+
+    final ParallelAggregation parallel = ParallelAggregation.create(prev, new Expression[0],
+        aggregates.toArray(new FunctionCallExpression[0]), functionFactory, evaluator);
+    if (parallel == null)
+      return null;
+
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final ParallelAggregation.Merged merged = parallel.run(context, heapLimit, 0);
+      if (merged == null)
+        return null;
+      parallelWorkers = merged.workers();
+      final ResultInternal row = new ResultInternal();
+      final ParallelAggregation.Group group = merged.groups().getFirst();
+      for (int i = 0; i < outputNames.size(); i++)
+        row.setProperty(outputNames.get(i), group.aggregators[i].getAggregatedResult());
+      return row;
+    } finally {
+      if (context.isProfiling())
+        cost += System.nanoTime() - begin;
+    }
+  }
+
+  private ResultSet resultSet(final List<Result> results) {
     return new ResultSet() {
       private int index = 0;
 
@@ -354,6 +403,8 @@ public class AggregationStep extends AbstractExecutionStep {
       }
     }
     builder.append(String.join(", ", aggFuncs));
+    if (parallelWorkers > 0)
+      builder.append(" (parallel: ").append(parallelWorkers).append(" workers)");
 
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());

@@ -19,6 +19,7 @@
 package com.arcadedb.function.cypher;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
@@ -89,5 +90,18 @@ public class SQLFunctionBridge implements StatelessFunction {
   @Override
   public Object getAggregatedResult() {
     return sqlFunction.getResult();
+  }
+
+  @Override
+  public boolean canMergePartials() {
+    return isAggregation && sqlFunction instanceof SQLAggregatedFunction function && function.canMergePartials();
+  }
+
+  @Override
+  public void mergePartial(final StatelessFunction other) {
+    if (!(sqlFunction instanceof SQLAggregatedFunction function) || !(other instanceof SQLFunctionBridge bridge)
+        || !(bridge.sqlFunction instanceof SQLAggregatedFunction otherFunction))
+      throw new UnsupportedOperationException("Function '" + cypherFunctionName + "' cannot merge partial aggregations");
+    function.mergePartial(otherFunction);
   }
 }

@@ -173,6 +173,8 @@ public class SelectExecutionPlanner {
     // now carried by the command deadline, which every guard reads and no statement kind can miss (issue #6304).
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
 
+    rewriteDistinctAsGroupBy(context);
+
     // A filter that keeps every record (WHERE 1=1, WHERE true) says nothing the statement did not already say, so it
     // is dropped here rather than pushed into the fetch: everything downstream - the projected properties computed
     // just below, the choice between FetchFromTypeWithFilterStep and FetchFromTypeExecutionStep, the hardwired
@@ -378,6 +380,60 @@ public class SelectExecutionPlanner {
     }
     info.fetchExecutionPlan = null;
     info.planCreated = true;
+  }
+
+  /** Records of the target type below which a DISTINCT is not rewritten: the parallel scan would decline it anyway. */
+  private static final long MIN_DISTINCT_REWRITE_RECORDS = 10_000L;
+
+  /**
+   * A plain {@code SELECT DISTINCT a, b FROM T} is the same set of rows as {@code SELECT a, b FROM T GROUP BY a, b}, and the GROUP BY is
+   * the one that aggregates in the parallel workers of a scan (issue #8799). Rewritten here, so that the dedup runs per worker and the
+   * partial results are merged at the end, instead of one {@code DistinctKey} per row on the consuming thread. The groups come out in
+   * the order of their first row, as the rows of a DISTINCT do.
+   * <p>
+   * Left as a DISTINCT when it cannot be the same plan: an aggregate, a GROUP BY, an ORDER BY (the dedup sees the sorted rows), expand()
+   * or UNWIND, a wildcard, excluded or nested items; and under a LIMIT, where DISTINCT stops reading as soon as it has enough rows while a
+   * GROUP BY has to read them all. Also left alone where the GROUP BY brings nothing but its blocking: a target that is not a type
+   * (subquery, index, RIDs), a transaction, or parallel scans disabled, so the streaming DISTINCT keeps its early exit and its
+   * memory-lean RID dedup.
+   */
+  private void rewriteDistinctAsGroupBy(final CommandContext context) {
+    if (!info.distinct || info.groupBy != null || info.orderBy != null || info.unwind != null || info.limit != null
+        || info.projection.isExpand())
+      return;
+    // A per-record LET variable is not in the row the GROUP BY key and the aggregated row are evaluated on
+    if (info.perRecordLetClause != null)
+      return;
+    if (info.target == null || info.target.getItem() == null || info.target.getItem().getIdentifier() == null)
+      return;
+    // What follows depends on the thread, the transaction and the size of the type at planning time, not on the statement alone: a plan
+    // either way must not be reused by an execution for which the answer differs
+    planDependsOnInputParameters = true;
+    if (!ParallelTypeScan.isAllowed(context.getDatabase()))
+      return;
+    // A small type is not scanned in parallel at run time, so the GROUP BY would only block where the DISTINCT streams
+    final String typeName = info.target.getItem().getIdentifier().getStringValue();
+    final Database database = context.getDatabase();
+    if (!database.getSchema().existsType(typeName) || database.countType(typeName, true) < MIN_DISTINCT_REWRITE_RECORDS)
+      return;
+
+    final List<ProjectionItem> items = info.projection.getItems();
+    if (items == null || items.isEmpty())
+      return;
+
+    final GroupBy groupBy = new GroupBy();
+    for (final ProjectionItem item : items) {
+      // Plain identifiers only: a computed expression would be evaluated for the key and again for the projected value, which for a
+      // non-deterministic one (rand()) gives groups that project to the same value, and costs a second evaluation per row
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null || item.isAggregate(context)
+          || !item.getExpression().isBaseIdentifier())
+        return;
+      groupBy.getItems().add(item.getExpression().copy());
+    }
+
+    info.groupBy = groupBy;
+    info.distinctRewrittenAsGroupBy = true;
+    info.distinct = false;
   }
 
   /**
@@ -988,7 +1044,15 @@ public class SelectExecutionPlanner {
     final Projection postAggregate = new Projection();
     postAggregate.setItems(new ArrayList<>());
 
+    // A GROUP BY on a computed expression (GROUP BY a % 10) needs the split even with no aggregate in the projection: the unsplit path
+    // evaluates the projected expression on the aggregated row, where it does not exist, and answered null for it
     boolean isSplitted = false;
+    if (info.groupBy != null && info.groupBy.getItems() != null)
+      for (final Expression exp : info.groupBy.getItems())
+        if (!exp.isBaseIdentifier()) {
+          isSplitted = true;
+          break;
+        }
 
     //split for aggregate projections
     final AggregateProjectionSplit result = new AggregateProjectionSplit();
@@ -4164,6 +4228,9 @@ public class SelectExecutionPlanner {
     final float maxSelectivity = context.getDatabase().getConfiguration()
         .getValueAsFloat(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY);
     if (!(maxSelectivity > 0))
+      return null;
+    // A DISTINCT returns its rows in first-occurrence order, which for an index search is key order: the fallbacks would change it
+    if (info.distinctRewrittenAsGroupBy)
       return null;
 
     // The rows of an index search come in key order, and a statement that returns them as they come can show it:

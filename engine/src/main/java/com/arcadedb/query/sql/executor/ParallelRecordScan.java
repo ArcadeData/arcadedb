@@ -25,6 +25,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -44,6 +45,15 @@ public final class ParallelRecordScan {
   @FunctionalInterface
   public interface RowMapper {
     Result map(Record record, CommandContext workerContext);
+  }
+
+  /** Consumes, in a worker, the rows of the units that worker scans. */
+  @FunctionalInterface
+  public interface PartialSink<P> {
+    /**
+     * @param position where the row is in the sequential scan: positions compare as the sequential scan orders the rows
+     */
+    void accept(P partial, Result row, long position, CommandContext workerContext);
   }
 
   private ParallelRecordScan(final ParallelTypeScan scan) {
@@ -69,6 +79,33 @@ public final class ParallelRecordScan {
   /** The rows, in the order a sequential scan would return them. Closing the result set stops the workers. */
   public ResultSet pull(final CommandContext context) {
     return scan.pull(context, Integer.MAX_VALUE);
+  }
+
+  /**
+   * Runs every row of the scan, in the workers, through a partial state each worker creates with {@code partialFactory}
+   * in its own context, and returns the partials - at most one per worker, the caller being one of them - once every row
+   * has gone through one (issue #8797). The caller merges them. Blocks; a worker's failure cancels the others and is
+   * rethrown. Takes the place of {@link #pull}: a scan is either pulled or aggregated.
+   *
+   * @param onWait called on the caller's thread after every batch it scans and about every 50ms while it waits, e.g. to
+   *               enforce a timeout
+   */
+  public <P> List<P> aggregate(final CommandContext context, final Function<CommandContext, P> partialFactory,
+      final PartialSink<P> sink, final Runnable onWait) {
+    return scan.aggregate(context, partialFactory, sink::accept, onWait);
+  }
+
+  /**
+   * Runs independent CPU-bound tasks - the merge of partial aggregations - on the caller and, when {@code inParallel}, on
+   * the producer pool too, and returns once all are done.
+   */
+  public void run(final List<Runnable> tasks, final boolean inParallel) {
+    scan.run(tasks, inParallel);
+  }
+
+  /** How many workers the scan runs, the caller included. */
+  public int getWorkerCount() {
+    return scan.getWorkerCount();
   }
 
   static void warnSkipped(final int bucketId, final long skipped) {

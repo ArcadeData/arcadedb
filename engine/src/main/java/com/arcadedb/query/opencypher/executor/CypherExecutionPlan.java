@@ -132,6 +132,7 @@ import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
@@ -168,6 +169,7 @@ import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -1291,6 +1293,75 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * The step that executes the physical operators of the optimized MATCH. A label scan at the root of the operators can
+   * also hand its rows to an aggregation that consumes them in the workers of a parallel scan (issue #8797).
+   */
+  private final class OptimizedMatchStep extends AbstractExecutionStep implements ParallelRowSource {
+    OptimizedMatchStep(final CommandContext context) {
+      super(context);
+    }
+
+    private ResultSet operatorResults = null;
+    private boolean closed = false;
+
+    @Override
+    public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+      // Once closed this step stays closed: re-executing the operator tree here would open a second
+      // set of cursors that the already-spent close() chain would never reach.
+      if (operatorResults == null && !closed) {
+        // Execute physical operators on first pull
+        operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+      }
+      return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
+    }
+
+    /**
+     * The physical-operator tree hangs off this step's result set, not off a previous step, so
+     * without this override the close() chain stopped one step short of the operators and every
+     * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
+     * for why an index cursor has to be closed explicitly).
+     */
+    @Override
+    public void close() {
+      if (!closed) {
+        closed = true;
+        if (operatorResults != null)
+          operatorResults.close();
+      }
+      super.close();
+    }
+
+    @Override
+    public String getName() {
+      return OPTIMIZED_MATCH_STEP_NAME;
+    }
+
+    @Override
+    public String getType() {
+      return getName();
+    }
+
+    @Override
+    public String prettyPrint(final int depth, final int indent) {
+      return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
+          physicalPlan.explain();
+    }
+
+    @Override
+    public String parallelVariable() {
+      return physicalPlan.getRootOperator() instanceof NodeByLabelScan scan ? scan.getVariable() : null;
+    }
+
+    @Override
+    public ParallelRecordScan planParallelRows(final CommandContext ctx, final List<BooleanExpression> filters) {
+      // Only before the operators were pulled: a started scan cannot be taken over
+      if (operatorResults != null || closed || !(physicalPlan.getRootOperator() instanceof NodeByLabelScan scan))
+        return null;
+      return scan.planParallelRows(ctx, filters);
+    }
+  }
+
+  /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
    * <p>
@@ -1308,53 +1379,7 @@ public class CypherExecutionPlan {
         expressionEvaluator.getFunctionFactory() : null;
 
     // Create a wrapper step that executes the physical operators
-    AbstractExecutionStep currentStep = new AbstractExecutionStep(context) {
-      private ResultSet operatorResults = null;
-      private boolean closed = false;
-
-      @Override
-      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-        // Once closed this step stays closed: re-executing the operator tree here would open a second
-        // set of cursors that the already-spent close() chain would never reach.
-        if (operatorResults == null && !closed) {
-          // Execute physical operators on first pull
-          operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
-        }
-        return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
-      }
-
-      /**
-       * The physical-operator tree hangs off this step's result set, not off a previous step, so
-       * without this override the close() chain stopped one step short of the operators and every
-       * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
-       * for why an index cursor has to be closed explicitly).
-       */
-      @Override
-      public void close() {
-        if (!closed) {
-          closed = true;
-          if (operatorResults != null)
-            operatorResults.close();
-        }
-        super.close();
-      }
-
-      @Override
-      public String getName() {
-        return OPTIMIZED_MATCH_STEP_NAME;
-      }
-
-      @Override
-      public String getType() {
-        return getName();
-      }
-
-      @Override
-      public String prettyPrint(final int depth, final int indent) {
-        return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
-            physicalPlan.explain();
-      }
-    };
+    AbstractExecutionStep currentStep = new OptimizedMatchStep(context);
 
     // Apply post-MATCH operations using clausesInOrder to respect the order they appear
     // in the query (e.g. WITH before UNWIND, not the other way around).
