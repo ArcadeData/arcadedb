@@ -49,6 +49,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -100,6 +103,8 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   private final AtomicInteger      probes            = new AtomicInteger();
   private final AtomicInteger      snapshotRequests  = new AtomicInteger();
   private       boolean            answerOlderFormat = false;
+  // Runs inside the fake leader's probe handler, while the round waits for the answer: null = nothing.
+  private volatile Runnable          duringProbe;
 
   @BeforeEach
   void setUp() throws IOException {
@@ -114,6 +119,9 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     leader = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
     leader.createContext(BootstrapElection.BOOTSTRAP_STATE_ROUTE, exchange -> {
       probes.incrementAndGet();
+      final Runnable hook = duringProbe;
+      if (hook != null)
+        hook.run();
       final String name = new JSONObject(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8))
           .getString(UnverifiedClosedCopyCheck.COPY_OF, null);
       // Shaped as PostBootstrapStateHandler answers, signed by whichever peer the mock currently names leader.
@@ -236,6 +244,63 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     assertThat(Files.exists(marker())).isTrue();
     assertRefusedOnThisFollower();
     assertThat(failures()).isEqualTo(1);
+  }
+
+  /**
+   * A tick while a round is still waiting on the leader does not queue another round behind it: the backoff is updated
+   * only when a round ends, so queued rounds would run back to back once the slow one finished.
+   */
+  @Test
+  void aTickWhileARoundIsStillRunningDoesNotQueueAnother() throws Exception {
+    final CountDownLatch probing = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    duringProbe = () -> {
+      probing.countDown();
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+    lastReverify().set(0L);
+    sm.reverifyUnverifiedClosedCopies();
+    assertThat(probing.await(30, TimeUnit.SECONDS)).as("the first round is waiting on the leader").isTrue();
+
+    lastReverify().set(0L); // the throttle alone would let this tick through
+    sm.reverifyUnverifiedClosedCopies();
+    release.countDown();
+    sm.awaitLifecycleTasksForTesting(60_000);
+
+    assertThat(probes.get()).as("one round, not two").isEqualTo(1);
+    duringProbe = null;
+    reverifyRound();
+    assertThat(probes.get()).as("the guard is released once the round ends").isEqualTo(2);
+  }
+
+  /**
+   * A round that finds another download holding the single flight learned nothing about the leader: the copy stays
+   * marked, but the backoff does not climb.
+   */
+  @Test
+  void aRoundThatFindsAnotherDownloadRunningDoesNotClimbTheBackoff() throws Exception {
+    reverifyRound(); // the first tick records the leader, which restarts the ladder: done before the count is pinned
+    leaderServesSnapshot();
+    leaderHolds.add(DB_NAME);
+    final Field f = ArcadeStateMachine.class.getDeclaredField("snapshotDownloadInProgress");
+    f.setAccessible(true);
+    final AtomicBoolean downloading = (AtomicBoolean) f.get(sm);
+    duringProbe = () -> downloading.set(true); // a download starts between the tick and the install
+    setFailures(2);
+    try {
+      reverifyRound();
+    } finally {
+      downloading.set(false);
+      duringProbe = null;
+    }
+
+    assertThat(snapshotRequests.get()).isZero();
+    assertThat(Files.exists(marker())).isTrue();
+    assertThat(failures()).isEqualTo(2);
   }
 
   /** A new leader may hold what the previous one did not: it is asked at the next tick, whatever the backoff. */

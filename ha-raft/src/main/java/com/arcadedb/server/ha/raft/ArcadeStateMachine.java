@@ -720,6 +720,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final    AtomicInteger unverifiedCopyReverifyFailures   = new AtomicInteger();
   // The leader the ladder above was climbed against: a different one may hold the database, so it starts over.
   private volatile RaftPeerId    unverifiedCopyReverifyLeader;
+  // A round is queued or running: the ladder above is updated only when it ends, so without this a slow round (a slow
+  // leader, a long download) would let every later tick queue another one behind it.
+  private final    AtomicBoolean unverifiedCopyReverifyInFlight   = new AtomicBoolean();
+
+  /** How one reinstall of an unverified closed copy ended, for the backoff of {@link #reverifyUnverifiedClosedCopies}. */
+  private enum ReinstallOutcome {
+    /** Installed, or settled by another path since the listing. */
+    SETTLED,
+    /** The leader closed it again, or the install failed: the copy keeps its mark. */
+    LEFT_MARKED,
+    /** Another download held the single flight: nothing was learned about the leader. */
+    BUSY
+  }
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -5550,15 +5563,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
       restartUnverifiedClosedCopyReverification();
       lastUnverifiedCopyReverifyMs.set(0L);
     }
+    if (unverifiedCopyReverifyInFlight.get())
+      return;
     final long now = System.currentTimeMillis();
     final long previous = lastUnverifiedCopyReverifyMs.get();
     if (previous != 0 && now - previous < unverifiedClosedCopyReverifyIntervalMs(unverifiedCopyReverifyFailures.get()))
       return;
     if (!lastUnverifiedCopyReverifyMs.compareAndSet(previous, now))
       return;
+    if (!unverifiedCopyReverifyInFlight.compareAndSet(false, true))
+      return;
     try {
-      lifecycleExecutor.submit(this::reverifyUnverifiedClosedCopiesNow);
+      lifecycleExecutor.submit(() -> {
+        try {
+          reverifyUnverifiedClosedCopiesNow();
+        } finally {
+          unverifiedCopyReverifyInFlight.set(false);
+        }
+      });
     } catch (final RejectedExecutionException ree) {
+      unverifiedCopyReverifyInFlight.set(false);
       LogManager.instance().log(this, Level.FINE,
           "Cannot schedule the re-verification of unverified closed copies: executor is shut down");
     }
@@ -5615,6 +5639,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     final String clusterToken = raftHA.getClusterToken();
     boolean anyLeft = false;
+    boolean busy = false;
     for (final String dbName : marked) {
       final boolean leaderServesIt;
       try {
@@ -5636,12 +5661,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
         anyLeft = true;
         continue;
       }
-      if (!reinstallUnverifiedClosedCopy(raftHA, source, dbName, clusterToken))
+      final ReinstallOutcome outcome = reinstallUnverifiedClosedCopy(dbName, source, clusterToken);
+      if (outcome == ReinstallOutcome.LEFT_MARKED)
         anyLeft = true;
+      else if (outcome == ReinstallOutcome.BUSY)
+        busy = true;
     }
+    // A copy left only because another download held the single flight says nothing about the leader: the ladder
+    // stays where it is, and the next round comes after the same wait.
     if (anyLeft)
       unverifiedCopyReverifyFailures.incrementAndGet();
-    else
+    else if (!busy)
       unverifiedCopyReverifyFailures.set(0);
   }
 
@@ -5675,26 +5705,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Replaces the closed, unverified copy of {@code dbName} with the leader's, under the same single-flight protocol as
    * {@link #triggerDatabaseResync}, and settles it as that resync settles a success.
    *
-   * @return whether the copy was installed; {@code false} leaves it closed and marked
+   * @return how it ended; anything but {@link ReinstallOutcome#SETTLED} leaves the copy closed and marked
    */
-  private boolean reinstallUnverifiedClosedCopy(final RaftHAServer raftHA, final PeerDialAddress source,
-      final String dbName, final String clusterToken) {
+  private ReinstallOutcome reinstallUnverifiedClosedCopy(final String dbName, final PeerDialAddress source,
+      final String clusterToken) {
     if (!snapshotDownloadInProgress.compareAndSet(false, true))
-      return false; // a download is running; the next round asks again
+      return ReinstallOutcome.BUSY; // a download is running; the next round asks again
     try {
       if (!snapshotDownloadLock.tryLock())
-        return false;
+        return ReinstallOutcome.BUSY;
       try {
         // Re-checked under the single flight: an install, a drop or an operator may have settled it since the listing.
         if (server.existsDatabase(dbName) || !SnapshotInstaller.isUnverifiedClosedCopy(server, dbName))
-          return true;
+          return ReinstallOutcome.SETTLED;
         try {
           installLeaderCopy(dbName, source.httpAddress(), source.httpsAddress(), clusterToken);
         } catch (final LeaderDoesNotHoldDatabaseException e) {
           // The leader closed it again between its answer and the download: the copy keeps its mark.
           HALog.log(this, HALog.BASIC, "Database '%s' stays closed and unverified on this follower: %s", dbName,
               e.getMessage());
-          return false;
+          return ReinstallOutcome.LEFT_MARKED;
         }
         LogManager.instance().log(this, Level.INFO,
             "Database '%s', closed on this follower and unverified since the leader did not hold it, has been "
@@ -5703,7 +5733,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         clearDivergedDatabase(dbName);
         clearBootstrapUnreconciled(dbName);
         settleBootstrapReplacement(dbName);
-        return true;
+        return ReinstallOutcome.SETTLED;
       } finally {
         snapshotDownloadLock.unlock();
       }
@@ -5711,7 +5741,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING,
           "Re-installing database '%s', closed and unverified on this follower, from the leader failed: %s. It stays "
               + "closed and the next health check retries it", dbName, e.getMessage());
-      return false;
+      return ReinstallOutcome.LEFT_MARKED;
     } finally {
       snapshotDownloadInProgress.set(false);
     }
