@@ -74,7 +74,7 @@ public class UpdateExecutionPlanner {
   public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context,  limit != null ? limit.getValue(context):0);
 
-    handleTarget(result, context, this.target, this.whereClause, this.timeout);
+    handleTarget(result, context, this.target, this.whereClause, this.timeout, limit != null ? limit.getValue(context) : 0);
 
     handleUpsert(result, context, this.target, this.whereClause, this.upsert);
     handleTimeout(result, context, this.timeout);
@@ -215,7 +215,7 @@ public class UpdateExecutionPlanner {
   }
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext context, final FromClause target,
-      final WhereClause whereClause, final Timeout timeout) {
+      final WhereClause whereClause, final Timeout timeout, final int limitValue) {
     final SelectStatement sourceStatement = new SelectStatement();
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
@@ -223,7 +223,35 @@ public class UpdateExecutionPlanner {
       sourceStatement.setTimeout(this.timeout.copy());
     }
     final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
-    result.chain(
-        new SubQueryStep(planner.createExecutionPlan(context, false), context, context));
+    final InternalExecutionPlan sourcePlan = planner.createExecutionPlan(context, false);
+    result.chain(new SubQueryStep(sourcePlan, context, context));
+
+    // #8814 (Halloween problem): a statement that rewrites what it searched by must not read its own output. An index
+    // walked while the statement moves the keys it walks meets the moved records again, so the addresses are read first
+    // An UPSERT is an equality lookup on a unique index, which cannot walk a range, and UpsertStep looks for that index
+    // in the step right before it
+    if (!upsert && operations != null && !operations.isEmpty() && readsIndex(sourcePlan))
+      result.chain(new MaterializeRecordsStep(context, limitValue));
+  }
+
+  private static boolean readsIndex(final ExecutionPlan plan) {
+    for (final ExecutionStep step : plan.getSteps()) {
+      if (readsIndex(step))
+        return true;
+    }
+    return false;
+  }
+
+  private static boolean readsIndex(final ExecutionStep step) {
+    if (step instanceof FetchFromIndexStep || step instanceof FetchFromIndexedFunctionStep)
+      return true;
+    for (final ExecutionStep subStep : step.getSubSteps())
+      if (readsIndex(subStep))
+        return true;
+    if (step instanceof final ExecutionStepInternal internal)
+      for (final ExecutionPlan subPlan : internal.getSubExecutionPlans())
+        if (readsIndex(subPlan))
+          return true;
+    return false;
   }
 }
