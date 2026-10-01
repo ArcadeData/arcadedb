@@ -643,7 +643,7 @@ function tsStartAutoRefresh(intervalMs) {
 
   if (intervalMs > 0) {
     tsAutoRefreshTimer = setInterval(function () {
-      if (studioCurrentTab === "timeseries")
+      if ($("#tab-db-timeseries").is(":visible"))
         tsExecuteQuery();
     }, intervalMs);
     globalNotify("Auto-refresh", "Enabled (" + (intervalMs / 1000) + "s)", "success");

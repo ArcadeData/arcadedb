@@ -464,7 +464,6 @@ function updateDatabases(callback, preferSelected) {
       let username = data.user || globalUsername || 'unknown';
       $("#queryUser").html(username);
       $("#databaseUser").html(username);
-      $("#tsUser").html(username);
       console.log("Set user to:", username);
 
       // CRITICAL: Always hide login and show studio, even if other operations fail
@@ -2148,6 +2147,8 @@ function refreshActiveSidebarPanel() {
 function setEditorLanguage(language) {
   $("#inputLanguage").val(language);
   editor.setOption("mode", getEditorMode());
+  vecLanguageChanged();
+  chartLanguageChanged();
 }
 
 // --- Saved Queries ---
@@ -3170,7 +3171,9 @@ function executeCommand(language, query) {
   globalActivateTab("tab-query");
 
   let activeTab = $("#tabs-command .active").attr("id");
-  if (activeTab == "tab-graph-sel") executeCommandGraph();
+  if (vecModeForLanguage(language) != null) executeSearchCommand();
+  else if (chartIsPromQL(language)) executePromQLCommand();
+  else if (activeTab == "tab-graph-sel") executeCommandGraph();
   else executeCommandTable();
 
   let queryHistory = getQueryHistory();
@@ -3289,6 +3292,7 @@ function executeCommandTable() {
       globalResultset = data.result;
       globalCy = null;
       renderTable();
+      queryChartResultChanged();
     })
     .fail(function (jqXHR, textStatus, errorThrown) {
       globalNotifyError(jqXHR.responseText);
@@ -3346,7 +3350,8 @@ function executeCommandGraph() {
 
       let activeTab = $("#tabs-command .active").attr("id");
 
-      if (data.result.vertices.length == 0 && data.result.records.length > 0) {
+      if (activeTab == "tab-chart-sel") queryChartResultChanged();
+      else if (data.result.vertices.length == 0 && data.result.records.length > 0) {
         if (activeTab == "tab-table-sel") renderTable();
         else globalActivateTab("tab-table");
       } else {
@@ -4430,6 +4435,8 @@ $(document).ready(function () {
     if (activeTab == "tab-db-backup-sel") {
       if (!dbBackupsLoaded)
         loadDatabaseBackups();
+    } else if (activeTab == "tab-db-timeseries-sel") {
+      initTimeSeries();
     } else if (activeTab == "tab-db-metrics-sel") {
       loadDatabaseMetrics();
     } else if (activeTab == "tab-db-buckets-sel") {
