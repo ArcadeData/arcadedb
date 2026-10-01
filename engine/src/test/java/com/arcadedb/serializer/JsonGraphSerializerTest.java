@@ -205,10 +205,10 @@ class JsonGraphSerializerTest extends TestHelper {
   void nonFiniteListItemsAreEncodedAsMarkers() {
     final MutableVertex[] v = new MutableVertex[1];
     database.transaction(() -> v[0] = database.newVertex("TestVertexType")
-        .set("ds", List.of(1.5, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN)).save());
+        .set("ds", List.of(1.5, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.NEGATIVE_INFINITY)).save());
 
     final String json = jsonGraphSerializer.serializeGraphElement(v[0]).toString();
 
-    assertThat(JsonPath.<List<Object>>read(json, "$.p.ds")).containsExactly(1.5, "PosInfinity", "NegInfinity", "NaN");
+    assertThat(JsonPath.<List<Object>>read(json, "$.p.ds")).containsExactly(1.5, "PosInfinity", "NegInfinity", "NaN", "NegInfinity");
   }
 }

@@ -911,8 +911,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
    * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
-   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from their JSON text instead of the
-   * double the parse produced, which dropped every digit past the 17th.
+   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from
+   * their JSON text instead of the double the parse produced, which dropped every digit past the 17th. A property with
+   * no declared type is left as it is: there is no schema to say that a marker string is a number.
    */
   private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
     if (type == null)
