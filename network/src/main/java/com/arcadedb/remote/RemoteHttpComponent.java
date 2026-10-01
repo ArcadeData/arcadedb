@@ -441,6 +441,9 @@ public class RemoteHttpComponent extends RWLockContext {
       final boolean replayable,
       final ControlPlaneRequest controlPlane) {
 
+    // The route of a control-plane request carries names and ids; messages and logs name the operation instead
+    final String messageLabel = controlPlane != null ? errorOperation : operation;
+
     Exception lastException = null;
 
     final Pair<String, Integer> stickyPin = getStickyPin();
@@ -572,7 +575,7 @@ public class RemoteHttpComponent extends RWLockContext {
               new JSONObject() :
               new JSONObject(response.body());
         } catch (final JSONException e) {
-          throw new RemoteException("Malformed server response for operation '" + operation + "'", e);
+          throw new RemoteException("Malformed server response for operation '" + messageLabel + "'", e);
         }
 
         if (callback == null)
@@ -587,7 +590,7 @@ public class RemoteHttpComponent extends RWLockContext {
           break;
 
         if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
-          refuseToReplayAPossiblyAppliedRequest(e, replayable, operation, connectToServer);
+          refuseToReplayAPossiblyAppliedRequest(e, replayable, messageLabel, connectToServer);
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
@@ -598,10 +601,10 @@ public class RemoteHttpComponent extends RWLockContext {
           }
 
           // Failing over hands the same write to the next server, which runs it again if the first one applied it.
-          refuseToReplayAPossiblyAppliedRequest(e, replayable, operation, connectToServer);
+          refuseToReplayAPossiblyAppliedRequest(e, replayable, messageLabel, connectToServer);
 
           if (!reloadClusterConfiguration())
-            throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
+            throw new RemoteException("Error on executing remote operation " + messageLabel + ", no server available", e);
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
           final Pair<String, Integer> snapshotLeader = leaderServer;
@@ -648,7 +651,7 @@ public class RemoteHttpComponent extends RWLockContext {
         throw e;
       } catch (final Exception e) {
         // Only checked exceptions thrown by the callback reach here: wrap them as a RemoteException.
-        throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
+        throw new RemoteException("Error on executing remote operation " + messageLabel + " (cause: " + e.getMessage() + ")", e);
       }
     }
 
@@ -656,7 +659,7 @@ public class RemoteHttpComponent extends RWLockContext {
       throw exception;
 
     throw new RemoteException(
-        "Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
+        "Error on executing remote operation '" + messageLabel + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
   }
 
   /**
