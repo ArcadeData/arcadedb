@@ -1697,17 +1697,11 @@ public class HashIndexBucket extends PaginatedComponent {
           System.arraycopy(oldEntry, ridsAfterStart, newEntry,
               keyLen + newRidCountBytes.length + ridsBeforeLen, ridsAfterLen);
 
-        // Check if there's space to write at dataEnd
-        int availableSpace = freeSpace(page, entryCount);
-        if (newEntrySize > availableSpace) {
-          entryCount = compactPage(page, entryCount);
-        }
-
-        // Write new entry at dataEnd, update slot
-        final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-        page.writeByteArray(dataEnd, newEntry);
-        page.writeShort(BUCKET_DATA_END, (short) (dataEnd + newEntrySize));
-        writeSlot(page, pos, dataEnd);
+        // The rewritten entry is always shorter than the old one (one RID fewer), so it goes back in place: the slot
+        // stays valid and no free space is needed. The tail left over becomes dead space, reclaimed by the next
+        // compaction. Appending it at dataEnd instead (the old way) needed room for a whole second copy of the entry
+        // and, once the page was full, compacted while the old entry was still live and wrote past the page.
+        page.writeByteArray(entryStart, newEntry);
 
         return 1;
       }
