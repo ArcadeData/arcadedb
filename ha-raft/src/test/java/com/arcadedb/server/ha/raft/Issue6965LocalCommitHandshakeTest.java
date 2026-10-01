@@ -78,6 +78,7 @@ class Issue6965LocalCommitHandshakeTest {
     when(proxied.getDatabasePath()).thenReturn(dbPath);
     when(proxied.getName()).thenReturn(DB_NAME);
     when(proxied.getTransactionManager()).thenReturn(SubclassMocks.mock(TransactionManager.class));
+    // An interface mock is already a generated class, so the inline maker's retransformation never applies to it.
     when(proxied.getSchema()).thenReturn(mock(Schema.class, RETURNS_DEEP_STUBS));
     when(proxied.executeInReadLock(any())).thenAnswer(inv -> ((Callable<?>) inv.getArgument(0)).call());
 
@@ -361,6 +362,7 @@ class Issue6965LocalCommitHandshakeTest {
   @Test
   void anUnclaimedEntryIsPublishedByTheCommittingThreadWhenTheStateMachineIsClosed() {
     final ArcadeStateMachine closed = SubclassMocks.spy(stateMachine);
+    assertThat(closed.getClass()).as("a subclass spy (issue #8021)").isNotEqualTo(ArcadeStateMachine.class);
     doReturn(true).when(closed).isClosed();
     when(raftServer.getStateMachine()).thenReturn(closed);
     when(broker.replicateTransaction(anyString(), any(), any())).thenReturn(7L);

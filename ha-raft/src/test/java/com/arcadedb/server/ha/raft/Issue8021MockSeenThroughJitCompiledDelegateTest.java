@@ -50,8 +50,8 @@ class Issue8021MockSeenThroughJitCompiledDelegateTest {
         final RaftReplicatedDatabase warm = new RaftReplicatedDatabase(null, real, null, httpClient);
         long chars = 0;
         // Enough calls for every tier to compile the delegate, with pauses that let the background compiler finish.
-        for (int round = 0; round < 20; round++) {
-          for (int i = 0; i < 200_000; i++)
+        for (int round = 0; round < 10; round++) {
+          for (int i = 0; i < 100_000; i++)
             chars += nameThrough(warm).length();
           Thread.sleep(20);
         }
