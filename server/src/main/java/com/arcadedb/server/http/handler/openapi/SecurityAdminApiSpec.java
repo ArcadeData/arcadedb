@@ -371,9 +371,10 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     postResponses.addApiResponse("412", SpecBuilders.errorResponse(
         "Precondition failed - the transport is not confidential. The token is returned in plaintext exactly "
             + "once, so it is not written back over a cleartext connection to a non-loopback client when "
-            + "arcadedb.server.apiTokenRequireSecureTransport is enabled. Reconnect over HTTPS, or have a reverse "
-            + "proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the server. On an HA "
-            + "cluster the leader applies the same check to the hop a follower forwarded the mint over"));
+            + "arcadedb.server.apiTokenRequireSecureTransport is enabled (the default). Reconnect over HTTPS, or "
+            + "have a reverse proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the "
+            + "server. On an HA cluster the leader applies the same check to the hop a follower forwarded the mint "
+            + "over"));
     postOp.setResponses(postResponses);
     pathItem.setPost(postOp);
 

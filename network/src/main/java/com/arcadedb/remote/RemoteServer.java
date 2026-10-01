@@ -231,9 +231,9 @@ public class RemoteServer extends RemoteHttpComponent {
    * the clear - a {@code http://} URL to a host that is not loopback - which is the client-side half of
    * what {@code RemoteGrpcServer} refuses for the same reason (issue #7309). Use {@code https://},
    * connect to the server over loopback, or opt out explicitly with
-   * {@link #setAllowInsecureApiTokenTransport(boolean)}. The server applies a refusal of its own only
-   * when {@code arcadedb.server.apiTokenRequireSecureTransport} is on, so this guard is what protects a
-   * caller talking to a default-configured server.
+   * {@link #setAllowInsecureApiTokenTransport(boolean)}. The server applies a refusal of its own while
+   * {@code arcadedb.server.apiTokenRequireSecureTransport} is on - the default since 26.10.1 - so this
+   * guard is what protects a caller talking to an older server, or to one that set it to false.
    *
    * @param database    the database the token is scoped to, or {@code "*"}/null for every database
    * @param expiresAt   epoch millis at which the token stops working; 0 for a token that does not expire

@@ -88,6 +88,38 @@ vanished even when an unrelated downsample ran in the same store, and only a blo
 is refused. The cutoff is recorded for the lower boundary alone, because only a lower one can be permanent in a
 store that keeps compacting forward.
 
+### Minting an API token over plain HTTP from a remote client is refused by default (#7823)
+
+`arcadedb.server.apiTokenRequireSecureTransport` now defaults to `true`. `POST /api/v1/server/api-tokens`
+returns the token in plaintext exactly once, so the server no longer writes it back over a cleartext
+connection to a peer that is not on its own host: such a mint is answered with **HTTP 412** instead of the
+token. This is the same rule the gRPC `CreateApiToken` RPC applies.
+
+**Who is affected.** Any client - Studio's token UI included - that mints API tokens over `http://` from a
+host other than the server's. A mint over HTTPS, or from a loopback client, is unaffected, and so is every
+other API-token operation (listing and revoking return no token material). Studio shows the 412 as an
+actionable message rather than a generic failure. Note that a server in a container reached through a
+published port typically sees the container network's gateway as the peer, not loopback, so a Studio opened on
+`http://localhost:2480` against the Docker image is refused too.
+
+**HA clusters.** A mint sent to a follower is forwarded to the leader (#8109), and the leader applies the same
+check to that hop, because the token travels back over it in plaintext. On a cluster whose nodes reach each
+other over plain HTTP on different hosts, a mint through a follower is therefore refused with 412 even when
+the client itself connected over HTTPS. Enable HTTPS between the cluster nodes, send the mint to the leader
+directly, or opt out as below.
+
+**How to migrate**, in order of preference:
+
+- serve the HTTP API over TLS, or mint from the server host itself;
+- behind a TLS-terminating reverse proxy, list the proxy's address in `arcadedb.server.apiTokenTrustedProxies`
+  (literal IPs or CIDR ranges, #7804) so its `X-Forwarded-Proto: https` is believed;
+- to keep the previous behaviour, set `arcadedb.server.apiTokenRequireSecureTransport=false`. The mint is then
+  allowed and logged at WARNING.
+
+The trusted-proxy list (#7804) and the Studio rendering of the 412 ship in this same release as the new
+default, so there is no earlier release in which the proxy list can be configured ahead of the flip: set it
+before, or together with, the upgrade.
+
 ## Improvements
 
 ### HA: a replicated TimeSeries sealed payload this node cannot install refuses the Raft entry (#8172)

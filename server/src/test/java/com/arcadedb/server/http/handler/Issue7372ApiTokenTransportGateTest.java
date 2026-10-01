@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -75,15 +76,35 @@ class Issue7372ApiTokenTransportGateTest {
   }
 
   /**
-   * The setting that decides whether an unfit transport is refused or merely logged. It ships off, so an
-   * upgrade does not start refusing the mints Studio's own token UI makes over plain HTTP; the assertion
-   * is here so flipping the default is a deliberate edit with a test to update, not a silent one.
+   * The setting that decides whether an unfit transport is refused or merely logged. It shipped off in
+   * #7372 so an upgrade did not start refusing the mints Studio's own token UI makes over plain HTTP, and
+   * #7804 scheduled the flip once Studio could explain the refusal and a TLS-terminating proxy could be
+   * listed. Issue #7823 is that flip: the default is now to refuse. The assertion stays so that changing
+   * the default again is a deliberate edit with a test to update, not a silent one.
    */
   @Test
-  void theRefusalIsOffByDefault() {
-    assertThat(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getDefValue()).isEqualTo(Boolean.FALSE);
+  void theRefusalIsOnByDefault() {
+    assertThat(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getDefValue()).isEqualTo(Boolean.TRUE);
     assertThat(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey())
         .isEqualTo("arcadedb.server.apiTokenRequireSecureTransport");
+  }
+
+  /**
+   * The default as the handler actually reads it - through a server's {@link ContextConfiguration}, not the
+   * enum constant - refuses a cleartext mint from a remote peer. This is the behaviour an upgrade brings to
+   * a server that never set the key (issue #7823).
+   */
+  @Test
+  void aDefaultConfiguredServerRefusesAnUnprotectedMint() {
+    final boolean requireSecure = new ContextConfiguration()
+        .getValueAsBoolean(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT);
+
+    final ExecutionResponse refusal = PostApiTokenHandler.checkTransport("http", remote(), requireSecure);
+
+    assertThat(refusal).isNotNull();
+    assertThat(refusal.getCode()).isEqualTo(412);
+    assertThat(PostApiTokenHandler.checkTransport("http", loopback(), requireSecure)).isNull();
+    assertThat(PostApiTokenHandler.checkTransport("https", remote(), requireSecure)).isNull();
   }
 
   /**
@@ -111,9 +132,9 @@ class Issue7372ApiTokenTransportGateTest {
   }
 
   /**
-   * With the setting off - the default - the same unprotected mint proceeds. It is logged at WARNING, which
-   * is deliberately not asserted here: what this pins is that the default does not refuse, because that is
-   * the compatibility promise the default exists to keep.
+   * With the setting explicitly set back to false - the operator's opt-out since #7823 made refusing the
+   * default - the same unprotected mint proceeds. It is logged at WARNING, which is deliberately not
+   * asserted here: what this pins is that the opt-out still restores the pre-#7823 behaviour.
    */
   @Test
   void withTheSettingOffAnUnprotectedMintProceeds() {
