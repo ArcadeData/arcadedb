@@ -382,6 +382,9 @@ public class SelectExecutionPlanner {
     info.planCreated = true;
   }
 
+  /** Records of the target type below which a DISTINCT is not rewritten: the parallel scan would decline it anyway. */
+  private static final long MIN_DISTINCT_REWRITE_RECORDS = 10_000L;
+
   /**
    * A plain {@code SELECT DISTINCT a, b FROM T} is the same set of rows as {@code SELECT a, b FROM T GROUP BY a, b}, and the GROUP BY is
    * the one that aggregates in the parallel workers of a scan (issue #8799). Rewritten here, so that the dedup runs per worker and the
@@ -394,15 +397,19 @@ public class SelectExecutionPlanner {
    * (subquery, index, RIDs), a transaction, or parallel scans disabled, so the streaming DISTINCT keeps its early exit and its
    * memory-lean RID dedup.
    */
-  /** Records of the target type below which a DISTINCT is not rewritten: the parallel scan would decline it anyway. */
-  private static final long MIN_DISTINCT_REWRITE_RECORDS = 10_000L;
-
   private void rewriteDistinctAsGroupBy(final CommandContext context) {
     if (!info.distinct || info.groupBy != null || info.orderBy != null || info.unwind != null || info.limit != null
         || info.projection.isExpand())
       return;
-    if (info.target == null || info.target.getItem() == null || info.target.getItem().getIdentifier() == null
-        || !ParallelTypeScan.isAllowed(context.getDatabase()))
+    // A per-record LET variable is not in the row the GROUP BY key and the aggregated row are evaluated on
+    if (info.perRecordLetClause != null)
+      return;
+    if (info.target == null || info.target.getItem() == null || info.target.getItem().getIdentifier() == null)
+      return;
+    // What follows depends on the thread, the transaction and the size of the type at planning time, not on the statement alone: a plan
+    // either way must not be reused by an execution for which the answer differs
+    planDependsOnInputParameters = true;
+    if (!ParallelTypeScan.isAllowed(context.getDatabase()))
       return;
     // A small type is not scanned in parallel at run time, so the GROUP BY would only block where the DISTINCT streams
     final String typeName = info.target.getItem().getIdentifier().getStringValue();

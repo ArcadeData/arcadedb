@@ -118,6 +118,16 @@ class Issue8799DistinctParallelTest extends TestHelper {
     });
   }
 
+  /** A per-record LET variable is not projected through the GROUP BY: the DISTINCT stays. And a plan is not reused across a transaction. */
+  @Test
+  void letVariablesAndPlanReuse() {
+    assertThat(rows("SELECT DISTINCT $x AS v FROM FourBuckets LET $x = grp + 1")).hasSize(100).doesNotContain("null");
+    final String query = "SELECT DISTINCT grp FROM FourBuckets";
+    assertThat(plan(query)).contains("CALCULATE AGGREGATE PROJECTIONS");
+    database.transaction(() -> assertThat(plan(query)).contains("+ DISTINCT"));
+    assertThat(plan(query)).contains("CALCULATE AGGREGATE PROJECTIONS");
+  }
+
   /** The rewrite keeps the column names the DISTINCT returned, aliased or not. */
   @Test
   void columnNamesAreKept() {
