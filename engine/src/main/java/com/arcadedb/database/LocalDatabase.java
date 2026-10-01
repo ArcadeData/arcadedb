@@ -277,6 +277,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
       final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
+    // #8838: STRIPED, SO CONCURRENT RECORD LOOKUPS DO NOT ALL WRITE THE SAME LOCK WORD
+    super(defaultStripeCount());
     try {
       this.mode = mode;
       this.configuration = configuration;
@@ -2529,7 +2531,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    final ReentrantReadWriteLock.WriteLock writeLock = writeLock();
+    final ReentrantReadWriteLock.WriteLock[] writeLock = writeLock();
     try {
 
       return callable.call();

@@ -35,7 +35,7 @@ class RWLockContextTest {
 
   @BeforeEach
   void setUp() {
-    lockContext = new RWLockContext();
+    lockContext = new RWLockContext(16);
   }
 
   @Test
@@ -116,6 +116,129 @@ class RWLockContextTest {
 
     // Reader should not have seen writer as active (writer was done before reader got lock)
     assertThat(readerSawWriter.get()).isFalse();
+  }
+
+  // #8838: the lock is striped by thread, so a writer must exclude readers living on every stripe
+  @Test
+  void writerExcludesReadersOnEveryStripe() throws Exception {
+    final int readers = 64;
+    final AtomicInteger activeReaders = new AtomicInteger();
+    final AtomicInteger readersSeenInWrite = new AtomicInteger();
+    final AtomicInteger writes = new AtomicInteger();
+    final AtomicBoolean stop = new AtomicBoolean();
+    final CountDownLatch done = new CountDownLatch(readers);
+
+    for (int i = 0; i < readers; i++) {
+      final Thread reader = new Thread(() -> {
+        while (!stop.get())
+          lockContext.executeInReadLock(() -> {
+            activeReaders.incrementAndGet();
+            activeReaders.decrementAndGet();
+            return null;
+          });
+        done.countDown();
+      });
+      reader.setDaemon(true);
+      reader.start();
+    }
+
+    try {
+      for (int w = 0; w < 200; w++)
+        lockContext.executeInWriteLock(() -> {
+          if (activeReaders.get() != 0)
+            readersSeenInWrite.incrementAndGet();
+          writes.incrementAndGet();
+          return null;
+        });
+    } finally {
+      stop.set(true);
+    }
+    assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(writes.get()).isEqualTo(200);
+    assertThat(readersSeenInWrite.get()).isZero();
+  }
+
+  @Test
+  void concurrentWritersDoNotDeadlockAndAreExclusive() throws Exception {
+    final int writers = 8;
+    final int[] counter = new int[1];
+    final CountDownLatch done = new CountDownLatch(writers);
+    for (int i = 0; i < writers; i++) {
+      final Thread writer = new Thread(() -> {
+        for (int k = 0; k < 500; k++)
+          lockContext.executeInWriteLock(() -> counter[0]++);
+        done.countDown();
+      });
+      writer.setDaemon(true);
+      writer.start();
+    }
+    assertThat(done.await(20, TimeUnit.SECONDS)).isTrue();
+    assertThat(counter[0]).isEqualTo(writers * 500);
+  }
+
+  @Test
+  void writeLockIsReentrantAndAllowsDowngradeToRead() {
+    final String result = lockContext.executeInWriteLock(() ->
+        lockContext.executeInWriteLock(() -> lockContext.executeInReadLock(() -> "ok")));
+    assertThat(result).isEqualTo("ok");
+  }
+
+  @Test
+  void blockedWriterDoesNotBlockSameThreadReentrantRead() throws Exception {
+    final CountDownLatch readerInside = new CountDownLatch(1);
+    final CountDownLatch writerQueued = new CountDownLatch(1);
+    final AtomicBoolean reentered = new AtomicBoolean();
+    final CountDownLatch done = new CountDownLatch(1);
+
+    final Thread reader = new Thread(() -> {
+      lockContext.executeInReadLock(() -> {
+        readerInside.countDown();
+        try {
+          writerQueued.await(5, TimeUnit.SECONDS);
+          Thread.sleep(200);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        // a writer is queued behind this reader, but the reader's own reentrant read must still succeed
+        lockContext.executeInReadLock(() -> {
+          reentered.set(true);
+          return null;
+        });
+        return null;
+      });
+      done.countDown();
+    });
+    reader.setDaemon(true);
+    reader.start();
+
+    assertThat(readerInside.await(5, TimeUnit.SECONDS)).isTrue();
+    final Thread writer = new Thread(() -> lockContext.executeInWriteLock(() -> null));
+    writer.setDaemon(true);
+    writer.start();
+    // let the writer park behind the reader
+    while (writer.getState() != Thread.State.WAITING && writer.isAlive())
+      Thread.sleep(5);
+    writerQueued.countDown();
+    assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+    writer.join(10_000);
+    assertThat(reentered.get()).isTrue();
+  }
+
+  @Test
+  void defaultContextIsASingleLock() {
+    final RWLockContext single = new RWLockContext();
+    assertThat(single.executeInWriteLock(() -> single.executeInReadLock(() -> "ok"))).isEqualTo("ok");
+  }
+
+  @Test
+  void lockingDisabledSkipsBothLocks() {
+    final RWLockContext ctx = new RWLockContext(8) {
+      {
+        setLockingEnabled(false);
+      }
+    };
+    assertThat(ctx.executeInReadLock(() -> "r")).isEqualTo("r");
+    assertThat(ctx.executeInWriteLock(() -> "w")).isEqualTo("w");
   }
 
   @Test
