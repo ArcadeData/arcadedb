@@ -29,6 +29,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
+import com.arcadedb.index.vector.LSMVectorIndexMutable;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -127,6 +128,19 @@ class Issue8019SnapshotShipSkipsCompactionTemporaryTest {
         }
       }
     }
+  }
+
+  /**
+   * The vector index builds its compaction output on {@code TEMP_EXT + FILE_EXT} too ({@code LSMVectorIndex}). The
+   * tests above drive an LSM-tree temporary, so this pins the vector-index name against the same predicate.
+   */
+  @Test
+  void aVectorIndexCompactionTemporaryIsNotShipped() {
+    final String stem = "Embedding_0_" + System.nanoTime() + ".";
+    assertThat(SnapshotHttpHandler.isShippedPageFile(stem + PaginatedComponent.TEMP_EXT + LSMVectorIndexMutable.FILE_EXT))
+        .as("a vector-index compaction temporary").isFalse();
+    assertThat(SnapshotHttpHandler.isShippedPageFile(stem + LSMVectorIndexMutable.FILE_EXT))
+        .as("the control: the published vector-index file").isTrue();
   }
 
   // ------------------------------------------------------------------------------------------------- HELPERS
