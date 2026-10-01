@@ -150,6 +150,12 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
    * The first value, from the end the aggregate looks at, of a row of the range that passes the WHERE.
    */
   private Object readEndOfRange(final CommandContext context, final TypeIndex index) {
+    // a comparison with null is never true: a null parameter bound leaves nothing to find, so do not walk the index for it
+    for (final RangePredicate predicate : range)
+      if (predicate.isParameter() && (context.getInputParameters() == null
+          || context.getInputParameters().get((String) predicate.getValue()) == null))
+        return null;
+
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, typeName, propertyName, range, index.getName(),
         List.of(propertyName), 0, 0);
     scan.setIndexOrder(!max, NodeIndexRangeScan.NullKeys.NONE);
