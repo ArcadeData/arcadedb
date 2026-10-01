@@ -78,6 +78,37 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
   }
 
   @Test
+  void typenameInsideAnInlineFragmentIsTheObjectType() {
+    assertSingleBook("{ bookById(id: \"book-1\") { ... on Book { __typename } id } }", record -> {
+      assertThat(record.<String>getProperty("__typename")).isEqualTo("Book");
+      assertThat(record.<String>getProperty("id")).isEqualTo("book-1");
+    });
+  }
+
+  @Test
+  void typenameOnRelationshipTargetOfADeclaredSubTypeIsTheSubType() {
+    executeTest(database -> {
+      database.getSchema().createVertexType("Novel").addSuperType("Book");
+      final MutableVertex novel = database.newVertex("Novel");
+      novel.set("id", "novel-1");
+      novel.save();
+      database.query("sql", "select from Author where id = 'author-1'").next().getElement().get().asVertex()
+          .newEdge("IS_AUTHOR_OF", novel);
+
+      defineTypes(database);
+      database.command("graphql", "type Novel { id: String }");
+      assertBook(database, "{ bookById(id: \"book-1\") { authors { wrote { id __typename } } } }", record -> {
+        final List<Result> authors = record.getProperty("authors");
+        final List<String> typeNames = new ArrayList<>();
+        for (final Result book : authors.getFirst().<List<Result>>getProperty("wrote"))
+          typeNames.add(book.getProperty("id") + ":" + book.getProperty("__typename"));
+        assertThat(typeNames).containsExactlyInAnyOrder("book-1:Book", "book-2:Book", "novel-1:Novel");
+      });
+      return null;
+    });
+  }
+
+  @Test
   void typenameIsNotReadFromARecordPropertyOfTheSameName() {
     // NAMES STARTING WITH "__" ARE RESERVED BY THE SPECIFICATION FOR INTROSPECTION: A PROPERTY THAT HAPPENS TO CARRY THE
     // NAME MUST NOT SHADOW THE TYPE

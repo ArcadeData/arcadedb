@@ -147,11 +147,10 @@ public class GraphQLResultSet implements ResultSet {
   /**
    * The {@code __typename} of a record by its database type, see {@link #declaredObjectTypeOf}: it depends only on the
    * type and on the SDL, fixed for the life of the result set, so a client that selects {@code __typename} everywhere
-   * (Apollo does) walks the type hierarchy once per database type rather than once per record. {@link #NO_DECLARED_TYPE}
+   * (Apollo does) walks the type hierarchy once per database type rather than once per record. A {@code null} value
    * stands for a type with no declared ancestor.
    */
   private final IdentityHashMap<DocumentType, String> declaredObjectTypes = new IdentityHashMap<>(4);
-  private static final String                         NO_DECLARED_TYPE    = "";
 
   /**
    * How many times the projections of a level were built rather than taken from {@link #projectionCache}, for tests.
@@ -471,24 +470,24 @@ public class GraphQLResultSet implements ResultSet {
    * grandparent reached through another parent; within one level the order of the super types decides.
    */
   private String declaredObjectTypeOf(final DocumentType type) {
-    String declared = declaredObjectTypes.get(type);
-    if (declared == null) {
-      declared = NO_DECLARED_TYPE;
-      final List<DocumentType> level = new ArrayList<>(2);
-      level.add(type);
-      for (int i = 0; i < level.size(); i++) {
-        final DocumentType candidate = level.get(i);
-        if (schema.isObjectType(candidate.getName())) {
-          declared = candidate.getName();
-          break;
-        }
-        for (final DocumentType superType : candidate.getSuperTypes())
-          if (!level.contains(superType))
-            level.add(superType);
+    if (declaredObjectTypes.containsKey(type))
+      return declaredObjectTypes.get(type);
+
+    String declared = null;
+    final List<DocumentType> level = new ArrayList<>(2);
+    level.add(type);
+    for (int i = 0; i < level.size(); i++) {
+      final DocumentType candidate = level.get(i);
+      if (schema.isObjectType(candidate.getName())) {
+        declared = candidate.getName();
+        break;
       }
-      declaredObjectTypes.put(type, declared);
+      for (final DocumentType superType : candidate.getSuperTypes())
+        if (!level.contains(superType))
+          level.add(superType);
     }
-    return declared != NO_DECLARED_TYPE ? declared : null;
+    declaredObjectTypes.put(type, declared);
+    return declared;
   }
 
   /**
