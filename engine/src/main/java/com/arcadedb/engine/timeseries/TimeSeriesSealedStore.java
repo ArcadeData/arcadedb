@@ -160,6 +160,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   // In-memory block directory (loaded at open) — protected by directoryLock
   private final List<BlockEntry>    blockDirectory = new ArrayList<>();
   private final ReadWriteLock       directoryLock  = new ReentrantReadWriteLock();
+  // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
+  // (see maxTimestampPrefix) that it is stale
+  private          int              directoryVersion;
+  private volatile MaxTimestampPrefix maxTimestampPrefix;
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
@@ -532,6 +536,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile.write(crcBuf.array());
 
       blockDirectory.add(entry);
+      ++directoryVersion;
+      restoreMinTimestampOrder();
 
       if (minTs < globalMinTs)
         globalMinTs = minTs;
@@ -716,21 +722,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (dirSize == 0)
         return BlockDirectorySnapshot.EMPTY;
 
-      // First block whose maxTimestamp >= fromTs. Everything before it ends before the range begins.
-      int lo = 0, hi = dirSize;
-      while (lo < hi) {
-        final int mid = (lo + hi) >>> 1;
-        if (blockDirectory.get(mid).maxTimestamp < fromTs)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      final int first = lo;
+      // First block that can reach fromTs. Everything before it ends before the range begins.
+      final int first = firstBlockEndingAtOrAfter(fromTs);
 
       // First block whose minTimestamp > toTs. The directory is ordered by minTimestamp, so everything from there
       // on starts after the range ends.
-      lo = first;
-      hi = dirSize;
+      int lo = first;
+      int hi = dirSize;
       while (lo < hi) {
         final int mid = (lo + hi) >>> 1;
         if (blockDirectory.get(mid).minTimestamp <= toTs)
@@ -1345,17 +1343,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (dirSize == 0)
         return results;
 
-      // Binary search: find the first block whose maxTimestamp >= fromTs. Everything before it ends before the
-      // requested lower bound. Same search iterateRange/forEachRow use.
-      int lo = 0, hi = dirSize - 1;
-      while (lo < hi) {
-        final int mid = (lo + hi) >>> 1;
-        if (blockDirectory.get(mid).maxTimestamp < fromTs)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      final int startBlockIdx = lo;
+      // First block that can reach fromTs: everything before it ends before the requested lower bound. A plain binary
+      // search on maxTimestamp is wrong here, the blocks overlap (issue #8813).
+      final int startBlockIdx = firstBlockEndingAtOrAfter(fromTs);
 
       // Timestamp of the newest row retained so far: once `need` rows are held, any block that starts after it
       // cannot contribute and the walk stops.
@@ -1819,8 +1809,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      ++directoryVersion;
       decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
+      ++directoryVersion;
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       for (final BlockEntry e : blockDirectory) {
@@ -2121,8 +2113,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Only update in-memory state after the successful file swap
     blockDirectory.clear();
+    ++directoryVersion;
     decodedColumnCache.clear();
     blockDirectory.addAll(newDirectory);
+    ++directoryVersion;
     globalMinTs = Long.MAX_VALUE;
     globalMaxTs = Long.MIN_VALUE;
     for (final BlockEntry e : blockDirectory) {
@@ -2362,8 +2356,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexChannel = indexFile.getChannel();
 
       blockDirectory.clear();
+      ++directoryVersion;
       decodedColumnCache.clear();
       blockDirectory.addAll(newBlockDirectory);
+      ++directoryVersion;
+      // The temp file was written in minTimestamp order, but the blocks Phase 4 of the compaction appended to it come
+      // from the samples that arrived since, and out-of-order ones are older than blocks already there (issue #8813)
+      restoreMinTimestampOrder();
 
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -2486,7 +2485,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (targetBlockCount >= blockDirectory.size())
         return; // nothing to truncate
 
-      final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
+      // The count is a count of blocks in FILE order, which is not the directory's order (issue #8813): the directory is
+      // sorted by minTimestamp, the file holds the blocks in the order they were written
+      final List<BlockEntry> inFileOrder = new ArrayList<>(blockDirectory);
+      inFileOrder.sort(Comparator.comparingLong(entry -> entry.blockStartOffset));
+      final List<BlockEntry> retained = new ArrayList<>(inFileOrder.subList(0, (int) targetBlockCount));
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
 
@@ -2532,8 +2535,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      ++directoryVersion;
       decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
+      ++directoryVersion;
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       for (final BlockEntry e : blockDirectory) {
@@ -2699,8 +2704,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // it accumulated is a prefix, and reporting a prefix as the whole would turn one finding into three.
       boolean walkedEveryBlock = true;
 
-      for (int i = 0; i < blockDirectory.size(); i++) {
-        final BlockEntry entry = blockDirectory.get(i);
+      // The directory is ordered by minTimestamp, the file by the order its blocks were written (issue #8813): the walk
+      // follows the file, which is what "blocks are written back to back" is a statement about
+      final List<BlockEntry> inFileOrder = new ArrayList<>(blockDirectory);
+      inFileOrder.sort(Comparator.comparingLong(e -> e.blockStartOffset));
+
+      for (int i = 0; i < inFileOrder.size(); i++) {
+        final BlockEntry entry = inFileOrder.get(i);
 
         if (entry.sampleCount <= 0)
           problems.add("block " + i + " (offset " + blockStart + ") declares " + entry.sampleCount + " sample(s)");
@@ -3378,6 +3388,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         previousBlockIds.add(entry.blockId);
 
       blockDirectory.clear();
+      ++directoryVersion;
       decodedColumnCache.clear();
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -3695,6 +3706,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Rebuild block directory by scanning block metadata records
     blockDirectory.clear();
+    ++directoryVersion;
     decodedColumnCache.clear();
     final long fileLength = indexFile.length();
     long pos = HEADER_SIZE;
@@ -3855,8 +3867,77 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       dataPos += 4; // skip CRC
 
       blockDirectory.add(entry);
+      ++directoryVersion;
       pos = dataPos;
     }
+    // The file holds the blocks in the order they were written, which is not the order of their timestamps when a
+    // compaction appended late-arriving samples after the ones it had merged (issue #8813)
+    restoreMinTimestampOrder();
+  }
+
+  /**
+   * Puts {@link #blockDirectory} back in ascending {@code minTimestamp} order, which the walks that stop early rely on:
+   * {@link #scanRangeAscending} stops at the first block that starts after the newest row it holds. The order the blocks
+   * sit in the file is NOT that order once a compaction has appended the late-arriving samples it found after merging
+   * the rest (issue #8813), so the directory is what carries it, not the file. Stable, and a plain pass when it is
+   * already ordered, which is the case for every store that never saw an out-of-order sample.
+   * <p>
+   * Caller holds the directory write lock (or is the constructor).
+   */
+  private void restoreMinTimestampOrder() {
+    long previous = Long.MIN_VALUE;
+    for (int i = 0, size = blockDirectory.size(); i < size; i++) {
+      final long minTs = blockDirectory.get(i).minTimestamp;
+      if (minTs < previous) {
+        blockDirectory.sort(Comparator.comparingLong(entry -> entry.minTimestamp));
+        ++directoryVersion;
+        return;
+      }
+      previous = minTs;
+    }
+  }
+
+  /**
+   * {@code runningMax[i]} is the largest {@code maxTimestamp} among the blocks 0..i of the directory.
+   *
+   * @param version the {@link #directoryVersion} it was computed for
+   */
+  private record MaxTimestampPrefix(int version, long[] runningMax) {
+  }
+
+  /**
+   * The index of the first block that can hold a timestamp at or after {@code fromTs}: every block before it ends
+   * before {@code fromTs}. Caller holds the directory read lock.
+   * <p>
+   * The directory is ordered by {@code minTimestamp}, and blocks are not disjoint: a late-arriving sample makes a block
+   * that starts early and ends late, so {@code maxTimestamp} is NOT monotonic along the directory and a binary search
+   * on it can step over a block that does reach {@code fromTs}. The running maximum is monotonic by construction, and
+   * the first position where it reaches {@code fromTs} is exactly the first block that can (issue #8813).
+   */
+  private int firstBlockEndingAtOrAfter(final long fromTs) {
+    final int dirSize = blockDirectory.size();
+    MaxTimestampPrefix prefix = maxTimestampPrefix;
+    if (prefix == null || prefix.version() != directoryVersion || prefix.runningMax().length != dirSize) {
+      final long[] runningMax = new long[dirSize];
+      long max = Long.MIN_VALUE;
+      for (int i = 0; i < dirSize; i++) {
+        max = Math.max(max, blockDirectory.get(i).maxTimestamp);
+        runningMax[i] = max;
+      }
+      prefix = new MaxTimestampPrefix(directoryVersion, runningMax);
+      maxTimestampPrefix = prefix;
+    }
+
+    final long[] runningMax = prefix.runningMax();
+    int lo = 0, hi = dirSize;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (runningMax[mid] < fromTs)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {
