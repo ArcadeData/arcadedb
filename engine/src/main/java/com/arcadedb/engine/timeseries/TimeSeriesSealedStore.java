@@ -537,7 +537,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       blockDirectory.add(entry);
       ++directoryVersion;
-      restoreMinTimestampOrder();
+      final int size = blockDirectory.size();
+      if (size > 1 && blockDirectory.get(size - 2).minTimestamp > minTs)
+        restoreMinTimestampOrder();
 
       if (minTs < globalMinTs)
         globalMinTs = minTs;
@@ -3867,9 +3869,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       dataPos += 4; // skip CRC
 
       blockDirectory.add(entry);
-      ++directoryVersion;
       pos = dataPos;
     }
+    ++directoryVersion;
     // The file holds the blocks in the order they were written, which is not the order of their timestamps when a
     // compaction appended late-arriving samples after the ones it had merged (issue #8813)
     restoreMinTimestampOrder();

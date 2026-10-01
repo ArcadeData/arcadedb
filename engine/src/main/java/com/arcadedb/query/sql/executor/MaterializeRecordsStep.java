@@ -26,7 +26,9 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A barrier that reads every record address of the previous step BEFORE the first one is passed downstream, then serves
@@ -94,7 +96,7 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
         result.add(new ResultInternal(record));
         ++served;
       } catch (final RecordNotFoundException e) {
-        // DELETED SINCE THE ADDRESS WAS READ: NOTHING TO UPDATE
+        // Deleted since the address was read: nothing to update
       }
     }
     return result;
@@ -102,6 +104,8 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
 
   private void drain(final CommandContext context, final ExecutionStepInternal prevStep) {
     final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
+    // With a limit the count must be of distinct records, or a multi-value index returning one RID per key under-delivers
+    final Set<RID> seen = limit > 0 ? new HashSet<>() : null;
     while (limit <= 0 || buffer.size() < limit) {
       final ResultSet upstream = prevStep.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!upstream.hasNext())
@@ -112,7 +116,7 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final RID rid = ridOf(item);
-          if (rid != null && rid.getBucketId() >= 0 && rid.getPosition() >= 0)
+          if (rid != null && rid.getBucketId() >= 0 && rid.getPosition() >= 0 && (seen == null || seen.add(rid)))
             buffer.add(rid.getBucketId(), rid.getPosition());
         } finally {
           if (context.isProfiling())

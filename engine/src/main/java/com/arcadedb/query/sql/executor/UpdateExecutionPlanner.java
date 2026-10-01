@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -27,11 +28,14 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Timeout;
+import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -72,9 +76,10 @@ public class UpdateExecutionPlanner {
   }
 
   public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
-    final UpdateExecutionPlan result = new UpdateExecutionPlan(context,  limit != null ? limit.getValue(context):0);
+    final int limitValue = limit != null ? limit.getValue(context) : 0;
+    final UpdateExecutionPlan result = new UpdateExecutionPlan(context, limitValue);
 
-    handleTarget(result, context, this.target, this.whereClause, this.timeout, limit != null ? limit.getValue(context) : 0);
+    handleTarget(result, context, this.target, this.whereClause, this.timeout, limitValue);
 
     handleUpsert(result, context, this.target, this.whereClause, this.upsert);
     handleTimeout(result, context, this.timeout);
@@ -226,31 +231,53 @@ public class UpdateExecutionPlanner {
     final InternalExecutionPlan sourcePlan = planner.createExecutionPlan(context, false);
     result.chain(new SubQueryStep(sourcePlan, context, context));
 
-    // #8814 (Halloween problem): a statement that rewrites what it searched by must not read its own output. An index
-    // walked while the statement moves the keys it walks meets the moved records again, so the addresses are read first
-    // An UPSERT is an equality lookup on a unique index, which cannot walk a range, and UpsertStep looks for that index
-    // in the step right before it
-    if (!upsert && operations != null && !operations.isEmpty() && readsIndex(sourcePlan))
+    // #8814 (Halloween problem): a statement that rewrites a key it walks must not read its own output, so the addresses
+    // are read first. An UPSERT is an equality lookup on a unique index, which cannot walk a range, and UpsertStep looks
+    // for that index in the step right before it.
+    if (!upsert && operations != null && !operations.isEmpty() && readsIndex(sourcePlan, modifiedProperties()))
       result.chain(new MaterializeRecordsStep(context, limitValue));
   }
 
-  private static boolean readsIndex(final ExecutionPlan plan) {
-    for (final ExecutionStep step : plan.getSteps()) {
-      if (readsIndex(step))
-        return true;
+  /**
+   * @return the properties the operations set, or null when they can touch any (REMOVE, CONTENT, MERGE, SET on a path)
+   */
+  private Set<String> modifiedProperties() {
+    final Set<String> properties = new HashSet<>();
+    for (final UpdateOperations op : operations) {
+      if (op.getType() != UpdateOperations.TYPE_SET || op.getUpdateItems() == null)
+        return null;
+      for (final UpdateItem item : op.getUpdateItems()) {
+        if (item.getLeft() == null || item.getLeftModifier() != null)
+          return null;
+        properties.add(item.getLeft().getStringValue());
+      }
     }
+    return properties;
+  }
+
+  private static boolean readsIndex(final ExecutionPlan plan, final Set<String> modified) {
+    for (final ExecutionStep step : plan.getSteps())
+      if (readsIndex(step, modified))
+        return true;
     return false;
   }
 
-  private static boolean readsIndex(final ExecutionStep step) {
-    if (step instanceof FetchFromIndexStep || step instanceof FetchFromIndexedFunctionStep)
+  private static boolean readsIndex(final ExecutionStep step, final Set<String> modified) {
+    if (step instanceof final FetchFromIndexStep indexStep) {
+      if (modified == null)
+        return true;
+      for (final String property : indexStep.index.getPropertyNames())
+        if (modified.contains(Index.basePropertyName(property)))
+          return true;
+    } else if (step instanceof FetchFromIndexedFunctionStep)
       return true;
+
     for (final ExecutionStep subStep : step.getSubSteps())
-      if (readsIndex(subStep))
+      if (readsIndex(subStep, modified))
         return true;
     if (step instanceof final ExecutionStepInternal internal)
       for (final ExecutionPlan subPlan : internal.getSubExecutionPlans())
-        if (readsIndex(subPlan))
+        if (readsIndex(subPlan, modified))
           return true;
     return false;
   }
