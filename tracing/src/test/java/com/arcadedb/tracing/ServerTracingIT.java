@@ -23,8 +23,10 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +34,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,7 +100,8 @@ class ServerTracingIT extends BaseGraphServerTest {
     final ObservationRegistry registry = getServer(0).getObservationRegistry();
     final InMemorySpanExporter exporter = InMemorySpanExporter.create();
     final TracingPlugin plugin = new TracingPlugin();
-    plugin.attachForTest(registry, exporter);
+    // Issue #8801: the HTTP span is exported after the response is sent, so hold it back to make that window deterministic.
+    plugin.attachForTest(registry, new HttpSpanDelayingExporter(exporter, 300));
 
     try {
       final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/command/graph")).openConnection();
@@ -114,11 +118,19 @@ class ServerTracingIT extends BaseGraphServerTest {
       // originating protocol (http here), nested under the HTTP request span.
       SpanData querySpan = null;
       SpanData httpSpan = null;
-      for (int attempt = 0; attempt < 100 && querySpan == null; attempt++) {
+      // Poll until BOTH spans are exported: the query span ends during the command, the HTTP span only in the handler's
+      // finally block, after the client already has its response (#8801).
+      for (int attempt = 0; attempt < 250 && (querySpan == null || httpSpan == null); attempt++) {
         final List<SpanData> spans = exporter.getFinishedSpanItems();
         querySpan = spans.stream().filter(s -> "arcadedb.query".equals(s.getName())).findFirst().orElse(null);
-        httpSpan = spans.stream().filter(s -> "arcadedb.http.server.requests".equals(s.getName())).findFirst().orElse(null);
-        if (querySpan == null)
+        // Match the HTTP span of this request (same trace as the query span), not any HTTP span exported meanwhile.
+        final SpanData query = querySpan;
+        httpSpan = query == null ? null : spans.stream()
+            .filter(s -> "arcadedb.http.server.requests".equals(s.getName()))
+            .filter(s -> query.getTraceId().equals(s.getTraceId()))
+            .findFirst()
+            .orElse(null);
+        if (querySpan == null || httpSpan == null)
           Thread.sleep(20);
       }
 
@@ -203,5 +215,37 @@ class ServerTracingIT extends BaseGraphServerTest {
 
   private static String basicAuth() {
     return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
+  }
+
+  /** Delays the export of the HTTP request span, reproducing a slow runner where the handler's finally block lags the response. */
+  private static final class HttpSpanDelayingExporter implements SpanExporter {
+    private final SpanExporter delegate;
+    private final long        delayMs;
+
+    private HttpSpanDelayingExporter(final SpanExporter delegate, final long delayMs) {
+      this.delegate = delegate;
+      this.delayMs = delayMs;
+    }
+
+    @Override
+    public CompletableResultCode export(final Collection<SpanData> spans) {
+      if (spans.stream().anyMatch(s -> "arcadedb.http.server.requests".equals(s.getName())))
+        try {
+          Thread.sleep(delayMs);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      return delegate.export(spans);
+    }
+
+    @Override
+    public CompletableResultCode flush() {
+      return delegate.flush();
+    }
+
+    @Override
+    public CompletableResultCode shutdown() {
+      return delegate.shutdown();
+    }
   }
 }
