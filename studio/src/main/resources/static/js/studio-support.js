@@ -625,7 +625,7 @@ function supportCollectFormHtml(prefix, withTitle) {
     prefix +
     'PreviewBtn" onclick="supportPreview(\'' +
     prefix +
-    '\')"><i class="fa fa-eye"></i> Preview what will be sent</button>';
+    '\')"><i class="fa fa-paperclip"></i> Prepare the attachments</button>';
   html += '<div id="' + prefix + 'Preview" class="mt-3"></div>';
   html += "</div>";
   return html;
@@ -737,7 +737,7 @@ function supportPreview(prefix) {
       supportUpdateSendState(prefix);
     })
     .always(function () {
-      btn.prop("disabled", false).html('<i class="fa fa-eye"></i> Preview what will be sent');
+      btn.prop("disabled", false).html('<i class="fa fa-paperclip"></i> Prepare the attachments');
     });
 }
 
@@ -817,7 +817,7 @@ function supportUpdateSendState(prefix) {
   var ready = !needsPreview || !!supportPreviews[prefix];
   if (prefix === "spIssue") {
     $("#spIssueSendBtn").prop("disabled", !ready);
-    $("#spIssueSendHint").text(ready ? "" : "Preview what will be sent first: you review exactly what leaves the server.");
+    $("#spIssueSendHint").text(ready ? "" : "Prepare the attachments first: you review exactly what leaves the server.");
   } else if (prefix === "spPublic") {
     var has = !!supportPreviews[prefix];
     $("#spPublicDownloadBtn").prop("disabled", !has);
@@ -884,7 +884,7 @@ function supportSendIssue() {
   }
   var preview = supportPreviews.spIssue;
   if (supportCollectNeedsPreview("spIssue") && !preview) {
-    $("#spIssueResult").html(supportAlertHtml({ code: "bad_request", message: "Preview what will be sent first." }));
+    $("#spIssueResult").html(supportAlertHtml({ code: "bad_request", message: "Prepare the attachments first." }));
     return;
   }
   var body = {
@@ -1286,7 +1286,7 @@ function supportOpenGithub() {
   }
   var preview = supportPreviews.spPublic;
   if (supportCollectNeedsPreview("spPublic") && !preview) {
-    $("#spPublicAlert").html(supportAlertHtml({ code: "bad_request", message: "Preview what will be downloaded first, so the summary of your environment can be added." }));
+    $("#spPublicAlert").html(supportAlertHtml({ code: "bad_request", message: "Prepare the attachments first, so the summary of your environment can be added." }));
     return;
   }
   var summary = preview && preview.description ? preview.description.githubSummary : "";
