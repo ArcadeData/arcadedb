@@ -200,6 +200,37 @@ class Issue8710RemoteServerSecurityRoutesFailoverTest {
     }
   }
 
+  /** Failover must not carry the token to a cleartext non-loopback host: the guard vets every URL attempted. */
+  @Test
+  void createApiTokenIsNeverSentToACleartextNonLoopbackFailoverTarget() throws Exception {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.NETWORK_SAME_SERVER_ERROR_RETRIES, 2);
+    final int closedPort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      closedPort = probe.getLocalPort();
+    }
+    final RemoteServer client = new RemoteServer("127.0.0.1", closedPort, "root", "test", cfg) {
+      @Override
+      void requestClusterConfiguration() {
+        // no cluster
+      }
+
+      @Override
+      boolean reloadClusterConfiguration() {
+        final List<Pair<String, Integer>> replicas = getReplicaServerList();
+        if (replicas.isEmpty())
+          replicas.add(new Pair<>("192.0.2.1", 2480));
+        return true;
+      }
+    };
+    try {
+      assertThatThrownBy(() -> client.createApiToken("t", "db", 0L, null)).isInstanceOf(SecurityException.class)
+          .hasMessageContaining("192.0.2.1");
+    } finally {
+      client.close();
+    }
+  }
+
   private static String json(final JSONObject body) {
     final byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
     return "Content-Type: application/json\r\nContent-Length: " + bytes.length + "\r\nConnection: close\r\n\r\n" + body;
