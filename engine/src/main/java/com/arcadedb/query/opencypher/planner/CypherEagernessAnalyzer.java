@@ -144,22 +144,24 @@ public final class CypherEagernessAnalyzer {
   }
 
   /**
-   * Records that a clause which changes the graph (CREATE, MERGE, SET, REMOVE, DELETE, FOREACH, a write procedure or
-   * a subquery that writes) has been planned and no barrier has drained it since.
+   * Records that a clause which changes the graph has been planned and no barrier has drained it since. The
+   * {@code observeWrite} methods (SET, REMOVE, MERGE, write procedure) already do it; this is for the clauses they do not
+   * cover: CREATE, DELETE, FOREACH and a subquery that writes.
    */
   public void observeWriteClause() {
     writePending = true;
   }
 
   /**
-   * True when a {@code LIMIT} placed here would stop pulling before the writes ahead of it have run for every row.
+   * True when a {@code LIMIT} placed here (not behind an ORDER BY or an aggregation) would stop pulling before the writes ahead of it have run for every row.
    * openCypher runs each clause to completion before the next one starts, so a {@code WITH ... LIMIT n} (or a final
    * {@code RETURN ... LIMIT n}) that follows a write must see all of that write's rows, as Neo4j's {@code Eager} makes it
    * do. Without the barrier the write ran for as many rows as the pull-model batches had already carried past it (issues
    * #8826 and #8827: 1000 {@code FOREACH} creations instead of 2000, 4 deleted vertices instead of 5).
    */
-  public boolean needsBarrierBeforeLimit() {
-    return writePending;
+  public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
+    // ORDER BY and an aggregation already drain their whole input
+    return writePending && !hasOrderBy && !hasAggregations;
   }
 
   /** True when at least one graph read is still potentially in flight ahead of the current clause. */
@@ -262,6 +264,7 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final SetClause setClause) {
     if (setClause == null)
       return;
+    writePending = true;
     for (final SetClause.SetItem item : setClause.getItems()) {
       switch (item.getType()) {
       case PROPERTY -> observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -277,6 +280,7 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final RemoveClause removeClause) {
     if (removeClause == null)
       return;
+    writePending = true;
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
         observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -286,12 +290,14 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final MergeClause mergeClause) {
     if (mergeClause == null)
       return;
+    writePending = true;
     observeWrite(mergeClause.getOnCreateSet());
     observeWrite(mergeClause.getOnMatchSet());
   }
 
   /** A write procedure is opaque: it can write any property. */
   public void observeWriteProcedure() {
+    writePending = true;
     writesAnyPropertyKey = true;
   }
 

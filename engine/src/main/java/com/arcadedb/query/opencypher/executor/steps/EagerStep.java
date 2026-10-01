@@ -85,11 +85,16 @@ public class EagerStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("EagerStep requires a previous step");
 
+    // Drained on the first pull, not on the first hasNext(): a consumer that never reads a row (a LIMIT 0 above the
+    // barrier) must still see the writes behind it run for every row (issues #8826, #8827)
+    if (materialized == null)
+      materialize(context);
+
     return new ResultSet() {
       @Override
       public boolean hasNext() {
         if (materialized == null)
-          materialize();
+          materialize(context);
         return currentIndex < materialized.size();
       }
 
@@ -107,44 +112,44 @@ public class EagerStep extends AbstractExecutionStep {
         return result;
       }
 
-      private void materialize() {
-        final long begin = context.isProfiling() ? System.nanoTime() : 0;
-        try {
-          materialized = new ArrayList<>();
-          // The drain is one uninterrupted region, and the statement-level drain that tests the command
-          // deadline per row only starts once this one has finished - so a TIMEOUT clause could not end a
-          // long barrier before this guard. Same reason CypherExecutionPlan.execute() carries one (#6266).
-          final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-          // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
-          // across the writes, which is the very interleaving this step exists to prevent.
-          final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
-          heapLimit = OperationHeapLimit.of(context, "eager read/write barrier");
-          try {
-            while (prevResults.hasNext()) {
-              guard.check();
-              final Result row = prevResults.next();
-              materialized.add(row);
-              heapLimit.add(materialized.size(), row);
-            }
-          } catch (final RuntimeException e) {
-            materialized.clear();
-            releaseHeap();
-            throw e;
-          }
-          if (context.isProfiling())
-            rowCount += materialized.size();
-        } finally {
-          if (context.isProfiling())
-            cost += System.nanoTime() - begin;
-        }
-      }
-
       @Override
       public void close() {
         EagerStep.this.close();
       }
     };
   }
+
+    private void materialize(final CommandContext context) {
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        materialized = new ArrayList<>();
+        // The drain is one uninterrupted region, and the statement-level drain that tests the command
+        // deadline per row only starts once this one has finished - so a TIMEOUT clause could not end a
+        // long barrier before this guard. Same reason CypherExecutionPlan.execute() carries one (#6266).
+        final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+        // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
+        // across the writes, which is the very interleaving this step exists to prevent.
+        final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+        heapLimit = OperationHeapLimit.of(context, "eager read/write barrier");
+        try {
+          while (prevResults.hasNext()) {
+            guard.check();
+            final Result row = prevResults.next();
+            materialized.add(row);
+            heapLimit.add(materialized.size(), row);
+          }
+        } catch (final RuntimeException e) {
+          materialized.clear();
+          releaseHeap();
+          throw e;
+        }
+        if (context.isProfiling())
+          rowCount += materialized.size();
+      } finally {
+        if (context.isProfiling())
+          cost += System.nanoTime() - begin;
+      }
+    }
 
   private void releaseHeap() {
     if (heapLimit != null)

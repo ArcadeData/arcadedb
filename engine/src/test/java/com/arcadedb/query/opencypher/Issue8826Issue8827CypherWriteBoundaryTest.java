@@ -111,4 +111,63 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
     drain("UNWIND range(1, 500) AS i CREATE (n:Item {i: i}) WITH n LIMIT 1 RETURN n");
     assertThat(count("MATCH (n:Item) RETURN count(n) AS c")).isEqualTo(500L);
   }
+
+  private void seedItems() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Src {i: i})");
+  }
+
+  @Test
+  void labeledMatchCreateBeforeReturnLimit() {
+    seedItems();
+    drain("MATCH (a:Src) CREATE (:Out {i: a.i}) RETURN a LIMIT 1");
+    assertThat(count("MATCH (o:Out) RETURN count(o) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void labeledMatchCreateBeforeWithLimit() {
+    seedItems();
+    drain("MATCH (a:Src) CREATE (:Out {i: a.i}) WITH a LIMIT 1 RETURN a");
+    assertThat(count("MATCH (o:Out) RETURN count(o) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void labeledMatchSetBeforeWithLimit() {
+    seedItems();
+    drain("MATCH (a:Src) SET a.seen = true WITH a LIMIT 1 RETURN a");
+    assertThat(count("MATCH (a:Src) WHERE a.seen = true RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void labeledMatchDeleteBeforeWithLimit() {
+    seedItems();
+    drain("MATCH (a:Src) DELETE a WITH 1 AS x LIMIT 1 RETURN x");
+    assertThat(count("MATCH (a:Src) RETURN count(a) AS c")).isZero();
+  }
+
+  @Test
+  void mergeBeforeSkipAndLimit() {
+    drain("UNWIND range(1, 500) AS i MERGE (:Mg {i: i}) WITH i SKIP 1 LIMIT 1 RETURN i");
+    assertThat(count("MATCH (a:Mg) RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void removeBeforeWithLimit() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Rm {i: i, t: 1})");
+    drain("MATCH (a:Rm) REMOVE a.t WITH a LIMIT 1 RETURN a");
+    assertThat(count("MATCH (a:Rm) WHERE a.t IS NULL RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void limitZeroAfterWriteStillWrites() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Lz {i: i}) WITH i LIMIT 0 RETURN i");
+    assertThat(count("MATCH (a:Lz) RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void readOnlyLimitKeepsStreaming() {
+    seedItems();
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (a:Src) RETURN a LIMIT 1")) {
+      assertThat(rs.next().toString()).doesNotContain("EagerStep");
+    }
+  }
 }

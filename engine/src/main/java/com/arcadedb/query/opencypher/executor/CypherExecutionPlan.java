@@ -1418,6 +1418,7 @@ public class CypherExecutionPlan {
             final CreateStep createStep = new CreateStep(createClause, context, functionFactory);
             createStep.setPrevious(currentStep);
             currentStep = createStep;
+            eagerness.observeWriteClause();
           }
           break;
         }
@@ -1430,6 +1431,7 @@ public class CypherExecutionPlan {
             final SetStep setStep = new SetStep(setClause, context, functionFactory);
             setStep.setPrevious(currentStep);
             currentStep = setStep;
+            eagerness.observeWriteClause();
           }
           break;
         }
@@ -1441,6 +1443,7 @@ public class CypherExecutionPlan {
                 matchClausesNeedEagerDelete(currentSegmentMatchClauses));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
+            eagerness.observeWriteClause();
           }
           break;
         }
@@ -1453,6 +1456,7 @@ public class CypherExecutionPlan {
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
+            eagerness.observeWriteClause();
           }
           break;
         }
@@ -1464,6 +1468,7 @@ public class CypherExecutionPlan {
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
+          eagerness.observeWriteClause();
           break;
         }
 
@@ -1478,6 +1483,10 @@ public class CypherExecutionPlan {
 
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
+          // A LIMIT stops pulling: the writes ahead of it must have run for every row first (issues #8826, #8827)
+          if (withClause.getLimit() != null
+              && eagerness.needsBarrierBeforeLimit(withClause.getOrderByClause() != null, withClause.hasAggregations()))
+            currentStep = withEagerBarrier(currentStep, context, eagerness);
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
           if (withClause.hasAggregations())
             eagerness.observeAggregationBoundary();
@@ -1589,6 +1598,10 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
+      // The LIMIT cuts the pull: the writes ahead of it must have run for every row first (issues #8826, #8827)
+      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
+          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final int limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
       final LimitStep limitStep = new LimitStep(limitVal, context);
@@ -1829,8 +1842,8 @@ public class CypherExecutionPlan {
       case WITH:
         final WithClause withClause = entry.getTypedClause();
         // A LIMIT stops pulling: the writes ahead of it must have run for every row first (issues #8826, #8827)
-        if (currentStep != null && withClause.getLimit() != null && withClause.getOrderByClause() == null
-            && !withClause.hasAggregations() && eagerness.needsBarrierBeforeLimit())
+        if (currentStep != null && withClause.getLimit() != null
+            && eagerness.needsBarrierBeforeLimit(withClause.getOrderByClause() != null, withClause.hasAggregations()))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
@@ -1860,7 +1873,6 @@ public class CypherExecutionPlan {
         }
         currentStep = mergeStep;
         eagerness.observeWrite(mergeClause);
-        eagerness.observeWriteClause();
         break;
 
       case CREATE:
@@ -1880,10 +1892,8 @@ public class CypherExecutionPlan {
       case SET:
         final SetClause setClause = entry.getTypedClause();
         // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
-        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause)) {
+        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause))
           eagerness.observeWrite(setClause);
-          eagerness.observeWriteClause();
-        }
         if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
           if (eagerness.needsBarrier(setClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
@@ -1892,7 +1902,6 @@ public class CypherExecutionPlan {
           setStep.setPrevious(currentStep);
           currentStep = setStep;
           eagerness.observeWrite(setClause);
-          eagerness.observeWriteClause();
         }
         break;
 
@@ -1906,7 +1915,6 @@ public class CypherExecutionPlan {
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
-          eagerness.observeWriteClause();
         }
         break;
 
@@ -1933,10 +1941,8 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
             && SimpleCypherStatement.isWriteProcedureCall(callClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
-        if (SimpleCypherStatement.isWriteProcedureCall(callClause)) {
+        if (SimpleCypherStatement.isWriteProcedureCall(callClause))
           eagerness.observeWriteProcedure();
-          eagerness.observeWriteClause();
-        }
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -2064,8 +2070,8 @@ public class CypherExecutionPlan {
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
       // The final LIMIT cuts the pull too: the writes ahead of it must have run for every row first (issues #8826, #8827)
-      if (statement.getOrderByClause() == null
-          && (statement.getReturnClause() == null || !statement.getReturnClause().hasAggregations()) && eagerness.needsBarrierBeforeLimit())
+      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
+          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
         currentStep = withEagerBarrier(currentStep, context, eagerness);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
@@ -3970,6 +3976,7 @@ public class CypherExecutionPlan {
         mergeStep.setPrevious(currentStep);
       }
       currentStep = mergeStep;
+      eagerness.observeWriteClause();
     }
 
     // Step 4: CREATE clause - create vertices/edges
@@ -3983,6 +3990,7 @@ public class CypherExecutionPlan {
       }
       // else: Standalone CREATE (no previous step)
       currentStep = createStep;
+      eagerness.observeWriteClause();
     }
 
     // Step 5: SET clause - update properties
@@ -3994,6 +4002,7 @@ public class CypherExecutionPlan {
           statement.getSetClause(), context, functionFactory);
       setStep.setPrevious(currentStep);
       currentStep = setStep;
+      eagerness.observeWriteClause();
     }
 
     // Step 6: DELETE clause - delete vertices/edges
@@ -4009,6 +4018,7 @@ public class CypherExecutionPlan {
           statement.getDeleteClause(), context, matchClausesNeedEagerDelete(statement.getMatchClauses()));
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
+      eagerness.observeWriteClause();
     }
 
     // Step 6a: REMOVE clauses - remove properties
@@ -4019,6 +4029,7 @@ public class CypherExecutionPlan {
         final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
         removeStep.setPrevious(currentStep);
         currentStep = removeStep;
+        eagerness.observeWriteClause();
       }
     }
 
@@ -4089,6 +4100,10 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
+      // The LIMIT cuts the pull: the writes ahead of it must have run for every row first (issues #8826, #8827)
+      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
+          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(),
           context);
