@@ -138,7 +138,10 @@ public class CypherPointFunction implements StatelessFunction {
         if (!(sridObj instanceof Number))
           throw new CommandSemanticException(
               "point() 'srid' must be numeric, found " + describe(sridObj));
-        srid = ((Number) sridObj).intValue();
+        final double sridValue = ((Number) sridObj).doubleValue();
+        if (sridValue != Math.rint(sridValue) || sridValue < 0 || sridValue > Integer.MAX_VALUE)
+          throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + sridObj);
+        srid = (int) sridValue;
       }
       String crs = crsObj != null ? crsObj.toString() : null;
       // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
@@ -163,6 +166,9 @@ public class CypherPointFunction implements StatelessFunction {
       }
       if (crs == null)
         crs = crsOfSrid(srid, result.containsKey("z"));
+      // Store the canonical spelling of a known name so case-sensitive consumers (point.distance, withinBBox, Bolt) agree with the srid.
+      if (srid != null && isKnownSrid(srid) && sridOfCrs(crs) != null)
+        crs = crsOfSrid(srid, has3d);
       result.put("crs", crs);
       if (srid != null)
         result.put("srid", srid);

@@ -124,4 +124,20 @@ class Issue3993PointSridTest extends TestHelper {
       assertThat(((Number) rs.next().getProperty("d")).doubleValue()).isEqualTo(0.0);
     }
   }
+
+  @Test
+  void lowerCaseCrsIsStoredCanonicallyAndIsGeographic() {
+    assertThat(point("point({x: 1, y: 2, crs: 'wgs-84'})").get("crs")).isEqualTo("WGS-84");
+    try (final ResultSet rs = database.command("opencypher",
+        "RETURN point.distance(point({x: 1, y: 2, crs: 'wgs-84'}), point({x: 1, y: 3, crs: 'WGS-84'})) AS d")) {
+      // one degree of latitude is about 111 km, only possible when both points are measured geographically
+      assertThat(((Number) rs.next().getProperty("d")).doubleValue()).isBetween(110_000.0, 112_000.0);
+    }
+  }
+
+  @Test
+  void fractionalOrNegativeSridIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4326.9})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: -1})")).isInstanceOf(CommandSemanticException.class);
+  }
 }
