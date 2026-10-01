@@ -25,6 +25,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
@@ -33,6 +34,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
@@ -152,7 +154,8 @@ public class WhereClause extends SimpleNode {
               }
             }
           } catch (final IndexException e) {
-            // Dropped or rebuilt while reading it
+            // Dropped or rebuilt while reading it: no source for an estimation
+            LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while estimating: %s", index.getName(), e.getMessage());
           }
         }
       }

@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -62,13 +64,13 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsIndexes() throws Exception {
-    runRace("NOTUNIQUE");
+    runRace(false);
   }
 
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsFullTextIndexes() throws Exception {
-    runRace("FULL_TEXT");
+    runRace(true);
   }
 
   @Test
@@ -81,7 +83,23 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
     assertThatThrownBy(index::getPropertyNames).isInstanceOf(IndexException.class);
   }
 
-  private void runRace(final String indexKind) throws Exception {
+  @Test
+  void typeIndexIsReadyForQueriesOnlyWhilePopulatedAndNotDropped() {
+    final DocumentType type = database.getSchema().createDocumentType("Ready");
+    type.createProperty("x", Type.LONG);
+
+    assertThat(new TypeIndex("Ready[none]", type).isReadyForQueries()).isFalse();
+
+    final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "x");
+    assertThat(index.isReadyForQueries()).isTrue();
+    assertThat(type.getAllIndexes(true)).containsExactly(index);
+
+    index.drop();
+    assertThat(index.isReadyForQueries()).isFalse();
+    assertThat(type.getAllIndexes(true)).isEmpty();
+  }
+
+  private void runRace(final boolean fullText) throws Exception {
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
     database.command("sql", "CREATE PROPERTY Person.name STRING");
@@ -126,10 +144,10 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
 
     try {
       for (int i = 0; i < ROUNDS; i++) {
-        database.command("sql", "CREATE PROPERTY Person.p" + i + (indexKind.equals("FULL_TEXT") ? " STRING" : " LONG"));
-        database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + indexKind);
+        database.command("sql", "CREATE PROPERTY Person.p" + i + (fullText ? " STRING" : " LONG"));
+        database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + (fullText ? "FULL_TEXT" : "NOTUNIQUE"));
         // a composite index sharing the permanent one's first property ties with it when ranking WHERE id = ?
-        if (!indexKind.equals("FULL_TEXT")) {
+        if (!fullText) {
           database.command("sql", "CREATE INDEX ON Person (id, p" + i + ") NOTUNIQUE");
           database.command("sql", "DROP INDEX `Person[id,p" + i + "]`");
         }
