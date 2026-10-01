@@ -21,6 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.Profiler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -434,6 +435,8 @@ public class ArcadeDBServer {
       // every later stop. Only the metrics install is undone here; the rest of the failure path is
       // unchanged, and a stop() that follows finds nothing left to dismantle.
       CodeUtils.executeIgnoringExceptions(this::stopMetrics, "Error on stopping the metrics collection", false);
+      // Nor does the profiler keep describing the directory of a server that is not running (issue #7869).
+      Profiler.withdrawDiskSpaceConfiguration(configuration);
       throw e;
     } finally {
       clearLifecycleOwner();
@@ -465,6 +468,11 @@ public class ArcadeDBServer {
 
     // A (re)start has not been held by the security-convergence gate yet (issue #8446).
     securityConvergenceGate.reset();
+
+    // Issue #7869: the profiler behind GET /api/v1/server and the Studio disk card reads the database directory
+    // through THIS configuration, which is where a directory set in config/server-configuration.json lands - the
+    // file never reaches the process-wide enum. Withdrawn in stopInternal() and on a failed start.
+    Profiler.publishDiskSpaceConfiguration(configuration);
 
     // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
     awaitingHAWrapper = isHARequested();
@@ -1115,6 +1123,9 @@ public class ArcadeDBServer {
       CodeUtils.executeIgnoringExceptions(serverMonitor::stop, "Error on stopping the server health monitor", false);
       serverMonitor = null;
     }
+
+    // Issue #7869: hand the profiler's disk figures back to another running server, or to the process-wide setting.
+    Profiler.withdrawDiskSpaceConfiguration(configuration);
 
     // The previews of the support bundle are temporary files: deleted on shutdown
     if (supportService != null) {
