@@ -931,23 +931,24 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             entry.setValue(marker);
         }
       } else if (propertyType == Type.DECIMAL) {
-        if (!json.isNull(entry.getKey()) && !(entry.getValue() instanceof String))
+        if (entry.getValue() instanceof Number)
           entry.setValue(json.getBigDecimal(entry.getKey()));
       } else if (propertyType == Type.LIST && entry.getValue() instanceof List<?> list) {
+        // json2map built a fresh mutable ArrayList, so the items are replaced in place and nothing is allocated
+        @SuppressWarnings("unchecked") final List<Object> items = (List<Object>) list;
         final String ofType = property.getOfType();
         if (Type.DECIMAL.name().equalsIgnoreCase(ofType)) {
           final JSONArray array = json.getJSONArray(entry.getKey());
-          final List<Object> restored = new ArrayList<>(list.size());
-          for (int i = 0; i < list.size(); ++i)
-            restored.add(list.get(i) instanceof Number ? array.getBigDecimal(i) : list.get(i));
-          entry.setValue(restored);
+          for (int i = 0; i < items.size(); ++i)
+            if (items.get(i) instanceof Number)
+              items.set(i, array.getBigDecimal(i));
         } else if (Type.DOUBLE.name().equalsIgnoreCase(ofType) || Type.FLOAT.name().equalsIgnoreCase(ofType)) {
-          final List<Object> restored = new ArrayList<>(list.size());
-          for (final Object item : list) {
-            final Double marker = item instanceof String text ? NonFiniteNumbers.decode(text) : null;
-            restored.add(marker != null ? marker : item);
-          }
-          entry.setValue(restored);
+          for (int i = 0; i < items.size(); ++i)
+            if (items.get(i) instanceof String text) {
+              final Double marker = NonFiniteNumbers.decode(text);
+              if (marker != null)
+                items.set(i, marker);
+            }
         }
       }
     }

@@ -197,7 +197,6 @@ class JsonGraphSerializerTest extends TestHelper {
     assertThat(encoded).isEqualTo(birth.toEpochDay());
   }
 
-
   /**
    * Issue #8871: a non-finite item inside a list used to be rewritten to 0 by JSONArray.put(Number); it travels as the
    * NonFiniteNumbers marker, like the scalar case.
