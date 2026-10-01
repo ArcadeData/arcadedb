@@ -143,12 +143,15 @@ public class CypherPointFunction implements StatelessFunction {
           throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + sridObj);
         srid = (int) sridValue;
       }
-      String crs = crsObj != null ? crsObj.toString() : null;
+      if (crsObj != null && !(crsObj instanceof String))
+        throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
+      String crs = (String) crsObj;
       // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
       // An explicit crs and srid that disagree are a client error, as in Neo4j.
       if (srid != null && crs != null) {
         final Integer crsSrid = sridOfCrs(crs);
-        if (crsSrid != null && !crsSrid.equals(srid))
+        // A known srid also contradicts an unrecognised crs name, since the pair must travel together.
+        if ((crsSrid != null && !crsSrid.equals(srid)) || (crsSrid == null && isKnownSrid(srid)))
           throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
       }
       // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
@@ -165,7 +168,7 @@ public class CypherPointFunction implements StatelessFunction {
           srid = sridOfCrs(crs);
       }
       if (crs == null)
-        crs = crsOfSrid(srid, result.containsKey("z"));
+        crs = crsOfSrid(srid, has3d);
       // Store the canonical spelling of a known name so case-sensitive consumers (point.distance, withinBBox, Bolt) agree with the srid.
       if (srid != null && isKnownSrid(srid) && sridOfCrs(crs) != null)
         crs = crsOfSrid(srid, has3d);
