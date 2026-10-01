@@ -24,7 +24,6 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -40,6 +39,9 @@ import java.util.Map;
  * <p>Also supports an ArcadeDB-specific 2-arg positional form {@code point(x, y)}, equivalent to
  * {@code point({longitude: x, latitude: y})} per the universal GIS {@code (x, y)} convention. Neo4j
  * has no such positional form.</p>
+ * <p>For the cartesian (x/y) form the {@code srid} and {@code crs} name are derived from each other (cartesian 7203 and
+ * cartesian-3D 9157, WGS-84 4326 and WGS-84-3D 4979), known names are matched case-insensitively and stored in canonical
+ * spelling, and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system.</p>
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
@@ -147,30 +149,25 @@ public class CypherPointFunction implements StatelessFunction {
         throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
       String crs = (String) crsObj;
       // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
-      // An explicit crs and srid that disagree are a client error, as in Neo4j.
-      if (srid != null && crs != null) {
-        final Integer crsSrid = sridOfCrs(crs);
-        // A known srid also contradicts an unrecognised crs name, since the pair must travel together.
-        if ((crsSrid != null && !crsSrid.equals(srid)) || (crsSrid == null && isKnownSrid(srid)))
-          throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
-      }
-      // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
       final boolean has3d = result.containsKey("z");
-      final Integer knownSrid = srid != null ? srid : crs != null ? sridOfCrs(crs) : null;
-      if (knownSrid != null && isKnownSrid(knownSrid) && is3dSrid(knownSrid) != has3d)
-        throw new CommandSemanticException(
-            "point() " + (has3d ? "3D coordinates" : "2D coordinates") + " do not match the dimension of srid " + knownSrid);
-      // An unknown crs name is kept as given, without an srid, as before.
+      final Integer crsSrid = crs != null ? sridOfCrs(crs) : null;
+      // An explicit crs and srid that disagree are a client error, as in Neo4j. A known srid also contradicts an
+      // unrecognised crs name, since the pair must travel together.
+      if (srid != null && crs != null && (crsSrid != null ? !crsSrid.equals(srid) : isKnownSrid(srid)))
+        throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
       if (srid == null) {
         if (crs == null)
           srid = has3d ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
         else
-          srid = sridOfCrs(crs);
+          srid = crsSrid;
       }
-      if (crs == null)
-        crs = crsOfSrid(srid, has3d);
-      // Store the canonical spelling of a known name so case-sensitive consumers (point.distance, withinBBox, Bolt) agree with the srid.
-      if (srid != null && isKnownSrid(srid) && sridOfCrs(crs) != null)
+      // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
+      if (srid != null && isKnownSrid(srid) && is3dSrid(srid) != has3d)
+        throw new CommandSemanticException(
+            "point() " + (has3d ? "3D" : "2D") + " coordinates do not match the dimension of srid " + srid);
+      // A known name is stored in canonical spelling so case-sensitive consumers (point.distance, withinBBox, Bolt) agree
+      // with the srid; an unknown name is kept as given, without an srid, as before.
+      if (crs == null || crsSrid != null)
         crs = crsOfSrid(srid, has3d);
       result.put("crs", crs);
       if (srid != null)
@@ -185,13 +182,15 @@ public class CypherPointFunction implements StatelessFunction {
 
   /** Neo4j SRID of a well-known CRS name, or null when the name is not one of the four Neo4j defines. */
   private static Integer sridOfCrs(final String crs) {
-    return switch (crs.toLowerCase(Locale.ROOT)) {
-      case "cartesian" -> SRID_CARTESIAN_2D;
-      case "cartesian-3d" -> SRID_CARTESIAN_3D;
-      case "wgs-84" -> SRID_WGS84_2D;
-      case "wgs-84-3d" -> SRID_WGS84_3D;
-      default -> null;
-    };
+    if (crs.equalsIgnoreCase("cartesian"))
+      return SRID_CARTESIAN_2D;
+    if (crs.equalsIgnoreCase("cartesian-3D"))
+      return SRID_CARTESIAN_3D;
+    if (crs.equalsIgnoreCase("WGS-84"))
+      return SRID_WGS84_2D;
+    if (crs.equalsIgnoreCase("WGS-84-3D"))
+      return SRID_WGS84_3D;
+    return null;
   }
 
   private static boolean isKnownSrid(final int srid) {

@@ -87,7 +87,7 @@ class Issue3993PointSridTest extends TestHelper {
 
   @Test
   void mismatchedCrsAndSridIsRejected() {
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'WGS-84', srid: 7203})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'WGS-84', srid: 7203})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
     assertThat(point("point({x: 1, y: 2, crs: 'WGS-84', srid: 4326})").get("srid")).isEqualTo(4326);
   }
 
@@ -107,9 +107,9 @@ class Issue3993PointSridTest extends TestHelper {
 
   @Test
   void dimensionMismatchIsRejected() {
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, crs: 'WGS-84'})")).isInstanceOf(CommandSemanticException.class);
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 4326})")).isInstanceOf(CommandSemanticException.class);
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'cartesian-3D'})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, crs: 'WGS-84'})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 4326})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'cartesian-3D'})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
   }
 
   @Test
@@ -137,18 +137,18 @@ class Issue3993PointSridTest extends TestHelper {
 
   @Test
   void fractionalOrNegativeSridIsRejected() {
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4326.9})")).isInstanceOf(CommandSemanticException.class);
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: -1})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4326.9})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: -1})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
   }
 
   @Test
   void knownSridWithUnknownCrsIsRejected() {
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'foo', srid: 4326})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'foo', srid: 4326})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
   }
 
   @Test
   void nonStringCrsIsRejected() {
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 123})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 123})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
   }
 
   @Test
@@ -162,7 +162,30 @@ class Issue3993PointSridTest extends TestHelper {
   @Test
   void sridBoundaryValues() {
     assertThat(point("point({x: 1, y: 2, srid: 4326.0})").get("srid")).isEqualTo(4326);
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 0.0 / 0.0})")).isInstanceOf(CommandSemanticException.class);
-    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4294971622})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 0.0 / 0.0})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4294971622})")).isInstanceOf(CommandSemanticException.class).hasMessageContaining("point()");
+  }
+
+  @Test
+  void threeDimensionalSridsAndBounds() {
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 4979})").get("crs")).isEqualTo("WGS-84-3D");
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9157})").get("crs")).isEqualTo("cartesian-3D");
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 7203})")).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("dimension");
+    assertThat(point("point({x: 1, y: 2, srid: 2147483647})").get("srid")).isEqualTo(Integer.MAX_VALUE);
+  }
+
+  @Test
+  void unknownCrsAndUnknownSridAreKept() {
+    final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'foo', srid: 9999})");
+    assertThat(p.get("crs")).isEqualTo("foo");
+    assertThat(p.get("srid")).isEqualTo(9999);
+  }
+
+  @Test
+  void nullZIsTwoDimensional() {
+    final Map<?, ?> p = point("point({x: 1, y: 2, z: null, srid: 4326})");
+    assertThat(p.get("crs")).isEqualTo("WGS-84");
+    assertThat(p.containsKey("z")).isFalse();
   }
 }
