@@ -391,10 +391,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             "Cannot drop index '" + getName() + "' because one or more underlying files are not available");
       }
 
+    // The wrapper must stay valid while its sub-indexes are dropped: LocalSchema#dropIndex resolves and unregisters the
+    // wrapper through them. A reader that meets the half-dropped index finds the sub-indexes gone and gets an IndexException
+    // (or a null type), which the planner treats as "not a candidate"; invalid goes first so the window after it is closed.
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    // Invalid before the sub-indexes are cleared, so a reader that finds them gone has a good chance to see it invalid too
     valid = false;
     indexesOnBuckets.clear();
   }
@@ -730,11 +732,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   /** The first sub-index, or null when none (yet, or any more): a single read, so it cannot race with a concurrent clear(). */
   private IndexInternal firstOrNull() {
-    try {
-      return indexesOnBuckets.getFirst();
-    } catch (final NoSuchElementException e) {
-      return null;
-    }
+    final Iterator<IndexInternal> iterator = indexesOnBuckets.iterator();
+    return iterator.hasNext() ? iterator.next() : null;
   }
 
   public IndexMetadata getMetadata() {

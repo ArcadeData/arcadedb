@@ -881,6 +881,7 @@ public class SelectExecutionPlanner {
         }
       } catch (final IndexException e) {
         // Dropped or rebuilt while reading it: not a candidate
+        LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
       }
     }
     return null;
@@ -3898,6 +3899,7 @@ public class SelectExecutionPlanner {
         nullStrategy = idx.getNullStrategy();
       } catch (final IndexException e) {
         // Dropped or rebuilt while reading it: not a candidate
+        LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", idx.getName(), e.getMessage());
         continue;
       }
       if (indexFields.size() < info.orderBy.getItems().size()) {
@@ -4830,6 +4832,7 @@ public class SelectExecutionPlanner {
       return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
     } catch (final IndexException e) {
       // Dropped or rebuilt after plannableIndexes()
+      LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
       return null;
     }
   }
@@ -4915,6 +4918,7 @@ public class SelectExecutionPlanner {
       return buildIndexSearchDescriptorInternal(context, index, block, clazz);
     } catch (final IndexException e) {
       // Dropped or rebuilt between plannableIndexes() and here: not a candidate for this plan
+      LogManager.instance().log(this, Level.FINE, "Index '%s' skipped while planning: %s", index.getName(), e.getMessage());
       return null;
     }
   }
