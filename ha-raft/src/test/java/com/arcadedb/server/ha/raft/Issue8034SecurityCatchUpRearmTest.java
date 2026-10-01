@@ -71,9 +71,9 @@ class Issue8034SecurityCatchUpRearmTest {
   @Test
   void anAttemptThatAskedSpendsTheRequest() {
     try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
-      catchUp.takeRequestForTests();
+      final long token = catchUp.takeRequestForTests();
 
-      assertThat(catchUp.settle(Outcome.ASKED)).as("nothing is left to retry once a peer has answered").isTrue();
+      assertThat(catchUp.settle(token, Outcome.ASKED)).as("nothing is left to retry once a peer has answered").isTrue();
       assertThat(catchUp.hasRequestedSinceStart())
           .as("the request was made, so the next leader change must not make it again")
           .isTrue();
@@ -87,10 +87,10 @@ class Issue8034SecurityCatchUpRearmTest {
   @Test
   void anAttemptThatAskedNobodyReleasesTheRequest() {
     try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
-      catchUp.takeRequestForTests();
+      final long token = catchUp.takeRequestForTests();
       assertThat(catchUp.hasRequestedSinceStart()).isTrue();
 
-      assertThat(catchUp.settle(Outcome.NOBODY_TO_ASK)).as("there is nothing to retry while nobody can answer")
+      assertThat(catchUp.settle(token, Outcome.NOBODY_TO_ASK)).as("there is nothing to retry while nobody can answer")
           .isTrue();
       assertThat(catchUp.hasRequestedSinceStart())
           .as("nothing was asked, so the once-per-start request must survive")
@@ -102,8 +102,8 @@ class Issue8034SecurityCatchUpRearmTest {
   @Test
   void theNextLeaderObservedAfterAReleaseAsksAgain() {
     try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
-      catchUp.takeRequestForTests();
-      catchUp.settle(Outcome.NOBODY_TO_ASK);
+      final long token = catchUp.takeRequestForTests();
+      catchUp.settle(token, Outcome.NOBODY_TO_ASK);
       assertThat(catchUp.hasRequestedSinceStart()).isFalse();
 
       catchUp.takeRequestForTests();
@@ -120,9 +120,9 @@ class Issue8034SecurityCatchUpRearmTest {
   @Test
   void aTransientFailureIsRetriedAndDoesNotTouchTheRequest() {
     try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
-      catchUp.takeRequestForTests();
+      final long token = catchUp.takeRequestForTests();
 
-      assertThat(catchUp.settle(Outcome.TRANSIENT_FAILURE)).as("a transient failure is retried").isFalse();
+      assertThat(catchUp.settle(token, Outcome.TRANSIENT_FAILURE)).as("a transient failure is retried").isFalse();
       assertThat(catchUp.hasRequestedSinceStart())
           .as("the retry budget still owns the request while it has attempts left")
           .isTrue();
