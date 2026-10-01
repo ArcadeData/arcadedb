@@ -1404,7 +1404,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
     // (which would fail if the group directory already exists).
-    final File[] storageDirs = storageDir.listFiles(f -> f.isDirectory() && !"lost+found".equals(f.getName()));
+    final File[] storageDirs = storageDir.listFiles(f -> f.isDirectory() && !ArcadeDBServer.FILESYSTEM_RECOVERY_DIRECTORY.equals(f.getName()));
     final boolean hasExistingStorage = persistStorage && storageDir.exists()
         && storageDirs != null && storageDirs.length > 0;
     final RaftStorage.StartupOption startupOption = hasExistingStorage
@@ -5622,7 +5622,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final File storageDir = getRaftStorageDir();
     if (!storageDir.exists())
       return false;
-    final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !"lost+found".equals(f.getName()));
+    final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !ArcadeDBServer.FILESYSTEM_RECOVERY_DIRECTORY.equals(f.getName()));
     return subdirs != null && subdirs.length > 0;
   }
 

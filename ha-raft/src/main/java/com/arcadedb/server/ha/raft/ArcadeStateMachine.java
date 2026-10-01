@@ -5603,7 +5603,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     ensureBootstrapBaselinesLoaded();
     for (final String dbName : dbNames) {
-      if (dbName == null || dbName.startsWith(".") || bootstrapBaselines.containsKey(dbName))
+      if (dbName == null || ArcadeDBServer.isReservedDatabaseName(dbName) || bootstrapBaselines.containsKey(dbName))
         continue;
       bootstrapPassesPending.put(dbName, pending);
       // No lock spans the two maps, and none is needed: the apply thread records the baseline BEFORE it removes the
