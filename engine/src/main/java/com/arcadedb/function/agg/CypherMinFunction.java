@@ -64,6 +64,21 @@ public class CypherMinFunction implements StatelessFunction {
   }
 
   @Override
+  public boolean canMergePartials() {
+    return true;
+  }
+
+  @Override
+  public void mergePartial(final StatelessFunction other) {
+    final CypherMinFunction that = (CypherMinFunction) other;
+    // The same rule execute() applies to a row: a value replaces this one only when it is strictly smaller
+    if (that.hasValue && (!hasValue || CypherFunctionHelper.cypherCompare(that.minValue, minValue) < 0)) {
+      minValue = that.minValue;
+      hasValue = true;
+    }
+  }
+
+  @Override
   public Object getAggregatedResult() {
     return hasValue ? minValue : null;
   }

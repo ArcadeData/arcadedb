@@ -121,4 +121,23 @@ public interface StatelessFunction extends Function {
   default Object getAggregatedResult() {
     throw new UnsupportedOperationException("Not an aggregation function");
   }
+
+  /**
+   * Whether two instances of this aggregation function, each fed a disjoint part of the rows, can be combined by
+   * {@link #mergePartial} into the state one instance fed every row would have: what lets an aggregation run in the
+   * workers of a parallel scan and merge at the end (issue #8797). {@code false} unless a function says otherwise.
+   *
+   * @return false by default
+   */
+  default boolean canMergePartials() {
+    return false;
+  }
+
+  /**
+   * Folds into this instance the state of {@code other}, an instance of the same function fed rows this one was not.
+   * Only called when {@link #canMergePartials()} is {@code true}.
+   */
+  default void mergePartial(final StatelessFunction other) {
+    throw new UnsupportedOperationException("Function '" + getName() + "' cannot merge partial aggregations");
+  }
 }

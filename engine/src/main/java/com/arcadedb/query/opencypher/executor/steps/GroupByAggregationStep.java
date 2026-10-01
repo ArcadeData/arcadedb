@@ -20,13 +20,15 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.DistinctNumericKey;
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.HeapElementsLimit;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -59,6 +61,13 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   private static final String BATCH_SIZE_PROPERTY = "arcadedb.aggregation.batchSize";
   private static final Integer CONFIGURED_BATCH_SIZE = System.getProperty(BATCH_SIZE_PROPERTY) != null ?
       Integer.parseInt(System.getProperty(BATCH_SIZE_PROPERTY)) : null;
+
+  // THE GROUPS HELD, AND WHAT THEIR AGGREGATES GATHER, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE
+  // QUERIES (ISSUES #8585, #8591). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+
+  // HOW MANY WORKERS THE LAST EXECUTION AGGREGATED WITH, FOR THE EXPLAIN OF THE PLAN THAT RAN: 0 WHEN IT AGGREGATED ON THE CALLER
+  private volatile int parallelWorkers;
 
   public GroupByAggregationStep(final ReturnClause returnClause, final CommandContext context,
       final CypherFunctionFactory functionFactory) {
@@ -111,11 +120,22 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
 
     final List<Result> results;
 
-    if (singleKeyPath) {
-      results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context, nRecords);
-    } else {
-      results = aggregateMultiKey(groupingKeys, aggregationItems, complexAggregationItems,
-          aggExpressions, aggOutputNames, aggCount, context, nRecords);
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
+    try {
+      // The aggregates that merge partial states aggregate in the workers of a parallel label scan (issue #8797)
+      final List<Result> parallelResults = complexAggregationItems.isEmpty() && !groupingKeys.isEmpty() ?
+          aggregateInParallel(groupingKeys, aggregationItems, aggCount, context) : null;
+      if (parallelResults != null) {
+        results = parallelResults;
+      } else if (singleKeyPath) {
+        results = aggregateSingleKey(groupingKeys.get(0), aggExpressions, aggOutputNames, aggCount, context, nRecords);
+      } else {
+        results = aggregateMultiKey(groupingKeys, aggregationItems, complexAggregationItems,
+            aggExpressions, aggOutputNames, aggCount, context, nRecords);
+      }
+    } catch (final RuntimeException e) {
+      releaseHeap();
+      throw e;
     }
 
     return new ResultSet() {
@@ -126,9 +146,17 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         return index < results.size();
       }
 
+      // THE CHARGE STAYS UNTIL THE STEP CLOSES, NOT UNTIL THE LAST GROUP IS SERVED: THE STEP DOWNSTREAM PULLS THE GROUPS
+      // IN BATCHES, SO A FEW GROUPS CARRYING LARGE collect() LISTS ARE ALL HANDED OVER - AND STILL HELD THERE - BEFORE THE
+      // CALLER READ THE FIRST ONE
       @Override
       public Result next() {
-        return results.get(index++);
+        final Result result = results.get(index++);
+        if (index == results.size()) {
+          results.clear();
+          index = 0;
+        }
+        return result;
       }
 
       @Override
@@ -136,6 +164,45 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         GroupByAggregationStep.this.close();
       }
     };
+  }
+
+  /**
+   * The groups, aggregated in the workers of a parallel scan, or {@code null} when the rows are not the ones of one, or an
+   * aggregate or expression cannot run there, or this execution cannot run in parallel.
+   */
+  private List<Result> aggregateInParallel(final List<GroupingKey> groupingKeys, final List<AggregationItem> aggregationItems,
+      final int aggCount, final CommandContext context) {
+    final Expression[] keys = new Expression[groupingKeys.size()];
+    for (int i = 0; i < keys.length; i++)
+      keys[i] = groupingKeys.get(i).expression;
+    final FunctionCallExpression[] aggregates = new FunctionCallExpression[aggCount];
+    for (int i = 0; i < aggCount; i++)
+      aggregates[i] = aggregationItems.get(i).funcExpr;
+
+    final ParallelAggregation parallel = ParallelAggregation.create(prev, keys, aggregates, functionFactory, evaluator);
+    if (parallel == null)
+      return null;
+
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final ParallelAggregation.Merged merged = parallel.run(context, heapLimit, groupOverheadBytes(aggCount, keys.length + aggCount));
+      if (merged == null)
+        return null;
+      parallelWorkers = merged.workers();
+      final List<Result> results = new ArrayList<>(merged.groups().size());
+      for (final ParallelAggregation.Group group : merged.groups()) {
+        final ResultInternal groupResult = new ResultInternal();
+        for (int i = 0; i < keys.length; i++)
+          groupResult.setProperty(groupingKeys.get(i).outputName, group.keyValues[i]);
+        for (int i = 0; i < aggCount; i++)
+          groupResult.setProperty(aggregationItems.get(i).outputName, group.aggregators[i].getAggregatedResult());
+        results.add(groupResult);
+      }
+      return results;
+    } finally {
+      if (context.isProfiling())
+        cost += System.nanoTime() - begin;
+    }
   }
 
   /**
@@ -155,7 +222,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     // LinkedHashMap preserves insertion order, needed because ORDER BY in WITH clauses
     // may fail to resolve aggregation expressions and fall back to iteration order
     final Map<Object, SingleKeyGroupState> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    final int groupOverhead = groupOverheadBytes(aggCount, 1 + aggCount);
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -176,11 +243,11 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         if (group == null) {
           final StatelessFunction[] aggregators = new StatelessFunction[aggCount];
           for (int i = 0; i < aggCount; i++)
-            aggregators[i] = functionFactory.getFunctionExecutor(
-                aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct());
+            aggregators[i] = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+                aggExpressions[i].getFunctionName(), aggExpressions[i].isDistinct()), heapLimit);
           group = new SingleKeyGroupState(keyValue, aggregators);
           groups.put(canonicalKey, group);
-          limit.check(groups.size());
+          heapLimit.add(groups.size(), keyValue, groupOverhead);
         }
 
         // Feed row to aggregators using direct array access
@@ -241,7 +308,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final CommandContext context, final int nRecords) {
 
     final Map<GroupKeyValues, GroupAggregators> groups = new LinkedHashMap<>();
-    final HeapElementsLimit limit = HeapElementsLimit.of(context, "groups", "GROUP BY");
+    final int groupOverhead = groupOverheadBytes(aggCount + complexAggregationItems.size(),
+        groupingKeys.size() + aggCount + complexAggregationItems.size());
 
     final ResultSet prevResults = prev.syncPull(context, CONFIGURED_BATCH_SIZE != null ? CONFIGURED_BATCH_SIZE : nRecords);
 
@@ -260,7 +328,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
           groupAgg.representativeRow = inputRow;
           groups.put(keyValues, groupAgg);
-          limit.check(groups.size());
+          // THE GROUP KEEPS ITS FIRST INPUT ROW, FOR THE COMPLEX AGGREGATION ITEMS
+          heapLimit.add(groups.size(), new Object[] { keyValues.values, inputRow }, groupOverhead);
         }
 
         // Feed row using array-indexed access for regular aggregations
@@ -350,8 +419,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final StatelessFunction[] aggregatorArray = new StatelessFunction[aggCount];
     for (int i = 0; i < aggCount; i++) {
       final AggregationItem aggItem = aggregationItems.get(i);
-      aggregatorArray[i] = functionFactory.getFunctionExecutor(
-          aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct());
+      aggregatorArray[i] = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+          aggItem.funcExpr.getFunctionName(), aggItem.funcExpr.isDistinct()), heapLimit);
     }
 
     final Map<String, Map<String, StatelessFunction>> complexAggregators = new HashMap<>();
@@ -359,13 +428,34 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       final Map<String, StatelessFunction> innerFuncs = new HashMap<>();
       for (final Map.Entry<String, FunctionCallExpression> innerEntry : complexItem.innerAggregations.entrySet()) {
         final FunctionCallExpression innerAgg = innerEntry.getValue();
-        innerFuncs.put(innerEntry.getKey(), functionFactory.getFunctionExecutor(
-            innerAgg.getFunctionName(), innerAgg.isDistinct()));
+        innerFuncs.put(innerEntry.getKey(), HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+            innerAgg.getFunctionName(), innerAgg.isDistinct()), heapLimit));
       }
       complexAggregators.put(complexItem.outputName, innerFuncs);
     }
 
     return new GroupAggregators(aggregatorArray, complexAggregators);
+  }
+
+  /**
+   * What a group holds besides its key values and the values its aggregates gather, which are charged on their own:
+   * its entry in the map of the groups, its state, one aggregate function per aggregation - and the row it becomes,
+   * since the rows are built while the groups are still held, which is the peak of the step.
+   */
+  private static int groupOverheadBytes(final int aggregates, final int columns) {
+    return HeapEstimator.HASH_ENTRY_BYTES + 2 * HeapEstimator.OBJECT_BYTES + 56 * aggregates + HeapEstimator.RESULT_BYTES
+        + HeapEstimator.HASH_ENTRY_BYTES * columns;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   /**
@@ -406,6 +496,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       builder.append("[").append(String.join(", ", groupKeys)).append("] ");
     }
     builder.append(String.join(", ", aggFuncs));
+    if (parallelWorkers > 0)
+      builder.append(" (parallel: ").append(parallelWorkers).append(" workers)");
 
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());

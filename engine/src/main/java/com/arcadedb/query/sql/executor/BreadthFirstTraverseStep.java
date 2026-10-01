@@ -107,13 +107,13 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       final TraverseResult item = (TraverseResult) this.entryPoints.removeFirst();
       if (postFilter == null || postFilter.matchesFilters(item, context))
         this.results.add(item);
-      for (final TraverseProjectionItem proj : projections) {
-        final Object nextStep = proj.execute(item, context);
-        final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
-        if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth) {
+      // Test the depth first: the projection (an out() loads the vertex and its edge segment) must not run on vertices that can no longer expand
+      final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
+      if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth)
+        for (final TraverseProjectionItem proj : projections) {
+          final Object nextStep = proj.execute(item, context);
           addNextEntryPoints(nextStep, depth + 1, (List) item.getMetadata("$path"), (List) item.getMetadata("$stack"), context);
         }
-      }
     }
   }
 

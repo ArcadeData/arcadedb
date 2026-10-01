@@ -229,6 +229,42 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
     };
   }
 
+  /**
+   * Plans this scan for an aggregation that consumes its rows in the workers of a parallel scan, rather than one at a
+   * time on the thread consuming the query (issue #8797): the rows pass this scan's own pushed predicate and the
+   * {@code extraFilters} of the steps between the scan and the aggregation, all evaluated in the workers. Unlike the
+   * scan of {@link #execute}, it also serves a scan with no predicate at all.
+   *
+   * @return the scan, whose rows the caller aggregates, or {@code null} when this execution must stay sequential: a
+   * predicate is not one the workers can evaluate, the type is partitioned and pruned to one bucket, the type does not
+   * exist or is not a vertex type, or the parallel scan declines (disabled, in a transaction, too small)
+   */
+  public ParallelRecordScan planParallelRows(final CommandContext context, final List<BooleanExpression> extraFilters) {
+    BooleanExpression filter = whereFilter;
+    if (filter != null && !ParallelSafeExpressions.isParallelSafe(filter, variable))
+      return null;
+    for (final BooleanExpression extra : extraFilters) {
+      if (!ParallelSafeExpressions.isParallelSafe(extra, variable))
+        return null;
+      filter = filter == null ? extra : new LogicalExpression(LogicalExpression.Operator.AND, filter, extra);
+    }
+
+    if (!context.getDatabase().getSchema().existsType(label)
+        || !(context.getDatabase().getSchema().getType(label) instanceof VertexType))
+      return null;
+    if (PartitionPruning.prunedBucketName(context.getDatabase().getSchema().getType(label), patternProperties) != null)
+      return null;
+
+    final BooleanExpression rowFilter = filter;
+    final ParallelRecordScan scan = ParallelRecordScan.plan(context, label, (record, workerContext) -> {
+      final ResultInternal row = new ResultInternal();
+      row.setProperty(variable, record.asVertex());
+      return rowFilter == null || rowFilter.evaluate(row, workerContext) ? row : null;
+    });
+    servedInParallel.set(scan != null);
+    return scan;
+  }
+
   @Override
   public String getOperatorType() {
     return "NodeByLabelScan";

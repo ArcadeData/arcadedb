@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.StarExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
@@ -46,18 +47,19 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-final class ParallelSafeExpressions {
+public final class ParallelSafeExpressions {
   private ParallelSafeExpressions() {
   }
 
   /**
    * @param variable the only variable the predicate may read: the node the scan binds
    */
-  static boolean isParallelSafe(final Object expression, final String variable) {
+  public static boolean isParallelSafe(final Object expression, final String variable) {
     return switch (expression) {
       case null -> false;
       case LiteralExpression ignored -> true;
       case ParameterExpression ignored -> true;
+      case StarExpression ignored -> true;
       case VariableExpression v -> variable.equals(v.getVariableName());
       case PropertyAccessExpression p -> variable.equals(p.getVariableName());
       case BooleanWrapperExpression w -> isParallelSafe(w.getBooleanExpression(), variable);

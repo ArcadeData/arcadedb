@@ -64,6 +64,21 @@ public class CypherMaxFunction implements StatelessFunction {
   }
 
   @Override
+  public boolean canMergePartials() {
+    return true;
+  }
+
+  @Override
+  public void mergePartial(final StatelessFunction other) {
+    final CypherMaxFunction that = (CypherMaxFunction) other;
+    // The same rule execute() applies to a row: a value replaces this one only when it is strictly greater
+    if (that.hasValue && (!hasValue || CypherFunctionHelper.cypherCompare(that.maxValue, maxValue) > 0)) {
+      maxValue = that.maxValue;
+      hasValue = true;
+    }
+  }
+
+  @Override
   public Object getAggregatedResult() {
     return hasValue ? maxValue : null;
   }
