@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -62,6 +63,9 @@ public class WithStep extends AbstractExecutionStep {
   private final WithClause withClause;
   private final ExpressionEvaluator evaluator;
   private final boolean skipLimitDeferred;
+  // SET BY THE PLANNER WHEN ANY WRITE PRECEDES THIS WITH (EVEN ONE AN EARLIER BARRIER COVERS, WHICH THEN DRAINS A SECOND TIME AT NO COST):
+  // A LIMIT 0 THEN STILL DRAINS ITS INPUT, WHICH IS WHAT RUNS THE WRITES BEHIND IT
+  private boolean drainOnZeroLimit;
 
   // THE KEYS A DISTINCT REMEMBERS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585,
   // #8591). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
@@ -75,6 +79,11 @@ public class WithStep extends AbstractExecutionStep {
     // Defer SKIP/LIMIT to downstream steps when ORDER BY is present,
     // so sorting happens before pagination
     this.skipLimitDeferred = withClause.getOrderByClause() != null;
+  }
+
+  /** Makes a {@code LIMIT 0} drain its input, like {@code LimitStep} does, so the writes behind it run. */
+  public void setDrainOnZeroLimit(final boolean drainOnZeroLimit) {
+    this.drainOnZeroLimit = drainOnZeroLimit;
   }
 
   @Override
@@ -156,6 +165,14 @@ public class WithStep extends AbstractExecutionStep {
 
         // Check if LIMIT has been reached
         if (limit != null && returned >= limit) {
+          // LIMIT 0 returns nothing, but like LimitStep it still drains the input so the writes behind it run
+          if (limit == 0 && drainOnZeroLimit) {
+            final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+            while (prevResults.hasNext()) {
+              guard.check();
+              prevResults.next();
+            }
+          }
           finish();
           return;
         }

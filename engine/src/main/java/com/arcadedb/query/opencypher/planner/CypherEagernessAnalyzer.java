@@ -83,6 +83,10 @@ public final class CypherEagernessAnalyzer {
   // The mirror image, for a read that comes AFTER a write: the property keys written so far that no barrier has drained.
   private final Set<String> writtenPropertyKeys    = new HashSet<>();
   private       boolean     writesAnyPropertyKey   = false;
+  // Whether a clause that changes the graph has run ahead of the current one with no barrier since: what a LIMIT must not cut short (#8826, #8827).
+  private       boolean     writePending           = false;
+  // Sticky, never cleared by a barrier: whether any clause that changes the graph precedes the current one.
+  private       boolean     writeSeen              = false;
 
   /**
    * Folds one MATCH (or OPTIONAL MATCH) clause into the read footprint. A node pattern with no static and
@@ -138,6 +142,37 @@ public final class CypherEagernessAnalyzer {
     readsAnyRelationshipType = false;
     writtenPropertyKeys.clear();
     writesAnyPropertyKey = false;
+    writePending = false;
+  }
+
+  /**
+   * Records that a clause which changes the graph has been planned and no barrier has drained it since. The
+   * {@code observeWrite} methods (SET, REMOVE, MERGE, write procedure) already do it; this is for the clauses they do not
+   * cover: CREATE, DELETE, FOREACH and a subquery that writes.
+   */
+  public void observeWriteClause() {
+    writePending = true;
+    writeSeen = true;
+  }
+
+  /** True when a clause that changes the graph was planned ahead of the current one, whether or not a barrier drained it since. */
+  public boolean hasObservedWrite() {
+    return writeSeen;
+  }
+
+  /**
+   * True when a {@code LIMIT} placed here (not behind an ORDER BY or an aggregation) would stop pulling before the writes ahead of it have run for every row.
+   * openCypher runs each clause to completion before the next one starts, so a {@code WITH ... LIMIT n} (or a final
+   * {@code RETURN ... LIMIT n}) that follows a write must see all of that write's rows, as Neo4j's {@code Eager} makes it
+   * do. Without the barrier the write ran for as many rows as the pull-model batches had already carried past it (issues
+   * #8826 and #8827: 1000 {@code FOREACH} creations instead of 2000, 4 deleted vertices instead of 5).
+   * <p>
+   * The barrier drains every row but the planner asks it to keep only the first {@code skip + limit} of them when no later
+   * step can drop a row, so the memory stays O(limit).
+   */
+  public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
+    // ORDER BY and an aggregation already drain their whole input
+    return writePending && !hasOrderBy && !hasAggregations;
   }
 
   /** True when at least one graph read is still potentially in flight ahead of the current clause. */
@@ -240,6 +275,8 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final SetClause setClause) {
     if (setClause == null)
       return;
+    writePending = true;
+    writeSeen = true;
     for (final SetClause.SetItem item : setClause.getItems()) {
       switch (item.getType()) {
       case PROPERTY -> observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -255,6 +292,8 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final RemoveClause removeClause) {
     if (removeClause == null)
       return;
+    writePending = true;
+    writeSeen = true;
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.PROPERTY)
         observePropertyWrite(item.getProperty(), item.getKeyExpression());
@@ -264,12 +303,16 @@ public final class CypherEagernessAnalyzer {
   public void observeWrite(final MergeClause mergeClause) {
     if (mergeClause == null)
       return;
+    writePending = true;
+    writeSeen = true;
     observeWrite(mergeClause.getOnCreateSet());
     observeWrite(mergeClause.getOnMatchSet());
   }
 
   /** A write procedure is opaque: it can write any property. */
   public void observeWriteProcedure() {
+    writePending = true;
+    writeSeen = true;
     writesAnyPropertyKey = true;
   }
 
