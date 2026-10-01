@@ -111,7 +111,7 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
   }
 
   @Test
-  void literalsADoubleHoldsStayDoubles() {
+  void longAndShortLiteralsPickTheirType() {
     try (final ResultSet rs = database.query("sql", "SELECT 0.1000000000000000 AS a, 1.2345678901234567890e5 AS b, 123456789012345.5 AS c")) {
       final Result r = rs.next();
       assertThat(r.<Object>getProperty("a")).isEqualTo(0.1d);
@@ -141,7 +141,7 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
 
   @Test
   void renderedLiteralReparsesToTheSameValue() {
-    for (final String literal : new String[] { "12345678901234567890.", "12345678901234567890e0", EXACT, "1.2345678901234567890e30" }) {
+    for (final String literal : new String[] { "12345678901234567890.", "12345678901234567890e0", "-12345678901234567890.", EXACT, "1.2345678901234567890e30" }) {
       final StringBuilder rendered = new StringBuilder();
       new SQLAntlrParser(null).parse("SELECT " + literal + " AS a").toString(null, rendered);
       try (final ResultSet rs = database.query("sql", rendered.toString())) {
@@ -157,6 +157,28 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO D SET v = 1.2345678901234567890"));
     try (final ResultSet rs = database.query("sql", "SELECT v FROM D")) {
       assertThat(rs.next().<Double>getProperty("v")).isEqualTo(1.2345678901234567890d);
+    }
+  }
+
+  @Test
+  void doublePropertyTimesLongLiteralIsExactDecimal() {
+    database.command("sql", "CREATE DOCUMENT TYPE M");
+    database.command("sql", "CREATE PROPERTY M.v DOUBLE");
+    database.transaction(() -> database.command("sql", "INSERT INTO M SET v = 2.0"));
+    try (final ResultSet rs = database.query("sql", "SELECT v * 3.14159265358979323846 AS a FROM M")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(BigDecimal.class);
+    }
+  }
+
+  @Test
+  void negativeLongLiteralAsDecimalIndexKey() {
+    database.command("sql", "CREATE DOCUMENT TYPE N");
+    database.command("sql", "CREATE PROPERTY N.k STRING");
+    database.command("sql", "CREATE PROPERTY N.dec DECIMAL");
+    database.command("sql", "CREATE INDEX ON N (dec) NOTUNIQUE");
+    database.transaction(() -> database.newDocument("N").set("k", "neg", "dec", new BigDecimal("-" + EXACT)).save());
+    try (final ResultSet rs = database.query("sql", "SELECT k FROM N WHERE dec = -" + EXACT)) {
+      assertThat(rs.next().<String>getProperty("k")).isEqualTo("neg");
     }
   }
 
