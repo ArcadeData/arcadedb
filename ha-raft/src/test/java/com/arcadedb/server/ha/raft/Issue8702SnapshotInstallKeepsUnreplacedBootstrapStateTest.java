@@ -145,6 +145,35 @@ class Issue8702SnapshotInstallKeepsUnreplacedBootstrapStateTest {
     }
   }
 
+  /**
+   * The two exclusions pinned independently: one LEADER_MISSING database carries only the divergence mark, another
+   * only the pending replacement. Each must keep exactly what it had.
+   */
+  @Test
+  void eachExclusionHoldsOnItsOwn(@TempDir final Path tempDir) throws Exception {
+    final String markOnlyDb = "db-mark-only";
+    final String pendingOnlyDb = "db-pending-only";
+    final JSONObject json = new JSONObject();
+    json.put(markOnlyDb, baselineEntry().put("unreconciled", true));
+    json.put(pendingOnlyDb, baselineEntry().put("pendingReplacement", true));
+    json.put(REINSTALLED_DB, baselineEntry().put("unreconciled", true).put("pendingReplacement", true));
+    final ArcadeStateMachine sm = newStateMachine(tempDir, Set.of(markOnlyDb, pendingOnlyDb, REINSTALLED_DB), json);
+    replaceReconciler(sm, new StubReconciler(Set.of(), Set.of(markOnlyDb, pendingOnlyDb)));
+    sm.setRaftHAServer(followerRaft());
+    try {
+      sm.notifyInstallSnapshotFromLeader(leaderRoleInfo(), TermIndex.valueOf(9L, FIRST_LOG_INDEX)).get();
+
+      assertThat(sm.getBootstrapUnreconciledDatabases()).containsExactly(markOnlyDb);
+      assertThat(sm.getPendingBootstrapReplacements()).containsExactly(pendingOnlyDb);
+      assertThat(sm.getBootstrapInstallsInFlight()).containsExactly(pendingOnlyDb);
+      assertPersisted(tempDir, markOnlyDb, false, true);
+      assertPersisted(tempDir, pendingOnlyDb, true, false);
+      assertPersisted(tempDir, REINSTALLED_DB, false, false);
+    } finally {
+      sm.close();
+    }
+  }
+
   /** Control: an install that replaced every database settles every replacement and clears every mark, as before. */
   @Test
   void aFullInstallStillSettlesEverything(@TempDir final Path tempDir) throws Exception {
@@ -199,14 +228,16 @@ class Issue8702SnapshotInstallKeepsUnreplacedBootstrapStateTest {
     return tempDir.resolve("databases").resolve(".raft").resolve("bootstrap-baselines");
   }
 
+  private static JSONObject baselineEntry() {
+    return new JSONObject().put("fingerprint", "0".repeat(64)).put("lastTxId", 5L);
+  }
+
   /** Every database starts with a baseline, a divergence mark and a pending replacement, as after a restart. */
-  private static void seedBootstrapState(final Path tempDir, final Set<String> databaseNames) throws IOException {
+  private static JSONObject markedAndPending(final Set<String> databaseNames) {
     final JSONObject json = new JSONObject();
     for (final String dbName : databaseNames)
-      json.put(dbName, new JSONObject().put("fingerprint", "0".repeat(64)).put("lastTxId", 5L).put("unreconciled", true)
-          .put("pendingReplacement", true));
-    Files.createDirectories(baselinesFile(tempDir).getParent());
-    Files.writeString(baselinesFile(tempDir), json.toString());
+      json.put(dbName, baselineEntry().put("unreconciled", true).put("pendingReplacement", true));
+    return json;
   }
 
   private static RaftHAServer followerRaft() {
@@ -229,7 +260,14 @@ class Issue8702SnapshotInstallKeepsUnreplacedBootstrapStateTest {
 
   private static ArcadeStateMachine newStateMachine(final Path tempDir, final Set<String> databaseNames)
       throws IOException {
-    seedBootstrapState(tempDir, databaseNames);
+    return newStateMachine(tempDir, databaseNames, markedAndPending(databaseNames));
+  }
+
+  /** Seeds the persisted bootstrap state first, so the state machine loads it the way a restarted node does. */
+  private static ArcadeStateMachine newStateMachine(final Path tempDir, final Set<String> databaseNames,
+      final JSONObject bootstrapState) throws IOException {
+    Files.createDirectories(baselinesFile(tempDir).getParent());
+    Files.writeString(baselinesFile(tempDir), bootstrapState.toString());
 
     final ContextConfiguration config = new ContextConfiguration();
     config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
