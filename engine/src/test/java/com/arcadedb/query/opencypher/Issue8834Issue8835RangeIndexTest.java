@@ -76,6 +76,9 @@ class Issue8834Issue8835RangeIndexTest extends TestHelper {
     assertThat(longs("MATCH (n:H) WHERE n.h > 7 RETURN n.h AS v")).containsExactlyInAnyOrder(8L, 9L);
     assertThat(longs("MATCH (n:H) WHERE n.u <= 1 RETURN n.u AS v")).containsExactlyInAnyOrder(0L, 1L);
     assertThat(longs("MATCH (n:H) WHERE n.h = 7 RETURN n.h AS v")).containsExactly(7L);
+    try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (n:H) WHERE n.h > 7 RETURN n.h AS v")) {
+      assertThat(rs.next().toJSON().toString()).doesNotContain("NodeIndexRangeScan");
+    }
   }
 
   @Test
