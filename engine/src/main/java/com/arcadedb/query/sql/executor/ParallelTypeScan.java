@@ -634,7 +634,14 @@ final class ParallelTypeScan {
         }
       }, "ArcadeDB-parallel-scan-unit-reader-" + READER_IDS.incrementAndGet());
       dedicatedReader = reader;
-      reader.start();
+      try {
+        reader.start();
+      } catch (final Throwable e) {
+        // NO THREAD COULD BE CREATED: A LATER CLAIM MUST NOT QUEUE ITS UNIT FOR A READER THAT DOES NOT EXIST
+        dedicatedReader = null;
+        readerUnits = null;
+        throw e;
+      }
       // A close() FROM ANOTHER THREAD THAT RAN BEFORE THE FIELD WAS SET FOUND NO READER TO STOP: STOP IT NOW
       if (closed)
         reader.interrupt();
