@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -201,5 +203,38 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
     try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (a:Src) SET a.x = 1 RETURN a LIMIT 1")) {
       assertThat(rs.next().toString()).contains("EagerStep");
     }
+  }
+
+  @Test
+  void parameterLimitAfterWriteKeepsTheFirstRowsAndWritesAll() {
+    seedItems();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "MATCH (a:Src) CREATE (:Out {i: a.i}) WITH a SKIP 2 LIMIT $n RETURN a.i AS i",
+          Map.of("n", 3))) {
+        int rows = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+        assertThat(rows).isEqualTo(3);
+      }
+    });
+    assertThat(count("MATCH (o:Out) RETURN count(o) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void filteredLimitAfterWriteStillReturnsMatchingRows() {
+    seedItems();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "MATCH (a:Src) CREATE (:Out {i: a.i}) WITH a WHERE a.i > 400 LIMIT 5 RETURN a.i AS i")) {
+        int rows = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+        assertThat(rows).isEqualTo(5);
+      }
+    });
+    assertThat(count("MATCH (o:Out) RETURN count(o) AS c")).isEqualTo(500L);
   }
 }

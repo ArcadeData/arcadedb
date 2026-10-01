@@ -1483,10 +1483,7 @@ public class CypherExecutionPlan {
 
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
-          // A LIMIT stops pulling: the writes ahead of it must have run for every row first (issues #8826, #8827)
-          if (withClause.getLimit() != null
-              && eagerness.needsBarrierBeforeLimit(withClause.getOrderByClause() != null, withClause.hasAggregations()))
-            currentStep = withEagerBarrier(currentStep, context, eagerness);
+          currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
           if (withClause.hasAggregations())
             eagerness.observeAggregationBoundary();
@@ -1598,10 +1595,7 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT (if any)
     if (statement.getLimit() != null) {
-      // The LIMIT cuts the pull: the writes ahead of it must have run for every row first (issues #8826, #8827)
-      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
-          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
-        currentStep = withEagerBarrier(currentStep, context, eagerness);
+      currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final int limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
       final LimitStep limitStep = new LimitStep(limitVal, context);
@@ -1841,10 +1835,7 @@ public class CypherExecutionPlan {
 
       case WITH:
         final WithClause withClause = entry.getTypedClause();
-        // A LIMIT stops pulling: the writes ahead of it must have run for every row first (issues #8826, #8827)
-        if (currentStep != null && withClause.getLimit() != null
-            && eagerness.needsBarrierBeforeLimit(withClause.getOrderByClause() != null, withClause.hasAggregations()))
-          currentStep = withEagerBarrier(currentStep, context, eagerness);
+        currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
@@ -2069,10 +2060,7 @@ public class CypherExecutionPlan {
 
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
-      // The final LIMIT cuts the pull too: the writes ahead of it must have run for every row first (issues #8826, #8827)
-      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
-          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
-        currentStep = withEagerBarrier(currentStep, context, eagerness);
+      currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
       final LimitStep limitStep = new LimitStep(limitVal, context);
@@ -3327,13 +3315,55 @@ public class CypherExecutionPlan {
    */
   private static AbstractExecutionStep withEagerBarrier(final AbstractExecutionStep currentStep,
       final CommandContext context, final CypherEagernessAnalyzer eagerness) {
+    return withEagerBarrier(currentStep, context, eagerness, -1);
+  }
+
+  private static AbstractExecutionStep withEagerBarrier(final AbstractExecutionStep currentStep,
+      final CommandContext context, final CypherEagernessAnalyzer eagerness, final long keepFirst) {
     if (currentStep == null)
       return null;
-    final EagerStep eagerStep = new EagerStep(context);
+    final EagerStep eagerStep = new EagerStep(context, keepFirst);
     eagerStep.setPrevious(currentStep);
     // The barrier closes every enumeration behind it, so the writes that follow it need no second one.
     eagerness.observeBarrier();
     return eagerStep;
+  }
+
+  /**
+   * Plants the barrier a {@code LIMIT} needs when a write is pending ahead of it, and does nothing otherwise: a LIMIT stops
+   * pulling, so without it the write would run only for the rows the pull-model batches had already carried past it (issues
+   * #8826, #8827). When no step behind the barrier can drop a row (no WHERE, no DISTINCT) the barrier keeps only the first
+   * {@code skip + limit} rows and discards the rest after the writes ran for them, so the memory stays O(limit).
+   */
+  private static AbstractExecutionStep withLimitBarrier(final AbstractExecutionStep currentStep, final CommandContext context,
+      final CypherEagernessAnalyzer eagerness, final CypherFunctionFactory functionFactory, final WithClause withClause) {
+    if (currentStep == null || withClause.getLimit() == null
+        || !eagerness.needsBarrierBeforeLimit(withClause.getOrderByClause() != null, withClause.hasAggregations()))
+      return currentStep;
+    final boolean dropsRows = withClause.getWhereClause() != null || withClause.isDistinct();
+    return withEagerBarrier(currentStep, context, eagerness,
+        keepFirst(functionFactory, context, dropsRows, withClause.getSkip(), withClause.getLimit()));
+  }
+
+  private static AbstractExecutionStep withLimitBarrier(final AbstractExecutionStep currentStep, final CommandContext context,
+      final CypherEagernessAnalyzer eagerness, final CypherFunctionFactory functionFactory, final CypherStatement statement) {
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (currentStep == null || statement.getLimit() == null || !eagerness.needsBarrierBeforeLimit(
+        statement.getOrderByClause() != null, returnClause != null && returnClause.hasAggregations()))
+      return currentStep;
+    final boolean dropsRows = returnClause != null && returnClause.isDistinct();
+    return withEagerBarrier(currentStep, context, eagerness,
+        keepFirst(functionFactory, context, dropsRows, statement.getSkip(), statement.getLimit()));
+  }
+
+  private static long keepFirst(final CypherFunctionFactory functionFactory, final CommandContext context, final boolean dropsRows,
+      final Expression skip, final Expression limit) {
+    if (dropsRows)
+      return -1;
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    final long limitVal = evaluator.evaluateSkipLimit(limit, new ResultInternal(), context);
+    final long skipVal = skip != null ? evaluator.evaluateSkipLimit(skip, new ResultInternal(), context) : 0L;
+    return limitVal + skipVal;
   }
 
   /**
@@ -4100,10 +4130,7 @@ public class CypherExecutionPlan {
 
     // Step 10: LIMIT clause - limit number of results
     if (statement.getLimit() != null && currentStep != null) {
-      // The LIMIT cuts the pull: the writes ahead of it must have run for every row first (issues #8826, #8827)
-      if (eagerness.needsBarrierBeforeLimit(statement.getOrderByClause() != null,
-          statement.getReturnClause() != null && statement.getReturnClause().hasAggregations()))
-        currentStep = withEagerBarrier(currentStep, context, eagerness);
+      currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, statement);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(),
           context);

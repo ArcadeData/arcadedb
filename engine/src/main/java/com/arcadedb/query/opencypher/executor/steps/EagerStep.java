@@ -71,8 +71,17 @@ public class EagerStep extends AbstractExecutionStep {
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
 
+  // HOW MANY ROWS TO KEEP WHEN THE BARRIER SITS RIGHT BEHIND A LIMIT: THE REST ARE DRAINED (SO THE WRITES UPSTREAM RUN FOR EVERY ROW)
+  // AND DISCARDED, WHICH KEEPS THE MEMORY AT O(LIMIT) INSTEAD OF O(ROWS). -1 KEEPS EVERYTHING
+  private final long keepFirst;
+
   public EagerStep(final CommandContext context) {
+    this(context, -1);
+  }
+
+  public EagerStep(final CommandContext context, final long keepFirst) {
     super(context);
+    this.keepFirst = keepFirst;
   }
 
   /**

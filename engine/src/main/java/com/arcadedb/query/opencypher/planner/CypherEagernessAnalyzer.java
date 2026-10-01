@@ -159,8 +159,8 @@ public final class CypherEagernessAnalyzer {
    * do. Without the barrier the write ran for as many rows as the pull-model batches had already carried past it (issues
    * #8826 and #8827: 1000 {@code FOREACH} creations instead of 2000, 4 deleted vertices instead of 5).
    * <p>
-   * The cost is memory: the barrier buffers every row ahead of the {@code LIMIT} (bounded by the operation heap limit), where a
-   * streaming pull kept one batch. Keeping only the first N rows would flatten it for a literal LIMIT and is a possible follow-up.
+   * The barrier drains every row but the planner asks it to keep only the first {@code skip + limit} of them when no later
+   * step can drop a row, so the memory stays O(limit).
    */
   public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
     // ORDER BY and an aggregation already drain their whole input
