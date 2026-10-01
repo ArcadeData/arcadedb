@@ -75,4 +75,11 @@ class Issue3993PointSridTest extends TestHelper {
     assertThat(p.get("crs")).isEqualTo("WGS-84");
     assertThat(point("point({x: 1, y: 2, srid: 7203})").get("crs")).isEqualTo("cartesian");
   }
+
+  @Test
+  void sridDerivedFromLowerCaseCrs() {
+    assertThat(point("point({x: 1, y: 2, crs: 'wgs-84'})").get("srid")).isEqualTo(4326);
+    assertThat(point("point({x: 1, y: 2, z: 3, crs: 'wgs-84-3d'})").get("srid")).isEqualTo(4979);
+    assertThat(point("point({x: 1, y: 2, z: 3, crs: 'cartesian-3d'})").get("srid")).isEqualTo(9157);
+  }
 }
