@@ -43,7 +43,9 @@ import java.util.regex.Pattern;
 public class OtlpMetricsPlugin implements ServerPlugin {
   // scheme://authority, then an optional lone "/", then an optional query and/or fragment
   private static final Pattern URL_WITHOUT_PATH = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]+)/?([?#].*)?$");
-  private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]*:4317(?:[/?#].*)?$");
+  private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@\\s]*@)?[^/?#@\\s]*:4317(?:[/?#].*)?$");
+
+  private static final Pattern USER_INFO        = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#@\\s]*@");
 
   private OtlpMeterRegistry registry;
   private boolean           enabled;
@@ -95,7 +97,7 @@ public class OtlpMetricsPlugin implements ServerPlugin {
     if (looksLikeGrpcEndpoint(configured))
       LogManager.instance().log(OtlpMetricsPlugin.class, Level.WARNING,
           "OTLP metrics endpoint '%s' looks like the OTLP/gRPC port (4317), but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
-          configured);
+          redactUserInfo(configured));
     final String endpoint = normalizeEndpoint(configured);
     final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
     return new OtlpConfig() {
@@ -114,7 +116,7 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   /**
    * Micrometer POSTs to the configured URL as is, so a base URL without a path reaches the collector root and is
    * answered with 404. The standard OTLP/HTTP metrics path is appended in that case; an explicit path is kept.
-   * The authority is checked rather than the host, because {@link URI} reports no host for names such as
+   * The authority is checked rather than the host, because {@code URI} reports no host for names such as
    * {@code otel_collector} (an underscore, common in Docker Compose service names).
    */
   static String normalizeEndpoint(final String endpoint) {
@@ -126,6 +128,13 @@ public class OtlpMetricsPlugin implements ServerPlugin {
       return endpoint;
     final String suffix = matcher.group(2);
     return matcher.group(1) + "/v1/metrics" + (suffix != null ? suffix : "");
+  }
+
+  /**
+   * Drops {@code user:password@} from a URL so credentials configured in the endpoint never reach the server log.
+   */
+  static String redactUserInfo(final String endpoint) {
+    return endpoint == null ? null : USER_INFO.matcher(endpoint).replaceFirst("$1");
   }
 
   /**
