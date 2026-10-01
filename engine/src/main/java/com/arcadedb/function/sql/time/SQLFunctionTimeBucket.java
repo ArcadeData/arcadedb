@@ -64,7 +64,7 @@ import java.util.Objects;
 public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
   public static final String NAME = "ts.timeBucket";
 
-  /** The last options resolved: the third parameter is almost always a constant, so it is parsed once, not per row. */
+  /** The last options resolved: the third parameter is a constant in practice, so it is parsed once, not per row. */
   private record ResolvedOffset(Object options, String interval, long offsetMs) {
   }
 
