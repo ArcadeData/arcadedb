@@ -911,7 +911,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /**
    * Undoes what the generic JSON parse does to numbers on the record path (issue #8871), driven by the declared
    * property types: FLOAT/DOUBLE values exported as the {@link NonFiniteNumbers} markers ("PosInfinity", "NegInfinity")
-   * are decoded back, and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from their JSON text instead of the
+   * are decoded back (scalar or LIST OF FLOAT/DOUBLE), and DECIMAL values (scalar or LIST OF DECIMAL) are re-read from their JSON text instead of the
    * double the parse produced, which dropped every digit past the 17th.
    */
   private static void restoreNumberFidelity(final DocumentType type, final JSONObject json, final Map<String, Object> map) {
@@ -933,13 +933,20 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       } else if (propertyType == Type.DECIMAL) {
         if (!json.isNull(entry.getKey()) && !(entry.getValue() instanceof String))
           entry.setValue(json.getBigDecimal(entry.getKey()));
-      } else if (propertyType == Type.LIST && Type.DECIMAL.name().equalsIgnoreCase(property.getOfType())
-          && entry.getValue() instanceof List<?> list) {
-        final JSONArray array = json.getJSONArray(entry.getKey());
-        if (array.length() == list.size()) {
+      } else if (propertyType == Type.LIST && entry.getValue() instanceof List<?> list) {
+        final String ofType = property.getOfType();
+        if (Type.DECIMAL.name().equalsIgnoreCase(ofType)) {
+          final JSONArray array = json.getJSONArray(entry.getKey());
           final List<Object> restored = new ArrayList<>(list.size());
           for (int i = 0; i < list.size(); ++i)
             restored.add(list.get(i) instanceof Number ? array.getBigDecimal(i) : list.get(i));
+          entry.setValue(restored);
+        } else if (Type.DOUBLE.name().equalsIgnoreCase(ofType) || Type.FLOAT.name().equalsIgnoreCase(ofType)) {
+          final List<Object> restored = new ArrayList<>(list.size());
+          for (final Object item : list) {
+            final Double marker = item instanceof String text ? NonFiniteNumbers.decode(text) : null;
+            restored.add(marker != null ? marker : item);
+          }
           entry.setValue(restored);
         }
       }

@@ -67,10 +67,15 @@ class Issue8871JsonlNonFiniteAndDecimalRoundTripTest {
       source.command("sql", "CREATE PROPERTY T.d DOUBLE");
       source.command("sql", "CREATE PROPERTY T.dec DECIMAL");
       source.command("sql", "CREATE PROPERTY T.decs LIST OF DECIMAL");
+      source.command("sql", "CREATE PROPERTY T.ds LIST OF DOUBLE");
+      source.command("sql", "CREATE VERTEX TYPE V");
+      source.command("sql", "CREATE PROPERTY V.d DOUBLE");
+      source.command("sql", "CREATE PROPERTY V.dec DECIMAL");
       source.transaction(() -> {
         source.newDocument("T").set("k", 0, "f", Float.POSITIVE_INFINITY, "d", Double.POSITIVE_INFINITY, "dec", BIG).save();
         source.newDocument("T").set("k", 1, "f", Float.NEGATIVE_INFINITY, "d", Double.NEGATIVE_INFINITY, "decs", List.of(BIG)).save();
-        source.newDocument("T").set("k", 2, "f", Float.NaN, "d", Double.NaN).save();
+        source.newDocument("T").set("k", 2, "f", Float.NaN, "d", Double.NaN, "ds", List.of(1.5, Double.NEGATIVE_INFINITY, Double.NaN)).save();
+        source.newVertex("V").set("d", Double.POSITIVE_INFINITY, "dec", BIG).save();
         // ordinary finite extremes must keep round-tripping unchanged
         source.newDocument("T").set("k", 3, "f", -0.0f, "d", Double.MAX_VALUE).save();
       });
@@ -86,7 +91,17 @@ class Issue8871JsonlNonFiniteAndDecimalRoundTripTest {
       assertThat(row(target, 1).<Float>getProperty("f")).isEqualTo(Float.NEGATIVE_INFINITY);
       assertThat(row(target, 1).<Double>getProperty("d")).isEqualTo(Double.NEGATIVE_INFINITY);
       final List<?> decs = row(target, 1).getProperty("decs");
-      assertThat(new BigDecimal(decs.get(0).toString())).isEqualByComparingTo(BIG);
+      assertThat(decs.get(0)).isInstanceOf(BigDecimal.class);
+      assertThat((BigDecimal) decs.get(0)).isEqualByComparingTo(BIG);
+      final List<?> ds = row(target, 2).getProperty("ds");
+      assertThat(ds.get(0)).isEqualTo(1.5);
+      assertThat(ds.get(1)).isEqualTo(Double.NEGATIVE_INFINITY);
+      assertThat((Double) ds.get(2)).isNaN();
+      try (final ResultSet rs = target.query("sql", "SELECT FROM V")) {
+        final Result v = rs.next();
+        assertThat(v.<Double>getProperty("d")).isEqualTo(Double.POSITIVE_INFINITY);
+        assertThat(v.<BigDecimal>getProperty("dec")).isEqualByComparingTo(BIG);
+      }
       assertThat(row(target, 2).<Float>getProperty("f")).isNaN();
       assertThat(row(target, 2).<Double>getProperty("d")).isNaN();
       assertThat(row(target, 3).<Float>getProperty("f")).isEqualTo(-0.0f);
