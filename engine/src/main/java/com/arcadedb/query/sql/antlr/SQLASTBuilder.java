@@ -6939,16 +6939,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Reads a list of {@code AFTER n unit GRANULARITY n unit} clauses into downsampling tiers, sorted ascending by
+   * Reads a list of {@code AFTER n unit GRANULARITY n unit [OFFSET [-]n unit]} clauses into downsampling tiers, sorted ascending by
    * threshold. Shared by CREATE TIMESERIES TYPE and ALTER TIMESERIES TYPE ... ADD DOWNSAMPLING POLICY.
    */
   private static List<DownsamplingTier> parseDownsamplingTiers(
       final List<SQLParser.DownsamplingTierClauseContext> tierCtxs) {
     final List<DownsamplingTier> tiers = new ArrayList<>(tierCtxs.size());
     for (final SQLParser.DownsamplingTierClauseContext tierCtx : tierCtxs) {
-      final long afterMs = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
-      final long granMs = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
-      tiers.add(new DownsamplingTier(afterMs, granMs));
+      final long afterMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(0)));
+      final long granMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(1)));
+      long offsetMs = 0L;
+      if (tierCtx.OFFSET() != null) {
+        offsetMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(2).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(2)));
+        if (tierCtx.MINUS() != null)
+          offsetMs = -offsetMs;
+      }
+      tiers.add(new DownsamplingTier(afterMs, granMs, offsetMs));
     }
     tiers.sort(Comparator.comparingLong(DownsamplingTier::afterMs));
     return tiers;

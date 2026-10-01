@@ -346,7 +346,9 @@ public class TimeSeriesTypeBuilder {
     sql.append(" DOWNSAMPLING POLICY");
     for (final DownsamplingTier tier : downsamplingTiers)
       sql.append(" AFTER ").append(renderDuration(tier.afterMs(), "downsampling threshold"))
-          .append(" GRANULARITY ").append(renderDuration(tier.granularityMs(), "downsampling granularity"));
+          .append(" GRANULARITY ").append(renderDuration(tier.granularityMs(), "downsampling granularity"))
+          .append(tier.offsetMs() == 0 ? ""
+              : " OFFSET " + (tier.offsetMs() < 0 ? "-" : "") + renderDuration(Math.abs(tier.offsetMs()), "downsampling offset"));
   }
 
   /**

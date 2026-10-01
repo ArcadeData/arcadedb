@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.engine.timeseries.TimeBucketGrid;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
@@ -141,6 +142,15 @@ final class TimeSeriesHandlerUtils {
     if (owner.isNull(name))
       throw missingMember(path, "a number");
     return readLong(owner, name, path);
+  }
+
+  /**
+   * The bucket grid offset of an aggregation member: its optional {@code bucketOrigin}, in epoch milliseconds, reduced
+   * modulo the interval the way {@link TimeBucketGrid#normalizeOffset} defines it (issue #8798). Absent means the
+   * epoch-aligned grid every client has always had.
+   */
+  static long optBucketOffset(final JSONObject aggJson, final long bucketInterval, final String path) {
+    return TimeBucketGrid.normalizeOffset(optLong(aggJson, "bucketOrigin", 0L, path + ".bucketOrigin"), bucketInterval);
   }
 
   /**

@@ -1315,6 +1315,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       }
       final JSONObject aggregation = new JSONObject();
       aggregation.put("bucketInterval", query.getBucketIntervalMs());
+      if (query.getBucketOriginMs() != 0)
+        aggregation.put("bucketOrigin", query.getBucketOriginMs());
       aggregation.put("requests", requests);
       payload.put("aggregation", aggregation);
     }

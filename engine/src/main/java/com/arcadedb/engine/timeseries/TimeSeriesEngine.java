@@ -681,6 +681,19 @@ public class TimeSeriesEngine implements AutoCloseable {
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
+    return aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, 0L, tagFilter, metrics, bucketCeiling);
+  }
+
+  /**
+   * Same as above on a bucket grid that starts at {@code bucketOffsetMs} instead of the Unix epoch (issue #8798), so
+   * weekly buckets can start on a Monday and daily ones at a local midnight. The offset is an origin REDUCED modulo the
+   * interval, as {@link TimeBucketGrid#normalizeOffset} returns it.
+   *
+   * @param bucketOffsetMs {@code 0} for the epoch-aligned grid
+   */
+  public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
     final int reqCount = requests.size();
 
     // Determine actual data range to size flat arrays correctly.
@@ -729,7 +742,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     final long firstBucket;
     final int maxBuckets;
     if (useFlatMode && actualMin <= actualMax) {
-      firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
+      firstBucket = TimeBucketGrid.bucketStart(actualMin, bucketIntervalMs, bucketOffsetMs);
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
       // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
       if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS
@@ -787,7 +800,7 @@ public class TimeSeriesEngine implements AutoCloseable {
               // refuse a request whose real answer fits. The bound stays a bound either way, and it is the one
               // that cannot refuse an answer the caller was entitled to.
               shardResult.setBucketCeiling(bucketCeiling);
-              shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
+              shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, shardResult, shardMetrics, tagFilter);
               return shardResult;
             } catch (final IOException e) {
               throw new CompletionException(e);
@@ -825,7 +838,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs;
+            final long bucketTs = TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs);
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
             result.accumulateRow(bucketTs, rowValues);
@@ -859,7 +872,7 @@ public class TimeSeriesEngine implements AutoCloseable {
         // if compaction completes between reading the two layers.
         shard.getCompactionLock().readLock().lock();
         try {
-          shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics, tagFilter);
+          shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, result, metrics, tagFilter);
 
           final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
@@ -869,7 +882,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
+            final long bucketTs = bucketIntervalMs > 0 ? TimeBucketGrid.bucketStart(ts, bucketIntervalMs, bucketOffsetMs) : singleBucketTs;
 
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
@@ -922,6 +935,25 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Merges the small sealed blocks every shard has accumulated into full-size ones (issue #8794). Run it after
+   * {@link #compactAll()}: that is what creates them, one per shard per pass, when the feed is slower than a block
+   * per pass. Lossless, and a no-op on a store with nothing to merge.
+   */
+  public void mergeSmallBlocks() throws IOException {
+    mergeSmallBlocks(1);
+  }
+
+  /**
+   * Same, but a shard is rewritten only when the pass removes at least {@code minBlocksSaved} blocks: a pass copies the
+   * whole sealed file and, under HA, ships it, so the maintenance scheduler lets a handful of small blocks accumulate
+   * instead of rewriting a large store every minute to fold two of them.
+   */
+  public void mergeSmallBlocks(final int minBlocksSaved) throws IOException {
+    for (final TimeSeriesShard shard : shards)
+      shard.mergeSmallBlocks(minBlocksSaved);
+  }
+
+  /**
    * Applies retention policy: removes sealed blocks older than the given timestamp.
    * Note: this only truncates sealed stores. To ensure mutable bucket data is also
    * covered, call {@link #compactAll()} before this method.
@@ -968,7 +1000,8 @@ public class TimeSeriesEngine implements AutoCloseable {
     for (final DownsamplingTier tier : orderedTiers) {
       final long cutoffTs = nowMs - tier.afterMs();
       runSealedMaintenanceReplicated(
-          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(), tsColIdx, tagColIndices,
+          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(),
+              TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs()), tsColIdx, tagColIndices,
               numericColIndices));
     }
   }

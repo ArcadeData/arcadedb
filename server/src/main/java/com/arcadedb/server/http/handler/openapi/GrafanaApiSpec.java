@@ -188,6 +188,11 @@ public class GrafanaApiSpec implements OpenApiContributor {
         "Bucket width in the same unit as the timestamps. Derived from 'maxDataPoints' and the "
             + "time range when omitted. When stated it must be positive: a value of zero or less is refused "
             + "with an error frame for this target rather than replaced by a derived interval."));
+    aggregation.addProperty("bucketOrigin", SpecBuilders.integer(
+        "Where the bucket grid starts, in epoch milliseconds. Buckets are multiples of 'bucketInterval' counted from "
+            + "this instant. Optional; the default is the Unix epoch, which was a Thursday at 00:00 UTC, so a one-week "
+            + "bucket starts on a Thursday and a one-day bucket at 00:00 UTC. A Monday origin gives Monday weeks and a "
+            + "local-midnight origin gives local days."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(
         aggregationRequest,
         "Aggregations to compute. Must name at least one; an empty array is refused with an error frame."));

@@ -75,6 +75,16 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * A downsampling tier's trailing {@code OFFSET} clause, or nothing for the epoch-aligned grid (issue #8798). Signed,
+   * because the grammar allows a minus in front of the amount and a grid shifted the other way is the common case.
+   */
+  protected static String renderTierOffset(final long offsetMs) {
+    if (offsetMs == 0)
+      return "";
+    return " OFFSET " + (offsetMs < 0 ? "-" : "") + renderDuration(Math.abs(offsetMs));
+  }
+
+  /**
    * {@code <count> <unit>} for a duration in milliseconds, in the SAME units the parser reads - the unit table
    * lives once, on {@link com.arcadedb.schema.TimeSeriesTypeBuilder#renderSQLDuration}, so the two renderings
    * cannot drift apart (code review on PR #7721). Shared by every TimeSeries DDL statement that carries a

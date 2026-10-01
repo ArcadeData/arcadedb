@@ -852,6 +852,58 @@ public class TimeSeriesShard implements AutoCloseable {
     }
   }
 
+  /**
+   * Merges the runs of small sealed blocks this shard has accumulated into full-size ones (issue #8794).
+   * <p>
+   * A feed slower than one block per maintenance pass seals a small block every pass, and compaction never looks
+   * back at what it sealed before. This is the look back: it runs after {@link #compact()} on the same schedule, under
+   * the same mutex, and ships its result through the same HA path as retention and downsampling do (leader only, the
+   * rewritten sealed bytes in one replication unit). It is separate from {@link #compact()} on purpose: compaction's
+   * crash recovery truncates the store back to "the first N blocks in file order", which only means something while
+   * compaction appends and never rewrites a block it already wrote.
+   * <p>
+   * The file is written without any lock appenders wait on; only the swap and the capture of the file image for
+   * replication run under the compaction write lock (the same as retention and compaction do).
+   *
+   * @param minBlocksSaved the least number of blocks the pass must remove to be worth a rewrite of the whole file (and,
+   *                       under HA, its replication); {@code 1} merges whenever it can
+   * @return whether the store was rewritten
+   */
+  public boolean mergeSmallBlocks(final int minBlocksSaved) throws IOException {
+    compactionMutex.lock();
+    try {
+      return database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> mergeSmallBlocksInternal(minBlocksSaved));
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException("Merge of small blocks interrupted for shard " + shardIndex, e);
+    } finally {
+      compactionMutex.unlock();
+    }
+  }
+
+  private boolean mergeSmallBlocksInternal(final int minBlocksSaved) throws IOException {
+    final TimeSeriesSealedStore.MergePlan plan = sealedStore.prepareMerge(SEALED_BLOCK_SIZE, compactionBucketIntervalMs,
+        minBlocksSaved);
+    if (plan == null)
+      return false;
+
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    // As retention and downsampling do: the local swap lands first and the replication record follows it, so a failure
+    // between the two is repaired by the next sealed change shipped for this shard
+    compactionLock.writeLock().lock();
+    try {
+      if (!sealedStore.commitMerge(plan))
+        return false;
+      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      return true;
+    } catch (final IOException | RuntimeException e) {
+      sealedStore.deleteMergeTempFileIfExists();
+      throw e;
+    } finally {
+      compactionLock.writeLock().unlock();
+    }
+  }
+
   private void compactInternal() throws IOException {
     final long initialBlockCount = sealedStore.getBlockCount();
 
@@ -1590,7 +1642,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
   // --- Private helpers ---
 
-  private static int[] sortIndices(final long[] timestamps) {
+  static int[] sortIndices(final long[] timestamps) {
     final int n = timestamps.length;
     final int[] indices = new int[n];
     for (int i = 0; i < n; i++)
@@ -1621,14 +1673,14 @@ public class TimeSeriesShard implements AutoCloseable {
     System.arraycopy(temp, from, arr, from, to - from);
   }
 
-  private static long[] applyOrder(final long[] data, final int[] indices) {
+  static long[] applyOrder(final long[] data, final int[] indices) {
     final long[] result = new long[data.length];
     for (int i = 0; i < indices.length; i++)
       result[i] = data[indices[i]];
     return result;
   }
 
-  private static Object[] applyOrderObjects(final Object[] data, final int[] indices) {
+  static Object[] applyOrderObjects(final Object[] data, final int[] indices) {
     final Object[] result = new Object[data.length];
     for (int i = 0; i < indices.length; i++)
       result[i] = data[indices[i]];

@@ -21,11 +21,22 @@ package com.arcadedb.engine.timeseries;
 /**
  * Defines a downsampling tier: data older than {@code afterMs} gets downsampled
  * to {@code granularityMs} resolution (averaging numeric fields per time bucket).
+ * <p>
+ * The buckets are multiples of the granularity counted from the Unix epoch, shifted by {@code offsetMs} (issue #8798,
+ * see {@link TimeBucketGrid}): zero keeps the epoch-aligned grid, and {@code -8 hours} makes daily buckets start at
+ * local midnight in UTC+8. It should be the same offset the queries over the type bucket with, so a downsampled
+ * block does not straddle two of their buckets. Blocks already downsampled to this granularity are not re-bucketed, so
+ * changing the offset of an existing tier only affects data downsampled afterwards.
  *
  * @param afterMs       age threshold in milliseconds (must be > 0)
  * @param granularityMs target resolution in milliseconds (must be > 0)
+ * @param offsetMs      shift of the bucket grid from the epoch, in milliseconds; may be negative, zero for the default grid
  */
-public record DownsamplingTier(long afterMs, long granularityMs) {
+public record DownsamplingTier(long afterMs, long granularityMs, long offsetMs) {
+
+  public DownsamplingTier(final long afterMs, final long granularityMs) {
+    this(afterMs, granularityMs, 0L);
+  }
 
   public DownsamplingTier {
     if (afterMs <= 0)

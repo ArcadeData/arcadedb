@@ -217,6 +217,11 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             + "value of zero or less is refused with 400 rather than read as a single bucket over the whole "
             + "range, and one with a fractional part is refused rather than truncated, because a bucket width "
             + "is exactly the sort of value a client computes by division."));
+    aggregation.addProperty("bucketOrigin", SpecBuilders.integer(
+        "Where the bucket grid starts, in epoch milliseconds. Buckets are multiples of 'bucketInterval' counted from "
+            + "this instant. Optional; the default is the Unix epoch, which was a Thursday at 00:00 UTC, so a one-week "
+            + "bucket starts on a Thursday and a one-day bucket at 00:00 UTC. A Monday origin gives Monday weeks and a "
+            + "local-midnight origin gives local days."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(request,
         "Aggregations to compute. Must name at least one; an empty array is refused with 400."));
     aggregation.setRequired(List.of("bucketInterval", "requests"));

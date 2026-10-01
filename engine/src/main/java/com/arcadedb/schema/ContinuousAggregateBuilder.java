@@ -43,7 +43,8 @@ import java.util.regex.Pattern;
  */
 public class ContinuousAggregateBuilder {
   private static final Pattern TIME_BUCKET_PATTERN = Pattern.compile(
-      "ts\\.timeBucket\\s*\\(\\s*'([^']+)'\\s*,\\s*(\\w+)\\s*\\)",
+      // the optional third parameter (origin, offset, timezone) moves the bucket grid (issue #8798); it never holds a closing parenthesis
+      "ts\\.timeBucket\\s*\\(\\s*'([^']+)'\\s*,\\s*(\\w+)\\s*(?:,[^)]*)?\\)",
       Pattern.CASE_INSENSITIVE);
 
   private static final Pattern ALIAS_PATTERN = Pattern.compile(
@@ -163,8 +164,9 @@ public class ContinuousAggregateBuilder {
     final Matcher bucketMatcher = TIME_BUCKET_PATTERN.matcher(query);
     if (!bucketMatcher.find())
       throw new SchemaException("""
-          Continuous aggregate query must include ts.timeBucket(interval, timestamp) \
-          in the projection. Example: SELECT ts.timeBucket('1h', ts) AS hour, ...""");
+          Continuous aggregate query must include ts.timeBucket(interval, timestamp [, options]) \
+          in the projection, with options written as a literal that holds no parenthesis. \
+          Example: SELECT ts.timeBucket('1h', ts) AS hour, ...""");
 
     final String intervalStr = bucketMatcher.group(1);
     final String tsColumnInQuery = bucketMatcher.group(2);

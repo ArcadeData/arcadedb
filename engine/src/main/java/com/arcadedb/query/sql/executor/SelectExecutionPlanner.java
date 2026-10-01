@@ -59,6 +59,7 @@ import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.IsNotNullCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
+import com.arcadedb.query.sql.parser.JsonItem;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
@@ -3254,6 +3255,20 @@ public class SelectExecutionPlanner {
     return false;
   }
 
+  private static boolean isLiteralOptions(final Expression expression) {
+    if (expression.isLiteral())
+      return true;
+    if (expression.json != null) {
+      for (final JsonItem item : expression.json.items)
+        if (!item.right.isLiteral())
+          return false;
+      return true;
+    }
+    // the parser wraps a map literal in a BaseExpression around the Expression that holds it
+    return expression.mathExpression instanceof BaseExpression base && base.modifier == null && base.expression != null
+        && isLiteralOptions(base.expression);
+  }
+
   /**
    * Attempts to push down aggregation into the TimeSeries engine.
    * Eligible queries have: ts.timeBucket GROUP BY, simple aggregate functions (avg, max, min, sum, count),
@@ -3285,6 +3300,7 @@ public class SelectExecutionPlanner {
     // Find the timeBucket item and aggregate items
     String timeBucketAlias = null;
     String intervalStr = null;
+    Object bucketOptions = null;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final Map<String, String> requestAliasToOutputAlias = new HashMap<>();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
@@ -3308,6 +3324,23 @@ public class SelectExecutionPlanner {
         if (!(intervalVal instanceof String))
           return false;
         intervalStr = (String) intervalVal;
+        // The optional options parameter (origin, offset, timezone) moves the bucket grid and the push-down has to
+        // bucket on the same one as the function does (issue #8798). Resolved here, once, so it must be a constant:
+        // anything that needs the current record is left to the generic path, which evaluates it per row.
+        if (funcCall.getParams().size() > 3)
+          return false;
+        if (funcCall.getParams().size() == 3) {
+          // Only a literal, or a JSON object of literals, is resolved once here: anything that reads the record (a column,
+          // coalesce(col, ...)) would be evaluated against no record and bucket differently from the generic plan
+          final Expression optionsExpression = funcCall.getParams().get(2);
+          if (!isLiteralOptions(optionsExpression))
+            return false;
+          try {
+            bucketOptions = funcCall.getParams().get(2).execute((Identifiable) null, context);
+          } catch (final CommandExecutionException | IllegalArgumentException e) {
+            return false;
+          }
+        }
       } else {
         // Must be an aggregate function
         final String aggFuncName = funcName.toLowerCase(Locale.ROOT);
@@ -3376,6 +3409,14 @@ public class SelectExecutionPlanner {
     if (bucketIntervalMs <= 0)
       return false;
 
+    // Same for the grid options: a malformed one is the generic path's to refuse, with the message the function gives
+    final long bucketOffsetMs;
+    try {
+      bucketOffsetMs = SQLFunctionTimeBucket.resolveOffset(bucketOptions, intervalStr, bucketIntervalMs);
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+
     // Extract tag filter from WHERE clause for push-down
     final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
 
@@ -3386,7 +3427,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Chain the push-down step
-    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
+    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
         timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
 
     // Null out the aggregate projections so handleProjections doesn't add duplicate steps

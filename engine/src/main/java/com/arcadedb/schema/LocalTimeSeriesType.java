@@ -378,6 +378,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         final JSONObject tierJson = new JSONObject();
         tierJson.put("afterMs", tier.afterMs());
         tierJson.put("granularityMs", tier.granularityMs());
+        if (tier.offsetMs() != 0)
+          tierJson.put("offsetMs", tier.offsetMs());
         tierArray.put(tierJson);
       }
       json.put("downsamplingTiers", tierArray);
@@ -438,7 +440,8 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         final JSONObject tierJson = tierArray.getJSONObject(i);
         tiers.add(new DownsamplingTier(
             tierJson.getLong("afterMs"),
-            tierJson.getLong("granularityMs")
+            tierJson.getLong("granularityMs"),
+            tierJson.getLong("offsetMs", 0L)
         ));
       }
     }
