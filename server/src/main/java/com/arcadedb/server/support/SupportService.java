@@ -293,19 +293,6 @@ public class SupportService implements AutoCloseable {
     return client(registration);
   }
 
-  // ---------------------------------------------------------------------------------------------- installation
-
-  /**
-   * Registers this server as an installation of the key's workspace in the portal, or completes the one it already has: the
-   * portal answers {@code {status: created|updated|unchanged, installationId, name, filled, differs}}. What is sent is the same
-   * redacted diagnostics document an issue carries (never logs, never a thread dump).
-   */
-  public String registerInstallation() {
-    final SupportPortalClient client = requireClient();
-    final JSONObject diagnostics = new SupportDiagnostics(server).build(new SupportRedactor.Session());
-    return client.registerInstallation(new JSONObject().put("diagnostics", diagnostics).toString());
-  }
-
   // ---------------------------------------------------------------------------------------------- preview
 
   /**

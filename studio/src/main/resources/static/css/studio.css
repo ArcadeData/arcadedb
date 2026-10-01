@@ -4442,23 +4442,6 @@ body.col-resizing * {
   color: var(--text-primary);
 }
 
-.support-installation {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 10px 12px;
-  margin-bottom: 14px;
-  border: 1px dashed var(--border-ddd);
-  border-radius: 8px;
-  font-size: 0.86rem;
-}
-
-.support-installation-text {
-  flex: 1;
-  min-width: 220px;
-}
-
 .support-ok {
   color: #1f9d55;
 }
