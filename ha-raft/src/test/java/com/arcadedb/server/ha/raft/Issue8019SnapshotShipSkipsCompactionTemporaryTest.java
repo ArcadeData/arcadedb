@@ -160,11 +160,7 @@ class Issue8019SnapshotShipSkipsCompactionTemporaryTest {
       SnapshotHttpHandler.addPageFilesToZip(zipOut, db, snapshot, manifest);
       zipOut.finish();
     }
-    final Map<String, byte[]> entries = new HashMap<>();
-    try (final ZipInputStream zipIn = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
-      for (ZipEntry entry = zipIn.getNextEntry(); entry != null; entry = zipIn.getNextEntry())
-        entries.put(entry.getName(), zipIn.readAllBytes());
-    }
+    final Map<String, byte[]> entries = readEntries(bytes.toByteArray());
     assertThat(manifest).extracting(SnapshotManager.ManifestEntry::name)
         .as("the manifest the follower verifies must describe exactly the entries written (#4831)")
         .containsExactlyInAnyOrderElementsOf(entries.keySet());
@@ -179,8 +175,12 @@ class Issue8019SnapshotShipSkipsCompactionTemporaryTest {
       SnapshotHttpHandler.addPageFilesToZip(zipOut, db, snapshot, manifest);
       zipOut.finish();
     }
+    return readEntries(bytes.toByteArray());
+  }
+
+  private static Map<String, byte[]> readEntries(final byte[] zip) throws Exception {
     final Map<String, byte[]> entries = new HashMap<>();
-    try (final ZipInputStream zipIn = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+    try (final ZipInputStream zipIn = new ZipInputStream(new ByteArrayInputStream(zip))) {
       for (ZipEntry entry = zipIn.getNextEntry(); entry != null; entry = zipIn.getNextEntry())
         entries.put(entry.getName(), zipIn.readAllBytes());
     }

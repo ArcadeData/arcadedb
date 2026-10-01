@@ -912,7 +912,6 @@ public class SnapshotHttpHandler implements HttpHandler {
     if (snapshot != null) {
       for (final PageSnapshot.SnapshotConfigFile config : snapshot.getConfigurationFiles())
         total += config.size();
-      // #8019: THE SAME FILTER addPageFilesToZip APPLIES, or a compaction temporary is announced but never sent
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
         if (isShippedPageFile(file.fileName()))
           total += file.size();
@@ -1012,12 +1011,10 @@ public class SnapshotHttpHandler implements HttpHandler {
    * Archives the page files of the ship: the window's files when there is one, the registered files frozen on disk
    * otherwise - the same two sources {@link #estimateUncompressedBytes} sizes.
    * <p>
-   * NEITHER SOURCE IS SHIPPED WHOLE (issue #8019). An index-compaction temporary ({@code temp_*}) is a fully
-   * REGISTERED component file, so it is in both, yet it is node-local work in progress: the window's own
-   * {@code schema.json} still names the files it has not replaced yet ({@code removeTempSuffix()} runs before the
-   * schema is switched over), and on the follower it is a file nothing ever registers - its extension is not in
-   * {@code LocalDatabase.SUPPORTED_FILE_EXT} - renames or deletes. Shipping it costs the transfer and the follower's
-   * space reservation, and leaves a permanent orphan behind. See {@link #isShippedPageFile(String)}.
+   * An index-compaction temporary ({@code temp_*}) is registered, so both sources carry it, but it is skipped (issue
+   * #8019): the shipped {@code schema.json} still names the files it has not replaced yet, because
+   * {@code removeTempSuffix()} runs before the schema switches over, and on the follower nothing would ever register
+   * or delete it. See {@link #isShippedPageFile(String)}.
    * <p>
    * Package-private and static so both branches can be driven from a test without an HTTP exchange.
    */
