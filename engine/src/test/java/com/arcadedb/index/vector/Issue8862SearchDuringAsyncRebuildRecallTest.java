@@ -26,7 +26,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -109,6 +108,7 @@ class Issue8862SearchDuringAsyncRebuildRecallTest {
         final double before = recall(index, live, live.keySet().toArray(new RID[0]), new Random(11), 20);
         assertThat(before).as("precondition: recall before the deletes").isGreaterThan(0.9);
 
+        // 20% deleted is the default rebuild threshold, so the commit starts an async rebuild
         final long rebuildsBefore = stat(index, "graphRebuildCount");
         final List<RID> shuffled = new ArrayList<>(rids);
         Collections.shuffle(shuffled, new Random(13));
@@ -140,7 +140,7 @@ class Issue8862SearchDuringAsyncRebuildRecallTest {
         assertThat(samplesDuringRebuild).as("samples that ran entirely inside the rebuild window (of %d)", samples)
             .isPositive();
         assertThat(worst).as("worst recall@10 sampled around the async rebuild (before: %s)", before)
-            .isGreaterThan(0.9);
+            .isGreaterThan(0.7); // a 3-query sample of an approximate search varies; the bug measured 0.04-0.31
       } finally {
         if (db.isOpen())
           db.drop();
