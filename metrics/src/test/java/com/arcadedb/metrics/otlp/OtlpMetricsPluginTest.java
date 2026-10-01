@@ -124,6 +124,8 @@ class OtlpMetricsPluginTest {
     assertThat(OtlpMetricsPlugin.normalizeEndpoint(null)).isNull();
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("")).isEmpty();
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318?x=1")).isEqualTo("http://h:4318/v1/metrics?x=1");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://otel_collector:4318")).isEqualTo("http://otel_collector:4318/v1/metrics");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("localhost:4318")).isEqualTo("localhost:4318");
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://[::1]:4318")).isEqualTo("http://[::1]:4318/v1/metrics");
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://user:pw@h:4318")).isEqualTo("http://user:pw@h:4318/v1/metrics");
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318#x")).isEqualTo("http://h:4318/v1/metrics#x");
@@ -145,6 +147,9 @@ class OtlpMetricsPluginTest {
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4317")).isTrue();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4317/")).isTrue();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel-collector:4318/v1/metrics")).isFalse();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://otel_collector:4317")).isTrue();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("https://host:4317/v1/metrics")).isTrue();
+    assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("http://host:43170")).isFalse();
     assertThat(OtlpMetricsPlugin.looksLikeGrpcEndpoint("not a url")).isFalse();
   }
 

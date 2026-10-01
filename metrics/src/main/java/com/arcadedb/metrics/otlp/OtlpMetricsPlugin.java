@@ -29,10 +29,10 @@ import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.Map;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Optional {@link ServerPlugin} that pushes Micrometer metrics to an OTLP endpoint, alongside (never
@@ -41,6 +41,10 @@ import java.util.logging.Level;
  * unchanged. The Prometheus scrape path is untouched whether or not OTLP is enabled.
  */
 public class OtlpMetricsPlugin implements ServerPlugin {
+  // scheme://authority, then an optional lone "/", then an optional query and/or fragment
+  private static final Pattern URL_WITHOUT_PATH = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]+)/?([?#].*)?$");
+  private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]*:4317(?:[/?#].*)?$");
+
   private OtlpMeterRegistry registry;
   private boolean           enabled;
 
@@ -109,29 +113,19 @@ public class OtlpMetricsPlugin implements ServerPlugin {
 
   /**
    * Micrometer POSTs to the configured URL as is, so a base URL without a path reaches the collector root and is
-   * answered with 404. The standard OTLP/HTTP metrics path is appended in that case; an explicit path is kept (issue #7294).
+   * answered with 404. The standard OTLP/HTTP metrics path is appended in that case; an explicit path is kept.
+   * The authority is checked rather than the host, because {@link URI} reports no host for names such as
+   * {@code otel_collector} (an underscore, common in Docker Compose service names).
    */
   static String normalizeEndpoint(final String endpoint) {
     if (endpoint == null)
       return null;
-    try {
-      final URI uri = new URI(endpoint.trim());
-      final String path = uri.getRawPath();
-      if (uri.getHost() != null && (path == null || path.isEmpty() || "/".equals(path))) {
-        final String base = endpoint.trim();
-        int cut = base.length();
-        for (final char delimiter : new char[] { '?', '#' }) {
-          final int pos = base.indexOf(delimiter);
-          if (pos >= 0 && pos < cut)
-            cut = pos;
-        }
-        final String head = base.substring(0, cut);
-        return (head.endsWith("/") ? head.substring(0, head.length() - 1) : head) + "/v1/metrics" + base.substring(cut);
-      }
-    } catch (final URISyntaxException e) {
-      // leave it untouched, the exporter reports the bad URL
-    }
-    return endpoint;
+    final String trimmed = endpoint.trim();
+    final Matcher matcher = URL_WITHOUT_PATH.matcher(trimmed);
+    if (!matcher.matches())
+      return endpoint;
+    final String suffix = matcher.group(2);
+    return matcher.group(1) + "/v1/metrics" + (suffix != null ? suffix : "");
   }
 
   /**
@@ -140,11 +134,8 @@ public class OtlpMetricsPlugin implements ServerPlugin {
   static boolean looksLikeGrpcEndpoint(final String endpoint) {
     if (endpoint == null)
       return false;
-    try {
-      return new URI(endpoint.trim()).getPort() == 4317;
-    } catch (final URISyntaxException e) {
-      return false;
-    }
+    final Matcher matcher = GRPC_PORT.matcher(endpoint.trim());
+    return matcher.matches();
   }
 
   /**
