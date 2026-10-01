@@ -2529,7 +2529,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    final ReentrantReadWriteLock.WriteLock writeLock = writeLock();
+    final ReentrantReadWriteLock.WriteLock[] writeLock = writeLock();
     try {
 
       return callable.call();
