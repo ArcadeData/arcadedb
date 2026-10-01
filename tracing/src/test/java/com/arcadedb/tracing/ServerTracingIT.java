@@ -158,8 +158,14 @@ class ServerTracingIT extends BaseGraphServerTest {
     plugin.attachForTest(registry, exporter);
 
     try {
-      final long readyRequestsBefore = readyRequestCount();
-      for (final String method : new String[] { "GET", "HEAD" })
+      final String[] methods = { "GET", "HEAD" };
+      final String[] probes = { "/ready", "/health" };
+      final long[][] probeRequestsBefore = new long[methods.length][probes.length];
+      for (int m = 0; m < methods.length; m++)
+        for (int p = 0; p < probes.length; p++)
+          probeRequestsBefore[m][p] = probeRequestCount(methods[m], probes[p]);
+
+      for (final String method : methods)
         for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
           final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
           c.setRequestMethod(method);
@@ -189,13 +195,19 @@ class ServerTracingIT extends BaseGraphServerTest {
       assertThat(databasesSpan).as("the non-probe request must still be traced").isNotNull();
 
       // Only the tracing handler declines the probe; the always-on HTTP RED timer is recorded outside the Observation and
-      // must still count it. Polled: the timer is recorded in the handler's finally block, after the response.
-      long readyRequestsAfter = readyRequestCount();
-      for (int attempt = 0; attempt < 250 && readyRequestsAfter <= readyRequestsBefore; attempt++) {
-        Thread.sleep(20);
-        readyRequestsAfter = readyRequestCount();
-      }
-      assertThat(readyRequestsAfter).as("the RED timer must still record the untraced probe").isGreaterThan(readyRequestsBefore);
+      // must still count it. Polled: the timer is recorded in the handler's finally block, after the response. It is also
+      // recorded AFTER observation.stop(), so once every probe request is counted, a span a probe produced is already
+      // exported. Wait on all four probes, not only GET /ready, so the noneMatch below does not depend on request ordering (#8803).
+      for (int m = 0; m < methods.length; m++)
+        for (int p = 0; p < probes.length; p++) {
+          long after = probeRequestCount(methods[m], probes[p]);
+          for (int attempt = 0; attempt < 250 && after <= probeRequestsBefore[m][p]; attempt++) {
+            Thread.sleep(20);
+            after = probeRequestCount(methods[m], probes[p]);
+          }
+          assertThat(after).as("the RED timer must still record the untraced probe " + methods[m] + " " + probes[p])
+              .isGreaterThan(probeRequestsBefore[m][p]);
+        }
       assertThat(exporter.getFinishedSpanItems())
           .as("no span may carry a probe path")
           .noneMatch(s -> "/ready".equals(s.getAttributes().get(pathKey)) || "/health".equals(s.getAttributes().get(pathKey)));
@@ -205,12 +217,15 @@ class ServerTracingIT extends BaseGraphServerTest {
   }
 
   /**
-   * Reads the RED timer from the global registry. That needs a child registry, which the server fixture's metrics setup
-   * adds; without one {@code find(...).timer()} is null and the count stays 0, so the assertion above fails loudly.
+   * Reads the RED timers of a method and path from the global registry, summed over the status and db tags. That needs a
+   * child registry, which the server fixture's metrics setup adds; without one {@code find(...).timers()} is empty and the
+   * count stays 0, so the assertion above fails loudly.
    */
-  private static long readyRequestCount() {
-    final Timer timer = Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", "/ready").tag("method", "GET").timer();
-    return timer != null ? timer.count() : 0L;
+  private static long probeRequestCount(final String method, final String path) {
+    long count = 0L;
+    for (final Timer timer : Metrics.globalRegistry.find("arcadedb.http.requests").tag("path", path).tag("method", method).timers())
+      count += timer.count();
+    return count;
   }
 
   private static String basicAuth() {
