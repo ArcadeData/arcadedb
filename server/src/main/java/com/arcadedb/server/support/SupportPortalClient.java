@@ -154,6 +154,16 @@ public class SupportPortalClient {
     return call("POST", "/issues/" + number + "/comments", new JSONObject().put("body", body).toString());
   }
 
+  /** Answers one support request: {@code {outcome, result? | text?, reason?, durationMs?}}; the portal makes it one client comment. */
+  public String answerRequest(final long number, final String requestId, final String jsonBody) {
+    return call("POST", "/issues/" + number + "/requests/" + requestId + "/response", jsonBody);
+  }
+
+  /** Answers several support requests at once ({@code {responses: [...]}}): the portal makes ONE comment of them. */
+  public String answerRequests(final long number, final String jsonBody) {
+    return call("POST", "/issues/" + number + "/responses", jsonBody);
+  }
+
   public void setOpen(final long number, final boolean open) {
     call("PUT", "/issues/" + number, new JSONObject().put("open", open).toString());
   }
@@ -310,7 +320,7 @@ public class SupportPortalClient {
     // A code we do not know of is kept as "portal_error": Studio switches on the known ones
     if (!List.of("invalid_key", "client_mismatch", "scope_denied", "support_not_active", "not_found", "too_large", "rate_limited",
         "bad_request", "not_supported", "no_workspace", "forbidden", "key_has_no_owner", "instance_id.taken", "invalid_instance_id",
-        "invalid_version").contains(code))
+        "invalid_version", "already_answered").contains(code))
       code = "portal_error";
 
     long retryAfter = 0L;
@@ -333,7 +343,8 @@ public class SupportPortalClient {
           + "scopes in the customer portal.";
       case "support_not_active" -> "Your ArcadeDB support plan is not active (it expired or there is none). Renew or buy a plan at "
           + "https://arcadedb.com/pricing.html; you can still report a public GitHub issue.";
-      case "not_found" -> "The issue was not found in your workspace.";
+      case "not_found" -> "The issue (or the request) was not found in your workspace.";
+      case "already_answered" -> "This request was already answered, by you or by a colleague. Reload the issue to see the answer.";
       case "too_large" -> "The upload is larger than the portal accepts. Narrow the log window, or do not send the logs.";
       case "rate_limited" -> "Too many requests to the portal" + (retryAfter > 0 ? ": retry in " + retryAfter + " seconds" : ": retry later")
           + ".";

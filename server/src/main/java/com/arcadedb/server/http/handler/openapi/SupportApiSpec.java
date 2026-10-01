@@ -49,6 +49,8 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues", createIssuesPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}", createIssuePath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/comments", createCommentsPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/requests/{requestId}/response", createAnswerRequestPath());
+    openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/responses", createAnswerRequestsPath());
     openAPI.getPaths().addPathItem("/api/v1/server/support/issues/{number}/attachments", createAttachmentsPath());
 
     // Every operation is authenticated: the 401 of an unauthenticated request is declared once, here
@@ -67,6 +69,8 @@ public class SupportApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("SupportBundleRequest", createBundleRequestSchema());
     openAPI.getComponents().addSchemas("SupportCreateIssueRequest", createIssueRequestSchema());
     openAPI.getComponents().addSchemas("SupportCommentRequest", createCommentRequestSchema());
+    openAPI.getComponents().addSchemas("SupportAnswerRequest", createAnswerSchema(false));
+    openAPI.getComponents().addSchemas("SupportAnswersRequest", createAnswersSchema());
     openAPI.getComponents().addSchemas("SupportSetOpenRequest", createSetOpenRequestSchema());
     openAPI.getComponents().addSchemas("SupportAttachRequest", createAttachRequestSchema());
   }
@@ -193,6 +197,33 @@ public class SupportApiSpec implements OpenApiContributor {
     return item;
   }
 
+  private PathItem createAnswerRequestPath() {
+    final Operation post = SpecBuilders.operation("answerSupportRequest", TAG, "Answer a support request",
+        "Staff can ask for the result of a read-only query. The browser runs it through the ordinary query endpoint, then sends the "
+            + "result (or a decline, or the failure) here and the server forwards it to the portal, which turns it into a client "
+            + "comment. Restricted to the root user." + ERRORS);
+    post.addParametersItem(SpecBuilders.pathParam("number", "Issue number"));
+    post.addParametersItem(SpecBuilders.pathParam("requestId", "Request id (rq_ and 8 hex digits)"));
+    post.setRequestBody(SpecBuilders.jsonBody("The answer", "SupportAnswerRequest", true));
+    post.setResponses(portalResponses("201", SpecBuilders.jsonResponse("The client comment, as the portal answers", null)));
+    post.getResponses().addApiResponse("409", SpecBuilders.errorResponse("The request was already answered"));
+    final PathItem item = new PathItem();
+    item.setPost(post);
+    return item;
+  }
+
+  private PathItem createAnswerRequestsPath() {
+    final Operation post = SpecBuilders.operation("answerSupportRequests", TAG, "Answer several support requests at once",
+        "As answering one, for \"Run all\": the portal writes ONE comment. Restricted to the root user." + ERRORS);
+    post.addParametersItem(SpecBuilders.pathParam("number", "Issue number"));
+    post.setRequestBody(SpecBuilders.jsonBody("The answers", "SupportAnswersRequest", true));
+    post.setResponses(portalResponses("201", SpecBuilders.jsonResponse("The client comment, as the portal answers", null)));
+    post.getResponses().addApiResponse("409", SpecBuilders.errorResponse("A request was already answered"));
+    final PathItem item = new PathItem();
+    item.setPost(post);
+    return item;
+  }
+
   private PathItem createAttachmentsPath() {
     final Operation post = SpecBuilders.operation("attachToSupportIssue", TAG, "Send more files to a support issue",
         "Sends the files of a preview to an existing issue. Restricted to the root user." + ERRORS);
@@ -294,6 +325,28 @@ public class SupportApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("A reply");
     schema.addProperty("body", SpecBuilders.string("At most 20000 characters"));
     schema.setRequired(List.of("body"));
+    return schema;
+  }
+
+  private Schema<?> createAnswerSchema(final boolean withRequestId) {
+    final Schema<Object> schema = SpecBuilders.object("The answer to a support request");
+    if (withRequestId)
+      schema.addProperty("requestId", SpecBuilders.string("The request being answered (rq_ and 8 hex digits)"));
+    schema.addProperty("outcome", SpecBuilders.string("answered, declined or failed"));
+    schema.addProperty("result", SpecBuilders.object("answered only: {columns: [{name, type}], rows: [[...]], truncated, masked: "
+        + "{cells: [[row, column]], columns: [name], mode: redact|hash}}. Masked values are replaced before they are sent; "
+        + "either result or text, not both"));
+    schema.addProperty("text", SpecBuilders.string("answered only: pasted text instead of a result, at most 20000 characters"));
+    schema.addProperty("reason", SpecBuilders.string("declined, or failed: why, at most 500 characters"));
+    schema.addProperty("durationMs", SpecBuilders.integer("How long the query ran"));
+    schema.setRequired(withRequestId ? List.of("requestId", "outcome") : List.of("outcome"));
+    return schema;
+  }
+
+  private Schema<?> createAnswersSchema() {
+    final Schema<Object> schema = SpecBuilders.object("Several answers, written as one comment");
+    schema.addProperty("responses", SpecBuilders.object("A list of 1 to 20 answers, each as SupportAnswerRequest with its requestId"));
+    schema.setRequired(List.of("responses"));
     return schema;
   }
 
