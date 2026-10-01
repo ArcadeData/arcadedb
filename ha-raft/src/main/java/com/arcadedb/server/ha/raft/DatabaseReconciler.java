@@ -472,7 +472,7 @@ public class DatabaseReconciler {
   private Set<String> localUserDatabaseNames() throws IOException {
     final Set<String> names = new HashSet<>();
     for (final String name : server.getDatabaseNames())
-      if (!name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+      if (!ArcadeDBServer.isReservedDatabaseName(name))
         names.add(name);
     names.addAll(SnapshotInstaller.closedDatabaseNames(server));
     return names;
@@ -582,7 +582,7 @@ public class DatabaseReconciler {
     final Set<String> registered = new LinkedHashSet<>();
     for (final String dbName : server.getDatabaseNames())
       // existsDatabase re-checks the live registry: a database dropped since the listing has no copy left to refresh
-      if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX) && server.existsDatabase(dbName))
+      if (!ArcadeDBServer.isReservedDatabaseName(dbName) && server.existsDatabase(dbName))
         registered.add(dbName);
     final Set<String> leaderMissing = new HashSet<>();
     for (final String dbName : registered) {

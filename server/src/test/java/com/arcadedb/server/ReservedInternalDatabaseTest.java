@@ -111,4 +111,15 @@ class ReservedInternalDatabaseTest extends StaticBaseServerTest {
       server.stop();
     }
   }
+
+  /** Issue #8805: only the exact name is reserved, so user databases that merely resemble it stay usable. */
+  @Test
+  void onlyTheExactLostAndFoundNameIsReserved() {
+    assertThat(ArcadeDBServer.isReservedDatabaseName("lost+found")).isTrue();
+    assertThat(ArcadeDBServer.isReservedDatabaseName(".raft")).isTrue();
+    assertThat(ArcadeDBServer.isReservedDatabaseName("lost+found2")).isFalse();
+    assertThat(ArcadeDBServer.isReservedDatabaseName("my-lost+found")).isFalse();
+    assertThat(ArcadeDBServer.isReservedDatabaseName("Lost+Found")).isFalse();
+    assertThat(ArcadeDBServer.isReservedDatabaseName(null)).isFalse();
+  }
 }

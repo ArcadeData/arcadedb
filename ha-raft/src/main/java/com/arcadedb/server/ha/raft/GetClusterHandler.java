@@ -609,7 +609,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       final Set<String> dbNames = new TreeSet<>();
       if (peerId.equals(localPeerId)) {
         for (final String dbName : server.getDatabaseNames())
-          if (!dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+          if (!ArcadeDBServer.isReservedDatabaseName(dbName))
             dbNames.add(dbName);
       } else {
         // The guarded address, not the best-effort one (issue #6267). This fan-out attributes whatever comes back
