@@ -145,6 +145,15 @@ public class GraphQLResultSet implements ResultSet {
   private final TypeConditions typeConditions = new TypeConditions();
 
   /**
+   * The {@code __typename} of a record by its database type, see {@link #declaredObjectTypeOf}: it depends only on the
+   * type and on the SDL, fixed for the life of the result set, so a client that selects {@code __typename} everywhere
+   * (Apollo does) walks the type hierarchy once per database type rather than once per record. {@link #NO_DECLARED_TYPE}
+   * stands for a type with no declared ancestor.
+   */
+  private final IdentityHashMap<DocumentType, String> declaredObjectTypes = new IdentityHashMap<>(4);
+  private static final String                         NO_DECLARED_TYPE    = "";
+
+  /**
    * How many times the projections of a level were built rather than taken from {@link #projectionCache}, for tests.
    */
   private long projectionBuilds;
@@ -440,6 +449,9 @@ public class GraphQLResultSet implements ResultSet {
    * so a record of a database sub type of the type the field returns reports its own type when the SDL declares it.
    * Otherwise the schema type the selections are written against. With neither known, the database type of the record
    * is the only type there is to report.
+   * <p>
+   * The declared type of the record wins even when it is unrelated to {@code parentType}, as when a native query
+   * directive returns records of another type: {@code __typename} reports what the object is, not what was expected.
    */
   private String typeNameOf(final Result current, final ObjectTypeDefinition parentType) {
     final DocumentType recordType = recordTypeOf(current);
@@ -453,16 +465,30 @@ public class GraphQLResultSet implements ResultSet {
     return parentType != null ? parentType.getName() : null;
   }
 
-  /** The name of {@code type}, or of its nearest super type, that the SDL declares as an object type; null if none. */
+  /**
+   * The name of {@code type}, or of its nearest super type, that the SDL declares as an object type; null if none. The
+   * hierarchy is walked level by level, so with multiple inheritance a declared direct parent wins over a declared
+   * grandparent reached through another parent; within one level the order of the super types decides.
+   */
   private String declaredObjectTypeOf(final DocumentType type) {
-    if (schema.isObjectType(type.getName()))
-      return type.getName();
-    for (final DocumentType superType : type.getSuperTypes()) {
-      final String declared = declaredObjectTypeOf(superType);
-      if (declared != null)
-        return declared;
+    String declared = declaredObjectTypes.get(type);
+    if (declared == null) {
+      declared = NO_DECLARED_TYPE;
+      final List<DocumentType> level = new ArrayList<>(2);
+      level.add(type);
+      for (int i = 0; i < level.size(); i++) {
+        final DocumentType candidate = level.get(i);
+        if (schema.isObjectType(candidate.getName())) {
+          declared = candidate.getName();
+          break;
+        }
+        for (final DocumentType superType : candidate.getSuperTypes())
+          if (!level.contains(superType))
+            level.add(superType);
+      }
+      declaredObjectTypes.put(type, declared);
     }
-    return null;
+    return declared != NO_DECLARED_TYPE ? declared : null;
   }
 
   /**

@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -140,6 +141,74 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
       database.command("graphql", "type Novel { id: String name: String }");
       assertBook(database, "{ bookById(id: \"novel-1\") { __typename name } }",
           record -> assertThat(record.<String>getProperty("__typename")).isEqualTo("Novel"));
+      return null;
+    });
+  }
+
+  @Test
+  void typenameWithMultipleInheritanceIsTheDeclaredDirectParentBeforeAGrandparent() {
+    executeTest(database -> {
+      // Hybrid -> [Paper, Novel], Paper -> Book: Book (A GRANDPARENT, FIRST IN SUPER TYPE ORDER) AND Novel (A DIRECT
+      // PARENT) ARE BOTH DECLARED, AND THE NEAREST ONE WINS
+      database.getSchema().createVertexType("Paper").addSuperType("Book");
+      database.getSchema().createVertexType("Novel");
+      database.getSchema().createVertexType("Hybrid").addSuperType("Paper").addSuperType("Novel");
+      final MutableVertex hybrid = database.newVertex("Hybrid");
+      hybrid.set("id", "hybrid-1");
+      hybrid.save();
+
+      defineTypes(database);
+      database.command("graphql", "type Novel { id: String }");
+      assertBook(database, "{ bookById(id: \"hybrid-1\") { __typename } }",
+          record -> assertThat(record.<String>getProperty("__typename")).isEqualTo("Novel"));
+      return null;
+    });
+  }
+
+  @Test
+  void typenameOfARecordOfAnotherDeclaredTypeIsItsOwnType() {
+    // A NATIVE QUERY CAN RETURN RECORDS OF A TYPE OTHER THAN THE ONE THE FIELD DECLARES: __typename REPORTS WHAT THE
+    // OBJECT IS
+    executeTest(database -> {
+      defineTypes(database);
+      database.command("graphql", """
+          type Query {
+            bookById(id: String): Book
+            mislabelled: Book @sql(statement: "select from Author")
+          }""");
+      try (final ResultSet resultSet = database.query("graphql", "{ mislabelled { __typename } }")) {
+        assertThat(resultSet.hasNext()).isTrue();
+        assertThat(resultSet.next().<String>getProperty("__typename")).isEqualTo("Author");
+        assertThat(resultSet.hasNext()).isFalse();
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void typenameIsResolvedForEveryRecordOfAResultSet() {
+    // THE TYPE NAME IS CACHED BY DATABASE TYPE: EVERY RECORD, OF EITHER TYPE, STILL GETS ITS OWN
+    executeTest(database -> {
+      database.getSchema().createVertexType("Novel").addSuperType("Book");
+      final MutableVertex novel = database.newVertex("Novel");
+      novel.set("id", "novel-1");
+      novel.save();
+
+      defineTypes(database);
+      database.command("graphql", """
+          type Query {
+            bookById(id: String): Book
+            allBooks: [Book] @sql(statement: "select from Book order by id")
+          }
+          type Novel { id: String }""");
+      try (final ResultSet resultSet = database.query("graphql", "{ allBooks { id __typename } }")) {
+        final List<String> typeNames = new ArrayList<>();
+        while (resultSet.hasNext()) {
+          final Result record = resultSet.next();
+          typeNames.add(record.getProperty("id") + ":" + record.getProperty("__typename"));
+        }
+        assertThat(typeNames).containsExactly("book-1:Book", "book-2:Book", "novel-1:Novel");
+      }
       return null;
     });
   }
