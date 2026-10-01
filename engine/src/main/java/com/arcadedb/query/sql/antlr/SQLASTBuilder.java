@@ -313,6 +313,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * the inner one.
    */
   private static final String NO_TARGET_ALIAS = "";
+  /** exponent range up to which a long decimal literal is kept as an exact BigDecimal rather than a double (issue #8872) */
+  private static final int    MAX_EXACT_DECIMAL_SCALE = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -3142,7 +3144,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * <p>
    * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
    * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
-   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}, or a {@code BigDecimal} when it has more digits than a double holds) and the sign lands
+   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double} unless it needs a
+   * {@code BigDecimal} to keep its digits) and the sign lands
    * correctly on every literal shape the visitors accept, not only on plain decimal.
    * <p>
    * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
@@ -3384,6 +3387,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (text.endsWith("F") || text.endsWith("f")) {
         number.value = Float.parseFloat(text.substring(0, text.length() - 1));
       } else if (text.endsWith("D") || text.endsWith("d")) {
+        // the D suffix asks for a double, so it never takes the exact BigDecimal path of a suffix-less literal
         number.value = Double.parseDouble(text.substring(0, text.length() - 1));
       } else {
         // A suffix-less literal is a double. Parsing it as a float made `0.05` mean 0.05000000074505806, which
@@ -3400,8 +3404,6 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return baseExpr;
   }
 
-  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
-
   /**
    * A literal a double represents exactly stays a {@link Double}. A decimal one longer than 15 characters (a cheap
    * pre-filter: 15 significant digits always round-trip) is kept as a {@link BigDecimal} when the double would not
@@ -3412,9 +3414,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
     if (text.length() > 15 && !Double.isInfinite(d) && !text.startsWith("0x") && !text.startsWith("0X")) {
-      final BigDecimal exact = new BigDecimal(text);
-      if (Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
-        return exact;
+      try {
+        final BigDecimal exact = new BigDecimal(text);
+        if (Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+          return exact;
+      } catch (final NumberFormatException ignore) {
+        // an exponent that does not fit an int (underflow to 0.0): the double is what the literal always evaluated to
+      }
     }
     return d;
   }

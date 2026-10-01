@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,36 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
       assertThat(r.<Object>getProperty("a")).isEqualTo(1d);
       assertThat(r.<Object>getProperty("b")).isEqualTo(Double.POSITIVE_INFINITY);
       assertThat(r.<Object>getProperty("c")).isEqualTo(0d);
+    }
+  }
+
+  @Test
+  void underflowingExponentAndDSuffixStayDoubles() {
+    try (final ResultSet rs = database.query("sql", "SELECT 1.0000000000000000e-9999999999 AS a, " + EXACT + "D AS b")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("a")).isEqualTo(0d);
+      assertThat(r.<Object>getProperty("b")).isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
+  void renderedLiteralReparsesToTheSameValue() {
+    for (final String literal : new String[] { "12345678901234567890.", "12345678901234567890e0", EXACT, "1.2345678901234567890e30" }) {
+      final StringBuilder rendered = new StringBuilder();
+      new SQLAntlrParser(null).parse("SELECT " + literal + " AS a").toString(null, rendered);
+      try (final ResultSet rs = database.query("sql", rendered.toString())) {
+        assertThat((BigDecimal) rs.next().getProperty("a")).as(literal).isEqualByComparingTo(new BigDecimal(literal.endsWith(".") ? literal + "0" : literal));
+      }
+    }
+  }
+
+  @Test
+  void longLiteralAssignedToDoubleProperty() {
+    database.command("sql", "CREATE DOCUMENT TYPE D");
+    database.command("sql", "CREATE PROPERTY D.v DOUBLE");
+    database.transaction(() -> database.command("sql", "INSERT INTO D SET v = 1.2345678901234567890"));
+    try (final ResultSet rs = database.query("sql", "SELECT v FROM D")) {
+      assertThat(rs.next().<Double>getProperty("v")).isEqualTo(1.2345678901234567890d);
     }
   }
 
