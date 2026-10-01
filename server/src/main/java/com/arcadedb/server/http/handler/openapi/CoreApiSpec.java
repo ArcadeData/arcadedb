@@ -52,7 +52,8 @@ public class CoreApiSpec implements OpenApiContributor {
   // was raised. GET /query degrades, and so do /begin, /commit and /rollback, whose degrade is what makes an
   // idempotent retry of a commit work. Documented on all of them, because a client generated from this contract
   // would otherwise not know to look for the one signal that says an answer came from OUTSIDE the transaction it
-  // named (code review on PR #7730). The operations that REFUSE a stale id instead - POST /query and
+  // named (code review on PR #7730). The operations that REFUSE a stale id instead - POST /query, whose
+  // rejectsUnresolvableSession() override keeps it refusing though requiresTransaction() is false (#8775), and
   // /command, whose requiresTransaction() is true - never send it, and do not name it here.
   // The paragraph itself lives in SpecBuilders, next to the other four, because issue #7681 needs it on ten
   // Grafana and Prometheus operations too.
@@ -678,7 +679,8 @@ public class CoreApiSpec implements OpenApiContributor {
 
   // GetQueryHandler.requiresTransaction() returns false, so a stale session id on GET query degrades
   // session-less (DatabaseAbstractHandler.setTransactionInThreadLocal) and answers 200, never 404. The
-  // POST endpoint has no such override, so its 404 does cover the stale-session case.
+  // POST endpoint overrides rejectsUnresolvableSession() to true (PostQueryHandler), so its 404 does cover the
+  // stale-session case.
   private ApiResponses createQueryResponses() {
     return createQueryResponses(true);
   }
