@@ -99,8 +99,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -715,7 +715,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // Wall-clock of the last re-verification round claimed by reverifyUnverifiedClosedCopies(); 0 = ask at the next tick.
   private final    AtomicLong    lastUnverifiedCopyReverifyMs     = new AtomicLong();
-  // Rounds in a row that left a marked copy in place. Written by the lifecycle executor and by a refused request.
+  // Rounds in a row that left a marked copy in place. Written by the lifecycle executor and by a refused request, without
+  // a lock on purpose: it is advisory, and a reset racing a round's own update costs at most one round early or late.
   private final    AtomicInteger unverifiedCopyReverifyFailures   = new AtomicInteger();
   // The leader the ladder above was climbed against: a different one may hold the database, so it starts over.
   private volatile RaftPeerId    unverifiedCopyReverifyLeader;
@@ -5519,9 +5520,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * refused on this follower for good.
    * <p>
    * The marks are read from disk, so a copy marked by any path - the full and targeted resyncs and both reconciles - and
-   * one restored after a restart are all found. For each, the leader is asked first whether it holds the database
-   * registered ({@link UnverifiedClosedCopyCheck#REGISTERED}), the condition under which its snapshot
-   * endpoint serves it: a leader that still does not costs one small request, not a download retried with backoff.
+   * one restored after a restart are all found. For each, the leader is asked first whether its snapshot endpoint
+   * would serve the database ({@link UnverifiedClosedCopyCheck#SERVES}: registered and not quarantined there): a leader
+   * that still would not costs one small request, not a download retried with backoff.
    * When it does, the copy is reinstalled with the same targeted install a quarantine gets, which replaces the mark with
    * the copy; it stays marked when anything fails, so this never reopens a copy the leader did not send.
    * <p>
@@ -5615,20 +5616,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final String clusterToken = raftHA.getClusterToken();
     boolean anyLeft = false;
     for (final String dbName : marked) {
-      final boolean leaderHoldsIt;
+      final boolean leaderServesIt;
       try {
-        leaderHoldsIt = leaderHoldsDatabaseRegistered(raftHA, leaderId, source, dbName, clusterToken);
+        leaderServesIt = leaderServesDatabase(localServer, raftHA, leaderId, source, dbName, clusterToken);
+      } catch (final InterruptedException e) {
+        // The executor is shutting down: every later question would fail the same way at once.
+        Thread.currentThread().interrupt();
+        anyLeft = true;
+        break;
       } catch (final Exception e) {
-        if (e instanceof InterruptedException)
-          Thread.currentThread().interrupt();
         HALog.log(this, HALog.BASIC, "Could not ask the leader about database '%s', closed and unverified here: %s",
             dbName, e.getMessage());
         anyLeft = true;
         continue;
       }
-      if (!leaderHoldsIt) {
+      if (!leaderServesIt) {
         HALog.log(this, HALog.BASIC,
-            "Database '%s' stays closed and unverified on this follower: the leader still does not hold it", dbName);
+            "Database '%s' stays closed and unverified on this follower: the leader still does not serve it", dbName);
         anyLeft = true;
         continue;
       }
@@ -5642,19 +5646,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Asks the leader whether it holds {@code dbName} registered, through the {@code copyOf} form of the bootstrap-state
+   * Asks the leader whether it would serve {@code dbName}'s snapshot ({@link UnverifiedClosedCopyCheck#SERVES}), through the {@code copyOf} form of the bootstrap-state
    * RPC (issues #8605, #8606), answered from its registry alone: nothing is opened or hashed there. Bounded by
    * {@link UnverifiedClosedCopyCheck#ROUND_TIMEOUT_MS}, and refused unless the leader itself answered.
    */
-  private boolean leaderHoldsDatabaseRegistered(final RaftHAServer raftHA, final RaftPeerId leaderId,
-      final PeerDialAddress source, final String dbName, final String clusterToken) throws Exception {
-    final boolean useSSL = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+  private boolean leaderServesDatabase(final ArcadeDBServer localServer, final RaftHAServer raftHA,
+      final RaftPeerId leaderId, final PeerDialAddress source, final String dbName, final String clusterToken)
+      throws Exception {
+    final boolean useSSL = localServer.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final String url = BootstrapElection.chooseUrl(source.httpAddress(), source.httpsAddress(), useSSL);
     if (url == null)
       throw new IOException("no address of the leader this node may dial");
-    final HttpClient client = url.startsWith("https://") ? raftHA.getHttpsClients().clientFor(server) : BootstrapElection.HTTP;
+    final HttpClient client =
+        url.startsWith("https://") ? raftHA.getHttpsClients().clientFor(localServer) : BootstrapElection.HTTP;
     final CompletableFuture<Boolean> answer =
-        UnverifiedClosedCopyCheck.askWhetherRegistered(client, leaderId.toString(), url, dbName, clusterToken);
+        UnverifiedClosedCopyCheck.askWhetherServed(client, leaderId.toString(), url, dbName, clusterToken);
     try {
       return answer.get(UnverifiedClosedCopyCheck.ROUND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     } catch (final ExecutionException e) {

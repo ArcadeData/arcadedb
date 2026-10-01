@@ -147,8 +147,11 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
       response.put("peerId", raftHAServer.getLocalPeerId().toString());
       response.put(UnverifiedClosedCopyCheck.COPY,
           UnverifiedClosedCopyCheck.localCopyState(server, raftHAServer.getStateMachine(), copyOf).toJSON(copyOf));
-      // Whether this node's snapshot endpoint would serve it: what a follower re-verifying a copy asks (issue #8606).
-      response.put(UnverifiedClosedCopyCheck.REGISTERED, server.existsDatabase(copyOf));
+      // Whether this node's snapshot endpoint would serve it - registered, and not quarantined (#8468): what a follower
+      // re-verifying a copy asks (issue #8606).
+      final ArcadeStateMachine stateMachine = raftHAServer.getStateMachine();
+      response.put(UnverifiedClosedCopyCheck.SERVES,
+          server.existsDatabase(copyOf) && (stateMachine == null || stateMachine.quarantineCause(copyOf) == null));
       return new ExecutionResponse(200, response.toString());
     }
 

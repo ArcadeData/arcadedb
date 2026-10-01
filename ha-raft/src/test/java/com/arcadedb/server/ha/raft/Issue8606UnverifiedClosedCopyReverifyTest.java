@@ -67,7 +67,7 @@ import static org.mockito.Mockito.when;
  * the database again, a database that is only read stayed refused on the follower indefinitely.
  * <p>
  * The {@link HealthMonitor} tick now re-verifies every marked copy against the leader, with backoff: it asks the leader
- * whether it holds the database registered, and reinstalls the copy when it does. A refused request and a new leader
+ * whether its snapshot endpoint would serve the database, and reinstalls the copy when it does. A refused request and a new leader
  * restart the backoff.
  * <p>
  * Same fixture as {@link Issue8589UnverifiedClosedCopyAfterResyncTest}, with the fake leader also answering the
@@ -95,7 +95,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   private       RaftHAServer       raft;
   private       HttpServer         leader;
   private       String             leaderAddress;
-  // What the fake leader answers about each database: absent = not registered there.
+  // What the fake leader answers about each database: absent = it would not serve it.
   private final Set<String>        leaderHolds       = ConcurrentHashMap.newKeySet();
   private final AtomicInteger      probes            = new AtomicInteger();
   private final AtomicInteger      snapshotRequests  = new AtomicInteger();
@@ -120,7 +120,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
       final JSONObject answer = new JSONObject().put("peerId", raft.getLeaderId().toString())
           .put(UnverifiedClosedCopyCheck.COPY, new UnverifiedClosedCopyCheck.CopyState(true, 50L).toJSON(name));
       if (!answerOlderFormat)
-        answer.put(UnverifiedClosedCopyCheck.REGISTERED, leaderHolds.contains(name));
+        answer.put(UnverifiedClosedCopyCheck.SERVES, leaderHolds.contains(name));
       final byte[] body = answer.toString().getBytes(StandardCharsets.UTF_8);
       exchange.sendResponseHeaders(200, body.length);
       exchange.getResponseBody().write(body);
@@ -188,7 +188,7 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
    */
   @Test
   void whileTheLeaderStillDoesNotHoldItTheCopyStaysRefusedAndNothingIsDownloaded() throws Exception {
-    leaderServesSnapshot(); // reachable, but the leader says it does not hold it registered
+    leaderServesSnapshot(); // reachable, but the leader says it would not serve it
 
     reverifyRound();
 
@@ -271,9 +271,9 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     assertThat(Files.exists(marker())).isTrue();
   }
 
-  /** A leader that predates the field cannot say it holds the database, so no install is attempted on its answer. */
+  /** A leader that predates the field cannot say it serves the database, so no install is attempted on its answer. */
   @Test
-  void anAnswerWithoutTheRegisteredFieldDoesNotInstall() throws Exception {
+  void anAnswerWithoutTheServesFieldDoesNotInstall() throws Exception {
     leaderServesSnapshot();
     leaderHolds.add(DB_NAME);
     answerOlderFormat = true;
@@ -285,16 +285,20 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     assertThat(Files.exists(marker())).isTrue();
   }
 
-  /** The leader's side of the probe: registered means held in the registry, which is what its snapshot route serves. */
+  /** The leader's side of the probe: what its snapshot route serves - registered there, and not quarantined (#8468). */
   @Test
-  void theLeadersHandlerReportsWhetherItHoldsTheDatabaseRegistered() throws Exception {
+  void theLeadersHandlerReportsWhetherItServesTheDatabase() throws Exception {
     when(raft.getStateMachine()).thenReturn(sm);
     final ServerDatabase other = server.getOrCreateDatabase("db8606other");
     try {
-      assertThat(handlerAnswer("db8606other").getBoolean(UnverifiedClosedCopyCheck.REGISTERED, false)).isTrue();
+      assertThat(handlerAnswer("db8606other").getBoolean(UnverifiedClosedCopyCheck.SERVES, false)).isTrue();
       final JSONObject closedHere = handlerAnswer(DB_NAME);
-      assertThat(closedHere.getBoolean(UnverifiedClosedCopyCheck.REGISTERED, true)).as("closed here").isFalse();
+      assertThat(closedHere.getBoolean(UnverifiedClosedCopyCheck.SERVES, true)).as("closed here").isFalse();
       assertThat(closedHere.getJSONObject(UnverifiedClosedCopyCheck.COPY).getBoolean("present", false)).isTrue();
+
+      sm.settleDivergedStateAfterInstall(Set.of("db8606other"), 40L);
+      assertThat(handlerAnswer("db8606other").getBoolean(UnverifiedClosedCopyCheck.SERVES, true))
+          .as("registered but quarantined: the snapshot route refuses it").isFalse();
     } finally {
       other.getEmbedded().drop();
       server.removeDatabase("db8606other");
@@ -304,13 +308,13 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
   /** The follower's side: the answer counts only when the leader wrote it, and a missing member is a "no". */
   @Test
   void theAnswerIsReadOnlyFromTheLeader() throws Exception {
-    final String signed = new JSONObject().put("peerId", "leader").put(UnverifiedClosedCopyCheck.REGISTERED, true).toString();
-    assertThat(UnverifiedClosedCopyCheck.parseRegistered(200, signed, "leader", "http://x")).isTrue();
-    assertThat(UnverifiedClosedCopyCheck.parseRegistered(200, new JSONObject().put("peerId", "leader").toString(),
+    final String signed = new JSONObject().put("peerId", "leader").put(UnverifiedClosedCopyCheck.SERVES, true).toString();
+    assertThat(UnverifiedClosedCopyCheck.parseServes(200, signed, "leader", "http://x")).isTrue();
+    assertThat(UnverifiedClosedCopyCheck.parseServes(200, new JSONObject().put("peerId", "leader").toString(),
         "leader", "http://x")).as("an older server's answer").isFalse();
-    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseRegistered(200, signed, "other", "http://x"))
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseServes(200, signed, "other", "http://x"))
         .isInstanceOf(LeaderDatabaseQuery.WrongPeerAnsweredException.class);
-    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseRegistered(403, "{}", "leader", "http://x"))
+    assertThatThrownBy(() -> UnverifiedClosedCopyCheck.parseServes(403, "{}", "leader", "http://x"))
         .isInstanceOf(IOException.class);
   }
 
