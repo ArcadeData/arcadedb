@@ -425,6 +425,7 @@ public class SelectExecutionPlanner {
     }
 
     info.groupBy = groupBy;
+    info.distinctRewrittenAsGroupBy = true;
     info.distinct = false;
   }
 
@@ -4187,6 +4188,9 @@ public class SelectExecutionPlanner {
     final float maxSelectivity = context.getDatabase().getConfiguration()
         .getValueAsFloat(GlobalConfiguration.QUERY_INDEX_MAX_SELECTIVITY);
     if (!(maxSelectivity > 0))
+      return null;
+    // A DISTINCT returns its rows in first-occurrence order, which for an index search is key order: the fallbacks would change it
+    if (info.distinctRewrittenAsGroupBy)
       return null;
 
     // The rows of an index search come in key order, and a statement that returns them as they come can show it:

@@ -40,6 +40,7 @@ public class QueryPlanningInfo {
 
   protected Timeout timeout;
   boolean distinct    = false;
+  boolean distinctRewrittenAsGroupBy = false;
   boolean expand      = false;
   String  expandAlias = null;
 
