@@ -18,6 +18,9 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+
 import io.grpc.Attributes;
 import io.grpc.Context;
 import io.grpc.Grpc;
@@ -26,6 +29,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.Status;
+import io.grpc.StatusException;
 import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
@@ -99,11 +103,182 @@ class GrpcTransportSecurityInterceptorTest {
     assertThat(decisionFor(null, false)).isFalse();
   }
 
+  // ------------------------------------------------------------------------------------------------
+  // Issue #7821: a TLS-terminating proxy listed in arcadedb.server.apiTokenTrustedProxies vouches
+  // for the leg it terminated through the x-forwarded-proto metadata key, exactly as it does for HTTP.
+  // ------------------------------------------------------------------------------------------------
+
+  private static final String PROXY_IP = "10.0.0.5";
+
+  private static InetSocketAddress proxy() {
+    return new InetSocketAddress(PROXY_IP, 51000);
+  }
+
+  private static InetSocketAddress remote() {
+    return new InetSocketAddress("203.0.113.7", 51000);
+  }
+
+  private static Metadata forwardedProto(final String... values) {
+    final Metadata metadata = new Metadata();
+    for (final String value : values)
+      metadata.put(GrpcTransportSecurityInterceptor.X_FORWARDED_PROTO_KEY, value);
+    return metadata;
+  }
+
+  @Test
+  void aListedProxyReportingHttpsVouchesForTheCall() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> PROXY_IP), proxy(), false,
+        forwardedProto("https"))).isTrue();
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> PROXY_IP), proxy(), false,
+        forwardedProto("HTTPS"))).isTrue();
+  }
+
+  @Test
+  void aListedCidrRangeVouchesForAProxyInsideIt() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> "10.0.0.0/24"), proxy(), false,
+        forwardedProto("https"))).isTrue();
+  }
+
+  /**
+   * The forgery the list exists to stop: a cleartext caller that is not the operator's proxy sends the
+   * metadata key itself. It must gain nothing.
+   */
+  @Test
+  void anUnlistedPeerCannotVouchForItself() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> PROXY_IP), remote(), false,
+        forwardedProto("https"))).isFalse();
+  }
+
+  /**
+   * The shipped default: an empty list leaves the metadata unread, so the decision is exactly the
+   * TLS-or-loopback test #7309 shipped, header or not.
+   */
+  @Test
+  void anEmptyListTrustsNoProxy() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> ""), proxy(), false,
+        forwardedProto("https"))).isFalse();
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> null), proxy(), false,
+        forwardedProto("https"))).isFalse();
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(), proxy(), false, forwardedProto("https")))
+        .isFalse();
+  }
+
+  @Test
+  void aListedProxyReportingCleartextOrNothingDoesNotVouch() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("http"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto())).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto(""))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https,"))).isFalse();
+  }
+
+  /**
+   * A proxy configured to append rather than overwrite leaves a client-supplied value in place and adds
+   * its own: every value has to report https, so an injected one cannot outvote the proxy's honest
+   * {@code http}.
+   */
+  @Test
+  void everyForwardedValueMustBeHttps() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https", "http"))).isFalse();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https", "https"))).isTrue();
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https, http"))).isFalse();
+  }
+
+  /** A typo in an allow-list has to deny, never widen. */
+  @Test
+  void anUnparseableListTrustsNoProxy() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> "proxy.example.com"), proxy(), false,
+        forwardedProto("https"))).isFalse();
+  }
+
+  /**
+   * The list is re-read on every call, so SET SERVER SETTING takes effect on the next mint, as it does
+   * for HTTP; a cached parse must not outlive a change of the setting.
+   */
+  @Test
+  void aChangedListTakesEffectOnTheNextCall() {
+    final AtomicReference<String> setting = new AtomicReference<>("");
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(setting::get);
+
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isFalse();
+    setting.set(PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isTrue();
+    setting.set("10.9.9.9");
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isFalse();
+  }
+
+  /** TLS and loopback stay safe whatever the list and the metadata say. */
+  @Test
+  void theTrustedProxyListNeverNarrowsTlsOrLoopback() {
+    final GrpcTransportSecurityInterceptor interceptor = new GrpcTransportSecurityInterceptor(() -> PROXY_IP);
+    assertThat(decisionFor(interceptor, remote(), true, forwardedProto("http"))).isTrue();
+    assertThat(decisionFor(interceptor, new InetSocketAddress("127.0.0.1", 51000), false, forwardedProto("http")))
+        .isTrue();
+  }
+
+  /**
+   * The metadata key is read only from a listed peer; a supplier that throws must still not let anything
+   * through, and must not fail the call.
+   */
+  @Test
+  void aFailingSettingSupplierTrustsNoProxy() {
+    assertThat(decisionFor(new GrpcTransportSecurityInterceptor(() -> {
+      throw new IllegalStateException("configuration unavailable");
+    }), proxy(), false, forwardedProto("https"))).isFalse();
+  }
+
+  /**
+   * Reachability: the interceptor the gRPC server registers is built by {@code forConfiguration} from the
+   * server's own configuration, so the listed proxy has to be honored through that factory - and a change
+   * of the setting on that configuration object, which is what SET SERVER SETTING makes, has to be seen.
+   */
+  @Test
+  void theServerFactoryReadsTheTrustedProxySettingLive() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    final GrpcTransportSecurityInterceptor interceptor = GrpcTransportSecurityInterceptor.forConfiguration(configuration);
+
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isFalse();
+
+    configuration.setValue(GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES, PROXY_IP);
+    assertThat(decisionFor(interceptor, proxy(), false, forwardedProto("https"))).isTrue();
+    assertThat(decisionFor(interceptor, remote(), false, forwardedProto("https"))).isFalse();
+  }
+
+  /**
+   * The refusal names the setting that would let a proxy through: an operator behind one is reading this
+   * message to find out why the mint is refused, and it previously offered only TLS and loopback.
+   */
+  @Test
+  void theRefusalPointsAtTheTrustedProxySetting() throws Exception {
+    final StatusException refusal = Context.current()
+        .withValue(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY, false)
+        .call(() -> {
+          try {
+            ArcadeDbGrpcAdminService.requireTransportSafeForSecrets();
+            return null;
+          } catch (final StatusException e) {
+            return e;
+          }
+        });
+
+    assertThat(refusal).isNotNull();
+    assertThat(refusal.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+    assertThat(refusal.getStatus().getDescription())
+        .contains(GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey())
+        .contains("x-forwarded-proto");
+  }
+
+  private static boolean decisionFor(final SocketAddress remoteAddress, final boolean tls) {
+    return decisionFor(new GrpcTransportSecurityInterceptor(), remoteAddress, tls, new Metadata());
+  }
+
   /**
    * Runs one call through the interceptor and reports the value it published, which is the only thing
    * the interceptor produces.
    */
-  private static boolean decisionFor(final SocketAddress remoteAddress, final boolean tls) {
+  private static boolean decisionFor(final GrpcTransportSecurityInterceptor interceptor,
+      final SocketAddress remoteAddress, final boolean tls, final Metadata headers) {
     final Attributes.Builder attributes = Attributes.newBuilder();
     if (remoteAddress != null)
       attributes.set(Grpc.TRANSPORT_ATTR_REMOTE_ADDR, remoteAddress);
@@ -112,10 +287,10 @@ class GrpcTransportSecurityInterceptorTest {
 
     final AtomicReference<Boolean> published = new AtomicReference<>();
 
-    new GrpcTransportSecurityInterceptor().interceptCall(
+    interceptor.interceptCall(
         new AttributesOnlyServerCall(attributes.build()),
-        new Metadata(),
-        (call, headers) -> {
+        headers,
+        (call, received) -> {
           published.set(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get());
           return new ServerCall.Listener<>() {
           };

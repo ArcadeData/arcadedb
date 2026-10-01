@@ -53,7 +53,9 @@ import java.util.logging.Level;
  * Issue #7804 settled the two questions that left open. The default flips in 27.1.1, stated on the
  * setting itself so an operator reads the window rather than discovering it; and a TLS-terminating
  * reverse proxy can vouch for the leg it terminated, but only from a peer address the operator listed
- * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}.
+ * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}. The gRPC
+ * mint reads the same list, through the {@code x-forwarded-proto} metadata key, with the same
+ * {@link #parseTrustedProxies} and {@link #forwardedProtoIsFullyEncrypted} (issue #7821).
  * Studio renders the 412 through {@code apiTokenTransportRefusal()} in {@code studio-security.js}.
  * <p>
  * <b>On an HA cluster the mint is forwarded to the leader</b>, as {@code /server/users} is (issue #8109), and the
@@ -204,7 +206,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    * attacker able to do that from the operator's proxy address is already on the path and can read the
    * cleartext leg without forging anything.
    */
-  static IPAddressBlocklist parseTrustedProxies(final String csv) {
+  public static IPAddressBlocklist parseTrustedProxies(final String csv) {
     try {
       return IPAddressBlocklist.parse(csv);
     } catch (final IllegalArgumentException e) {
@@ -249,7 +251,7 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    * a pass-through proxy forwards it unchanged, so the default limit turned an empty hop into a way past the
    * check depending only on where in the string it sat (found reviewing PR #7824).
    */
-  static boolean forwardedProtoIsFullyEncrypted(final String forwardedProto) {
+  public static boolean forwardedProtoIsFullyEncrypted(final String forwardedProto) {
     if (forwardedProto == null || forwardedProto.isBlank())
       return false;
 
