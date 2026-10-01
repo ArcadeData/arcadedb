@@ -49,6 +49,8 @@ class CheckpointTest {
     final Map<Integer, IOException>  scanErrors = new HashMap<>();
     /** Records only the buckets hold, as {rid, id}: counted, but not reached by the index scan. */
     final Map<Integer, List<long[]>> bucketOnly = new HashMap<>();
+    /** Added to what count(*) reports, as {ops, edges}: a stored counter that drifted from the records. */
+    final Map<Integer, long[]>       countDrift = new HashMap<>();
     Runnable                         beforeScan;
 
     @Override
@@ -61,8 +63,9 @@ class CheckpointTest {
         return new long[] { -1, -1 };
       }
       final List<long[]> nodeRows = rows.get(node);
-      return new long[] { nodeRows.size() + bucketOnly.getOrDefault(node, List.of()).size(),
-          nodeRows.stream().mapToLong(row -> row[1]).sum() };
+      final long[] drift = countDrift.getOrDefault(node, new long[2]);
+      return new long[] { nodeRows.size() + bucketOnly.getOrDefault(node, List.of()).size() + drift[0],
+          nodeRows.stream().mapToLong(row -> row[1]).sum() + drift[1] };
     }
 
     @Override
@@ -132,6 +135,9 @@ class CheckpointTest {
     assertThat(violations.getFirst().message()).contains("[2, 0, 1, 0, 2, 0]");
     assertThat(violations.getFirst().keys()).containsExactly(b);
     assertThat(violations.getFirst().details()).containsExactly(
+        "node 0 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges",
+        "node 1 counts: count(*) ops=1 edges=0, scanned 1 records, 1 index entries, 0 edges",
+        "node 2 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges",
         Ledger.format(b) + " outcome=ACKED pair=false present=[0, 2] missing=[1] withEdge=[]");
   }
 
@@ -233,7 +239,44 @@ class CheckpointTest {
     assertThat(convergence.message()).contains("[2, 0, 3, 0, 2, 0]").contains("the record scan found records");
     assertThat(convergence.keys()).isEmpty();
     assertThat(convergence.details()).containsExactly(
+        "node 0 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges",
+        "node 1 counts: count(*) ops=3 edges=0, scanned 3 records, 2 index entries, 0 edges",
         "node 1 records: 3 records, 2 distinct ids, 2 index entries",
-        "node 1 records: " + Ledger.format(b) + " is held by 2 records [#1:1, #2:7] (duplicate id)");
+        "node 1 records: " + Ledger.format(b) + " is held by 2 records [#1:1, #2:7] (duplicate id)",
+        "node 2 counts: count(*) ops=2 edges=0, scanned 2 records, 2 index entries, 0 edges");
+  }
+
+  @Test
+  void countThatDriftedFromIdenticalRecordsIsCountDrift() throws InterruptedException {
+    final long a = acked();
+    final long b = acked();
+    final ScriptedNodeReader reader = new ScriptedNodeReader();
+    for (int node = 0; node < 3; node++)
+      reader.rows.put(node, List.of(new long[] { a, 1 }, new long[] { b, 0 }));
+    // node 1 reports one op more and node 2 one edge less than they hold: every scan still agrees
+    reader.countDrift.put(1, new long[] { 1, 0 });
+    reader.countDrift.put(2, new long[] { 0, -1 });
+    final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
+    assertThat(violations).extracting(Violation::invariant).containsExactly("COUNT_DRIFT");
+    final Violation drift = violations.getFirst();
+    assertThat(drift.kind()).isEqualTo(ResultKind.SAFETY);
+    assertThat(drift.keys()).isEmpty();
+    assertThat(drift.message()).contains("[2, 1, 3, 1, 2, 0]").contains("2 records and 1 edges on every node")
+        .contains("node 1 count(*) ops=3 edges=1").contains("node 2 count(*) ops=2 edges=0")
+        .doesNotContain("node 0 count(*)");
+    assertThat(drift.details()).contains("node 1 counts: count(*) ops=3 edges=1, scanned 2 records, 2 index entries, 1 edges");
+  }
+
+  @Test
+  void countDriftNeedsEveryNodeScanned() throws InterruptedException {
+    final long a = acked();
+    final ScriptedNodeReader reader = new ScriptedNodeReader();
+    for (int node = 0; node < 3; node++)
+      reader.rows.put(node, List.of(new long[] { a, 0 }));
+    reader.countDrift.put(1, new long[] { 1, 0 });
+    reader.unreadable.add(2);
+    // node 2 may hold anything: nothing proves the data is identical, so this stays a convergence failure
+    assertThat(checkpoint(reader, Duration.ofMillis(300)).run().violations()).extracting(Violation::invariant)
+        .containsExactly("CONVERGENCE");
   }
 }
