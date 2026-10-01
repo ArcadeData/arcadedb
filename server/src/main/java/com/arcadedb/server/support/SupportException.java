@@ -41,12 +41,13 @@ public class SupportException extends RuntimeException {
    */
   public int getStudioStatus() {
     return switch (code) {
-      case "not_registered", "registered_by_settings", "config_not_writable", "preview_busy" -> 409;
+      case "not_registered", "registered_by_settings", "config_not_writable", "preview_busy", "instance_id.taken", "no_workspace",
+           "forbidden", "key_has_no_owner", "invalid_instance_id", "invalid_version" -> 409;
       case "preview_not_found" -> 404;
       case "bundle_too_large", "too_large" -> 413;
       case "bad_request" -> 400;
       case "support_not_active" -> 402;
-      case "not_found" -> 404;
+      case "not_found", "not_supported" -> 404;
       case "rate_limited" -> 429;
       case "portal_unreachable", "support_stopped" -> 503;
       case "internal_error" -> 500;

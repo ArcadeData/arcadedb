@@ -1,6 +1,7 @@
 /*
- * Server > Support tab: registration with the ArcadeData customer portal, support issues with redacted logs and a
- * diagnostics snapshot attached, the issues of the workspace, and the public GitHub path for users without a plan.
+ * Server > Support tab: the AI Assistant and the Support page. The Support page shows the registration with the ArcadeData
+ * customer portal (collapsed to "Support Active" once registered) and the issues of the workspace; opening a support issue
+ * (redacted logs and a diagnostics snapshot attached) and the public GitHub path for users without a plan are popups.
  *
  * The browser never sees the Client key: the server holds it and proxies the portal (api/v1/server/support/...).
  * Everything that comes from the portal is escaped before it is put in the page.
@@ -34,6 +35,10 @@ var supportPreviews = {}; // prefix -> { id, expiresAt, description }
 var supportIssues = null;
 var supportIssuesFilter = "open";
 var supportCurrentIssue = null;
+var supportDetailsOpen = false; // the registration details under "Support Active"
+var supportInstallation = null; // the portal's answer to "register this server": {status, name, filled, differs}
+var supportInstallationError = null;
+var supportInstallationBusy = false;
 
 function supportEsc(value) {
   return escapeHtml(value == null ? "" : value);
@@ -90,7 +95,7 @@ function supportAlertHtml(err) {
     extra =
       ' <a href="' +
       SUPPORT_BUY_URL +
-      '" target="_blank" rel="noopener noreferrer">Get professional support</a> or use the "Report a public GitHub issue" tab.';
+      '" target="_blank" rel="noopener noreferrer">Get professional support</a> or use the "Report a public GitHub issue" button.';
   } else if (err.code === "invalid_key" || err.code === "client_mismatch" || err.code === "scope_denied") {
     extra = " Unregister and register again in the Support tab with a valid Client ID and key.";
   } else if (err.code === "portal_unreachable") {
@@ -201,13 +206,20 @@ function loadSupport(refresh) {
 
 function renderSupportAll() {
   renderSupportOverview();
-  renderSupportIssueForm();
   renderSupportIssuesShell();
-  renderSupportPublic();
   showSupportView(supportCurrentView);
 }
 
 function showSupportView(view) {
+  // The popups are opened from the Support page: their old tabs are gone, their links now open them
+  if (view === "issue" || view === "public") {
+    showSupportView("overview");
+    if (view === "issue") supportOpenIssueModal();
+    else supportOpenPublicModal();
+    return;
+  }
+  if (view === "issues") view = "overview";
+
   supportCurrentView = view;
   $("#supportNav .nav-link").removeClass("active");
   $('#supportNav .nav-link[data-support-view="' + view + '"]').addClass("active");
@@ -222,11 +234,9 @@ function showSupportView(view) {
 
   $("#supportViewAi").hide();
   $("#supportSection").show();
-  $(".support-view").hide();
-  var id = { overview: "#supportViewOverview", issue: "#supportViewIssue", issues: "#supportViewIssues", public: "#supportViewPublic" }[view];
-  $(id).show();
+  $(".support-view").show();
   if (!supportLoaded) initSupport();
-  else if (view === "issues" && supportStatus && supportStatus.registered && supportIssues == null) loadSupportIssues();
+  else if (supportStatus && supportStatus.registered && supportIssues == null && !supportCurrentIssue) loadSupportIssues();
 }
 
 /** What opening the Support tab does: the view that was last shown (the AI Assistant the first time). */
@@ -246,6 +256,38 @@ $(document).on("click", ".support-goto", function (e) {
   showSupportView($(this).attr("data-support-view"));
 });
 
+$(document).on("click", ".support-open-issue", function (e) {
+  e.preventDefault();
+  supportOpenIssueModal();
+});
+
+$(document).on("click", ".support-open-public", function (e) {
+  e.preventDefault();
+  supportOpenPublicModal();
+});
+
+function supportShowModal(id) {
+  var el = document.getElementById(id);
+  if (el.parentNode !== document.body) document.body.appendChild(el);
+  bootstrap.Modal.getOrCreateInstance(el).show();
+}
+
+function supportHideModal(id) {
+  var el = document.getElementById(id);
+  var modal = el ? bootstrap.Modal.getInstance(el) : null;
+  if (modal) modal.hide();
+}
+
+function supportOpenIssueModal() {
+  if (!supportIsEntitled()) return;
+  renderSupportIssueForm();
+  supportShowModal("supportIssueModal");
+}
+
+function supportOpenPublicModal() {
+  renderSupportPublic();
+  supportShowModal("supportPublicModal");
+}
 
 // ------------------------------------------------------------------------------------------------ overview / registration
 
@@ -254,12 +296,14 @@ function renderSupportOverview() {
   var html = "";
 
   if (!s.registered) {
-    html += '<div class="support-card">';
-    html += "<h6><i class='fa fa-headset'></i> Professional support</h6>";
+    html += '<div class="support-card support-register">';
+    html += '<div class="support-register-head"><div class="support-reg-icon"><i class="fa fa-headset"></i></div><div>';
+    html += '<div class="support-reg-plan">Professional support</div>';
     html +=
-      '<p style="font-size: 0.88rem;">ArcadeData offers professional support with guaranteed first-response times. Register this server with the ' +
-      "<b>Client ID</b> and <b>Client key</b> of your workspace (create a key in the ArcadeDB customer portal) to open issues from here, with the logs and " +
-      "a diagnostics snapshot of this server attached, and to follow the replies.</p>";
+      '<div class="support-hint">Guaranteed first-response times, with the logs and a diagnostics snapshot of this server attached to every issue.</div>';
+    html += "</div></div>";
+    html +=
+      '<p style="font-size: 0.88rem;">Register this server with the <b>Client ID</b> and <b>Client key</b> of your workspace (create a key in the ArcadeDB customer portal) to open issues from here and to follow the replies.</p>';
     html += '<div class="row g-2 align-items-end">';
     html +=
       '<div class="col-md-4"><label class="form-label mb-1" for="supportClientId" style="font-size: 0.82rem;">Client ID</label>' +
@@ -280,100 +324,172 @@ function renderSupportOverview() {
       '<div class="support-hint mt-2">The key is stored on the server only (file <code>support.json</code>, owner-only permissions) and is never shown again: only its last four characters.</div>';
     html += "</div>";
 
-    html += '<div class="support-card">';
-    html += "<h6>Do not have a support plan?</h6>";
+    html += '<div class="support-card support-public-card">';
+    html += '<div class="d-flex align-items-center gap-3 flex-wrap">';
+    html += '<div style="flex: 1; min-width: 260px;"><h6 class="mb-1">Do not have a support plan?</h6>';
     html +=
-      '<p style="font-size: 0.88rem;" class="mb-2"><a href="' +
+      '<div class="support-hint"><a href="' +
       SUPPORT_BUY_URL +
-      '" target="_blank" rel="noopener noreferrer"><i class="fa fa-arrow-up-right-from-square"></i> Get professional support</a>. You can still report a problem in public: ' +
-      "the same redacted logs and diagnostics are produced for you to attach to a GitHub issue. Nothing is uploaded automatically.</p>";
-    html +=
-      '<button class="btn btn-sm btn-outline-secondary support-goto" data-support-view="public"><i class="fab fa-github"></i> Report a public GitHub issue</button>';
-    html += "</div>";
-  } else {
-    var plan = s.plan;
-    html += '<div class="support-card support-reg">';
-    html += '<div class="support-reg-head">';
-    html += '<div class="support-reg-icon"><i class="fa fa-headset"></i></div>';
-    html += '<div class="support-reg-title">';
-    html += '<div class="support-reg-kicker">Registered with the ArcadeData customer portal</div>';
-    if (plan) {
-      html +=
-        '<div class="support-reg-plan">' +
-        supportEsc(plan.label || "Support") +
-        (plan.units ? " &times; " + supportEsc(plan.units) : "") +
-        ' <span class="support-badge ' +
-        (plan.entitled ? "ok" : "bad") +
-        '">' +
-        (plan.entitled ? "Active" : "Not active") +
-        "</span></div>";
-      html +=
-        '<div class="support-hint">' +
-        (plan.endsOn
-          ? (plan.entitled ? "Until " : "Ended ") + supportEsc(supportFormatDate(plan.endsOn))
-          : plan.entitled
-            ? "No end date"
-            : "") +
-        "</div>";
-    } else html += '<div class="support-reg-plan">' + supportEsc(s.workspaceName || "Registered") + "</div>";
-    html += "</div>";
-    if (plan && plan.entitled)
-      html +=
-        '<button class="btn btn-primary support-goto ms-auto" data-support-view="issue"><i class="fa fa-plus"></i> Open an issue</button>';
-    html += "</div>";
+      '" target="_blank" rel="noopener noreferrer"><i class="fa fa-arrow-up-right-from-square"></i> Get professional support</a>. You can still report a problem in public: the same redacted logs and diagnostics are produced for you to attach to a GitHub issue. Nothing is uploaded automatically.</div></div>';
+    html += '<button class="btn btn-outline-secondary support-open-public"><i class="fab fa-github"></i> Report a public GitHub issue</button>';
+    html += "</div></div>";
+  } else html += supportStatusPanelHtml(s);
 
-    html += '<dl class="support-grid">';
-    html += "<div><dt>Workspace</dt><dd>" + supportEsc(s.workspaceName || "") + "</dd></div>";
-    html +=
-      "<div><dt>Client key</dt><dd class='support-mono'>" +
-      supportEsc(s.keyHint) +
-      (s.keyLabel ? ' <span class="support-hint">(' + supportEsc(s.keyLabel) + ")</span>" : "") +
-      "</dd></div>";
-    html += "<div><dt>Client ID</dt><dd class='support-mono'>" + supportEsc(s.clientId) + "</dd></div>";
-    html += "<div><dt>Instance ID</dt><dd class='support-mono'>" + supportEsc(s.instanceId) + "</dd></div>";
-    html += "<div><dt>Portal</dt><dd class='support-mono'>" + supportEsc(s.portalUrl) + "</dd></div>";
-    if (s.scopes && s.scopes.length) html += "<div><dt>Scopes</dt><dd>" + supportEsc(s.scopes.join(", ")) + "</dd></div>";
-    html += "</dl>";
-
-    html += '<div class="support-reg-foot">';
-    if (s.fromSettings)
-      html += '<span class="support-hint">Registered through the server settings: change or remove them in the server configuration.</span>';
-    else html += '<span class="support-hint">The key is stored on this server only.</span>';
-    html +=
-      '<button class="btn btn-sm btn-outline-danger ms-auto" id="supportUnregisterBtn" onclick="supportUnregister()"' +
-      (s.fromSettings ? ' disabled title="Configured through the settings arcadedb.support.clientId and arcadedb.support.clientKey"' : "") +
-      '><i class="fa fa-unlink"></i> Unregister</button>';
-    html += "</div>";
-    html += "</div>";
-
-    if (s.portalError) html += supportAlertHtml({ code: s.portalError.error, message: s.portalError.message });
-    else if (plan && !plan.entitled) {
-      html +=
-        '<div class="alert alert-warning py-2" style="font-size: 0.86rem;"><i class="fa fa-triangle-exclamation"></i> Your support plan is not active (it expired or there is none). ' +
-        'You cannot open issues in the portal. <a href="' +
-        supportEsc(supportBuyUrl()) +
-        '" target="_blank" rel="noopener noreferrer">Get professional support</a>, or ' +
-        '<a href="#" class="support-goto" data-support-view="public">report a public GitHub issue</a>.</div>';
-    }
-
-    if (s.sla) {
-      html += '<div class="support-card"><h6>First-response times</h6>';
-      html += '<table class="support-table" style="max-width: 640px;"><thead><tr><th style="width: 80px;">Severity</th><th>First response</th></tr></thead><tbody>';
-      SUPPORT_SEVERITIES.forEach(function (sev) {
-        html += "<tr><td><b>" + sev.id + "</b></td><td>" + supportEsc(s.sla[sev.id] || "") + "</td></tr>";
-      });
-      html += "</tbody></table>";
-      if (s.sla.coverage) html += '<div class="support-hint mt-2">Coverage: ' + supportEsc(s.sla.coverage) + "</div>";
-      html += "</div>";
-    }
-  }
-
-  html +=
-    '<div class="support-hint" id="supportZoneHint">Log time zone of this server: <b>' +
-    supportEsc(s.logTimeZone ? s.logTimeZone.id + " (UTC" + (s.logTimeZone.offset === "Z" ? "" : s.logTimeZone.offset) + ")" : "") +
-    "</b>. Log lines carry no time zone: the window you choose is converted to it.</div>";
   $("#supportViewOverview").html(html);
 }
+
+/** The registered state: one line ("Support Active") that expands to the details nobody needs after the first minute. */
+function supportStatusPanelHtml(s) {
+  var plan = s.plan;
+  var kind = s.portalError ? "bad" : plan && plan.entitled ? "ok" : "warn";
+  var icon = { ok: "fa-circle-check", warn: "fa-triangle-exclamation", bad: "fa-plug-circle-xmark" }[kind];
+  var title = { ok: "Support Active", warn: "Support not active", bad: "Cannot reach the support portal" }[kind];
+  var sub = [];
+  if (kind === "ok") {
+    if (plan.label) sub.push(supportEsc(plan.label) + (plan.units ? " &times; " + supportEsc(plan.units) : ""));
+    if (s.workspaceName) sub.push(supportEsc(s.workspaceName));
+    sub.push(plan.endsOn ? "until " + supportEsc(supportFormatDate(plan.endsOn)) : "no end date");
+  } else if (kind === "bad") sub.push(supportEsc(s.portalError.message));
+  else sub.push("Your plan expired or there is none: issues cannot be opened in the portal.");
+
+  var html = '<div class="support-status ' + kind + '">';
+  html += '<div class="support-status-bar">';
+  html +=
+    '<button type="button" class="support-status-main" id="supportStatusToggle" aria-expanded="' +
+    (supportDetailsOpen ? "true" : "false") +
+    '" aria-controls="supportStatusDetails" title="Show the registration details">';
+  html += '<span class="support-status-icon"><i class="fa ' + icon + '"></i></span>';
+  html += '<span class="support-status-text"><span class="support-status-title">' + title + '</span><span class="support-hint">' + sub.join(" &middot; ") + "</span></span>";
+  html += '<span class="support-status-chevron' + (supportDetailsOpen ? " open" : "") + '"><i class="fa fa-chevron-down"></i></span>';
+  html += "</button>";
+  html += '<div class="support-status-actions">';
+  if (kind === "warn")
+    html +=
+      '<a class="btn btn-sm btn-outline-secondary" href="' +
+      supportEsc(supportBuyUrl()) +
+      '" target="_blank" rel="noopener noreferrer">Get professional support</a>';
+  html += '<button type="button" class="btn btn-sm btn-outline-secondary" id="supportRefreshBtn" title="Check the plan again"><i class="fa fa-sync"></i></button>';
+  html += "</div></div>";
+
+  html += '<div class="support-status-details" id="supportStatusDetails"' + (supportDetailsOpen ? "" : ' style="display: none;"') + ">";
+  html += '<dl class="support-grid">';
+  html += "<div><dt>Workspace</dt><dd>" + supportEsc(s.workspaceName || "") + "</dd></div>";
+  if (plan)
+    html +=
+      "<div><dt>Plan</dt><dd>" +
+      supportEsc(plan.label || "") +
+      (plan.units ? " &times; " + supportEsc(plan.units) : "") +
+      ' <span class="support-badge ' +
+      (plan.entitled ? "ok" : "bad") +
+      '">' +
+      (plan.entitled ? "Active" : "Not active") +
+      "</span></dd></div>";
+  html +=
+    "<div><dt>Client key</dt><dd class='support-mono'>" +
+    supportEsc(s.keyHint) +
+    (s.keyLabel ? ' <span class="support-hint">(' + supportEsc(s.keyLabel) + ")</span>" : "") +
+    "</dd></div>";
+  html += "<div><dt>Client ID</dt><dd class='support-mono'>" + supportEsc(s.clientId) + "</dd></div>";
+  html += "<div><dt>Instance ID</dt><dd class='support-mono'>" + supportEsc(s.instanceId) + "</dd></div>";
+  html += "<div><dt>Portal</dt><dd class='support-mono'>" + supportEsc(s.portalUrl) + "</dd></div>";
+  if (s.scopes && s.scopes.length) html += "<div><dt>Scopes</dt><dd>" + supportEsc(s.scopes.join(", ")) + "</dd></div>";
+  html += "</dl>";
+
+  html += '<div class="support-installation" id="supportInstallation">' + supportInstallationHtml() + "</div>";
+
+  if (s.sla) {
+    html += '<div class="support-sla"><dt class="support-sla-title">First-response times</dt><div class="support-sla-row">';
+    SUPPORT_SEVERITIES.forEach(function (sev) {
+      html += '<div class="support-sla-cell"><b>' + sev.id + "</b><span>" + supportEsc(s.sla[sev.id] || "") + "</span></div>";
+    });
+    html += "</div>";
+    if (s.sla.coverage) html += '<div class="support-hint mt-1">Coverage: ' + supportEsc(s.sla.coverage) + "</div>";
+    html += "</div>";
+  }
+
+  html += '<div class="support-reg-foot">';
+  if (s.fromSettings) html += '<span class="support-hint">Registered through the server settings: change or remove them in the server configuration.</span>';
+  else html += '<span class="support-hint">The key is stored on this server only.</span>';
+  html +=
+    '<button class="btn btn-sm btn-outline-danger ms-auto" id="supportUnregisterBtn" onclick="supportUnregister()"' +
+    (s.fromSettings ? ' disabled title="Configured through the settings arcadedb.support.clientId and arcadedb.support.clientKey"' : "") +
+    '><i class="fa fa-unlink"></i> Unregister</button>';
+  html += "</div></div></div>";
+  return html;
+}
+
+$(document).on("click", "#supportStatusToggle", function () {
+  supportDetailsOpen = !supportDetailsOpen;
+  $(this).attr("aria-expanded", supportDetailsOpen ? "true" : "false");
+  $(".support-status-chevron").toggleClass("open", supportDetailsOpen);
+  $("#supportStatusDetails").slideToggle(150);
+});
+
+$(document).on("click", "#supportRefreshBtn", function () {
+  loadSupport(true);
+  supportIssues = null;
+});
+
+// ------------------------------------------------------------------------------------------------ the server as an installation
+
+/** What the portal said about this server's record in the installations, and the button to do it (again). */
+function supportInstallationHtml() {
+  var html = '<div class="support-installation-text">';
+  var r = supportInstallation;
+  if (supportInstallationBusy) html += supportSpinner("Registering this server in the portal...");
+  else if (supportInstallationError)
+    html += '<i class="fa fa-circle-exclamation text-danger"></i> ' + supportEsc(supportInstallationError.message);
+  else if (r && r.status) {
+    var what =
+      r.status === "created"
+        ? "Added to your installations in the portal"
+        : r.status === "updated"
+          ? "Your installation in the portal was completed (" + supportEsc((r.filled || []).join(", ")) + ")"
+          : "Already in your installations in the portal";
+    html += '<i class="fa fa-circle-check support-ok"></i> ' + what + (r.name ? ": <b>" + supportEsc(r.name) + "</b>" : "") + ".";
+    if (r.differs && r.differs.length)
+      html += ' <span class="support-hint">Differs from what the portal has, left as it is: ' + supportEsc(r.differs.join(", ")) + ".</span>";
+  } else html += '<span class="support-hint">Add this server to the installations of your workspace in the portal, with its version and environment.</span>';
+  html += "</div>";
+  html +=
+    '<button class="btn btn-sm btn-outline-primary" id="supportSyncBtn"' +
+    (supportInstallationBusy ? " disabled" : "") +
+    '><i class="fa fa-cloud-arrow-up"></i> ' +
+    (r && r.status ? "Synchronize" : "Register this server in the portal") +
+    "</button>";
+  return html;
+}
+
+function supportRenderInstallation() {
+  $("#supportInstallation").html(supportInstallationHtml());
+}
+
+/** @param auto true right after the key was registered: only a new installation is announced, a failure stays in the details */
+function supportRegisterInstallation(auto) {
+  if (supportInstallationBusy) return;
+  supportInstallationBusy = true;
+  supportInstallationError = null;
+  supportRenderInstallation();
+  return supportApi("POST", "/installation")
+    .done(function (text) {
+      supportInstallation = supportParse(text) || {};
+      if (supportInstallation.status === "created")
+        globalNotify("Support", "This server was added to your installations in the portal", "success");
+      else if (!auto) globalNotify("Support", "This server is up to date in your installations in the portal", "success");
+    })
+    .fail(function (jqXHR) {
+      supportInstallationError = supportError(jqXHR);
+      if (!auto) globalNotify("Support", supportInstallationError.message, "warning");
+    })
+    .always(function () {
+      supportInstallationBusy = false;
+      supportRenderInstallation();
+    });
+}
+
+$(document).on("click", "#supportSyncBtn", function () {
+  supportRegisterInstallation(false);
+});
 
 function supportCredentials() {
   return { clientId: $("#supportClientId").val().trim(), key: $("#supportClientKey").val().trim() };
@@ -422,8 +538,12 @@ function supportRegister() {
       $("#supportClientKey").val("");
       supportStatus = supportParse(text) || {};
       supportIssues = null;
+      supportInstallation = null;
+      supportInstallationError = null;
       renderSupportAll();
       globalNotify("Support", "This server is registered with the support portal", "success");
+      // Once registered, that's it: the server also becomes an installation of the workspace, without another click
+      supportRegisterInstallation(true);
     })
     .fail(function (jqXHR) {
       supportShowError(jqXHR, "#supportVerifyResult");
@@ -441,6 +561,9 @@ function supportUnregister() {
         .done(function () {
           supportIssues = null;
           supportCurrentIssue = null;
+          supportInstallation = null;
+          supportInstallationError = null;
+          supportDetailsOpen = false;
           loadSupport(true);
           globalNotify("Support", "The registration was removed", "success");
         })
@@ -715,29 +838,20 @@ function renderSupportIssueForm() {
   var html = "";
   delete supportPreviews.spIssue;
 
-  if (!s.registered) {
-    html +=
-      '<div class="support-card"><p class="mb-2" style="font-size: 0.88rem;">Register this server with your Client ID and key to open issues with ArcadeData support.</p>' +
-      '<button class="btn btn-sm btn-primary support-goto" data-support-view="overview">Go to the registration</button> ' +
-      '<button class="btn btn-sm btn-outline-secondary support-goto" data-support-view="public"><i class="fab fa-github"></i> Report a public GitHub issue</button></div>';
-    $("#supportViewIssue").html(html);
-    return;
-  }
-  if (!supportIsEntitled()) {
+  if (!s.registered || !supportIsEntitled()) {
     html +=
       '<div class="alert alert-warning py-2" style="font-size: 0.86rem;"><i class="fa fa-triangle-exclamation"></i> ' +
       (s.portalError ? supportEsc(s.portalError.message) : "Your support plan is not active (it expired or there is none), so issues cannot be opened in the portal.") +
       ' <a href="' +
       supportEsc(supportBuyUrl()) +
-      '" target="_blank" rel="noopener noreferrer">Get professional support</a> or ' +
-      '<a href="#" class="support-goto" data-support-view="public">report a public GitHub issue</a>.</div>';
-    $("#supportViewIssue").html(html);
+      '" target="_blank" rel="noopener noreferrer">Get professional support</a> or report a public GitHub issue.</div>';
+    $("#supportIssueModalBody").html(html);
     return;
   }
 
+  html += '<p class="support-hint mb-3">Describe the problem and attach the logs and a diagnostics snapshot of this server. Secrets are masked before anything leaves the server, and you review exactly what is sent.</p>';
   html += '<div id="spIssueResult"></div>';
-  html += '<div class="support-card" id="spIssueCard">';
-  html += "<h6>Open a support issue</h6>";
+  html += '<div id="spIssueCard">';
   html +=
     '<div class="mb-2"><label class="form-label mb-1" style="font-size: 0.82rem;" for="spIssueTitle">Title</label><input type="text" class="form-control" id="spIssueTitle" maxlength="200" autocomplete="off"></div>';
   html +=
@@ -755,9 +869,9 @@ function renderSupportIssueForm() {
   html += supportCollectFormHtml("spIssue");
   html += '<hr style="border-color: var(--border-light);">';
   html +=
-    '<button class="btn btn-sm btn-primary" id="spIssueSendBtn" onclick="supportSendIssue()"><i class="fa fa-paper-plane"></i> Send to ArcadeData support</button> <span class="support-hint" id="spIssueSendHint"></span>';
+    '<button class="btn btn-primary" id="spIssueSendBtn" onclick="supportSendIssue()"><i class="fa fa-paper-plane"></i> Send to ArcadeData support</button> <span class="support-hint" id="spIssueSendHint"></span>';
   html += "</div>";
-  $("#supportViewIssue").html(html);
+  $("#supportIssueModalBody").html(html);
   supportWireCollect("spIssue");
   supportUpdateSendState("spIssue");
 }
@@ -786,16 +900,10 @@ function supportSendIssue() {
   supportApi("POST", "/issues", body)
     .done(function (text) {
       var r = supportParse(text) || {};
-      var link = supportSafeUrl(r.url);
-      $("#spIssueResult").html(
-        '<div class="alert alert-success py-2" style="font-size: 0.88rem;"><i class="fa fa-circle-check"></i> Issue <b>#' +
-          supportEsc(r.number) +
-          "</b> was created." +
-          (link ? ' <a href="' + supportEsc(link) + '" target="_blank" rel="noopener noreferrer">Open it in the portal</a>.' : "") +
-          ' <a href="#" class="support-goto" data-support-view="issues">See my issues</a>.</div>'
-      );
+      supportHideModal("supportIssueModal");
       supportIssues = null;
-      renderSupportIssueFormKeepResult();
+      globalNotify("Support", "Issue #" + r.number + " was sent to ArcadeData support", "success");
+      if (supportCurrentView === "overview") loadSupportIssues();
     })
     .fail(function (jqXHR) {
       supportShowError(jqXHR, "#spIssueResult");
@@ -808,27 +916,29 @@ function supportSendIssue() {
     });
 }
 
-function renderSupportIssueFormKeepResult() {
-  var result = $("#spIssueResult").html();
-  renderSupportIssueForm();
-  $("#spIssueResult").html(result);
-}
-
 // ------------------------------------------------------------------------------------------------ my issues
 
 function renderSupportIssuesShell() {
   var s = supportStatus || {};
   if (!s.registered) {
-    $("#supportViewIssues").html(
-      '<div class="support-card"><p class="mb-2" style="font-size: 0.88rem;">Register this server to see the issues of your workspace here.</p>' +
-        '<button class="btn btn-sm btn-primary support-goto" data-support-view="overview">Go to the registration</button></div>'
-    );
+    $("#supportViewIssues").empty();
     return;
   }
-  var html = '<div id="spIssuesAlert"></div>';
+  var entitled = supportIsEntitled();
+  var html = '<div class="support-actions">';
+  html += '<h5 class="support-section-title"><i class="fa fa-life-ring"></i> Support issues</h5>';
+  html += '<div class="ms-auto d-flex gap-2 flex-wrap">';
+  html += '<button class="btn btn-outline-secondary support-open-public"><i class="fab fa-github"></i> Report a public GitHub issue</button>';
+  html +=
+    '<button class="btn btn-primary support-open-issue"' +
+    (entitled ? "" : ' disabled title="Your support plan is not active"') +
+    '><i class="fa fa-plus"></i> Open a new issue</button>';
+  html += "</div></div>";
+  html += '<div id="spIssuesAlert"></div>';
   html += '<div id="spIssuesList"></div><div id="spIssueDetail" style="display: none;"></div>';
   $("#supportViewIssues").html(html);
   if (supportIssues != null && !supportCurrentIssue) renderSupportIssuesList();
+  else if (supportIssues == null && !supportCurrentIssue && supportCurrentView === "overview") loadSupportIssues();
 }
 
 function loadSupportIssues() {
@@ -871,29 +981,31 @@ function renderSupportIssuesList() {
     html += '<option value="' + f + '"' + (f === supportIssuesFilter ? " selected" : "") + ">" + f + "</option>";
   });
   html += "</select>";
-  html += '<button class="btn btn-sm btn-outline-secondary" id="spIssuesRefresh"><i class="fa fa-sync"></i> Refresh</button>';
-  html += '<button class="btn btn-sm btn-primary ms-auto support-goto" data-support-view="issue"><i class="fa fa-plus"></i> Open an issue</button>';
+  html += '<button class="btn btn-sm btn-outline-secondary" id="spIssuesRefresh" title="Reload the issues"><i class="fa fa-sync"></i></button>';
   html += "</div>";
-  if (!supportIssues || !supportIssues.length) html += '<div class="support-card support-hint">No issue to show.</div>';
-  else {
-    html += '<table class="support-table"><thead><tr><th style="width: 70px;">#</th><th>Title</th><th style="width: 110px;">Status</th><th style="width: 90px;">Severity</th><th style="width: 190px;">Updated</th></tr></thead><tbody>';
+  if (!supportIssues || !supportIssues.length) {
+    html += '<div class="support-empty"><i class="fa fa-inbox"></i>';
+    html += "<div><b>No " + (supportIssuesFilter === "all" ? "" : supportEsc(supportIssuesFilter) + " ") + "issues</b></div>";
+    html += '<div class="support-hint">' + (supportIsEntitled() ? "Open a new issue when something needs ArcadeData support." : "Issues you open with ArcadeData support will show here.") + "</div></div>";
+  } else {
+    html += '<div class="support-issue-list">';
     supportIssues.forEach(function (issue) {
+      var sev = issue.severity || "";
       html +=
-        '<tr class="support-row-click" data-number="' +
+        '<div class="support-issue-row support-row-click" role="button" tabindex="0" data-number="' +
         supportEsc(issue.number) +
-        '"><td>' +
+        '"><span class="support-issue-num">#' +
         supportEsc(issue.number) +
-        "</td><td>" +
+        '</span><span class="support-issue-title">' +
         supportEsc(issue.title) +
-        "</td><td>" +
+        "</span>" +
+        (sev ? '<span class="support-badge sev-' + supportEsc(sev) + '">' + supportEsc(sev) + "</span>" : "") +
         supportStatusBadge(issue) +
-        "</td><td>" +
-        supportEsc(issue.severity || "") +
-        "</td><td>" +
+        '<span class="support-hint support-issue-date">' +
         supportEsc(supportFormatDate(issue.updatedOn || issue.updatedAt || issue.modifiedOn || issue.createdOn)) +
-        "</td></tr>";
+        "</span></div>";
     });
-    html += "</tbody></table>";
+    html += "</div>";
   }
   $("#spIssuesList").show().html(html);
 }
@@ -907,7 +1019,9 @@ $(document).on("click", "#spIssuesRefresh", function () {
   loadSupportIssues();
 });
 
-$(document).on("click", "#spIssuesList tr.support-row-click", function () {
+$(document).on("click keydown", "#spIssuesList .support-row-click", function (e) {
+  if (e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault();
   loadSupportIssue($(this).attr("data-number"));
 });
 
@@ -1073,10 +1187,9 @@ function supportSendAttachment() {
 // ------------------------------------------------------------------------------------------------ public GitHub path
 
 function renderSupportPublic() {
-  var html = '<div class="support-card">';
-  html += "<h6><i class='fab fa-github'></i> Report a public GitHub issue</h6>";
+  var html = "<div>";
   html +=
-    '<p style="font-size: 0.88rem;">For users without a support plan: build the same redacted bundle, download it, and open a prefilled public issue on GitHub. ' +
+    '<p style="font-size: 0.88rem;">Build the same redacted bundle, download it, and open a prefilled public issue on GitHub. ' +
     "<b>Nothing is uploaded anywhere automatically.</b> GitHub issues are public: the issue holds your text and a short environment summary, without logs. " +
     "Attach the downloaded zip to the issue by hand, after reading it.</p>";
   html += '<div id="spPublicAlert"></div>';
@@ -1087,13 +1200,13 @@ function renderSupportPublic() {
   html += supportCollectFormHtml("spPublic");
   html += '<hr style="border-color: var(--border-light);">';
   html +=
-    '<button class="btn btn-sm btn-outline-primary" id="spPublicDownloadBtn" disabled onclick="supportDownloadBundle()"><i class="fa fa-download"></i> Download redacted bundle</button> ';
+    '<button class="btn btn-outline-primary" id="spPublicDownloadBtn" disabled onclick="supportDownloadBundle()"><i class="fa fa-download"></i> Download redacted bundle</button> ';
   html +=
-    '<button class="btn btn-sm btn-primary" id="spPublicGithubBtn" onclick="supportOpenGithub()"><i class="fab fa-github"></i> Open GitHub issue</button>';
+    '<button class="btn btn-primary" id="spPublicGithubBtn" onclick="supportOpenGithub()"><i class="fab fa-github"></i> Open GitHub issue</button>';
   html +=
     '<div class="support-hint mt-2">The GitHub issue opens in a new tab with the title, your description and the environment summary filled in (the text is limited in length). Remember to attach the zip: drag it into the issue description.</div>';
   html += "</div>";
-  $("#supportViewPublic").html(html);
+  $("#supportPublicModalBody").html(html);
   delete supportPreviews.spPublic;
   supportWireCollect("spPublic");
   supportUpdateSendState("spPublic");
