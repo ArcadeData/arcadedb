@@ -307,11 +307,13 @@ def test_async_executor_wait_completion_positive_timeout_still_times_out(temp_db
     _, release = _block_async_worker(async_exec)
 
     try:
-        with pytest.raises(TimeoutError):
-            async_exec.wait_completion(50)
-    finally:
-        release.set()
-        async_exec.wait_completion()
+        try:
+            with pytest.raises(TimeoutError):
+                async_exec.wait_completion(50)
+        finally:
+            release.set()
+            async_exec.wait_completion()
 
-    assert async_exec.wait_completion(30000) is None
-    async_exec.close()
+        assert async_exec.wait_completion(30000) is None
+    finally:
+        async_exec.close()
