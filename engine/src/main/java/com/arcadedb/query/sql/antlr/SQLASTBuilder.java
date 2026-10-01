@@ -314,7 +314,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   private static final String NO_TARGET_ALIAS = "";
   /** exponent range up to which a long decimal literal is kept as an exact BigDecimal rather than a double (issue #8872) */
-  private static final int    MAX_EXACT_DECIMAL_SCALE = 400;
+  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -3413,13 +3413,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
-    if (text.length() > 15 && !Double.isInfinite(d) && !text.startsWith("0x") && !text.startsWith("0X")) {
+    if (text.length() > 15 && !Double.isInfinite(d)) {
       try {
         final BigDecimal exact = new BigDecimal(text);
         if (Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
           return exact;
       } catch (final NumberFormatException ignore) {
-        // an exponent that does not fit an int (underflow to 0.0): the double is what the literal always evaluated to
+        // a hex float (BigDecimal rejects it) or an exponent that does not fit an int (underflow to 0.0): the double is
+        // what the literal always evaluated to
       }
     }
     return d;

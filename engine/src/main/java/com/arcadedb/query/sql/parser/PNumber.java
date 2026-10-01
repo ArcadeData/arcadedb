@@ -46,6 +46,7 @@ public class PNumber extends SimpleNode {
       builder.append('F');
   }
 
+  /** BigDecimal.toString() writes its exponent with an uppercase E */
   private static boolean hasFloatingPointMarker(final String rendered) {
     return rendered.indexOf('.') >= 0 || rendered.indexOf('E') >= 0;
   }
