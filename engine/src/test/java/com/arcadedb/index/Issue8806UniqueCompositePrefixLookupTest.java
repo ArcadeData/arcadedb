@@ -19,7 +19,9 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,12 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 class Issue8806UniqueCompositePrefixLookupTest extends TestHelper {
   private static final int HOSTS  = 10;
   private static final int POINTS = 30_000;
   private static final int COMMIT = 1_000;
 
-  private void load(final String unique) {
+  private void load(final String unique) throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE Point");
     database.command("sql", "CREATE PROPERTY Point.host STRING");
     database.command("sql", "CREATE PROPERTY Point.ts LONG");
@@ -50,6 +53,15 @@ class Issue8806UniqueCompositePrefixLookupTest extends TestHelper {
       }
     }
     database.commit();
+    compactAndAssertSeries("Point[host,ts]");
+  }
+
+  /** The defect lives in the compacted series: compact now rather than wait for the background compaction. */
+  private void compactAndAssertSeries(final String indexName) throws Exception {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(indexName);
+    for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+      bucketIndex.compact();
+    assertThat(typeIndex.getIndexesOnBuckets()).anySatisfy(i -> assertThat(((LSMTreeIndex) i).getMutableIndex().getSubIndex()).isNotNull());
   }
 
   private long count(final String sql) {
@@ -66,8 +78,7 @@ class Issue8806UniqueCompositePrefixLookupTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("ts").longValue()).isZero();
     }
 
-    final TypeIndex index = database.getSchema().getType("Point").getAllIndexes(false).iterator().next() instanceof TypeIndex t ? t : null;
-    assertThat(index).isNotNull();
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Point[host,ts]");
     for (final boolean ascending : new boolean[] { true, false }) {
       final IndexCursor cursor = index.range(ascending, new Object[] { "host_7" }, true, new Object[] { "host_7" }, true);
       long n = 0;
@@ -80,26 +91,26 @@ class Issue8806UniqueCompositePrefixLookupTest extends TestHelper {
   }
 
   @Test
-  void uniquePrefixLookupReturnsEveryEntry() {
+  void uniquePrefixLookupReturnsEveryEntry() throws Exception {
     load("UNIQUE");
     check();
   }
 
   @Test
-  void uniquePrefixLookupAfterReopen() {
+  void uniquePrefixLookupAfterReopen() throws Exception {
     load("UNIQUE");
     reopenDatabase();
     check();
   }
 
   @Test
-  void notUniquePrefixLookupReturnsEveryEntry() {
+  void notUniquePrefixLookupReturnsEveryEntry() throws Exception {
     load("NOTUNIQUE");
     check();
   }
 
   @Test
-  void uniqueFirstPropertyOfThreePropertyIndex() {
+  void uniqueFirstPropertyOfThreePropertyIndex() throws Exception {
     database.command("sql", "CREATE DOCUMENT TYPE T3");
     database.command("sql", "CREATE PROPERTY T3.a INTEGER");
     database.command("sql", "CREATE PROPERTY T3.b INTEGER");
@@ -114,6 +125,7 @@ class Issue8806UniqueCompositePrefixLookupTest extends TestHelper {
       }
     }
     database.commit();
+    compactAndAssertSeries("T3[a,b,c]");
     assertThat(count("SELECT count(*) AS c FROM T3 WHERE a = 3")).isEqualTo(30_000);
     assertThat(count("SELECT count(*) AS c FROM T3 WHERE a = 3 AND b = 4")).isEqualTo(3_000);
   }

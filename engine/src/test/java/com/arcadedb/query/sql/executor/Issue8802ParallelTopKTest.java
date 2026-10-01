@@ -97,14 +97,16 @@ class Issue8802ParallelTopKTest extends TestHelper {
   /** Workers do not see a transaction's changes, so an ORDER BY inside one stays sequential - and sees them. */
   @Test
   void insideATransactionTheSortStaysSequentialAndSeesItsChanges() {
-    database.transaction(() -> {
+    database.begin();
+    try {
       database.newDocument("OneBucket").set("id", -1, "x", 1_000, "grp", 0, "name", "tx").save();
       final String[] plan = new String[1];
       final List<String> rows = run("SELECT id, x FROM OneBucket ORDER BY x DESC LIMIT 1", true, plan);
       assertThat(plan[0]).doesNotContain("parallel: ");
       assertThat(rows.getFirst()).contains("x=1000");
+    } finally {
       database.rollback();
-    });
+    }
   }
 
   /** A function the engine does not ship promises nothing about concurrent use: it keeps the sort sequential. */

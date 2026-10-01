@@ -130,7 +130,6 @@ public class OrderByStep extends AbstractExecutionStep {
       return;
     }
     final long timeoutBegin = System.currentTimeMillis();
-    boolean sorted = true;
     do {
       final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!lastBatch.hasNext())
@@ -148,7 +147,6 @@ public class OrderByStep extends AbstractExecutionStep {
         try {
           cachedResult.add(item);
           limit.add(cachedResult.size(), item);
-          sorted = false;
         } finally {
           if( context.isProfiling() ) {
             cost += System.nanoTime() - begin;
@@ -160,9 +158,7 @@ public class OrderByStep extends AbstractExecutionStep {
     } while (true);
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      if (!sorted) {
-        cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
-      }
+      cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
     } finally {
       if( context.isProfiling() ) {
         cost += System.nanoTime() - begin;
@@ -181,10 +177,7 @@ public class OrderByStep extends AbstractExecutionStep {
     final long timeoutBegin = System.currentTimeMillis();
     if (maxResults > 0 && topKInParallel(context, timeoutBegin))
       return;
-    final Comparator<Kept> byKeyThenArrival = (a, b) -> {
-      final int c = orderBy.compare(a.row, b.row, context);
-      return c != 0 ? c : Long.compare(a.arrival, b.arrival);
-    };
+    final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
     final PriorityQueue<Kept> heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
     long arrival = 0;
     do {
@@ -268,6 +261,7 @@ public class OrderByStep extends AbstractExecutionStep {
       // A ROUND TAKES THE PARTIALS OF THE PREVIOUS ONES BACK BEFORE IT CREATES ANY, SO A SOURCE SERVED IN MANY ROUNDS STILL
       // ENDS WITH NO MORE PARTIALS THAN WORKERS
       final List<PartialTopK> partials = new ArrayList<>();
+      final String[] types = pipeline.types().toArray(new String[0]);
       int workers = 0;
       long units = 0;
       ParallelTypeScan scan = firstScan;
@@ -279,12 +273,12 @@ public class OrderByStep extends AbstractExecutionStep {
               final PartialTopK reused = idle.poll();
               if (reused != null)
                 return reused;
-              final PartialTopK partial = new PartialTopK(pipeline.types().toArray(new String[0]), pipeline.copyConditions(),
+              final PartialTopK partial = new PartialTopK(types, pipeline.copyConditions(),
                   pipeline.projection() == null ? null : pipeline.projection().copy(), orderBy.copy(), workerContext, maxResults,
                   OperationHeapLimit.of(workerContext, "ORDER BY"));
               workerPartials.add(partial);
               return partial;
-            }, (partial, row, position, workerContext) -> partial.accept(row, roundPosition + position, workerContext), onWait);
+            }, (partial, row, position, ignored) -> partial.accept(row, roundPosition + position), onWait);
         for (final PartialTopK partial : used)
           if (!partials.contains(partial))
             partials.add(partial);
@@ -298,10 +292,7 @@ public class OrderByStep extends AbstractExecutionStep {
       final List<Kept> kept = new ArrayList<>();
       for (final PartialTopK partial : partials)
         kept.addAll(partial.heap);
-      kept.sort((a, b) -> {
-        final int c = orderBy.compare(a.row, b.row, context);
-        return c != 0 ? c : Long.compare(a.arrival, b.arrival);
-      });
+      kept.sort(byKeyThenArrival(orderBy, context));
       final int size = Math.min(maxResults, kept.size());
       cachedResult = new ArrayList<>(size);
       for (int i = 0; i < size; i++)
@@ -340,6 +331,14 @@ public class OrderByStep extends AbstractExecutionStep {
     return pipeline;
   }
 
+  /** Orders kept rows by the sort key, then by where the sequential scan met them. */
+  private static Comparator<Kept> byKeyThenArrival(final OrderBy orderBy, final CommandContext context) {
+    return (a, b) -> {
+      final int c = orderBy.compare(a.row, b.row, context);
+      return c != 0 ? c : Long.compare(a.arrival, b.arrival);
+    };
+  }
+
   /** A row kept by a top-K heap, with its position in the sequential scan: the tie-break that keeps the sort stable (#8802). */
   private record Kept(Result row, long arrival) {
   }
@@ -366,23 +365,25 @@ public class OrderByStep extends AbstractExecutionStep {
       this.context = context;
       this.maxResults = maxResults;
       this.heapLimit = heapLimit;
-      final Comparator<Kept> byKeyThenArrival = (a, b) -> {
-        final int c = orderBy.compare(a.row, b.row, context);
-        return c != 0 ? c : Long.compare(a.arrival, b.arrival);
-      };
-      this.heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
+      this.heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival(orderBy, context).reversed());
     }
 
-    void accept(final Result row, final long position, final CommandContext workerContext) {
-      if (!ParallelRowPipeline.matches(types, conditions, row, workerContext))
+    /**
+     * A worker meets its rows in ascending position: units are claimed from a shared counter in order, and a round's
+     * positions start above the previous one's. A row whose key ties the worst kept one therefore never replaces it, which
+     * is what keeps the earlier row, as the sequential sort does. A scan that claimed units in another order would break the
+     * ties here without the merge noticing.
+     */
+    void accept(final Result row, final long position) {
+      if (!ParallelRowPipeline.matches(types, conditions, row, context))
         return;
-      final Result next = projection != null ? projection.calculateSingle(workerContext, row) : row;
+      final Result next = projection != null ? projection.calculateSingle(context, row) : row;
       if (heap.size() < maxResults) {
         heap.add(new Kept(next, position));
         // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER, AND TAKEN ONLY FOR A ROW THAT ENTERS THE HEAP
         synchronized (this) {
           if (!heapReleased)
-            heapLimit.chargeElement(next, 0);
+            heapLimit.add(heap.size(), next);
         }
       } else if (orderBy.compare(next, heap.peek().row, context) < 0) {
         final Kept evicted = heap.poll();
