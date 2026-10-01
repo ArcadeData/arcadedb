@@ -223,19 +223,11 @@ final class SecurityCatchUp implements AutoCloseable {
    */
   void onRejected(final Runnable task) {
     if (task instanceof Attempt attempt)
-      rearm(attempt.token);
+      rearm(attempt.token());
   }
 
   /** A queued request, carrying the token it took the latch with so a rejection can release exactly that hold. */
-  static final class Attempt implements Runnable {
-    final long     token;
-    private final Runnable body;
-
-    Attempt(final long token, final Runnable body) {
-      this.token = token;
-      this.body = body;
-    }
-
+  record Attempt(long token, Runnable body) implements Runnable {
     @Override
     public void run() {
       body.run();

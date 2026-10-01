@@ -1541,13 +1541,8 @@ public final class SnapshotInstaller {
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
             deleteDirectoryIfExists(snapshotNew);
-            final List<String> liveBeforeRestore = liveEntryNames(dbDir);
             restoreBackup(dbDir, snapshotBackup);
-            final List<String> orphans = quarantineOrphanBucketFiles(dbDir, liveBeforeRestore);
-            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-                "Legacy snapshot swap for %s restored from the backup over these live entries: %s. Bucket files the "
-                    + "restored schema does not name were moved to %s (%s); other snapshot-only files, if any, "
-                    + "stay in place", null, dbDir, liveBeforeRestore, SNAPSHOT_ORPHANS_DIR, orphans);
+            quarantineOrphanBucketFiles(dbDir);
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1583,6 +1578,8 @@ public final class SnapshotInstaller {
         deleteDirectoryIfExists(snapshotNew);
         // Move backup contents back into dbDir
         restoreBackup(dbDir, snapshotBackup);
+        // Also where an interrupted legacy rollback (above) is finished by a later pass.
+        quarantineOrphanBucketFiles(dbDir);
 
       } else {
         // No completion marker and no backup. "The download was interrupted before the backup was created" is
@@ -1671,20 +1668,18 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Moves, among {@code candidates}, the bucket files whose bucket the restored {@code schema.json} does not name
-   * into {@link #SNAPSHOT_ORPHANS_DIR}, and returns their names.
+   * Moves the live bucket files that the restored {@code schema.json} does not name into
+   * {@link #SNAPSHOT_ORPHANS_DIR}, safe to delete once the database is verified.
    * <p>
    * A snapshot-only bucket that reached the live directory before a phase-2 crash stops the database opening when
    * its file id collides with an original's (the id is part of the file name). Quarantined rather than deleted, and
-   * only when the schema parses and lists at least one bucket, so a doubtful schema never costs a file. Index files
-   * are not judged.
+   * only when the schema parses and lists at least one bucket (bucket names never contain a dot, and every bucket
+   * belongs to a type), so a doubtful schema never costs a file. Index files are not judged.
    */
-  private static List<String> quarantineOrphanBucketFiles(final Path dbDir, final List<String> candidates)
-      throws IOException {
-    final List<String> moved = new ArrayList<>();
+  private static void quarantineOrphanBucketFiles(final Path dbDir) throws IOException {
     final Path schemaFile = dbDir.resolve("schema.json");
     if (!Files.isRegularFile(schemaFile))
-      return moved;
+      return;
     final Set<String> known = new HashSet<>();
     try {
       final JSONObject types = new JSONObject(Files.readString(schemaFile)).getJSONObject("types", new JSONObject());
@@ -1692,20 +1687,27 @@ public final class SnapshotInstaller {
         for (final Object bucket : types.getJSONObject(type).getJSONArray("buckets", new JSONArray()).toList())
           known.add(String.valueOf(bucket));
     } catch (final RuntimeException e) {
-      return moved;
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Cannot read the bucket names from the schema of %s, so no orphan bucket file was looked for: %s", null,
+          dbDir, e.getMessage());
+      return;
     }
     if (known.isEmpty())
-      return moved;
-    for (final String name : candidates) {
+      return;
+    final List<String> moved = new ArrayList<>();
+    for (final String name : liveEntryNames(dbDir)) {
       if (!name.endsWith(".bucket") || known.contains(name.substring(0, name.indexOf('.'))))
         continue;
       Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
       Files.move(dbDir.resolve(name), dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name), StandardCopyOption.REPLACE_EXISTING);
       moved.add(name);
     }
-    if (!moved.isEmpty())
-      fsyncDirectory(dbDir);
-    return moved;
+    if (moved.isEmpty())
+      return;
+    fsyncDirectory(dbDir);
+    LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+        "Moved bucket files that the restored schema of %s does not name to %s: %s. They are safe to delete once the "
+            + "database has been verified", null, dbDir, SNAPSHOT_ORPHANS_DIR, moved);
   }
 
   private static List<String> liveEntryNames(final Path dbDir) throws IOException {
