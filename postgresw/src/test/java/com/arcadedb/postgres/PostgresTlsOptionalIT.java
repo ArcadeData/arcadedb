@@ -25,6 +25,7 @@ import javax.net.ssl.SSLSocket;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.sql.Connection;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,6 +83,18 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
   }
 
   @Test
+  void gssEncryptionRequestIsAnsweredNAndTheSslRequestStillWorks() throws Exception {
+    try (final Socket socket = newSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      out.write(ByteBuffer.allocate(8).putInt(8).putInt(GSSENC_REQUEST_CODE).array());
+      out.flush();
+      assertThat(new DataInputStream(socket.getInputStream()).readByte()).isEqualTo((byte) 'N');
+
+      assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
+    }
+  }
+
+  @Test
   void aSecondSslRequestInsideTlsClosesTheConnection() throws Exception {
     try (final Socket socket = newSocket()) {
       assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
@@ -101,9 +114,9 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
     try (final Socket socket = newSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       // THE SSLREQUEST AND FOUR MORE BYTES IN ONE WRITE: THE CLIENT DID NOT WAIT FOR THE ANSWER
-      out.writeInt(8);
-      out.writeInt(SSL_REQUEST_CODE);
-      out.writeInt(0x16030100);
+      final ByteBuffer packet = ByteBuffer.allocate(12);
+      packet.putInt(8).putInt(SSL_REQUEST_CODE).putInt(0x16030100);
+      out.write(packet.array());
       out.flush();
       assertThat(readOrClosed(socket.getInputStream())).isEqualTo(-1);
     }

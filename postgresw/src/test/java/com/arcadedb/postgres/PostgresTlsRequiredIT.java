@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.sql.Connection;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,6 +80,18 @@ class PostgresTlsRequiredIT extends PostgresTlsTestBase {
       out.flush();
       // THE SERVER CLOSES WITHOUT ANSWERING: NO ERRORRESPONSE
       assertThat(readOrClosed(socket.getInputStream())).isEqualTo(-1);
+    }
+  }
+
+  @Test
+  void gssEncryptionRequestIsAnsweredNSoLibpqFallsBackToTls() throws Exception {
+    try (final Socket socket = newSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      out.write(ByteBuffer.allocate(8).putInt(8).putInt(GSSENC_REQUEST_CODE).array());
+      out.flush();
+      assertThat(new DataInputStream(socket.getInputStream()).readByte()).isEqualTo((byte) 'N');
+
+      assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
     }
   }
 }
