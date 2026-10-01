@@ -108,4 +108,16 @@ class Issue8811OrderByAliasIndexTest extends TestHelper {
       assertThat(plan(rs)).doesNotContain("V[a]");
     }
   }
+
+  @Test
+  void duplicateAliasDoesNotUseTheIndexAndMatchesTheUnindexedAnswer() {
+    final String query = "SELECT a, b AS a FROM V ORDER BY a ASC LIMIT 3";
+    final List<Object> got = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query)) {
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("a"));
+      assertThat(plan(rs)).doesNotContain("V[a]");
+    }
+    assertThat(got).hasSize(3);
+  }
 }

@@ -3748,13 +3748,19 @@ public class SelectExecutionPlanner {
     if (projection == null || projection.getItems() == null)
       return name;
 
+    ProjectionItem match = null;
     for (final ProjectionItem projectionItem : projection.getItems()) {
       if (projectionItem.isAll() || !name.equals(projectionItem.getProjectionAliasAsString()))
         continue;
-      final Expression expression = projectionItem.getExpression();
-      return expression != null && expression.isBaseIdentifier() ? expression.getDefaultAlias().getStringValue() : null;
+      if (match != null)
+        // two items under one name: which one the sort sees is not for the index to guess
+        return null;
+      match = projectionItem;
     }
-    return name;
+    if (match == null)
+      return name;
+    final Expression expression = match.getExpression();
+    return expression != null && expression.isBaseIdentifier() ? expression.getDefaultAlias().getStringValue() : null;
   }
 
   /**
