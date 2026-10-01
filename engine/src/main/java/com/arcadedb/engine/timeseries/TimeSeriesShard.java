@@ -862,7 +862,8 @@ public class TimeSeriesShard implements AutoCloseable {
    * crash recovery truncates the store back to "the first N blocks in file order", which only means something while
    * compaction appends and never rewrites a block it already wrote.
    * <p>
-   * The file is written without any lock appenders wait on; only the swap runs under the compaction write lock.
+   * The file is written without any lock appenders wait on; only the swap and the capture of the file image for
+   * replication run under the compaction write lock (the same as retention and compaction do).
    *
    * @param minBlocksSaved the least number of blocks the pass must remove to be worth a rewrite of the whole file (and,
    *                       under HA, its replication); {@code 1} merges whenever it can

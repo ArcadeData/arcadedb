@@ -24,6 +24,7 @@ import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
@@ -330,5 +331,22 @@ class Issue8798TimeBucketOriginTest extends TestHelper {
     reopenDatabase();
     assertThat(((LocalTimeSeriesType) database.getSchema().getType("D")).getDownsamplingTiers().getFirst().offsetMs())
         .isEqualTo(-8 * HOUR);
+  }
+
+  @Test
+  void theBuilderPrintsTheTierOffsetBack() {
+    final List<String> sql = database.getSchema().buildTimeSeriesType().withName("B").withTimestamp("ts")
+        .withTag("host", Type.STRING).withField("v", Type.DOUBLE)
+        .withDownsamplingTiers(List.of(new DownsamplingTier(HOUR, DAY, -8 * HOUR))).toSQL();
+    assertThat(sql.getFirst()).contains("GRANULARITY 1 DAYS OFFSET -8 HOURS");
+    sql.forEach(statement -> database.command("sql", statement));
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("B");
+    assertThat(type.getDownsamplingTiers().getFirst().offsetMs()).isEqualTo(-8 * HOUR);
+    assertThat(type.toJSON().getJSONArray("downsamplingTiers").getJSONObject(0).getLong("offsetMs")).isEqualTo(-8 * HOUR);
+  }
+
+  @Test
+  void aNonPositiveIntervalIsRefusedByTheGrid() {
+    assertThatThrownBy(() -> TimeBucketGrid.normalizeOffset(5L, 0L)).isInstanceOf(IllegalArgumentException.class);
   }
 }

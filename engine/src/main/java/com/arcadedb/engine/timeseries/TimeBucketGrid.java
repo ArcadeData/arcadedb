@@ -48,6 +48,8 @@ public final class TimeBucketGrid {
    * @param intervalMs the bucket width, which must be positive
    */
   public static long normalizeOffset(final long originMs, final long intervalMs) {
+    if (intervalMs <= 0)
+      throw new IllegalArgumentException("A bucket interval must be positive, got " + intervalMs);
     return Math.floorMod(originMs, intervalMs);
   }
 
