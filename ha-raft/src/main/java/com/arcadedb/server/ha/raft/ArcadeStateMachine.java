@@ -95,6 +95,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -2615,6 +2616,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           reconciler.reconcileDatabasesFromLeader(leaderId.toString(), leaderHttpAddr, leaderHttpsAddr, clusterToken,
               installedBoundaryIndex);
       final Set<String> notInstalled = reconcileResult.notInstalled();
+      final Set<String> leaderMissing = Objects.requireNonNullElse(reconcileResult.leaderMissing(), Set.of());
 
       // Compute the installed snapshot TermIndex: normally firstTermIndexInLog - 1, the end of what the snapshot covers,
       // or firstTermIndexInLog itself when the leader's marker is past it (issue #8449, see
@@ -2683,22 +2685,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // separate writes could leave a position at snapshotIndex with no quarantine for a database it gave up on
         // A database the reconcile reported LEADER_MISSING was kept, not refreshed, so its own applied position is not
         // advanced to the snapshot index either (issue #8588); it is not quarantined, unlike notInstalled.
-        completeSnapshotInstall(snapshotIndex, notInstalled, reconcileResult.leaderMissing());
+        completeSnapshotInstall(snapshotIndex, notInstalled, leaderMissing);
       }
       // The install brought every database up to the snapshot point, so any read floor an earlier
       // stale marker published is now satisfied. Cleared BEFORE the notify below so a woken waiter
       // re-checks against the restored state instead of the floor (issue #6111).
       clearStaleSnapshotFloor();
 
+      // Names the LEADER_MISSING databases: kept unrefreshed, they may keep the node out of the Service (issue #8702).
       LogManager.instance().log(this, Level.INFO,
-          "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d",
-          notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex);
-      // A leader-driven install reinstalls every database present on this node, so a copy the bootstrap
-      // overwrite guard had kept is gone and its divergence mark with it (issue #6124).
-      clearAllBootstrapUnreconciled();
-      // Likewise every pending bootstrap replacement it did reinstall (issue #8367); one it gave up on is still the
-      // copy the baseline rejected, so it stays pending.
-      settleBootstrapReplacementsExcept(notInstalled);
+          "HA resync finished (mode=snapshot, result=%s): snapshotIndex=%d%s",
+          notInstalled.isEmpty() ? "ok" : "partial", snapshotIndex,
+          leaderMissing.isEmpty() ? "" :
+              ", kept without refresh because the leader does not hold them: " + leaderMissing);
+      // Only a reinstalled database loses its #6124 mark and its #8367 pending replacement: a given-up (#6760) or
+      // LEADER_MISSING (#8588) one still holds the copy the bootstrap baseline rejected (issue #8702).
+      final Set<String> notReplaced = notReplaced(notInstalled, leaderMissing);
+      clearBootstrapUnreconciledExcept(notReplaced);
+      settleBootstrapReplacementsExcept(notReplaced);
 
       // Wake any threads blocked in RaftHAServer.waitForAppliedIndex()/waitForLocalApply(): this
       // leader-driven snapshot install advances the applied index without going through
@@ -7126,9 +7130,33 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Clears every bootstrap-divergence mark (issue #6124). Used by the two full-resync paths, which
-   * reinstall EVERY database present on this node from the leader - the same reasoning
-   * {@link #clearDivergedState()} makes for the diverged set.
+   * Clears the bootstrap-divergence mark (issue #6124) of every database not in {@code notReplaced}, in one durable
+   * write. Used by the two full-resync paths, which reinstall every present database except the ones they gave up on
+   * and the ones the leader does not hold (issue #8702): those still hold the copy the overwrite guard kept.
+   */
+  private void clearBootstrapUnreconciledExcept(final Set<String> notReplaced) {
+    synchronized (bootstrapBaselinesFileLock) {
+      ensureBootstrapBaselinesLoaded();
+      if (!bootstrapUnreconciledDatabases.isEmpty() && bootstrapUnreconciledDatabases.removeIf(
+          dbName -> !notReplaced.contains(dbName)))
+        persistBootstrapBaselinesFile();
+    }
+  }
+
+  /** The present databases a full install did NOT replace with the leader's copy: given up on, or not held by the leader. */
+  private static Set<String> notReplaced(final Set<String> notInstalled, final Set<String> leaderMissing) {
+    if (leaderMissing.isEmpty())
+      return notInstalled;
+    if (notInstalled.isEmpty())
+      return leaderMissing;
+    final Set<String> union = new HashSet<>(notInstalled);
+    union.addAll(leaderMissing);
+    return union;
+  }
+
+  /**
+   * Clears every bootstrap-divergence mark (issue #6124), for a path that reinstalled EVERY database present on
+   * this node from the leader - the same reasoning {@link #clearDivergedState()} makes for the diverged set.
    */
   // @VisibleForTesting
   void clearAllBootstrapUnreconciled() {
@@ -7430,21 +7458,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       clearDivergedState();
       // Every present database now carries the leader's copy, including any the bootstrap overwrite guard
       // had kept (issue #6124) - except one the leader does not hold, whose copy nothing replaced.
-      if (leaderMissing.isEmpty())
-        clearAllBootstrapUnreconciled();
-      else
-        for (final String dbName : getBootstrapUnreconciledDatabases())
-          if (!leaderMissing.contains(dbName))
-            clearBootstrapUnreconciled(dbName);
+      clearBootstrapUnreconciledExcept(leaderMissing);
     } else {
       // Every database but these carries the leader's copy now: clear the rest, and quarantine these with their own
       // honest floors in the same durable write (issues #6760, #8137).
       final var snapshotInfo = storage.getLatestSnapshot();
       final boolean durable = settleDivergedStateAfterInstall(notInstalled,
           snapshotInfo != null ? snapshotInfo.getIndex() : -1L, false);
-      for (final String dbName : getBootstrapUnreconciledDatabases())
-        if (!notInstalled.contains(dbName) && !leaderMissing.contains(dbName))
-          clearBootstrapUnreconciled(dbName);
+      clearBootstrapUnreconciledExcept(notReplaced(notInstalled, leaderMissing));
       // Fail closed. The node-wide floor below is the only other thing protecting these copies across a restart, and a
       // quarantine that lives in memory alone is gone after one: the directory would be reopened by the next request
       // and served ready and unclamped. Failing here keeps the floor and re-arms the resync (triggerSnapshotDownload).
