@@ -243,4 +243,31 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
     drain("UNWIND range(1, 500) AS i CREATE (:Lz {i: i}) WITH i LIMIT 1 WITH i LIMIT 0 RETURN i");
     assertThat(count("MATCH (a:Lz) RETURN count(a) AS c")).isEqualTo(500L);
   }
+
+  @Test
+  void returnLimitZeroAfterWriteStillWrites() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Rz {i: i}) RETURN i LIMIT 0");
+    assertThat(count("MATCH (a:Rz) RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void distinctLimitAfterWriteStillWritesAndDeduplicates() {
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", "UNWIND range(1, 500) AS i CREATE (:Dt {i: i}) WITH DISTINCT i % 7 AS k LIMIT 3 RETURN k")) {
+        int rows = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+        assertThat(rows).isEqualTo(3);
+      }
+    });
+    assertThat(count("MATCH (a:Dt) RETURN count(a) AS c")).isEqualTo(500L);
+  }
+
+  @Test
+  void skipWithoutLimitAfterWriteStillWrites() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Sk {i: i}) WITH i SKIP 10 RETURN i");
+    assertThat(count("MATCH (a:Sk) RETURN count(a) AS c")).isEqualTo(500L);
+  }
 }
