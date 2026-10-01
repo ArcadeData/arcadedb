@@ -263,16 +263,17 @@ def test_async_executor_wait_completion_zero_does_not_block_while_busy(temp_db):
             outcome["result"] = repr(exc)
 
     caller = threading.Thread(target=call, daemon=True)
-    caller.start()
-    # The worker is parked until `release` is set, so a wait_completion(0) that still
-    # reached the engine's clamped infinite wait would never come back from this join.
-    caller.join(10)
-    blocked = caller.is_alive()
-
-    release.set()
-    async_exec.wait_completion()
-    caller.join(10)
-    async_exec.close()
+    try:
+        caller.start()
+        # The worker is parked until `release` is set, so a wait_completion(0) that still
+        # reached the engine's clamped infinite wait would never come back from this join.
+        caller.join(10)
+        blocked = caller.is_alive()
+    finally:
+        release.set()
+        async_exec.wait_completion()
+        caller.join(10)
+        async_exec.close()
 
     assert blocked is False, "wait_completion(0) blocked on a busy executor"
     assert outcome.get("result") == "timeout"
@@ -280,11 +281,12 @@ def test_async_executor_wait_completion_zero_does_not_block_while_busy(temp_db):
 
 def test_async_executor_wait_completion_zero_returns_when_idle(temp_db):
     async_exec = temp_db.async_executor()
-    async_exec.wait_completion()
+    try:
+        async_exec.wait_completion()
 
-    assert async_exec.wait_completion(0) is None
-
-    async_exec.close()
+        assert async_exec.wait_completion(0) is None
+    finally:
+        async_exec.close()
 
 
 def test_async_executor_wait_completion_rejects_negative_timeout(temp_db):

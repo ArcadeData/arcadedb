@@ -751,7 +751,10 @@ class AsyncExecutor:
 
         The engine's waitCompletion() clamps any timeout <= 0 to an infinite
         wait, so 0 is never handed to it: it is answered off isProcessing(),
-        the same non-blocking poll is_pending() uses.
+        the same non-blocking poll is_pending() uses. Like is_pending(), it is
+        a point-in-time snapshot, not the barrier a positive timeout or no
+        argument gives: work a running task schedules after the snapshot is
+        not covered by a successful poll.
 
         Raises:
             TimeoutError: If timeout is reached before completion
