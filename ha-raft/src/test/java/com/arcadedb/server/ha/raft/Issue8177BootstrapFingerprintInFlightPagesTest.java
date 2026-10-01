@@ -135,11 +135,11 @@ class Issue8177BootstrapFingerprintInFlightPagesTest {
 
   /**
    * The fix: the baseline is sampled from the settled copy, so the state machine's recomputation reads the same bytes
-   * and a peer whose copy IS the baseline installs nothing, is marked nothing and stays in the Service - however the
-   * flush thread was scheduled.
+   * and a peer whose copy IS the baseline installs nothing, is marked nothing and stays in the Service. A guard for
+   * the helper on the same in-flight commit, deterministic by construction: the drain is explicit.
    */
   @Test
-  void aBaselineSampledFromTheSettledCopyMatchesThePeerWhateverTheFlushTiming() throws Exception {
+  void aBaselineSampledFromTheSettledCopyMatchesThePeer() throws Exception {
     commitAndSampleWhileItsPagesAreInFlight();
 
     final String settled = SettledBootstrapFingerprint.of(localDb);
