@@ -140,4 +140,29 @@ class Issue3993PointSridTest extends TestHelper {
     assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4326.9})")).isInstanceOf(CommandSemanticException.class);
     assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: -1})")).isInstanceOf(CommandSemanticException.class);
   }
+
+  @Test
+  void knownSridWithUnknownCrsIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'foo', srid: 4326})")).isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void nonStringCrsIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 123})")).isInstanceOf(CommandSemanticException.class);
+  }
+
+  @Test
+  void unknownCrsOrSridWith3DCoordinates() {
+    final Map<?, ?> unknownCrs = point("point({x: 1, y: 2, z: 3, crs: 'foo'})");
+    assertThat(unknownCrs.get("crs")).isEqualTo("foo");
+    assertThat(unknownCrs.containsKey("srid")).isFalse();
+    assertThat(point("point({x: 1, y: 2, z: 3, srid: 9999})").get("crs")).isEqualTo("cartesian-3D");
+  }
+
+  @Test
+  void sridBoundaryValues() {
+    assertThat(point("point({x: 1, y: 2, srid: 4326.0})").get("srid")).isEqualTo(4326);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 0.0 / 0.0})")).isInstanceOf(CommandSemanticException.class);
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 4294971622})")).isInstanceOf(CommandSemanticException.class);
+  }
 }
