@@ -121,7 +121,7 @@ public final class SnapshotInstaller {
      * The reopen that validates the installed snapshot returned a verdict - it failed - and the rollback it asks for
      * has not yet published ROLLING_BACK. Recovery must finish that rollback, not roll the bad snapshot forward (#8305).
      */
-    VALIDATION_FAILED, ROLLING_BACK, RESTORING
+    VALIDATION_FAILED, ROLLING_BACK, RESTORING // VALIDATION_FAILED is unknown to older nodes, which refuse it and keep every file
   }
 
   /**
@@ -1111,11 +1111,6 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Rolls the live database directory back to the retained {@code .snapshot-backup} copy after a
-   * post-swap failure. Clears the failed snapshot files first so entries present only in the failed
-   * snapshot do not linger, then moves the backup contents back into place.
-   */
-  /**
    * Records the verdict of the failed validation before acting on it, then rolls back. Without the record, the interval
    * between the failed reopen and the published ROLLING_BACK would leave the phase at INSTALLED, which recovery reads as
    * "roll forward" and answers by deleting the backup it was about to restore (#8305). Only worth recording when there
@@ -1134,6 +1129,11 @@ public final class SnapshotInstaller {
     rollbackToBackup(dbPath, snapshotBackup);
   }
 
+  /**
+   * Rolls the live database directory back to the retained {@code .snapshot-backup} copy after a
+   * post-swap failure. Clears the failed snapshot files first so entries present only in the failed
+   * snapshot do not linger, then moves the backup contents back into place.
+   */
   private static void rollbackToBackup(final Path dbPath, final Path snapshotBackup) {
     try {
       if (!Files.isDirectory(snapshotBackup)) {

@@ -43,7 +43,7 @@ class Issue8714BootstrapTransferBudgetTest {
   @Test
   void transferIsCappedToACandidateSlice() {
     final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.handoffReachablePeers()).thenReturn(Set.of("peer-b"));
+    when(ha.followerContactPeers()).thenReturn(Set.of("peer-b"));
     final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
 
     election.transferToElectedSource("peer-b", 120_000L);
@@ -55,10 +55,10 @@ class Issue8714BootstrapTransferBudgetTest {
   @Test
   void unreachableSourceIsNeverTransferredTo() {
     final RaftHAServer ha = mock(RaftHAServer.class);
-    when(ha.handoffReachablePeers()).thenReturn(Set.of("peer-c"));
+    when(ha.followerContactPeers()).thenReturn(Set.of("peer-c"));
     final BootstrapElection election = new BootstrapElection(ha, mock(ArcadeDBServer.class));
 
-    assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L)).isInstanceOf(IllegalStateException.class);
 
     verify(ha, never()).transferLeadership(anyString(), anyLong());
   }

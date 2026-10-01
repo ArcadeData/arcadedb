@@ -422,6 +422,8 @@ public class RemoteHttpComponent extends RWLockContext {
    */
   JSONObject controlPlaneRequest(final String method, final String path, final JSONObject body, final String operation,
       final Consumer<String> urlGuard) {
+    // Leader-preferred like every server command (list databases included): that keeps the same-server retry budget, which
+    // a read spread over a stale replica list would lose. isReplayable only looks at the method (GET); the path has a query string.
     return (JSONObject) httpCommand(method, null, path, null, null, null, true, true, (response, json) -> json, operation,
         isReplayable(method, path), new ControlPlaneRequest(body, urlGuard));
   }
