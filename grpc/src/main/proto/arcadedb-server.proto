@@ -896,6 +896,10 @@ message TimeSeriesAggregation {
   // At least one aggregation to compute. An empty list is refused with INVALID_ARGUMENT, on this RPC and on
   // both HTTP endpoints (issue #7675).
   repeated TimeSeriesAggregationRequest requests = 2;
+  // Where the bucket grid starts, in epoch milliseconds: buckets are multiples of the interval counted from here. Zero
+  // (the default) is the Unix epoch, a Thursday, so a one-week bucket starts on a Thursday; a Monday origin gives
+  // Monday weeks and a local-midnight origin gives local days (issue #8798).
+  int64 bucket_origin_ms = 3;
 }
 
 message TimeSeriesQueryRequest {

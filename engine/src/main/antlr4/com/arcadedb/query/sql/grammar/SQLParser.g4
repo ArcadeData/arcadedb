@@ -556,6 +556,7 @@ tsCodecClause
 /**
  * ALTER TIMESERIES TYPE body - add or drop downsampling policy
  * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS AFTER 30 DAYS GRANULARITY 1 DAYS
+ * Example: ALTER TIMESERIES TYPE SensorData ADD DOWNSAMPLING POLICY AFTER 30 DAYS GRANULARITY 1 DAYS OFFSET -8 HOURS  (days start at local midnight in UTC+8, issue #8798)
  * Example: ALTER TIMESERIES TYPE SensorData DROP DOWNSAMPLING POLICY
  */
 alterTimeSeriesTypeBody
@@ -564,7 +565,7 @@ alterTimeSeriesTypeBody
     ;
 
 downsamplingTierClause
-    : AFTER INTEGER_LITERAL tsTimeUnit GRANULARITY INTEGER_LITERAL tsTimeUnit
+    : AFTER INTEGER_LITERAL tsTimeUnit GRANULARITY INTEGER_LITERAL tsTimeUnit (OFFSET MINUS? INTEGER_LITERAL tsTimeUnit)?
     ;
 
 tsTimeUnit

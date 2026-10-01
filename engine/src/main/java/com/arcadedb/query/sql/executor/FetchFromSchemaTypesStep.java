@@ -269,6 +269,8 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
         final ResultInternal tierR = new ResultInternal();
         tierR.setProperty("afterMs", tier.afterMs());
         tierR.setProperty("granularityMs", tier.granularityMs());
+        if (tier.offsetMs() != 0)
+          tierR.setProperty("offsetMs", tier.offsetMs());
         tierResults.add(tierR);
       }
       r.setProperty("downsamplingTiers", tierResults);

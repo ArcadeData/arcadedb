@@ -290,6 +290,7 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final List<String> aliases = new ArrayList<>();
     final long bucketInterval;
+    final long bucketOffset;
 
     // The try covers the REQUEST the caller stated and nothing else - engine.aggregateMulti runs below it. An
     // IllegalArgumentException from inside the engine (MultiColumnAggregationResult.mergeFrom raises one when two
@@ -320,6 +321,8 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
             aggPath + ".bucketInterval");
       }
       bucketInterval = resolvedInterval;
+      // Same grid option as /ts/query (issue #8798)
+      bucketOffset = TimeSeriesHandlerUtils.optBucketOffset(aggJson, resolvedInterval, aggPath);
 
       // As on /ts/query: an empty array used to answer a bucket per interval whose 'values' array was empty,
       // which a Grafana panel renders as a frame with a time column and nothing to plot (issue #7675).
@@ -361,7 +364,7 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
       // longer pays for the whole range first. fetchLimit() is the same number the raw branch hands
       // queryAscending - what the budget can still carry, plus the row that proves it carried more - which as a
       // stopping point is one bucket wider than strictly needed and cannot stop a request that fits.
-      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics,
+      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, bucketOffset, tagFilter, readMetrics,
           budget.fetchLimit());
     } finally {
       TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRAFANA);

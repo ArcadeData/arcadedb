@@ -47,6 +47,7 @@ public class TimeSeriesQuery {
   private final Map<String, Object> tags        = new LinkedHashMap<>();
   private       int                 limit       = 0;
   private       long                bucketIntervalMs;
+  private       long                bucketOriginMs;
   private final List<Aggregation>   aggregations = new ArrayList<>();
 
   /**
@@ -130,6 +131,17 @@ public class TimeSeriesQuery {
     return this;
   }
 
+  /**
+   * Where the bucket grid of an aggregated query starts, in epoch milliseconds. Buckets are multiples of the interval
+   * counted from here; the default is the Unix epoch, a Thursday, so a one-week bucket starts on a Thursday and a
+   * one-day bucket starts at 00:00 UTC. A Monday origin gives Monday weeks, a local-midnight origin local days
+   * (issue #8798).
+   */
+  public TimeSeriesQuery bucketOrigin(final long originMs) {
+    this.bucketOriginMs = originMs;
+    return this;
+  }
+
   public String getType() {
     return type;
   }
@@ -162,6 +174,11 @@ public class TimeSeriesQuery {
 
   public long getBucketIntervalMs() {
     return bucketIntervalMs;
+  }
+
+  /** The bucket grid origin in epoch milliseconds; {@code 0} is the Unix epoch. */
+  public long getBucketOriginMs() {
+    return bucketOriginMs;
   }
 
   public List<Aggregation> getAggregations() {

@@ -86,6 +86,7 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
         // (issue #7791, the same defect #7689 fixed on the sibling CREATE statement).
         builder.append(" AFTER ").append(renderDuration(tier.afterMs()));
         builder.append(" GRANULARITY ").append(renderDuration(tier.granularityMs()));
+        builder.append(renderTierOffset(tier.offsetMs()));
       }
     } else
       builder.append(" DROP DOWNSAMPLING POLICY");
