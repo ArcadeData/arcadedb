@@ -662,8 +662,6 @@ final class ParallelTypeScan {
     }
     return now - unitWaitSince >= DEDICATED_READER_GRACE_MS * 1_000_000L;
   }
-    return now - unitWaitSince >= DEDICATED_READER_GRACE_MS * 1_000_000L;
-  }
 
   /** Whether {@code row} is a record the caller's transaction has deleted: the workers read committed pages, which still hold it. */
   private boolean deletedByTransaction(final Result row) {
