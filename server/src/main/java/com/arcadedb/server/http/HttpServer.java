@@ -130,14 +130,14 @@ public class HttpServer implements ServerPlugin {
   private final    HttpAuthSessionManager authSessionManager;
   private final    ClusterAuthSessionResolver clusterAuthSessionResolver;
   private final    LeaderCommandForwarder leaderCommandForwarder;
-  // Kept so stopService() can release the HttpClient the /batch handler forwards to the leader on (issue #8024).
-  // Built per startService() by setupRoutes(), like every other route handler, so there is one per start.
-  private volatile PostBatchHandler       postBatchHandler;
   private final    WebSocketEventBus      webSocketEventBus;
   private final    WebSocketInsertSessionManager  insertSessionManager;
   private final    WebSocketInsertProtocol        insertProtocol;
   private final    IdempotencyCache       idempotencyCache;
   private          ScheduledExecutorService idempotencyCleanupExecutor;
+  // Kept so stopService() can release the HttpClient the /batch handler forwards to the leader on (issue #8024).
+  // Built per startService() by setupRoutes(), like every other route handler, so there is one per start.
+  private volatile PostBatchHandler         postBatchHandler;
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
@@ -210,9 +210,7 @@ public class HttpServer implements ServerPlugin {
 
     CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
     CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
-    final PostBatchHandler batchHandler = postBatchHandler;
-    if (batchHandler != null)
-      CodeUtils.executeIgnoringExceptions(batchHandler::close, "Error on releasing the batch handler's HTTP client", true);
+    releaseBatchHandler(postBatchHandler);
     CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
         "Error on releasing the leader command forwarder's HTTP client", true);
   }
@@ -264,11 +262,14 @@ public class HttpServer implements ServerPlugin {
    * rather than overwritten, since an overwritten one could never be released at all.
    */
   private PostBatchHandler newPostBatchHandler() {
-    final PostBatchHandler previous = postBatchHandler;
-    if (previous != null)
-      CodeUtils.executeIgnoringExceptions(previous::close, "Error on releasing the batch handler's HTTP client", true);
+    releaseBatchHandler(postBatchHandler);
     postBatchHandler = new PostBatchHandler(this);
     return postBatchHandler;
+  }
+
+  private static void releaseBatchHandler(final PostBatchHandler handler) {
+    if (handler != null)
+      CodeUtils.executeIgnoringExceptions(handler::close, "Error on releasing the batch handler's HTTP client", true);
   }
 
   private int[] getHttpsPortRange(final ContextConfiguration configuration) {

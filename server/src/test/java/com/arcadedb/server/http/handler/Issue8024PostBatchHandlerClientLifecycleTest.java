@@ -81,6 +81,7 @@ class Issue8024PostBatchHandlerClientLifecycleTest extends BaseGraphServerTest {
         .as("a failing step earlier in stopService() must not skip the release of the batch handler's HTTP client")
         .isTrue();
 
+    // Restart only to hand the fixture a running server: its teardown checks and drops the databases.
     server.start();
   }
 
