@@ -211,7 +211,9 @@ public class HttpServer implements ServerPlugin {
 
     CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
     CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
-    releaseBatchHandler(postBatchHandler);
+    final PostBatchHandler batchHandler = postBatchHandler;
+    if (batchHandler != null)
+      CodeUtils.executeIgnoringExceptions(batchHandler::close, "Error on releasing the batch handler's HTTP client", true);
     CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
         "Error on releasing the leader command forwarder's HTTP client", true);
   }
@@ -257,20 +259,10 @@ public class HttpServer implements ServerPlugin {
     handleServerStartFailure(httpPortRange);
   }
 
-  /**
-   * Builds the {@code /api/v1/batch} handler and keeps it, so {@link #stopService()} can release the HTTP client it
-   * owns (issue #8024). A previous one - from a {@code startService()} that is being repeated - is released first
-   * rather than overwritten, since an overwritten one could never be released at all.
-   */
+  /** Builds the {@code /api/v1/batch} handler and keeps it, so {@link #stopService()} can release its HTTP client. */
   private PostBatchHandler newPostBatchHandler() {
-    releaseBatchHandler(postBatchHandler);
     postBatchHandler = new PostBatchHandler(this);
     return postBatchHandler;
-  }
-
-  private static void releaseBatchHandler(final PostBatchHandler handler) {
-    if (handler != null)
-      CodeUtils.executeIgnoringExceptions(handler::close, "Error on releasing the batch handler's HTTP client", true);
   }
 
   private int[] getHttpsPortRange(final ContextConfiguration configuration) {
