@@ -26,6 +26,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
@@ -1345,6 +1346,15 @@ public class ArcadeDBServer {
   }
 
   /**
+   * Returns {@code true} when {@code directory} holds an ArcadeDB database, meaning it carries a schema file (or its
+   * previous copy). Anything else under the database directory is not a database whatever its name, and must not be
+   * opened: opening it would create one inside it (issue #8805).
+   */
+  public static boolean holdsDatabase(final File directory) {
+    return new DatabaseFactory(directory.getPath()).exists();
+  }
+
+  /**
    * Returns {@code true} when {@code databaseDirectory} carries the {@link #SNAPSHOT_PENDING_FILE} marker, i.e.
    * an HA snapshot install started writing into it and has not finished. Every path that would open or create a
    * database goes through this check: the boot scan, the default-database pass, {@link #getDatabase} and
@@ -1939,6 +1949,16 @@ public class ArcadeDBServer {
                     "Deferring database '%s': an interrupted HA snapshot install left its '%s' marker. It is opened "
                         + "once snapshot recovery has completed or rolled back the install", null, f.getName(),
                     SNAPSHOT_PENDING_FILE);
+              continue;
+            }
+            // Not a database at all: a directory the operating system or the storage put there (Windows 'System Volume
+            // Information', Synology '@eaDir', ...). Opening it would create a database inside it (issue #8805).
+            if (!holdsDatabase(f)) {
+              final String[] content = f.list();
+              if (content != null && content.length > 0)
+                LogManager.instance().log(this, Level.WARNING,
+                    "Directory '%s' in the database directory was NOT opened: it holds no database (neither '%s' nor '%s' "
+                        + "found)", null, f.getName(), LocalSchema.SCHEMA_FILE_NAME, LocalSchema.SCHEMA_PREV_FILE_NAME);
               continue;
             }
             // Not a failure to load: a closed copy the last resync could not verify, which a follower does not serve
