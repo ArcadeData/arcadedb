@@ -182,6 +182,22 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
     }
   }
 
+  @Test
+  void seventeenDigitRoundTripLiteralMatchesStoredDoubleWithoutIndex() {
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.command("sql", "CREATE PROPERTY U.k STRING");
+    database.command("sql", "CREATE PROPERTY U.d2 DOUBLE");
+    database.transaction(() -> {
+      database.newDocument("U").set("k", "tenth", "d2", 0.1d).save();
+      database.newDocument("U").set("k", "third", "d2", 1d / 3).save();
+    });
+    assertThat(keys("SELECT k FROM U WHERE d2 = 0.10000000000000001")).containsExactly("tenth");
+    assertThat(keys("SELECT k FROM U WHERE d2 = 0.33333333333333331")).containsExactly("third");
+    try (final ResultSet rs = database.query("sql", "SELECT 0.10000000000000001 AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isEqualTo(0.1d);
+    }
+  }
+
   private List<String> keys(final String sql) {
     final List<String> ks = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", sql)) {

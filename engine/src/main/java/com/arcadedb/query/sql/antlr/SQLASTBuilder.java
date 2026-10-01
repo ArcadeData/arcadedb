@@ -313,8 +313,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * the inner one.
    */
   private static final String NO_TARGET_ALIAS = "";
-  /** exponent range up to which a long decimal literal is kept as an exact BigDecimal rather than a double (issue #8872) */
-  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
+  /** significant digits a double can carry: a literal with no more than this stays a double (issue #8872) */
+  private static final int MAX_DOUBLE_DIGITS          = 17;
+  /** bounds on the digits (precision) and the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
+  private static final int MAX_EXACT_DECIMAL_PRECISION = 10_000;
+  private static final int MAX_EXACT_DECIMAL_SCALE     = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -3405,10 +3408,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * A literal a double represents exactly stays a {@link Double}. A decimal one longer than 15 characters (a cheap
-   * pre-filter: 15 significant digits always round-trip) is kept as a {@link BigDecimal} when the double would not
-   * print back as the same number, so a DECIMAL target or comparison sees what the user typed (issue #8872). Hex
-   * floats, values outside the double range and exponents beyond {@link #MAX_EXACT_DECIMAL_SCALE} stay doubles, so
+   * A literal a double represents exactly, or with at most 17 significant digits, stays a {@link Double}. A decimal one
+   * longer than 15 characters (a cheap pre-filter) with more digits than that is kept as a {@link BigDecimal} when the
+   * double would not print back as the same number, so a DECIMAL target or comparison sees what the user typed (issue #8872). Hex
+   * floats, values outside the double range and scales beyond {@link #MAX_EXACT_DECIMAL_SCALE} or precisions beyond {@link #MAX_EXACT_DECIMAL_PRECISION} stay doubles, so
    * a huge exponent cannot be turned into a BigDecimal whose arithmetic expands about a billion digits.
    */
   private static Number parseSuffixlessDecimal(final String text) {
@@ -3416,7 +3419,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (text.length() > 15 && !Double.isInfinite(d)) {
       try {
         final BigDecimal exact = new BigDecimal(text);
-        if (Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+        final int precision = exact.precision();
+        // up to 17 significant digits is what a double carries (the `printf("%.17g")` round-trip form): such a literal IS
+        // the double, and turning it into a BigDecimal would stop it matching the stored double in an unindexed scan
+        if (precision > MAX_DOUBLE_DIGITS && precision <= MAX_EXACT_DECIMAL_PRECISION && Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE
+            && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
           return exact;
       } catch (final NumberFormatException ignore) {
         // a hex float (BigDecimal rejects it) or an exponent that does not fit an int (underflow to 0.0): the double is
