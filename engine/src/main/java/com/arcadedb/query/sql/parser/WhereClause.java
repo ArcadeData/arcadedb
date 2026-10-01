@@ -131,10 +131,10 @@ public class WhereClause extends SimpleNode {
         final Map<String, Object> conditions = getEqualityOperations(condition, context);
 
         for (final TypeIndex index : indexes) {
-          // An index created or dropped by a concurrent DDL is no source for an estimation
-          if (!index.isReadyForQueries())
-            continue;
           try {
+            // An index created or dropped by a concurrent DDL is no source for an estimation
+            if (!index.isReadyForQueries())
+              continue;
             if (index.getType() == Schema.INDEX_TYPE.FULL_TEXT)
               continue;
 
