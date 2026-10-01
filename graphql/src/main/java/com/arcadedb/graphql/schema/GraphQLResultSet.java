@@ -54,6 +54,12 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphQLResultSet implements ResultSet {
+  /**
+   * The meta-field every object type answers (spec 4.4.1, "Type Name Introspection"). Names starting with {@code __} are
+   * reserved for introspection, so it is never read from a record property of the same name. See issue #8745.
+   */
+  private static final String TYPENAME_FIELD = "__typename";
+
   private final GraphQLSchema        schema;
   private final ResultSet            resultSet;
   private final List<Selection>      projections;
@@ -162,9 +168,11 @@ public class GraphQLResultSet implements ResultSet {
    * @param type        the object type this field returns, when the schema declares one
    * @param set         the sub-selections written in the query document, if any
    * @param cacheable   whether {@code set} is the same list for every record, so its projections can be cached
+   * @param typeName    whether the field is the {@code __typename} meta-field, resolved from the type of the object
+   *                    rather than from a property: see issue #8745
    */
   private record Projection(String name, String fieldName, AbstractField field, FieldDefinition schemaField,
-                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable) {
+                            ObjectTypeDefinition type, List<Selection> set, boolean cacheable, boolean typeName) {
   }
 
   public GraphQLResultSet(final GraphQLSchema schema, final ResultSet resultSet, final List<Selection> projections,
@@ -205,9 +213,10 @@ public class GraphQLResultSet implements ResultSet {
           continue;
 
         projections.add(
-            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false));
+            new Projection(fieldDefinition.getName(), fieldDefinition.getName(), null, fieldDefinition, subType, null, false,
+                false));
       }
-      return mapProjections(current, projections);
+      return mapProjections(current, projections, type);
     } finally {
       expansionPath.removeLast();
     }
@@ -229,7 +238,7 @@ public class GraphQLResultSet implements ResultSet {
       } else {
         final List<Projection> projections = cached.get(current);
         if (projections != null)
-          return mapProjections(current, projections);
+          return mapProjections(current, projections, parentType);
       }
     }
 
@@ -265,7 +274,7 @@ public class GraphQLResultSet implements ResultSet {
           merged.addAll(first.set());
           merged.addAll(set.getSelections());
           projections.set(existing, new Projection(first.name(), first.fieldName(), first.field(), first.schemaField(),
-              first.type(), merged, cacheable));
+              first.type(), merged, cacheable, first.typeName()));
         }
         continue;
       }
@@ -276,13 +285,13 @@ public class GraphQLResultSet implements ResultSet {
       // THE PROJECTIONS OF A CACHED LEVEL ARE BUILT ONCE PER CACHE ENTRY, SO THE LISTS THEY HOLD, A MERGED ONE INCLUDED,
       // ARE THE SAME OBJECTS FOR EVERY RECORD THAT ENTRY SERVES: THE LEVEL BELOW IS CACHED BY THEIR IDENTITY TOO
       projections.add(new Projection(responseKey, fieldName, field, schemaField, subType,
-          set != null ? set.getSelections() : null, cacheable));
+          set != null ? set.getSelections() : null, cacheable, TYPENAME_FIELD.equals(fieldName)));
     }
 
     if (cached != null)
       cached.put(current, dependsOnRecord, projections);
 
-    return mapProjections(current, projections);
+    return mapProjections(current, projections, parentType);
   }
 
   /**
@@ -425,7 +434,42 @@ public class GraphQLResultSet implements ResultSet {
     return projectionValue;
   }
 
-  private GraphQLResult mapProjections(final Result current, final List<Projection> projections) {
+  /**
+   * The value of {@code __typename} for a record resolved against {@code parentType}: the most specific object type of
+   * the SDL the record is an instance of - its database type, or the nearest super type of it, that the SDL declares -
+   * so a record of a database sub type of the type the field returns reports its own type when the SDL declares it.
+   * Otherwise the schema type the selections are written against. With neither known, the database type of the record
+   * is the only type there is to report.
+   */
+  private String typeNameOf(final Result current, final ObjectTypeDefinition parentType) {
+    final DocumentType recordType = recordTypeOf(current);
+    if (recordType != null) {
+      final String declared = declaredObjectTypeOf(recordType);
+      if (declared != null)
+        return declared;
+      if (parentType == null)
+        return recordType.getName();
+    }
+    return parentType != null ? parentType.getName() : null;
+  }
+
+  /** The name of {@code type}, or of its nearest super type, that the SDL declares as an object type; null if none. */
+  private String declaredObjectTypeOf(final DocumentType type) {
+    if (schema.isObjectType(type.getName()))
+      return type.getName();
+    for (final DocumentType superType : type.getSuperTypes()) {
+      final String declared = declaredObjectTypeOf(superType);
+      if (declared != null)
+        return declared;
+    }
+    return null;
+  }
+
+  /**
+   * @param parentType the schema type the projections are resolved against, or {@code null} when the SDL declares none
+   */
+  private GraphQLResult mapProjections(final Result current, final List<Projection> projections,
+      final ObjectTypeDefinition parentType) {
     final Map<String, Object> map = new HashMap<>();
 
     if (current.getElement().isPresent()) {
@@ -440,6 +484,11 @@ public class GraphQLResultSet implements ResultSet {
     for (final Projection entry : projections) {
       final String projName = entry.name();
       final String realName = entry.fieldName();
+
+      if (entry.typeName()) {
+        map.put(projName, typeNameOf(current, parentType));
+        continue;
+      }
 
       Object projectionValue = current.getProperty(realName);
 
