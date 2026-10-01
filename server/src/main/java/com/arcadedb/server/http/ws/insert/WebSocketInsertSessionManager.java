@@ -183,13 +183,14 @@ public class WebSocketInsertSessionManager {
       return id;
     });
 
-    final Runnable afterClaimHook = afterChannelClaimForTesting;
-    if (afterClaimHook != null)
-      afterClaimHook.run();
-
     final DatabaseInternal database;
     final WebSocketInsertSession session;
     try {
+      // Inside the try, so a hook that throws releases the claim like any other failure here.
+      final Runnable afterClaimHook = afterChannelClaimForTesting;
+      if (afterClaimHook != null)
+        afterClaimHook.run();
+
       database = server.getDatabase(databaseName, false, false);
       session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession);
       // Before it is registered, not after: a session the sweep can see must already know where to send its
