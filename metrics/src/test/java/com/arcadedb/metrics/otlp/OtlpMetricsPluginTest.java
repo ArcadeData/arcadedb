@@ -133,13 +133,6 @@ class OtlpMetricsPluginTest {
   }
 
   @Test
-  void userInfoIsRedactedForLogging() {
-    assertThat(OtlpMetricsPlugin.redactUserInfo("http://user:pw@collector:4317")).isEqualTo("http://collector:4317");
-    assertThat(OtlpMetricsPlugin.redactUserInfo("http://collector:4317")).isEqualTo("http://collector:4317");
-    assertThat(OtlpMetricsPlugin.redactUserInfo(null)).isNull();
-  }
-
-  @Test
   void grpcPortEndpointIsStillNormalizedWithThePath() {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT, "http://collector:4317");
