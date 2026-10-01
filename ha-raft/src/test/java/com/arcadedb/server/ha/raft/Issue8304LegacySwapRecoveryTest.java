@@ -31,8 +31,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A snapshot swap interrupted by a binary that recorded no phase (issue #8304) used to be preserved and never
@@ -112,8 +114,8 @@ class Issue8304LegacySwapRecoveryTest {
 
   /**
    * Disjoint names that are really a phase-2 crash: the only snapshot file that moved is one no original had. The
-   * originals are restored and the node opens on them; the stray snapshot-only file is left in place (and named in
-   * the log) rather than guessed at.
+   * originals are restored and the node opens on them; the snapshot-only bucket, whose file id collides with an
+   * original's, is moved aside to {@code .snapshot-orphans} because it would stop the database opening.
    */
   @Test
   void disjointLayoutFromAPhase2CrashStillRestoresTheOriginalDatabase(@TempDir final Path root) throws Exception {
@@ -135,9 +137,55 @@ class Issue8304LegacySwapRecoveryTest {
     SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
 
     assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
+    assertThat(fileNames(db.resolve(".snapshot-orphans"))).anyMatch(n -> n.startsWith("SnapshotOnly_"));
     assertThat(db.resolve(".snapshot-pending")).doesNotExist();
     assertThat(staged).doesNotExist();
     assertThat(backup).doesNotExist();
+  }
+
+  /** A node that crashes again part-way through the rollback finishes it on the next recovery. */
+  @Test
+  void rollbackInterruptedMidRestoreIsResumedByTheNextRecovery(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.createDirectories(backup);
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    boolean first = true;
+    for (final String name : fileNames(db)) {
+      if (name.startsWith(".snapshot"))
+        continue;
+      if (first || name.startsWith("schema"))
+        Files.move(db.resolve(name), backup.resolve(name));
+      first = false;
+    }
+    final AtomicBoolean crashed = new AtomicBoolean();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if (point.startsWith("RESTORING:") && crashed.compareAndSet(false, true))
+        throw new SimulatedCrash();
+    };
+    try {
+      assertThatThrownBy(() -> SnapshotInstaller.recoverPendingSnapshotSwaps(databases))
+          .isInstanceOf(SimulatedCrash.class);
+    } finally {
+      SnapshotInstaller.swapProgressForTesting = null;
+    }
+    assertThat(crashed).isTrue();
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(backup).doesNotExist();
+  }
+
+  // Bypasses IOException handling, like process death.
+  private static final class SimulatedCrash extends Error {
   }
 
   /** A restore that does not produce a database keeps the pending marker, so nothing is accepted as healthy. */
