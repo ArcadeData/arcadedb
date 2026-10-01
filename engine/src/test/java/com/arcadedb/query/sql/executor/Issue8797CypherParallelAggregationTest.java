@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8797: an openCypher aggregate over a label scan ran on one core, while the same aggregate in SQL had run in the
@@ -116,6 +118,26 @@ class Issue8797CypherParallelAggregationTest extends TestHelper {
     assertSameAsSequential("MATCH (n:FourBuckets) WHERE n.x > 5000 RETURN count(*) AS c, sum(n.x) AS s, max(n.x) AS m, avg(n.x) AS a");
     assertSameAsSequential("MATCH (n:FourBuckets) WHERE n.x > 5000 RETURN n.grp AS grp, count(*) AS c");
     assertThat(rows("MATCH (n:FourBuckets) WHERE n.x > 5000 RETURN n.grp AS grp, count(*) AS c")).isEmpty();
+  }
+
+  /** The group cap applies to the groups of the parallel path as it does to the sequential one, and releases what the workers charged. */
+  @Test
+  void groupLimitFailsTheQueryLikeTheSequentialOne() {
+    final long previous = database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10);
+    try {
+      final String query = "MATCH (n:FourBuckets) RETURN n.grp AS grp, count(*) AS c";
+      assertThatThrownBy(() -> rows(query)).isInstanceOf(CommandExecutionException.class);
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+      try {
+        assertThatThrownBy(() -> rows(query)).isInstanceOf(CommandExecutionException.class);
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+      }
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, previous);
+    }
+    assertThat(rows("MATCH (n:FourBuckets) RETURN n.grp AS grp, count(*) AS c")).hasSize(100);
   }
 
   /** Workers do not see a transaction's changes, so inside one the aggregation stays on the caller - and sees them. */

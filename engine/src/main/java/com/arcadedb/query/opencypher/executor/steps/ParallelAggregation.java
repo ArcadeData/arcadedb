@@ -25,8 +25,8 @@ import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
-import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ExecutionStepInternal;
 import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.ParallelRecordScan;
@@ -53,6 +53,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Accepted trade-off, as in SQL: the partials merge in worker order, not scan order, so a {@code sum} or {@code avg} of doubles is
  * not bit-for-bit reproducible (the addition order varies), and a {@code min} or {@code max} over values that compare equal but
  * differ in type (1 and 1.0) may answer either one.
+ * <p>
+ * PROFILE: the scan and filter steps feeding the aggregation are never pulled, so only this step reports time and rows.
  * <p>
  * The groups come out in the order of their first row in the sequential scan, each with the key values of that row, as the
  * sequential aggregation returns them.
