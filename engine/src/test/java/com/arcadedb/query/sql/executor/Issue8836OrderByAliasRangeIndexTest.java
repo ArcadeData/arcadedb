@@ -127,4 +127,14 @@ class Issue8836OrderByAliasRangeIndexTest extends TestHelper {
       assertThat(got).isEqualTo(List.of(199L, 198L, 197L));
     }
   }
+
+  @Test
+  void parameterizedDirectionWithLimit() {
+    try (final ResultSet rs = database.command("sql", "SELECT b FROM V ORDER BY b :direction LIMIT 3", Map.of("direction", "DESC"))) {
+      final List<Long> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().<Number>getProperty("b").longValue());
+      assertThat(got).isEqualTo(List.of(1000L, 999L, 998L));
+    }
+  }
 }
