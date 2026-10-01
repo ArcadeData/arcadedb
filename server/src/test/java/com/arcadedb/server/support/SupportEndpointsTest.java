@@ -165,13 +165,66 @@ class SupportEndpointsTest extends BaseGraphServerTest {
   }
 
   @Test
+  void theServerIsRegisteredAsAnInstallationWithItsRedactedDiagnosticsAndNothingElse() throws Exception {
+    assertThat(call("POST", "/api/v1/server/support/installation", null).json().getString("error")).isEqualTo("not_registered");
+    register();
+    portal.requests.clear();
+
+    final Resp resp = call("POST", "/api/v1/server/support/installation", null);
+    assertThat(resp.status()).isEqualTo(200);
+    assertThat(resp.json().getString("status")).isEqualTo("created");
+    assertThat(portal.requests).hasSize(1);
+    final MockPortal.Recorded sent = portal.requests.get(0);
+    assertThat(sent.method()).isEqualTo("POST");
+    // A tenant process run with the key, not a route of the platform made for this
+    assertThat(sent.path()).isEqualTo("/api/v1/process-execute");
+    assertThat(sent.header("x-api-process")).isEqualTo("studio-register-instance");
+    assertThat(sent.header("x-instance-id")).isEqualTo(getServer(0).getInstanceId());
+    final JSONObject body = new JSONObject(sent.bodyText());
+    assertThat(body.keySet()).containsExactly("diagnostics");
+    assertThat(body.getJSONObject("diagnostics").getJSONObject("server").getString("version")).isNotBlank();
+    // Diagnostics only: no logs, no thread dump, and never the Client key
+    assertThat(sent.bodyText()).doesNotContain(MockPortal.KEY).doesNotContain("Thread dump");
+  }
+
+  @Test
+  void aRefusalOfTheInstallationIsShownWithItsCodeAndNeverAsAnAuthenticationFailure() throws Exception {
+    register();
+    // The portal's process refuses with "<code>: <sentence>", which the platform answers as a failed process
+    portal.handler = r -> new MockPortal.Response(500,
+        MockPortal.error("process_failed", "Process 'studio-register-instance' failed: Error: instance_id.taken: held"));
+    final Resp taken = call("POST", "/api/v1/server/support/installation", null);
+    assertThat(taken.status()).isEqualTo(409);
+    assertThat(taken.json().getString("error")).isEqualTo("instance_id.taken");
+    assertThat(taken.json().getString("message")).contains("already registered");
+
+    portal.handler = r -> new MockPortal.Response(500,
+        MockPortal.error("process_failed", "Process 'studio-register-instance' failed: Error: no_workspace: gone"));
+    final Resp left = call("POST", "/api/v1/server/support/installation", null);
+    // never 401/403: Studio would log the user out
+    assertThat(left.status()).isEqualTo(409);
+    assertThat(left.json().getString("error")).isEqualTo("no_workspace");
+
+    // A portal without the process: the platform refuses a key it cannot run it for like any key outside its routes
+    portal.handler = r -> new MockPortal.Response(401, MockPortal.error("unauthorized", "Authentication required"));
+    assertThat(call("POST", "/api/v1/server/support/installation", null).json().getString("error")).isEqualTo("not_supported");
+
+    // A bug in the portal's process is not shown as a refusal and does not leak its text
+    portal.handler = r -> new MockPortal.Response(500,
+        MockPortal.error("process_failed", "Process 'studio-register-instance' failed: TypeError: secret detail"));
+    final Resp broken = call("POST", "/api/v1/server/support/installation", null);
+    assertThat(broken.json().getString("error")).isEqualTo("portal_error");
+    assertThat(broken.json().getString("message")).doesNotContain("secret detail");
+  }
+
+  @Test
   void onlyTheRootUserIsAuthorised() throws Exception {
     final String[][] routes = { { "GET", "/api/v1/server/support" }, { "POST", "/api/v1/server/support/register" },
         { "DELETE", "/api/v1/server/support/register" }, { "POST", "/api/v1/server/support/preview" },
         { "POST", "/api/v1/server/support/issues" }, { "GET", "/api/v1/server/support/issues" },
         { "GET", "/api/v1/server/support/issues/1" }, { "PUT", "/api/v1/server/support/issues/1" },
         { "POST", "/api/v1/server/support/issues/1/comments" }, { "POST", "/api/v1/server/support/issues/1/attachments" },
-        { "POST", "/api/v1/server/support/bundle" } };
+        { "POST", "/api/v1/server/support/bundle" }, { "POST", "/api/v1/server/support/installation" } };
 
     // a user that is not root
     assertThat(call("POST", "/api/v1/server/users", new JSONObject().put("name", "bob").put("password", "bobs-password-1234").toString())
