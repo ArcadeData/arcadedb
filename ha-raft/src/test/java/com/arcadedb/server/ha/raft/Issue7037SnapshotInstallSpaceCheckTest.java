@@ -167,29 +167,25 @@ class Issue7037SnapshotInstallSpaceCheckTest {
           db.newDocument("Doc").set("id", i).set("payload", "x".repeat(200)).save();
       });
 
-      // MEASURED INSIDE THE SAME FROZEN WINDOW THE SHIP USES (issue #8145). The commit above only QUEUES its pages
-      // for the asynchronous flush thread, so a bucket file read with no window around it can still be growing:
-      // the estimate saw one page file at 64KB and the floor, read a moment later, saw it at 128KB. The production
-      // fallback path calls estimateUncompressedBytes from inside suspendFlushAndExecute, which drains the queue
-      // and then parks the flush thread, so both figures here are read in that window too. suspendFlushAndExecute
-      // logs and swallows what its callback throws, so the values are carried out and asserted after it returns.
+      // Read inside the frozen window the ship uses (issue #8145): the commit only queues its pages for the async flush.
+      final DatabaseInternal dbInternal = (DatabaseInternal) db;
       final long[] estimate = { -1L };
       final long[] pageFiles = { -1L };
-      ((DatabaseInternal) db).getPageManager().suspendFlushAndExecute(db, () -> {
-        // List.of(): this fixture has no TimeSeries type, so the sealed set the ship would stream is empty. Named
-        // rather than listed off the filesystem (issue #7726), which says what the file set under test IS.
-        estimate[0] = SnapshotHttpHandler.estimateUncompressedBytes((DatabaseInternal) db, null, List.of());
+      dbInternal.getPageManager().suspendFlushAndExecute(db, () -> {
+        // List.of(): no TimeSeries type, so the sealed set is empty (named, not listed off the filesystem: #7726).
+        estimate[0] = SnapshotHttpHandler.estimateUncompressedBytes(dbInternal, null, List.of());
 
-        // The archive ships the registered page files (not the WAL, which the install discards), so that is the
-        // floor.
+        // The archive ships the registered page files (not the WAL, which the install discards): that is the floor.
         long total = 0L;
-        for (final ComponentFile file : ((DatabaseInternal) db).getFileManager().getFiles())
+        for (final ComponentFile file : dbInternal.getFileManager().getFiles())
           if (file != null)
             total += file.getOSFile().length();
         pageFiles[0] = total;
       });
 
-      assertThat(pageFiles[0]).as("the window callback ran").isGreaterThan(0L);
+      // suspendFlushAndExecute swallows callback exceptions: these two make a swallowed failure read as one.
+      assertThat(pageFiles[0]).as("the page files were measured inside the window").isGreaterThan(0L);
+      assertThat(estimate[0]).as("the estimate was computed inside the window").isGreaterThan(0L);
       assertThat(estimate[0]).as("the estimate covers every page file plus the schema and configuration")
           .isGreaterThan(pageFiles[0]);
     } finally {
