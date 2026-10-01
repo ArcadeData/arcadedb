@@ -427,6 +427,60 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void readModifyWriteOfALaterRowShowsTheTransactionsOwnUpdateOnlyWhenTheSettingIsOff() {
+    // the lost-update scenario: an earlier iteration updates the rows the scan has not reached yet, and the loop then reads
+    // them back from the scan. Parallel (the default): the committed content, without the update. Setting off: the update
+    assertThat(rowsTaggedByAnEarlierUpdate()).isZero();
+
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION, false);
+    // not all of them: the sequential scan has already fetched its first batch of rows when the update runs
+    assertThat(rowsTaggedByAnEarlierUpdate()).isPositive();
+  }
+
+  private long rowsTaggedByAnEarlierUpdate() {
+    database.begin();
+    try {
+      long tagged = 0;
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          if (rows++ == 0)
+            database.command("sql", "UPDATE E SET tag = 'tx' WHERE grp = 5");
+          else if ("tx".equals(row.getProperty("tag")))
+            tagged++;
+        }
+      }
+      assertThat(rows).isEqualTo(expected);
+      return tagged;
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void aggregationInACleanTransactionRunsInParallelAndAnswersTheSame() {
+    final String aggregate = "SELECT count(*) AS n, sum(id) AS total FROM E WHERE grp = 5";
+    final long outsideTotal;
+    try (final ResultSet rs = database.query("sql", aggregate)) {
+      outsideTotal = ((Number) rs.next().getProperty("total")).longValue();
+    }
+    database.begin();
+    try {
+      try (final ResultSet rs = database.query("sql", "EXPLAIN " + aggregate)) {
+        assertThat(rs.next().<String>getProperty("executionPlanAsString")).contains("CALCULATE AGGREGATE PROJECTIONS (parallel");
+      }
+      try (final ResultSet rs = database.query("sql", aggregate)) {
+        final Result row = rs.next();
+        assertThat(row.<Long>getProperty("n")).isEqualTo(expected);
+        assertThat(((Number) row.getProperty("total")).longValue()).isEqualTo(outsideTotal);
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
     final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
     final long parallelUpdated = updatedIn(update, true);
