@@ -408,7 +408,10 @@ public class SelectExecutionPlanner {
 
     final GroupBy groupBy = new GroupBy();
     for (final ProjectionItem item : items) {
-      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null || item.isAggregate(context))
+      // Plain identifiers only: a computed expression would be evaluated for the key and again for the projected value, which for a
+      // non-deterministic one (rand()) gives groups that project to the same value, and costs a second evaluation per row
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null || item.isAggregate(context)
+          || !item.getExpression().isBaseIdentifier())
         return;
       groupBy.getItems().add(item.getExpression().copy());
     }
