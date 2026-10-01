@@ -27,6 +27,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
@@ -542,18 +543,28 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       sortSeeksInIndexOrder(seeks);
 
     for (final Object[][] seek : seeks) {
-      final Object[] convertedFrom = seek[0];
+      Object[] convertedFrom = seek[0];
       final Object[] convertedTo = seek[1];
+      boolean fromIncluded = fromKeyIncluded;
       final IndexCursor cursor;
 
-      if (Arrays.equals(convertedFrom, convertedTo) && fromKeyIncluded && toKeyIncluded
+      // A range with no lower bound starts at the first key, and an index that holds the null keys (NULL_STRATEGY INDEX)
+      // sorts them lowest: the range would return the records with no value, for which a comparison is never true
+      // (issue #8833). Start past them
+      if (convertedFrom == null && convertedTo != null && index.supportsOrderedIterations()
+          && index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
+        convertedFrom = new Object[] { null };
+        fromIncluded = false;
+      }
+
+      if (Arrays.equals(convertedFrom, convertedTo) && fromIncluded && toKeyIncluded
           && convertedFrom != null && index.getPropertyNames().size() == convertedFrom.length)
         cursor = index.get(convertedFrom);
       else if (index.supportsOrderedIterations()) {
         if (orderAsc)
-          cursor = index.range(true, convertedFrom, fromKeyIncluded, convertedTo, toKeyIncluded);
+          cursor = index.range(true, convertedFrom, fromIncluded, convertedTo, toKeyIncluded);
         else
-          cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromKeyIncluded);
+          cursor = index.range(false, convertedTo, toKeyIncluded, convertedFrom, fromIncluded);
       } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
         cursor = index.iterator(isOrderAsc(), convertedFrom, true);
       } else {

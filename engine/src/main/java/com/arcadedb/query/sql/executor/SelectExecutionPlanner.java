@@ -4074,7 +4074,7 @@ public class SelectExecutionPlanner {
         filterClusterIds = clazz.getBucketIds(true);
       }
       final boolean indexOrderApplied =
-          orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, (AndBlock) desc.keyCondition, desc.getIndex());
+          orderAsc != null && info.orderBy != null && fullySorted(info, (AndBlock) desc.keyCondition, desc.getIndex());
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds,
           indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context)));
       if (desc.requiresDistinctStep()) {
@@ -4129,14 +4129,14 @@ public class SelectExecutionPlanner {
     return refersToLet(Collections.singletonList(condition), info.perRecordLetClause);
   }
 
-  private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
+  private boolean fullySorted(final QueryPlanningInfo info, final AndBlock conditions, final Index idx) {
     if (!idx.supportsOrderedIterations() || holdsFoldedKeys(idx))
       return false;
 
     final List<String> orderItems = new ArrayList<>();
     String order = null;
 
-    for (final OrderByItem item : orderBy.getItems()) {
+    for (final OrderByItem item : info.orderBy.getItems()) {
       if (order == null) {
         order = item.getType();
       } else if (!order.equals(item.getType())) {
@@ -4148,7 +4148,9 @@ public class SelectExecutionPlanner {
       // than by the property itself (ORDER BY s.right(1), ORDER BY s[0]), which the index does not hold. In both cases
       // the planner cannot prove the index iteration already yields the requested order, so the ORDER BY step has to
       // stay (issue #6926).
-      final String name = item.getModifier() == null ? item.getName() : null;
+      // A name that is a projection alias is the property it renames (SELECT a AS c ... ORDER BY c), or the one it shadows
+      // (SELECT b AS a ... ORDER BY a sorts on b), as in handleClassWithIndexForSortOnly (#8836)
+      final String name = item.getModifier() == null ? (item.getAlias() != null ? resolveOrderByProperty(item, info) : item.getName()) : null;
       if (name == null)
         return false;
 
