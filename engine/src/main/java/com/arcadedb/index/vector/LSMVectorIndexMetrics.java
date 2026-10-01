@@ -116,6 +116,7 @@ class LSMVectorIndexMetrics {
   // Each one traded an O(index size) rebuild on the calling search thread for a load plus a filtered walk; the dead
   // nodes are charged to mutationsSinceRebuild, so the ordinary threshold folds them out on its own schedule.
   private final AtomicLong graphReusesWithTombstonedNodes = new AtomicLong(0);
+  private final AtomicLong graphLoadsFromOrdinalMap = new AtomicLong(0);
 
   // Vector fetch source tracking
   private final AtomicLong vectorFetchFromQuantized = new AtomicLong(0);
@@ -190,6 +191,10 @@ class LSMVectorIndexMetrics {
 
   void incrementStalePrefixGraphReuses() {
     stalePrefixGraphReuses.incrementAndGet();
+  }
+
+  void incrementGraphLoadsFromOrdinalMap() {
+    graphLoadsFromOrdinalMap.incrementAndGet();
   }
 
   void incrementGraphReusesWithTombstonedNodes() {
@@ -313,6 +318,7 @@ class LSMVectorIndexMetrics {
     stats.put("smallRebuildsOverBudget", smallRebuildsOverBudget.get());
     stats.put("stalePrefixGraphReuses", stalePrefixGraphReuses.get());
     stats.put("graphReusesWithTombstonedNodes", graphReusesWithTombstonedNodes.get());
+    stats.put("graphLoadsFromOrdinalMap", graphLoadsFromOrdinalMap.get());
     stats.put("compactionCount", compactionCount.get());
 
     stats.put("vectorFetchFromQuantized", vectorFetchFromQuantized.get());
@@ -342,6 +348,7 @@ class LSMVectorIndexMetrics {
     smallRebuildsOverBudget.set(0);
     stalePrefixGraphReuses.set(0);
     graphReusesWithTombstonedNodes.set(0);
+    graphLoadsFromOrdinalMap.set(0);
     compactionCount.set(0);
     vectorFetchFromQuantized.set(0);
     vectorFetchFromDocuments.set(0);
