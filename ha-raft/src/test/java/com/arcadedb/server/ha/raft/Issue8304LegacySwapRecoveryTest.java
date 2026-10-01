@@ -144,6 +144,68 @@ class Issue8304LegacySwapRecoveryTest {
     assertThat(backup).doesNotExist();
   }
 
+  /** A crash after the backup was consumed but before the orphan quarantine still gets the orphan moved aside. */
+  @Test
+  void crashBetweenTheRestoreAndTheQuarantineIsResumed(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    moveSnapshotOnlyBucketToLive(root, db);
+    final AtomicBoolean crashed = new AtomicBoolean();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if (point.equals("RESTORED") && crashed.compareAndSet(false, true))
+        throw new SimulatedCrash();
+    };
+    try {
+      assertThatThrownBy(() -> SnapshotInstaller.recoverPendingSnapshotSwaps(databases))
+          .isInstanceOf(SimulatedCrash.class);
+    } finally {
+      SnapshotInstaller.swapProgressForTesting = null;
+    }
+    assertThat(crashed).isTrue();
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(db.resolve(".snapshot-quarantine")).doesNotExist();
+  }
+
+  /** The original database caught mid schema rewrite names its buckets in schema.prev.json only. */
+  @Test
+  void orphanQuarantineReadsSchemaPrevWhenSchemaIsAbsent(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    Files.move(backup.resolve("schema.json"), backup.resolve("schema.prev.json"), StandardCopyOption.REPLACE_EXISTING);
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    moveSnapshotOnlyBucketToLive(root, db);
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(fileNames(db)).noneMatch(n -> n.startsWith("SnapshotOnly_"));
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+  }
+
+  private static void moveSnapshotOnlyBucketToLive(final Path root, final Path db) throws IOException {
+    createDatabase(root.resolve("other"), "other", "SnapshotOnly");
+    for (final String name : fileNames(root.resolve("other")))
+      if (name.startsWith("SnapshotOnly_"))
+        Files.move(root.resolve("other").resolve(name), db.resolve(name));
+    assertThat(fileNames(db)).anyMatch(n -> n.startsWith("SnapshotOnly_"));
+  }
+
   /** A node that crashes again part-way through the rollback finishes it on the next recovery. */
   @Test
   void rollbackInterruptedMidRestoreIsResumedByTheNextRecovery(@TempDir final Path root) throws Exception {
