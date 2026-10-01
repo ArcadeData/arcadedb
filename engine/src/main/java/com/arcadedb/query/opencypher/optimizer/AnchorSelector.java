@@ -299,7 +299,8 @@ public class AnchorSelector {
         final List<RangePredicate> predicates = rangeEntry.getValue();
 
         // Check if there's an index on this property
-        final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+        // A hash index cannot be read in key order, so it never serves a range (issue #8835)
+        final IndexStatistics indexStats = findOrderedIndexForProperty(indexes, propertyName);
 
         // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
         // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
@@ -485,11 +486,23 @@ public class AnchorSelector {
    * @return index statistics if found, null otherwise
    */
   private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
+    return findIndexForProperty(indexes, propertyName, false);
+  }
+
+  /** Same as {@link #findIndexForProperty(List, String)}, skipping the indexes that cannot be read in key order (a hash index). */
+  private IndexStatistics findOrderedIndexForProperty(final List<IndexStatistics> indexes, final String propertyName) {
+    return findIndexForProperty(indexes, propertyName, true);
+  }
+
+  private IndexStatistics findIndexForProperty(final List<IndexStatistics> indexes, final String propertyName,
+      final boolean orderedOnly) {
     if (indexes == null) {
       return null;
     }
 
     for (final IndexStatistics index : indexes) {
+      if (orderedOnly && !index.isOrdered())
+        continue;
       // Check if this is a single-property index on the target property
       if (index.getPropertyNames().size() == 1 && index.getPropertyNames().contains(propertyName)) {
         return index;

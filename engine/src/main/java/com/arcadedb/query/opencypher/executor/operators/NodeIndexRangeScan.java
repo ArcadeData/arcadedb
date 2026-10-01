@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
@@ -198,6 +199,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private boolean nullKeysDone = false;
       // The entries of the index with a value are all read
       private boolean valuesDone = false;
+      // The index is declared on a supertype: its cursor also yields the supertype's own records and the siblings' (#8834)
+      private boolean inheritedIndex = false;
 
       @Override
       public boolean hasNext() {
@@ -257,7 +260,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             valuesDone = true; // descending they trail it: nothing but null keys is left
             break;
           }
-          addVertex(identifiable.asVertex());
+          addIndexed(identifiable);
         }
 
         if (valuesDone || !cursor.hasNext()) {
@@ -291,7 +294,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             reachedValues = true;
             break;
           }
-          addVertex(identifiable.asVertex());
+          addIndexed(identifiable);
         }
         if (!reachedValues && nullKeyCursor.hasNext())
           return false; // the buffer filled first: the next call goes on from here
@@ -388,12 +391,22 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           }
           guard.check();
           try {
-            addVertex(((Identifiable) entry).asVertex());
+            addIndexed((Identifiable) entry);
           } catch (final RecordNotFoundException e) {
             // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
             // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
           }
         }
+      }
+
+      /**
+       * Adds what an index entry names, unless the index is inherited and the record belongs to another type of the
+       * hierarchy, which is rejected from its bucket without being loaded (issue #8834).
+       */
+      private void addIndexed(final Identifiable identifiable) {
+        if (inheritedIndex && !Labels.carriesLabel(context.getDatabase().getSchema(), identifiable, label))
+          return;
+        addVertex(identifiable.asVertex());
       }
 
       private void addVertex(final Vertex vertex) {
@@ -429,7 +442,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         if (!(typeIndex instanceof RangeIndex))
           return false;
 
+        // A hash index is a RangeIndex by type only: the planner never offers one to a range (issue #8835), so a plan that
+        // reaches it was built before the schema changed
+        if (!typeIndex.supportsOrderedIterations())
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' cannot be read in key order now: re-plan the query");
+
         rangeIndex = (RangeIndex) typeIndex;
+        inheritedIndex = Labels.isInheritedIndex(typeIndex, label);
 
         // Resolve bounds from predicates (may involve parameter resolution)
         final boolean foldedKeys = typeIndex.getMetadata() != null && typeIndex.getMetadata().hasAnyCaseInsensitive();
