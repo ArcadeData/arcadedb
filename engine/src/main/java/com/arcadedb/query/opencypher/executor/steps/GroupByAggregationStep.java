@@ -121,6 +121,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results;
 
     heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
+    parallelWorkers = 0;
     try {
       // The aggregates that merge partial states aggregate in the workers of a parallel label scan (issue #8797)
       final List<Result> parallelResults = complexAggregationItems.isEmpty() && !groupingKeys.isEmpty() ?

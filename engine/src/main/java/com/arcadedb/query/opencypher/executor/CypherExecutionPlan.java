@@ -103,7 +103,6 @@ import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
-import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.AntiJoinChainOp;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
@@ -133,6 +132,7 @@ import com.arcadedb.query.opencypher.executor.steps.MergeStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
 import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.PairHashJoinOp;
+import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.PartitionedTriangleOp;
 import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
@@ -1301,51 +1301,51 @@ public class CypherExecutionPlan {
       super(context);
     }
 
-  private ResultSet operatorResults = null;
-  private boolean closed = false;
+    private ResultSet operatorResults = null;
+    private boolean closed = false;
 
-  @Override
-  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-    // Once closed this step stays closed: re-executing the operator tree here would open a second
-    // set of cursors that the already-spent close() chain would never reach.
-    if (operatorResults == null && !closed) {
-      // Execute physical operators on first pull
-      operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+    @Override
+    public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+      // Once closed this step stays closed: re-executing the operator tree here would open a second
+      // set of cursors that the already-spent close() chain would never reach.
+      if (operatorResults == null && !closed) {
+        // Execute physical operators on first pull
+        operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+      }
+      return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }
-    return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
-  }
 
-  /**
-   * The physical-operator tree hangs off this step's result set, not off a previous step, so
-   * without this override the close() chain stopped one step short of the operators and every
-   * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
-   * for why an index cursor has to be closed explicitly).
-   */
-  @Override
-  public void close() {
-    if (!closed) {
-      closed = true;
-      if (operatorResults != null)
-        operatorResults.close();
+    /**
+     * The physical-operator tree hangs off this step's result set, not off a previous step, so
+     * without this override the close() chain stopped one step short of the operators and every
+     * cursor they hold stayed open for as long as the plan was retained (issue #7010, and #5635
+     * for why an index cursor has to be closed explicitly).
+     */
+    @Override
+    public void close() {
+      if (!closed) {
+        closed = true;
+        if (operatorResults != null)
+          operatorResults.close();
+      }
+      super.close();
     }
-    super.close();
-  }
 
-  @Override
-  public String getName() {
-    return OPTIMIZED_MATCH_STEP_NAME;
-  }
+    @Override
+    public String getName() {
+      return OPTIMIZED_MATCH_STEP_NAME;
+    }
 
-  @Override
-  public String getType() {
-    return getName();
-  }
+    @Override
+    public String getType() {
+      return getName();
+    }
 
-  @Override
-  public String prettyPrint(final int depth, final int indent) {
-    return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
-        physicalPlan.explain();
-  }
+    @Override
+    public String prettyPrint(final int depth, final int indent) {
+      return "  ".repeat(Math.max(0, depth * indent)) + "+ OPTIMIZED MATCH (physical operators)\n" +
+          physicalPlan.explain();
+    }
 
     @Override
     public String parallelVariable() {
