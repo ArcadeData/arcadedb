@@ -26,9 +26,11 @@ import static com.arcadedb.schema.Property.OUT_PROPERTY;
 
 public class LocalEdgeType extends LocalDocumentType implements EdgeType {
   private final boolean bidirectional;
-  // Not final: both are settable through ALTER TYPE, unlike bidirectional.
-  private       boolean lightweight;
-  private       boolean unique;
+  // Not final: both are settable through ALTER TYPE, unlike bidirectional. Volatile because ALTER TYPE reassigns them
+  // on the live instance while the edge-creation path (GraphEngine, GraphBatch) reads them with no lock held; for a
+  // LIGHTWEIGHT type no index backs UNIQUE, so a stale read of unique admits duplicates nothing else rejects (#7866).
+  private volatile boolean lightweight;
+  private volatile boolean unique;
 
   public LocalEdgeType(final LocalSchema schema, final String name, final boolean bidirectional) {
     this(schema, name, bidirectional, false, false);
