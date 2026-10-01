@@ -529,8 +529,7 @@ public class BinaryComparator {
       return equalsBinary(binary, binary1);
     else if (!a.getClass().equals(b.getClass()) &&//
         a instanceof Number number && b instanceof Number number1) {
-      final Number[] pair = Type.castComparableNumber(number, number1);
-      return pair[0].equals(pair[1]);
+      return Type.numbersEqual(number, number1);
     }
     return a.equals(b);
   }
