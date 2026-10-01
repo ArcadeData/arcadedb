@@ -1046,7 +1046,8 @@ class BootstrapElection {
       final Set<String> toHold = new HashSet<>(states.keySet());
       toHold.addAll(held);
       final ArcadeStateMachine stateMachine = haServer.getStateMachine();
-      // Announced only once the source is proven reachable, so a screen that refuses leaves the unbounded self-hold alone
+      // Announced only once the source is proven reachable, so a screen that refuses leaves the unbounded self-hold alone.
+      // Deliberately not rolled back if the transfer itself then fails: that is the behaviour of a failed transfer before #8714
       final Runnable announce = () -> {
         if (stateMachine != null)
           stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);

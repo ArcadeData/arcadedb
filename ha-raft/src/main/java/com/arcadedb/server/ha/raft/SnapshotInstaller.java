@@ -1531,7 +1531,10 @@ public final class SnapshotInstaller {
             writeSwapPhase(dbDir, SwapPhase.ROLLING_BACK);
             resumeRollback(dbDir, snapshotBackup);
             deleteDirectoryIfExists(snapshotNew);
-          }
+          } else
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "The installed snapshot in %s was recorded as failing validation but no backup is left to restore: keeping it",
+                null, dbDir);
         }
         case INSTALLED -> {
           // Every snapshot file is live, but the reopen that validates it never completed (a completed one clears
