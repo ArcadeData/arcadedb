@@ -6950,7 +6950,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final long granMs = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
       long offsetMs = 0L;
       if (tierCtx.OFFSET() != null) {
-        offsetMs = Long.parseLong(tierCtx.INTEGER_LITERAL(2).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(2));
+        offsetMs = Math.multiplyExact(Long.parseLong(tierCtx.INTEGER_LITERAL(2).getText()), parseTimeUnitMs(tierCtx.tsTimeUnit(2)));
         if (tierCtx.MINUS() != null)
           offsetMs = -offsetMs;
       }

@@ -349,4 +349,19 @@ class Issue8798TimeBucketOriginTest extends TestHelper {
   void aNonPositiveIntervalIsRefusedByTheGrid() {
     assertThatThrownBy(() -> TimeBucketGrid.normalizeOffset(5L, 0L)).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void aPerRowOptionsArgumentIsNotPushedDownOnTheEpochGrid() {
+    database.command("sql", "CREATE TIMESERIES TYPE P TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE, shift LONG) SHARDS 1");
+    final long t = ms("2024-03-01T20:00:00Z");
+    database.command("sql", "INSERT INTO P SET ts = ?, host = 'h', v = 1.0, shift = ?", t, ms("2024-03-01T16:00:00Z"));
+    final String sql = "SELECT ts.timeBucket('1d', ts, shift) AS b, count(*) AS c FROM P GROUP BY b";
+
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
+      assertThat(rs.next().<String>getProperty("executionPlanAsString")).doesNotContain("AGGREGATE FROM TIMESERIES");
+    }
+    try (final ResultSet rs = database.query("sql", sql)) {
+      assertThat(bucketMs(rs.next().getProperty("b"))).isEqualTo(ms("2024-03-01T16:00:00Z"));
+    }
+  }
 }
