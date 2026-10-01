@@ -135,6 +135,8 @@ class Issue8278RedisBatchFollowerForwardingIT extends BaseRaftHATest {
    * so it is visible on the leader only if the leader ran the batch, and on the follower only if the follower did.
    */
   private void assertBatchRanOnTheLeader(final String key, final int leader, final int follower) {
+    // An election between the POST and here would move the SET to another node and read as a routing failure.
+    assertThat(findLeaderIndex()).as("leadership must not have moved during the test (leader was %d)", leader).isEqualTo(leader);
     assertThat(((DatabaseInternal) getServerDatabase(leader, getDatabaseName())).getGlobalVariable(key))
         .as("the batch sent to follower %d must have been executed by leader %d, which then holds its SET %s", follower, leader,
             key)
@@ -155,7 +157,7 @@ class Issue8278RedisBatchFollowerForwardingIT extends BaseRaftHATest {
 
   private JSONObject postCommand(final int serverIndex, final String command, final JSONArray params) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) URI.create(
-        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName()).toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/command/" + getDatabaseName())).toURL().openConnection();
     try {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
