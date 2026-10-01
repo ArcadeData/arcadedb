@@ -38,6 +38,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -700,19 +701,39 @@ public class CSRBuilder {
     return result;
   }
 
+  /**
+   * Maps every bucket of the requested edge types to the CONCRETE type that owns it (issue #8426). A requested type
+   * brings its sub-types along, because a type answer is polymorphic on the record path, but each bucket is attributed
+   * to the type that stores its edges, so no slice depends on the order the types were listed and the edges of a
+   * sub-type never end up in its parent's slice (or the other way round).
+   */
   private Map<Integer, String> buildBucketToEdgeTypeMap(final String[] edgeTypes) {
     final Map<Integer, String> map = new HashMap<>();
+    for (final String name : concreteEdgeTypes(edgeTypes))
+      for (final int bucketId : database.getSchema().getType(name).getBucketIds(false))
+        map.put(bucketId, name);
+    return map;
+  }
+
+  /** The requested edge types and all their sub-types, or every edge type of the schema when none is requested. */
+  private Set<String> concreteEdgeTypes(final String[] edgeTypes) {
+    final Set<String> names = new LinkedHashSet<>();
     if (edgeTypes == null || edgeTypes.length == 0) {
       for (final DocumentType dt : database.getSchema().getTypes())
         if (dt instanceof EdgeType)
-          for (final int bucketId : dt.getBucketIds(true))
-            map.put(bucketId, dt.getName());
-    } else {
+          names.add(dt.getName());
+    } else
       for (final String edgeType : edgeTypes)
-        for (final int bucketId : database.getSchema().getType(edgeType).getBucketIds(true))
-          map.put(bucketId, edgeType);
-    }
-    return map;
+        collectTypeFamily(database.getSchema().getType(edgeType), names);
+    return names;
+  }
+
+  /** Adds the type and, recursively, its sub-types, the type itself first. */
+  static void collectTypeFamily(final DocumentType type, final Set<String> names) {
+    if (!names.add(type.getName()))
+      return;
+    for (final DocumentType subType : type.getSubTypes())
+      collectTypeFamily(subType, names);
   }
 
   private Iterator<Record> createVertexIterator(final String[] vertexTypes) {
@@ -739,14 +760,8 @@ public class CSRBuilder {
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {
     final Map<String, Column.Type> result = new HashMap<>();
-    if (edgeTypes == null || edgeTypes.length == 0) {
-      for (final DocumentType dt : database.getSchema().getTypes())
-        if (dt instanceof EdgeType)
-          collectEdgeSchemaProperties(dt, result);
-    } else {
-      for (final String typeName : edgeTypes)
-        collectEdgeSchemaProperties(database.getSchema().getType(typeName), result);
-    }
+    for (final String typeName : concreteEdgeTypes(edgeTypes))
+      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result);
     return result;
   }
 

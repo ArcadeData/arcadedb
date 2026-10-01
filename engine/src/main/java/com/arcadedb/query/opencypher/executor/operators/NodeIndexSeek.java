@@ -196,7 +196,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           seen = new HashSet<>();
           for (final Expression element : inList.getValues()) {
             final Object resolved = resolveValue(element);
-            if (resolved instanceof Collection<?> coll) {
+            if (inList.isScalar(element))
+              addSeekKey(resolved, trailing);
+            else if (resolved instanceof Collection<?> coll) {
               for (final Object v : coll)
                 addSeekKey(v, trailing);
             } else if (resolved != null && resolved.getClass().isArray()) {

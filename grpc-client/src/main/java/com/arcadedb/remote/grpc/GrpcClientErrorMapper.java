@@ -24,6 +24,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.grpc.LeaderRedirectProtocol;
@@ -81,6 +82,25 @@ final class GrpcClientErrorMapper {
       case UNAVAILABLE -> new NeedRetryException(msg);
       default -> new RemoteException("gRPC error: " + msg, e);
     };
+  }
+
+  /**
+   * {@link #toException} for a failed {@code CommitTransaction}. A status-only {@code UNAVAILABLE} does not prove the
+   * commit never landed, because the channel can drop after the request went out, so it is an unknown outcome and a
+   * non-retryable {@link TransactionException}: {@code transaction()} must not re-run a scope whose first run may
+   * already be durable (issue #8711). The HTTP client draws the same line. An error the server itself classified (a
+   * class-name trailer, e.g. a conflict or a refusal by a follower) was produced before anything was applied and keeps
+   * its type.
+   */
+  static RuntimeException toCommitException(final Throwable e) {
+    final RuntimeException mapped = toException(e);
+    if (mapped.getClass() == NeedRetryException.class && Status.fromThrowable(e).getCode() == Status.Code.UNAVAILABLE) {
+      final Metadata trailers = Status.trailersFromThrowable(e);
+      if (trailers == null || trailers.get(EXCEPTION_CLASS_KEY) == null)
+        return new TransactionException("Error on transaction commit: the connection was lost and the outcome is unknown, "
+            + "the transaction may have been committed (" + mapped.getMessage() + ")", e);
+    }
+    return mapped;
   }
 
   private static RuntimeException reconstructFromClassName(final String exceptionClass, final String msg,

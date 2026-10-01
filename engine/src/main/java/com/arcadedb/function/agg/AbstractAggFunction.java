@@ -23,7 +23,9 @@ import com.arcadedb.function.StatelessFunction;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Abstract base class for aggregation functions.
@@ -78,6 +80,43 @@ public abstract class AbstractAggFunction implements StatelessFunction {
     } else if (input instanceof Number)
       result.add(((Number) input).doubleValue());
 
+    return result;
+  }
+
+  /**
+   * Returns {value, items} for the items paired with the extreme (minimum or maximum) of the parallel value list.
+   * The two raw lists are walked together and a position whose value is not a number (null included) is skipped as a
+   * pair, so a missing measurement never shifts the pairing. The length guard applies to the RAW lists: a length
+   * mismatch is a real mis-pairing and yields {value: null, items: []}, as does a list with no numeric value.
+   */
+  protected Map<String, Object> extremeItems(final Object valuesArg, final Object itemsArg, final boolean max) {
+    final List<Object> values = toObjectList(valuesArg);
+    final List<Object> items = toObjectList(itemsArg);
+
+    final List<Object> extremeItems = new ArrayList<>();
+    Double extreme = null;
+
+    if (!values.isEmpty() && values.size() == items.size()) {
+      for (int i = 0; i < values.size(); i++) {
+        if (!(values.get(i) instanceof Number number))
+          continue;
+
+        final double value = number.doubleValue();
+        if (Double.isNaN(value))
+          continue; // never less, greater or equal to anything: taking it as the extreme would pin the result to it
+
+        if (extreme == null || (max ? value > extreme : value < extreme)) {
+          extreme = value;
+          extremeItems.clear();
+          extremeItems.add(items.get(i));
+        } else if (value == extreme)
+          extremeItems.add(items.get(i));
+      }
+    }
+
+    final Map<String, Object> result = new HashMap<>();
+    result.put("value", extreme);
+    result.put("items", extremeItems);
     return result;
   }
 

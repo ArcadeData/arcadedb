@@ -539,6 +539,7 @@ class RaftGroupCommitter {
         }
 
         if (quorum == Quorum.ALL) {
+          final long logIndex = reply.getLogIndex();
           try {
             // Same shared-deadline pattern as the get() above (issue #6373, a surviving sibling of
             // #5848): the blocking io().watch() overload has no timeout parameter at all, so it must
@@ -547,16 +548,16 @@ class RaftGroupCommitter {
             // the MAJORITY leg. The async overload's future gives the same bound the get() loop uses.
             final long remainingWatchNanos = deadlineNanos - System.nanoTime();
             final RaftClientReply watchReply = raftClient.async()
-                .watch(reply.getLogIndex(), RaftProtos.ReplicationLevel.ALL_COMMITTED)
+                .watch(logIndex, RaftProtos.ReplicationLevel.ALL_COMMITTED)
                 .get(remainingWatchNanos, TimeUnit.NANOSECONDS);
             if (!watchReply.isSuccess()) {
               batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                  "ALL quorum not reached after MAJORITY commit at logIndex=" + reply.getLogIndex()));
+                  "ALL quorum not reached after MAJORITY commit at logIndex=" + logIndex, null, logIndex));
               continue;
             }
           } catch (final TimeoutException te) {
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + reply.getLogIndex(), te));
+                "ALL quorum not reached within batch deadline after MAJORITY commit at logIndex=" + logIndex, te, logIndex));
             continue;
           } catch (final InterruptedException ie) {
             // Rethrow instead of swallowing: this must reach the outer catch (final InterruptedException)
@@ -570,7 +571,7 @@ class RaftGroupCommitter {
             if (isClientClosed(e))
               clientClosedDetected = true;
             batch.get(i).future.complete(new MajorityCommittedAllFailedException(
-                "ALL quorum watch failed after MAJORITY commit: " + e.getMessage(), e));
+                "ALL quorum watch failed after MAJORITY commit at logIndex=" + logIndex + ": " + e.getMessage(), e, logIndex));
             continue;
           }
         }

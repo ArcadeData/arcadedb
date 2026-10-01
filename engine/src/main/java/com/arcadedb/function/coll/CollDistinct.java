@@ -21,8 +21,6 @@ package com.arcadedb.function.coll;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.LongRangeList;
 
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -62,6 +60,6 @@ public class CollDistinct extends AbstractCollFunction {
     if (range != null)
       // The step of a range is never zero, so no element repeats: the distinct list IS the range (issue #6353).
       return range;
-    return new ArrayList<>(new LinkedHashSet<>(list));
+    return distinctOf(list);
   }
 }

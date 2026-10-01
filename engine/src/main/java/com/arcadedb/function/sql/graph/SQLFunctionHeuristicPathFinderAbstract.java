@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -192,7 +194,10 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dy = Math.abs(y - gy);
     final double h_diagonal = Math.min(dx, dy);
     final double h_straight = dx + dy;
-    return (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
+    // Octile distance (admissible on 8-connected grids, not for arbitrary Euclidean-weighted graphs): straight step
+    // costs D, diagonal step costs D2 = sqrt(2) * D. Fixing D2 at 2 * D (issue #8705)
+    // cancelled the correction term and made this MANHATTAN.
+    return dFactor * h_straight + (Math.sqrt(2) - 2) * dFactor * h_diagonal;
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
@@ -268,17 +273,24 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
                                             final Map<String, Double> plist, final Map<String, Double> glist,
                                             final long depth, final double dFactor) {
 
-    final double heuristic;
-    double h_diagonal = 0.0;
-    double h_straight = 0.0;
-    for (final String str : axisNames) {
-      h_diagonal = Math.min(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ?
-          glist.get(str) : 0.0)), h_diagonal);
-      h_straight += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ?
-          glist.get(str) : 0.0));
+    // N-dimensional octile distance: a move changing k axes at once costs sqrt(k) * D. With the deltas sorted in
+    // descending order e1 >= ... >= en (e(n+1) = 0) the cheapest route costs sum((ek - e(k+1)) * sqrt(k)). For two
+    // axes it equals the two-axis overload, and an axis with delta zero contributes nothing (issue #8705).
+    final int n = axisNames.length;
+    final double[] deltas = new double[n];
+    for (int i = 0; i < n; i++) {
+      final Double c = clist.get(axisNames[i]);
+      final Double g = glist.get(axisNames[i]);
+      deltas[i] = Math.abs((c != null ? c : 0.0) - (g != null ? g : 0.0));
     }
-    heuristic = (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
-    return heuristic;
+    Arrays.sort(deltas);
+    double res = 0.0;
+    for (int k = 1; k <= n; k++) {
+      final double ek = deltas[n - k];
+      final double next = k < n ? deltas[n - k - 1] : 0.0;
+      res += (ek - next) * Math.sqrt(k);
+    }
+    return dFactor * res;
   }
 
   protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
@@ -326,17 +338,28 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   protected String[] stringArray(final Object fromObject) {
-    switch (fromObject) {
-      case String s -> {
-        return fromObject.toString().replace("},{", " ,").split(",");
-      }
-      case String[] o -> {
-        return (String[]) fromObject;
-      }
-      case null, default -> {
-        return new String[]{};
-      }
+    return switch (fromObject) {
+      case null -> new String[] {};
+      case String s -> toStrings(s.replace("},{", " ,").split(","));
+      case Collection<?> c -> toStrings(c.toArray());
+      case Object[] a -> toStrings(a);
+      default -> throw new CommandSQLParsingException(
+          "Expected a string or a list of strings, found " + fromObject.getClass().getSimpleName());
+    };
+  }
+
+  /** Trims every value and drops null and blank ones, so an empty name never reaches an edge-type or property lookup. */
+  private static String[] toStrings(final Object[] values) {
+    int count = 0;
+    final String[] result = new String[values.length];
+    for (final Object value : values) {
+      if (value == null)
+        continue;
+      final String trimmed = value.toString().trim();
+      if (!trimmed.isEmpty())
+        result[count++] = trimmed;
     }
+    return count == result.length ? result : Arrays.copyOf(result, count);
   }
 
   protected Boolean booleanOrDefault(final Object fromObject, final boolean defaultValue) {

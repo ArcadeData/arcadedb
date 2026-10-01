@@ -103,8 +103,7 @@ public class MCPStdioServer {
 
       final ServerSecurityUser user = server.getSecurity().authenticate("root", rootPassword, null);
 
-      new MCPStdioServer(server, config, user, in, out).run();
-      return 0;
+      return new MCPStdioServer(server, config, user, in, out).run() ? 0 : 1;
 
     } catch (final Exception e) {
       System.err.println("ERROR: " + e.getMessage());
@@ -115,7 +114,11 @@ public class MCPStdioServer {
     }
   }
 
-  public void run() {
+  /**
+   * @return {@code true} when the loop ended on EOF (stdin closed), {@code false} when it ended on an I/O failure, so
+   * the caller can report a transport that died mid-session differently from a clean shutdown (issue #8039).
+   */
+  public boolean run() {
     final BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
     try {
       String line;
@@ -138,7 +141,9 @@ public class MCPStdioServer {
       }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "MCP stdio error: %s", e.getMessage());
+      return false;
     }
+    return true;
   }
 
   /**

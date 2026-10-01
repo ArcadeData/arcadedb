@@ -79,6 +79,8 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
     graph().tx().readWrite();
 
     final MutableVertex mutableElement = vertex.baseElement.modify();
+    // The key and value come from the traversal, not from the record read: no stale-read refusal (#8610, #8707)
+    mutableElement.clearBasedOnStaleRead();
     mutableElement.remove(key);
     mutableElement.save();
 

@@ -455,7 +455,7 @@ public class StripedEdgeList extends EdgeLinkedList {
     for (final EdgeLinkedList chain : allChains(false)) {
       final JSONArray chainArray = chain.toJSON();
       for (int i = 0; i < chainArray.length(); ++i)
-        array.put(chainArray.getString(i));
+        array.put(chainArray.getJSONObject(i));
     }
     return array;
   }

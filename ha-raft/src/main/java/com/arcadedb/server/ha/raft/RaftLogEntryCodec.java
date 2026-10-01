@@ -142,6 +142,12 @@ public final class RaftLogEntryCodec {
   static final String SECURITY_PRECONDITION_SECTION = "security-precondition";
 
   /**
+   * Name of the extension section carrying the Raft log index a {@code TX_ENTRY}'s originator had applied when it
+   * prepared the transaction (issue #8686).
+   */
+  static final String TX_PREPARED_AT_SECTION = "tx-prepared-at-index";
+
+  /**
    * Appends one self-describing extension section to an entry being encoded. Call this AFTER the type's own
    * fields have been written, so a decoder that predates the section stops cleanly at the end of what it knows.
    * Sections may be repeated; a decoder skips every one it does not recognise.
@@ -339,16 +345,33 @@ public final class RaftLogEntryCodec {
        * entry type, on a seed - which must overwrite whatever the joining peer holds - and on a security entry
        * written by a node that predates the section, all three of which apply unconditionally as before.
        */
-      String securityPrecondition
+      String securityPrecondition,
+      /**
+       * The Raft log index the node that prepared a {@code TX_ENTRY} had applied when it prepared it (issue #8686), or
+       * {@code -1} when the entry does not say: every other entry type, and a transaction written by a node that
+       * predates the section. The leader refuses a transaction whose index is older than the last schema-changing
+       * entry it applied, because that transaction was prepared against a schema the cluster has already moved past.
+       */
+      long txPreparedAtIndex
   ) {
 
-    /** The same entry with {@code securityPrecondition} replaced; the decoder reads the section after the body. */
-    DecodedEntry withSecurityPrecondition(final String precondition) {
-      return precondition == null ?
+    /** The same entry with the values the trailing extension sections carried; the decoder reads them after the body. */
+    DecodedEntry withTrailingSections(final TrailingSections sections) {
+      return sections.isEmpty() ?
           this :
           new DecodedEntry(type, databaseName, walData, bucketRecordDelta, schemaJson, filesToAdd, filesToRemove,
               walEntries, bucketDeltas, usersJson, forceSnapshot, bootstrapFingerprint, bootstrapLastTxId,
-              sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, precondition);
+              sealedFileBlobs, moreChunksFollow, sealedFileChunks, schemaDelta, sections.securityPrecondition(),
+              sections.txPreparedAtIndex());
+    }
+  }
+
+  /** What the framed extension sections of one entry carried; a field an entry did not carry stays at its "absent" value. */
+  record TrailingSections(String securityPrecondition, long txPreparedAtIndex) {
+    static final TrailingSections NONE = new TrailingSections(null, -1L);
+
+    boolean isEmpty() {
+      return securityPrecondition == null && txPreparedAtIndex < 0;
     }
   }
 
@@ -407,6 +430,20 @@ public final class RaftLogEntryCodec {
    */
   public static ByteString encodeTxEntry(final String databaseName, final byte[] walData,
       final Map<Integer, Integer> bucketRecordDelta) {
+    return encodeTxEntry(databaseName, walData, bucketRecordDelta, -1L);
+  }
+
+  /**
+   * Encodes a transaction entry that also states the Raft log index its originator had applied when it prepared the
+   * transaction (issue #8686), as a framed extension section AFTER the fields a build without it reads - see
+   * {@link #writeExtensionSection}. A negative index writes no section, which is byte for byte the entry an older build
+   * writes, and reads back as "unknown".
+   * <p>
+   * Only to be written once every peer advertises {@link PeerCapabilities#TX_PREPARED_AT_INDEX}, for the reason
+   * {@link #writeExtensionSection} gives: a build that predates the framing halts on an entry with trailing bytes.
+   */
+  public static ByteString encodeTxEntry(final String databaseName, final byte[] walData,
+      final Map<Integer, Integer> bucketRecordDelta, final long preparedAtIndex) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -425,6 +462,15 @@ public final class RaftLogEntryCodec {
       for (final Map.Entry<Integer, Integer> entry : bucketRecordDelta.entrySet()) {
         dos.writeInt(entry.getKey());
         dos.writeInt(entry.getValue());
+      }
+
+      if (preparedAtIndex >= 0) {
+        final ByteArrayOutputStream section = new ByteArrayOutputStream(TX_PREPARED_AT_SECTION.length() + 10);
+        final DataOutputStream sectionOut = new DataOutputStream(section);
+        sectionOut.writeUTF(TX_PREPARED_AT_SECTION);
+        sectionOut.writeLong(preparedAtIndex);
+        sectionOut.flush();
+        writeExtensionSection(dos, section.toByteArray());
       }
 
       dos.flush();
@@ -837,7 +883,7 @@ public final class RaftLogEntryCodec {
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
         return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
-            Collections.emptyList(), false, Collections.emptyList(), null, null);
+            Collections.emptyList(), false, Collections.emptyList(), null, null, -1L);
       final String databaseName = dis.readUTF();
 
       try {
@@ -872,12 +918,12 @@ public final class RaftLogEntryCodec {
       case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
       case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
           null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false,
-          Collections.emptyList(), null, null);
+          Collections.emptyList(), null, null, -1L);
       case SECURITY_USERS_ENTRY, SECURITY_GROUPS_ENTRY, SECURITY_API_TOKENS_ENTRY -> decodeSecurityEntry(dis, type);
       case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
     };
 
-    return result.withSecurityPrecondition(readTrailingExtensionSections(dis, type));
+    return result.withTrailingSections(readTrailingExtensionSections(dis, type));
   }
 
   /**
@@ -894,12 +940,13 @@ public final class RaftLogEntryCodec {
    * of those sections, so there is nothing left here to frame. It extends through its own mechanism instead; see
    * {@link #EXTENSION_MAGIC}.
    */
-  private static String readTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
+  private static TrailingSections readTrailingExtensionSections(final DataInputStream dis, final RaftLogEntryType type)
       throws IOException {
     if (type == RaftLogEntryType.SCHEMA_ENTRY)
-      return null;
+      return TrailingSections.NONE;
 
     String securityPrecondition = null;
+    long txPreparedAtIndex = -1L;
     while (dis.available() > 0) {
       if (dis.available() < EXTENSION_HEADER_BYTES)
         throw new IllegalStateException("Corrupted Raft log entry: " + dis.available()
@@ -919,8 +966,40 @@ public final class RaftLogEntryCodec {
       final String precondition = readSecurityPrecondition(section);
       if (precondition != null)
         securityPrecondition = precondition;
+
+      final long preparedAt = readTxPreparedAtIndex(section);
+      if (preparedAt >= 0)
+        txPreparedAtIndex = preparedAt;
     }
-    return securityPrecondition;
+    return new TrailingSections(securityPrecondition, txPreparedAtIndex);
+  }
+
+  /**
+   * Reads the index a transaction was prepared at out of one extension section, or returns {@code -1} when the
+   * section is something else (issue #8686). Same two-step shape as {@link #readSecurityPrecondition}, and for the same
+   * reason: a section that is not ours is skipped, but a section that IS ours and cannot be read is corruption - reading
+   * it as "unknown" would quietly switch the stale-schema check off for that entry.
+   */
+  private static long readTxPreparedAtIndex(final byte[] section) {
+    final DataInputStream dis = new DataInputStream(new ByteArrayInputStream(section));
+    try {
+      if (!TX_PREPARED_AT_SECTION.equals(dis.readUTF()))
+        return -1L;
+    } catch (final IOException e) {
+      return -1L;
+    }
+
+    try {
+      final long index = dis.readLong();
+      if (index < 0)
+        throw new IllegalStateException("negative index " + index);
+      return index;
+    } catch (final IOException | IllegalStateException e) {
+      throw new IllegalStateException(
+          "Corrupted Raft log entry: the '" + TX_PREPARED_AT_SECTION + "' extension section carries no readable "
+              + "index. Refusing the entry rather than reading it as prepared at an unknown index, which would let a "
+              + "transaction prepared under an older schema through", e);
+    }
   }
 
   /**
@@ -976,7 +1055,7 @@ public final class RaftLogEntryCodec {
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
         null, null, null, null, null, null, false, null, -1L, Collections.emptyList(), false, Collections.emptyList(),
-        null, null);
+        null, null, -1L);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -1131,7 +1210,7 @@ public final class RaftLogEntryCodec {
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
         schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs,
-        moreChunksFollow, sealedFileChunks, schemaDelta, null);
+        moreChunksFollow, sealedFileChunks, schemaDelta, null, -1L);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -1143,7 +1222,7 @@ public final class RaftLogEntryCodec {
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList(), null, null);
+        Collections.emptyList(), null, null, -1L);
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -1156,7 +1235,7 @@ public final class RaftLogEntryCodec {
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
         null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList(), false,
-        Collections.emptyList(), null, null);
+        Collections.emptyList(), null, null, -1L);
   }
 
   /**
@@ -1173,7 +1252,7 @@ public final class RaftLogEntryCodec {
     final String json = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(type, "",
         null, null, null, null, null, null, null, json, false, null, -1L, Collections.emptyList(), false,
-        Collections.emptyList(), null, null);
+        Collections.emptyList(), null, null, -1L);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.IsNullExpression;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -325,10 +326,13 @@ public class CypherOptimizer {
    * <ul>
    *   <li>a range scan whose index keys, from the first, are the ORDER BY items: its rows come in that order in either
    *   direction, and a null key never matches the range predicate the scan stands for;</li>
-   *   <li>a scan of a whole label, with no predicate at all, and an index on the single ORDER BY item, ascending: the
-   *   index entries in order and then the vertices with no key, which is where a null sorts. Taken only here, where the
-   *   first rows of the index are the answer: with a filter, the index order could read the whole label one random
-   *   access at a time to find the few rows a sort of the label would have found.</li>
+   *   <li>a scan of a whole label with an index on the single ORDER BY item, and no predicate but, at most,
+   *   {@code IS NOT NULL} on that item (#8724). The vertices with no key sort last ascending and first descending: they
+   *   follow the index entries ascending when the index holds none (a scan of the label finds them; descending that
+   *   scan would come first, so that shape keeps its sort), they are absent when the property is MANDATORY and NOTNULL or
+   *   the WHERE excludes them, and they are read from the index itself under NULL_STRATEGY INDEX. Taken only here,
+   *   where the first rows of the index are the answer: with a filter, the index order could read the whole label one
+   *   random access at a time to find the few rows a sort of the label would have found.</li>
    * </ul>
    * Only under a LIMIT: without one the whole range is read anyway, and the adaptive range scan of #8333 reads it faster
    * out of index order and sorts it.
@@ -342,8 +346,7 @@ public class CypherOptimizer {
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
       variable = rangeScan.getVariable();
       label = rangeScan.getLabel();
-    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator
-        && labelScan.getWhereFilter() == null) {
+    } else if (anchorOperator instanceof NodeByLabelScan labelScan && labelScan == rootOperator) {
       variable = labelScan.getVariable();
       label = labelScan.getLabel();
     } else
@@ -366,32 +369,85 @@ public class CypherOptimizer {
     }
 
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
+      // The scan may carry a case-insensitive index, whose order is that of its folded keys (issue #8700). An index the
+      // schema no longer offers cannot give an order either
+      final TypeIndex scanIndex = type.getPolymorphicIndexByProperties(rangeScan.getIndexProperties());
+      if (scanIndex == null || (scanIndex.getMetadata() != null && scanIndex.getMetadata().hasAnyCaseInsensitive()))
+        return null;
       final List<String> indexProperties = rangeScan.getIndexProperties();
       if (orderedProperties.size() > indexProperties.size()
           || !indexProperties.subList(0, orderedProperties.size()).equals(orderedProperties)
           || !rangeScan.getPropertyName().equals(indexProperties.getFirst()))
         return null;
-      rangeScan.setIndexOrder(ascending, false);
+      rangeScan.setIndexOrder(ascending, NodeIndexRangeScan.NullKeys.NONE);
       return rootOperator;
     }
 
-    // A whole label: nothing may filter it, the index must hold every non-null key, and the null keys it leaves out
-    // come last, so only ascending
-    if (!ascending || orderedProperties.size() != 1 || !logicalPlan.getWhereFilters().isEmpty()
-        || statement.getWhereClause() != null || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
+    // A whole label: nothing may filter it but the exclusion of the null keys, and the index must hold every non-null key
+    if (orderedProperties.size() != 1 || !logicalPlan.getNodes().get(variable).getProperties().isEmpty())
       return null;
-    for (final MatchClause matchClause : statement.getMatchClauses())
-      if (matchClause.hasWhereClause())
-        return null;
     final String property = orderedProperties.getFirst();
+    final boolean excludesNulls = onlyExcludesNullKeys(logicalPlan, variable, property);
+    if (!excludesNulls && ((NodeByLabelScan) anchorOperator).getWhereFilter() != null)
+      return null;
     final TypeIndex index = type.getPolymorphicIndexByProperties(property);
     if (!(index instanceof RangeIndex) || !index.supportsOrderedIterations() || index.getType() != Schema.INDEX_TYPE.LSM_TREE
-        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+        || index.getPropertyNames().size() != 1
+        || (index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive()))
       return null;
+
+    final boolean nullKeysInIndex = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
+    final Property schemaProperty = type.getPolymorphicPropertyIfExists(property);
+    if (schemaProperty == null)
+      return null;
+    // MANDATORY makes the vertex carry the property and NOTNULL its value: NOTNULL alone leaves a vertex that never sets it,
+    // and such a vertex is not in the index either (issue #8701). The constraint is trusted as SQL trusts it: ALTER PROPERTY does
+    // not validate the vertices written before it, so a type that gained the constraint over existing data must be repaired first
+    final boolean everyVertexHasAKey = schemaProperty.isMandatory() && schemaProperty.isNotNull();
+
+    final NodeIndexRangeScan.NullKeys nullKeys;
+    if (everyVertexHasAKey)
+      nullKeys = NodeIndexRangeScan.NullKeys.NONE;
+    else if (excludesNulls)
+      nullKeys = nullKeysInIndex ? NodeIndexRangeScan.NullKeys.SKIPPED_IN_INDEX : NodeIndexRangeScan.NullKeys.NONE;
+    else if (nullKeysInIndex)
+      nullKeys = NodeIndexRangeScan.NullKeys.PLACED_FROM_INDEX;
+    else if (ascending)
+      // The index holds no null key and the null keys sort last: the vertices with none follow the index entries. Descending
+      // they would come first, and only a scan of the label finds them
+      nullKeys = NodeIndexRangeScan.NullKeys.LAST_FROM_LABEL;
+    else
+      return null;
+
     final NodeIndexRangeScan scan = new NodeIndexRangeScan(variable, label, property, List.of(), index.getName(),
         index.getPropertyNames(), anchorOperator.getEstimatedCost(), anchorOperator.getEstimatedCardinality());
-    scan.setIndexOrder(true, true);
+    scan.setIndexOrder(ascending, nullKeys);
     return scan;
+  }
+
+  /**
+   * Whether the only conditions the statement puts on the matched nodes are {@code variable.property IS NOT NULL}, joined
+   * by AND: what the index, which holds no null key unless it has NULL_STRATEGY INDEX, already answers. A statement with no
+   * WHERE at all is not that, it does not exclude anything.
+   */
+  private static boolean onlyExcludesNullKeys(final LogicalPlan logicalPlan, final String variable, final String property) {
+    if (logicalPlan.getWhereFilters().isEmpty())
+      return false;
+    for (final WhereClause whereClause : logicalPlan.getWhereFilters())
+      if (!isNotNullOn(whereClause.getConditionExpression(), variable, property))
+        return false;
+    return true;
+  }
+
+  private static boolean isNotNullOn(final BooleanExpression expression, final String variable, final String property) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return isNotNullOn(wrapper.getBooleanExpression(), variable, property);
+    if (expression instanceof LogicalExpression logical)
+      return logical.getOperator() == LogicalExpression.Operator.AND && isNotNullOn(logical.getLeft(), variable, property)
+          && isNotNullOn(logical.getRight(), variable, property);
+    return expression instanceof IsNullExpression isNull && isNull.isNot()
+        && isNull.getExpression() instanceof PropertyAccessExpression access && variable.equals(access.getVariableName())
+        && property.equals(access.getPropertyName());
   }
 
   /**
@@ -607,11 +663,12 @@ public class CypherOptimizer {
   }
 
   /**
-   * Whether every edge type a tracked hop would walk has no sub-type. A view builds a type's adjacency polymorphically,
-   * so the slice of a type with sub-types holds their edges too, under the parent's name: two hops asking for the parent
-   * and for the sub-type would then label one edge twice, under two names, and never see the collision (#8394). A leaf
-   * type's slice holds exactly its own edges, which is what makes the type part of a label an identity. An untyped hop
-   * walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have to be leaves.
+   * Whether every edge type a tracked hop would walk has no sub-type. A view keeps one slice per concrete type (#8426)
+   * and answers a type polymorphically, so a hop on a type with sub-types walks their slices too: two hops asking for
+   * the parent and for the sub-type would then label one edge twice, under two names, and never see the collision
+   * (#8394). A leaf type answers with exactly its own edges, which is what makes the type part of a label an identity.
+   * An untyped hop walks every edge type of the schema (see {@link GAVEdgeRef#trackedEdgeTypes}), so all of them have
+   * to be leaves.
    */
   private boolean walksOnlyLeafEdgeTypes(final String[] edgeTypes) {
     for (final String type : GAVEdgeRef.trackedEdgeTypes(database, edgeTypes)) {
@@ -654,16 +711,23 @@ public class CypherOptimizer {
       return true;
 
     for (final String leftName : left.getTypes())
-      for (final String rightName : right.getTypes()) {
-        if (leftName.equals(rightName))
+      for (final String rightName : right.getTypes())
+        if (edgeTypesMayOverlap(database.getSchema(), leftName, rightName))
           return true;
-        final var leftType = database.getSchema().getTypeOrNull(leftName);
-        final var rightType = database.getSchema().getTypeOrNull(rightName);
-        if (leftType != null && rightType != null
-            && (leftType.instanceOf(rightName) || rightType.instanceOf(leftName)))
-          return true;
-      }
     return false;
+  }
+
+  /**
+   * Whether one edge can match both relationship types: the names are equal, or one type is a sub-type of the other,
+   * because a pattern on a type matches its sub-types' edges too (issues #6310, #8426). Shared with the count
+   * push-down, which must not call {@code [:K]} and {@code [:KC]} disjoint on the strength of their names.
+   */
+  public static boolean edgeTypesMayOverlap(final Schema schema, final String leftName, final String rightName) {
+    if (leftName.equals(rightName))
+      return true;
+    final DocumentType leftType = schema.getTypeOrNull(leftName);
+    final DocumentType rightType = schema.getTypeOrNull(rightName);
+    return leftType != null && rightType != null && (leftType.instanceOf(rightName) || rightType.instanceOf(leftName));
   }
 
   /** Partitions relationship patterns into deterministic node-connected components. */

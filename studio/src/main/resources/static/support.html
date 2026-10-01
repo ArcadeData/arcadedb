@@ -1,11 +1,19 @@
-<!-- AI Assistant Tab -->
+<!-- Support Tab: the AI Assistant and the Support page (status, my issues; the new issue and the public GitHub issue are popups) -->
 <style>
   .ai-message-content h1 { font-size: 1.3rem; }
   .ai-message-content h2 { font-size: 1.15rem; }
   .ai-message-content h3 { font-size: 1.05rem; }
   .ai-message-content h4, .ai-message-content h5, .ai-message-content h6 { font-size: 0.95rem; }
 </style>
-<div class="tab-pane fade" id="tab-ai" role="tabpanel">
+<div class="tab-pane fade" id="tab-support" role="tabpanel">
+  <ul class="nav nav-pills mb-3 support-nav" id="supportNav">
+    <li class="nav-item"><a href="#" class="nav-link active" data-support-view="ai"><i class="fa fa-robot"></i> AI Assistant</a></li>
+    <li class="nav-item"><a href="#" class="nav-link" data-support-view="overview">Support</a></li>
+  </ul>
+
+  <!-- AI Assistant view -->
+  <div id="supportViewAi">
+
 
   <!-- Inactive state (no subscription) -->
   <div id="aiInactivePanel" style="display: none;">
@@ -117,5 +125,42 @@
       </div>
     </div>
   </div>
+  </div>
 
+  <!-- Support page: the status of the registration, then the issues of the workspace -->
+  <div id="supportSection" style="display: none;">
+    <div id="supportAlert"></div>
+    <div id="supportLoading" class="text-center py-4" style="display: none;">
+      <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem;"></div>
+      <div class="text-muted small mt-2">Loading the support status...</div>
+    </div>
+    <div id="supportContent" style="display: none;">
+      <div id="supportViewOverview" class="support-view"></div>
+      <div id="supportViewIssues" class="support-view"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Popups (moved to the body when first shown, so that no ancestor of the tab can clip or stack them) -->
+<div class="modal fade support-modal" id="supportIssueModal" tabindex="-1" aria-labelledby="supportIssueModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="supportIssueModalLabel"><i class="fa fa-headset"></i> Open a support issue</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="supportIssueModalBody"></div>
+    </div>
+  </div>
+</div>
+<div class="modal fade support-modal" id="supportPublicModal" tabindex="-1" aria-labelledby="supportPublicModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="supportPublicModalLabel"><i class="fab fa-github"></i> Report a public GitHub issue</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="supportPublicModalBody"></div>
+    </div>
+  </div>
 </div>

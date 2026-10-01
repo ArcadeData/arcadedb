@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.optimizer.plan;
 
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 
@@ -43,6 +44,7 @@ public class AnchorSelection {
   private final List<Object> keyValues;  // Equality values covering a leading prefix of the index key
   private final List<RangePredicate> rangePredicates;  // For range scan
   private final List<DisjunctionIndexSeek> disjunctionIndexSeeks;  // For a label-disjunction equality index seek
+  private final List<UnionIndexSeek> unionIndexSeeks;  // For an OR of index-served predicates (issue #8723)
   private final double estimatedCost;
   private final long estimatedCardinality;
 
@@ -58,24 +60,33 @@ public class AnchorSelection {
   public record DisjunctionIndexSeek(String typeName, IndexStatistics index, List<Object> keyValues) {
   }
 
+  /**
+   * One branch of a union of index seeks (issue #8723): {@code WHERE n.x = 1 OR n.s = 'a'} is answered by one seek per
+   * disjunct, each on the index of its own property, with the vertices found by several de-duplicated. {@code value} is
+   * what the seek looks up ({@link InListValues} when the branch stands
+   * for several values), {@code keyValues} the equality values covering a leading prefix of the index's key.
+   */
+  public record UnionIndexSeek(String propertyName, Object value, IndexStatistics index, List<Object> keyValues) {
+  }
+
   // Constructor for full scan (no index)
   public AnchorSelection(final String variable, final LogicalNode node,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, false, null, null, null, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, false, null, null, null, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, null, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, null, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek with value
   public AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, propertyValue, null, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, propertyValue, null, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for equality index seek covering a prefix of a composite key (issue #5444)
@@ -83,7 +94,7 @@ public class AnchorSelection {
                         final IndexStatistics index, final String propertyName, final Object propertyValue,
                         final List<Object> keyValues,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, null, null, estimatedCost, estimatedCardinality);
+    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, null, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for range index scan
@@ -91,22 +102,28 @@ public class AnchorSelection {
                         final IndexStatistics index, final String propertyName,
                         final List<RangePredicate> rangePredicates,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, true, index, propertyName, null, null, rangePredicates, null, estimatedCost, estimatedCardinality);
+    this(variable, node, true, index, propertyName, null, null, rangePredicates, null, null, estimatedCost, estimatedCardinality);
   }
 
   // Constructor for a label-disjunction equality index seek: one seek per root type (issue #6397)
   public AnchorSelection(final String variable, final LogicalNode node, final String propertyName,
                         final Object propertyValue, final List<DisjunctionIndexSeek> disjunctionIndexSeeks,
                         final double estimatedCost, final long estimatedCardinality) {
-    this(variable, node, true, null, propertyName, propertyValue, null, null, disjunctionIndexSeeks, estimatedCost,
+    this(variable, node, true, null, propertyName, propertyValue, null, null, disjunctionIndexSeeks, null, estimatedCost,
         estimatedCardinality);
+  }
+
+  // Constructor for a union of index seeks, one per disjunct of an OR (issue #8723)
+  public AnchorSelection(final String variable, final LogicalNode node, final List<UnionIndexSeek> unionIndexSeeks,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, true, null, null, null, null, null, null, unionIndexSeeks, estimatedCost, estimatedCardinality);
   }
 
   // Main constructor
   private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                          final IndexStatistics index, final String propertyName, final Object propertyValue,
                          final List<Object> keyValues, final List<RangePredicate> rangePredicates,
-                         final List<DisjunctionIndexSeek> disjunctionIndexSeeks,
+                         final List<DisjunctionIndexSeek> disjunctionIndexSeeks, final List<UnionIndexSeek> unionIndexSeeks,
                          final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
@@ -118,6 +135,7 @@ public class AnchorSelection {
     this.keyValues = keyValues == null || keyValues.isEmpty() ? List.of() : List.copyOf(keyValues);
     this.rangePredicates = rangePredicates;
     this.disjunctionIndexSeeks = disjunctionIndexSeeks == null ? List.of() : List.copyOf(disjunctionIndexSeeks);
+    this.unionIndexSeeks = unionIndexSeeks == null ? List.of() : List.copyOf(unionIndexSeeks);
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
   }
@@ -208,6 +226,18 @@ public class AnchorSelection {
   }
 
   /**
+   * Returns true when this anchor is a union of index seeks, one per disjunct of an OR (issue #8723): it has no single
+   * index or property, {@link #getUnionIndexSeeks()} carries them.
+   */
+  public boolean isUnionIndexSeek() {
+    return !unionIndexSeeks.isEmpty();
+  }
+
+  public List<UnionIndexSeek> getUnionIndexSeeks() {
+    return unionIndexSeeks;
+  }
+
+  /**
    * Returns the estimated cost of accessing this anchor.
    */
   public double getEstimatedCost() {
@@ -232,7 +262,9 @@ public class AnchorSelection {
       // (via appendStepChain -> AbstractExecutionStep.prettyPrint on the physical-operator wrapper step, reached
       // through EXPLAIN's per-branch UNION description), so index.getIndexName() below would NPE for this shape
       // if it were not branched around.
-      if (isDisjunctionIndexSeek()) {
+      if (isUnionIndexSeek()) {
+        sb.append(", unionSeeks=").append(unionIndexSeeks);
+      } else if (isDisjunctionIndexSeek()) {
         sb.append(", disjunctionSeeks=").append(disjunctionIndexSeeks);
         sb.append(", property=").append(propertyName);
         sb.append(", value=").append(propertyValue);

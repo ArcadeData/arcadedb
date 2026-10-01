@@ -64,12 +64,13 @@ public class AggStatistics extends AbstractAggFunction {
       stats.put("sum", 0.0);
       stats.put("mean", null);
       stats.put("stdev", null);
+      stats.put("median", null);
       return stats;
     }
 
     final long count = values.size();
     double sum = 0.0;
-    double min = Double.MAX_VALUE;
+    double min = Double.POSITIVE_INFINITY;
     double max = Double.NEGATIVE_INFINITY; // NOT Double.MIN_VALUE, which is the smallest POSITIVE double (issue #6672)
 
     for (final Double value : values) {

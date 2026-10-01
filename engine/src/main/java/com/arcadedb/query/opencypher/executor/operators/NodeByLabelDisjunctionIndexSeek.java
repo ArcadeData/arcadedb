@@ -135,9 +135,9 @@ public class NodeByLabelDisjunctionIndexSeek extends AbstractPhysicalOperator {
   public String explain(final int depth) {
     final StringBuilder sb = new StringBuilder();
     final String indent = getIndent(depth);
-    sb.append(indent).append("+ NodeByLabelDisjunctionIndexSeek");
+    sb.append(indent).append("+ ").append(getOperatorType());
     sb.append("(").append(variable).append(")");
-    sb.append(" [roots=").append(perRootSeeks.size());
+    sb.append(" [").append(seekUnit()).append("=").append(perRootSeeks.size());
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");
@@ -147,6 +147,11 @@ public class NodeByLabelDisjunctionIndexSeek extends AbstractPhysicalOperator {
     for (final NodeIndexSeek seek : perRootSeeks)
       sb.append(seek.explain(depth + 1));
     return sb.toString();
+  }
+
+  /** What each seek of the union stands for, as EXPLAIN names it. */
+  protected String seekUnit() {
+    return "roots";
   }
 
   public String getVariable() {

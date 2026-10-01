@@ -6255,6 +6255,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return missing;
   }
 
+  private final TxPreparedAtCapabilityCache txPreparedAtCapability = new TxPreparedAtCapabilityCache(
+      () -> allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
+
+  /**
+   * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Cached for a
+   * second, since it is asked on every commit; a membership change drops the answer at once, see {@link TxPreparedAtCapabilityCache}.
+   */
+  public boolean canStateTxPreparedAt() {
+    return txPreparedAtCapability.isCapable();
+  }
+
+  /** Drops the cached {@link #canStateTxPreparedAt} answer, so the next commit asks again; called when the membership changes. */
+  void invalidateTxPreparedAtCapability() {
+    txPreparedAtCapability.invalidate();
+  }
+
+  /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
+  public boolean isTxSchemaCheckEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_TX_SCHEMA_CHECK);
+  }
+
   /** What this node tells its peers it can decode. */
   public Set<String> getAdvertisedCapabilities() {
     return advertisedCapabilities;

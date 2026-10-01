@@ -256,7 +256,7 @@ public class LocalSchema implements Schema {
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
-  private final       List<Component>                        files                         = Collections.synchronizedList(new ArrayList<>());
+  private final       FileSlots                              files                         = new FileSlots();
   // Concurrent for the same reason indexMap below is, and the reason is not symmetry: the bucket lookup maps are
   // written by the schema load and by DDL from arbitrary user threads while queries resolve bucket names on the
   // correctness path (LocalDocumentType.restoreExternalBuckets and ensureExternalBucketFor read it directly). A
@@ -367,6 +367,14 @@ public class LocalSchema implements Schema {
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
   protected final     Map<String, JSONObject>               extensions                    = new LinkedHashMap<>();
   private final       Map<String, TriggerListenerAdapter> triggerAdapters = new HashMap<>();
+  /**
+   * The schema members that live beside {@code "types"} (triggers, materialized views, continuous aggregates,
+   * function libraries, extensions) as a load in flight has restored them, or {@code null} when nothing is staging.
+   * Published by {@link #publishStagedMembers()} at the same barrier as the type graph and discarded by
+   * {@link #endStagedPublication()} when the load aborts, so a failed load leaves the previous generation's members
+   * exactly as it found them (issue #8230).
+   */
+  private             StagedMembers                          stagedMembers;
   private final       String                                 databasePath;
   private final       File                                   configurationFile;
   private final       ComponentFactory                       componentFactory;
@@ -549,7 +557,9 @@ public class LocalSchema implements Schema {
       if (initialize)
         initComponents();
 
-      readConfiguration();
+      if (!readConfiguration() && mustKeepPreviousGeneration())
+        throw new SchemaException("Cannot load the schema from '" + SCHEMA_FILE_NAME
+            + "': it could not be read. The previous schema stays in place, see the log for the cause");
 
       // filesDuringLoad(), not `files`: the components this load built live in the staged file-id overlay until
       // the barrier below, while the live array still carries the previous generation (issues #7962, #7963).
@@ -685,6 +695,7 @@ public class LocalSchema implements Schema {
     // before the replacement is published would close them under readers still holding the old graph.
     stagedTypes.clear();
     supersededTypes = published.types();
+    stagedMembers = new StagedMembers(timeZone, zoneId, dateFormat, dateTimeFormat, versionSerial.get());
   }
 
   /**
@@ -703,17 +714,18 @@ public class LocalSchema implements Schema {
     if (rebuildingEverything || !stagedFiles.isEmpty())
       synchronized (files) {
         // The full rebuild REPLACES the array (issue #7963): a slot it did not stage belongs to a file the new
-        // generation does not have. Under the list's own lock, which every reader takes, so no reader sees it half
-        // rewritten.
+        // generation does not have. The new table is built aside and published in one step (issue #8634), so a
+        // lock-free reader never sees it half rewritten.
+        Component[] table = files.toArray();
         if (rebuildingEverything)
-          for (int i = 0; i < files.size(); ++i)
+          for (int i = 0; i < table.length; ++i)
             if (!stagedFiles.containsKey(i))
-              files.set(i, null);
+              table[i] = null;
 
         for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
           final int fileId = entry.getKey();
-          while (files.size() < fileId + 1)
-            files.add(null);
+          if (table.length < fileId + 1)
+            table = Arrays.copyOf(table, fileId + 1);
           final Component component = entry.getValue();
           // A page committed or flushed while this load ran raised the page count of the component that was
           // published THEN, the previous generation's, and not the one staged here. Neither source alone is the
@@ -723,7 +735,7 @@ public class LocalSchema implements Schema {
           // point resolves its component under this same lock, so it reaches the new instance; a write that
           // resolved the previous one before it had written its page before, and the file size covers it.
           if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
-            final Component previous = fileId < files.size() ? files.get(fileId) : null;
+            final Component previous = table[fileId];
             if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
               paginated.updatePageCount(previousPaginated.getCommittedPageCount());
             try {
@@ -733,8 +745,9 @@ public class LocalSchema implements Schema {
                   component.getName());
             }
           }
-          files.set(fileId, component);
+          table[fileId] = component;
         }
+        files.replaceAll(table);
       }
 
     // What the maps serve right now, taken before they change, so the instances this publication retires can be
@@ -800,6 +813,7 @@ public class LocalSchema implements Schema {
         stagedBucketId2TypeMap != null ? stagedBucketId2TypeMap : previous.bucketId2TypeMap(),
         stagedBucketId2InvolvedTypeMap != null ? stagedBucketId2InvolvedTypeMap : previous.bucketId2InvolvedTypeMap());
     publishedFromStaging = publishedTypes;
+    publishStagedMembers();
     // The staged load rebuilt the bucket map before this swap, while readers still saw the previous graph: an answer
     // derived from the types in that window describes the old generation (issue #8625)
     typesChanged();
@@ -876,6 +890,17 @@ public class LocalSchema implements Schema {
     stagedFiles.clear();
     stagingFileIds = false;
     rebuildingEverything = false;
+    final boolean committed = published.types() == publishedFromStaging;
+    if (!committed && stagedMembers != null) {
+      // The load overwrote these on its way in, before anything was known to have worked (issue #8230): they belong
+      // to the generation that is still published.
+      timeZone = stagedMembers.previousTimeZone;
+      zoneId = stagedMembers.previousZoneId;
+      dateFormat = stagedMembers.previousDateFormat;
+      dateTimeFormat = stagedMembers.previousDateTimeFormat;
+      versionSerial.set(stagedMembers.previousVersion);
+    }
+    stagedMembers = null;
     // Only when the graph was NOT published: after a successful commit these very instances are the live ones
     // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
     // would otherwise leak one engine, and its file handles, per failed reload.
@@ -1195,7 +1220,9 @@ public class LocalSchema implements Schema {
       for (final Component component : loaded)
         component.onAfterLoad();
 
-      readConfiguration();
+      if (!readConfiguration() && mustKeepPreviousGeneration())
+        throw new SchemaException("Cannot refresh the schema from '" + SCHEMA_FILE_NAME
+            + "': it could not be read. The previous schema stays in place, see the log for the cause");
 
       // ...and every schema hook runs AFTER it, because those read what readConfiguration() just set on the index
       // metadata (a vector index loads its vectors only once its dimensions are known).
@@ -1386,12 +1413,7 @@ public class LocalSchema implements Schema {
         return null;
     }
 
-    synchronized (files) {
-      for (final Component f : files)
-        if (f != null && name.equals(f.getName()))
-          return f;
-    }
-    return null;
+    return files.findByName(name);
   }
 
   /**
@@ -1412,9 +1434,8 @@ public class LocalSchema implements Schema {
         return staged;
     }
 
-    synchronized (files) {
-      return id < files.size() ? files.get(id) : null;
-    }
+    // lock-free (issue #8634): this is the per-record bucket resolution of every query thread
+    return files.get(id);
   }
 
   /**
@@ -1428,9 +1449,7 @@ public class LocalSchema implements Schema {
     if (isRebuildingEverything())
       snapshot = new ArrayList<>();
     else
-      synchronized (files) {
-        snapshot = new ArrayList<>(files);
-      }
+      snapshot = files.toList();
 
     if (isStagingPublication() && !stagedFiles.isEmpty())
       for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
@@ -2543,10 +2562,7 @@ public class LocalSchema implements Schema {
       if (!(component instanceof LocalBucket rebuilt))
         continue;
 
-      final Component live;
-      synchronized (files) {
-        live = rebuilt.getFileId() < files.size() ? files.get(rebuilt.getFileId()) : null;
-      }
+      final Component live = files.get(rebuilt.getFileId());
       if (live instanceof LocalBucket liveBucket && liveBucket != rebuilt && liveBucket.getName().equals(rebuilt.getName())) {
         rebuilt.setCachedRecordCount(liveBucket.getCachedRecordCount());
         rebuilt.setPageStatistics(liveBucket.getStatistics().getJSONArray("pages"));
@@ -2967,7 +2983,14 @@ public class LocalSchema implements Schema {
     return first;
   }
 
-  protected synchronized void readConfiguration() {
+  /**
+   * Rebuilds the logical schema from {@code schema.json}.
+   *
+   * @return {@code false} when the file could not be read into a schema (issue #8230). The failure is logged and the
+   * schema is left as far as it got, which is what a caller with nothing to protect goes on with; a load with a
+   * previous generation to protect must not publish it, see {@link #mustKeepPreviousGeneration()}.
+   */
+  protected synchronized boolean readConfiguration() {
     // The graph this rebuild produces goes into the map typeMap() resolves to, which for a load in flight is the
     // staged one - so the published graph is neither emptied nor mutated here, and the TimeSeries types it holds
     // are closed by commitStagedPublication() once the replacement is live rather than before it exists (issue
@@ -2987,13 +3010,14 @@ public class LocalSchema implements Schema {
     readingFromFile = true;
 
     boolean saveConfiguration = false;
+    boolean readable = true;
     try {
       File file = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
       final File prevFile = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
       if (!file.exists() || file.length() == 0) {
         file = prevFile;
         if (!file.exists())
-          return;
+          return true;
 
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
       }
@@ -3021,7 +3045,7 @@ public class LocalSchema implements Schema {
 
       if (root.names() == null || root.names().isEmpty())
         // EMPTY SCHEMA
-        return;
+        return true;
 
       versionSerial.set(root.has("schemaVersion") ? root.getLong("schemaVersion") : 0L);
 
@@ -3456,25 +3480,44 @@ public class LocalSchema implements Schema {
 
       // Restore compaction file-migration map so WAL recovery can redirect or safely skip
       // pages that reference old (pre-compaction) file IDs.
-      migratedFileIds.clear();
+      // Staged with the five members above (issue #8230): applied at the barrier, and dropped with them on an abort.
+      final Map<Integer, Integer> migratedTarget =
+          isStagingPublication() && stagedMembers != null ? stagedMembers.migratedFileIds : migratedFileIds;
+      migratedTarget.clear();
       if (root.has("migratedFileIds") && !root.isNull("migratedFileIds")) {
         final JSONObject migratedJSON = root.getJSONObject("migratedFileIds");
         for (final String key : migratedJSON.keySet())
-          migratedFileIds.put(Integer.parseInt(key), migratedJSON.getInt(key));
+          migratedTarget.put(Integer.parseInt(key), migratedJSON.getInt(key));
       }
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
+      readable = false;
+      LogManager.instance().log(this, Level.SEVERE,
+          mustKeepPreviousGeneration() ? "Error on loading schema. The previous schema stays in place" :
+              "Error on loading schema. The schema will be reset", e);
     } finally {
       readingFromFile = false;
       loadInRamCompleted = true;
 
-      if (dirtyGeneration.get() > savedGeneration)
+      // Never over a schema file that could not be read: what is in memory is the fragment that got as far as the
+      // error, and writing it out would destroy the file the operator has to fix (issue #8230).
+      if (dirtyGeneration.get() > savedGeneration && (readable || !mustKeepPreviousGeneration()))
         saveConfiguration();
 
       rebuildBucketTypeMap();
       readStatisticsFile();
     }
+    return readable;
+  }
+
+  /**
+   * Whether a schema file that could not be read must stop the load in flight rather than be published (issue
+   * #8230): true when there is a published generation to protect, so a bad file cannot replace a good schema with
+   * an empty or half-built one. A load with no previous generation - the first open of a database - has nothing to
+   * lose and goes on with the reset schema, as it always has.
+   */
+  private boolean mustKeepPreviousGeneration() {
+    return isStagingPublication() && !published.types().isEmpty();
   }
 
   /**
@@ -3535,6 +3578,20 @@ public class LocalSchema implements Schema {
     // whatever the export did not name.
     final boolean replaceExisting = source == SchemaMemberSource.SCHEMA_FILE;
 
+    // A schema-file read inside a load's staging window restores into staged copies and installs nothing: the
+    // previous generation's members, listeners and refresh resources stay exactly as they are until
+    // publishStagedMembers() runs at the barrier, so a load that aborts has touched none of them (issue #8230).
+    final StagedMembers stage = replaceExisting && isStagingPublication() ? stagedMembers : null;
+    if (stage != null)
+      stage.restored = true;
+    final Map<String, Trigger> triggerTarget = stage != null ? stage.triggers : triggers;
+    final Map<String, MaterializedViewImpl> viewTarget = stage != null ? stage.materializedViews : materializedViews;
+    final Map<String, ContinuousAggregateImpl> aggregateTarget =
+        stage != null ? stage.continuousAggregates : continuousAggregates;
+    final Map<String, FunctionLibraryDefinition> libraryTarget =
+        stage != null ? stage.functionLibraries : functionLibraries;
+    final Map<String, JSONObject> extensionTarget = stage != null ? stage.extensions : extensions;
+
     int failures = 0;
 
     // LOAD TRIGGERS
@@ -3545,9 +3602,10 @@ public class LocalSchema implements Schema {
     // and so does this. Without it a trigger deleted from schema.json by hand survived a reload, while the same
     // edit to a materialized view or an extension took effect.
     if (replaceExisting) {
-      for (final String triggerName : new ArrayList<>(triggers.keySet()))
-        unregisterTriggerListener(triggerName);
-      triggers.clear();
+      if (stage == null)
+        for (final String triggerName : new ArrayList<>(triggers.keySet()))
+          unregisterTriggerListener(triggerName);
+      triggerTarget.clear();
     }
     if (root.has("triggers")) {
       final JSONObject triggersJSON = root.getJSONObject("triggers");
@@ -3591,8 +3649,8 @@ public class LocalSchema implements Schema {
             // Recorded only when the name is free, which on the replace path it always is - the sweep above just
             // emptied the map - so a trigger whose type is merely absent right now keeps its definition across the
             // reload instead of being silently dropped from the schema on the next save.
-            if (!triggers.containsKey(trigger.getName()))
-              triggers.put(trigger.getName(), trigger);
+            if (!triggerTarget.containsKey(trigger.getName()))
+              triggerTarget.put(trigger.getName(), trigger);
             continue;
           }
 
@@ -3603,10 +3661,13 @@ public class LocalSchema implements Schema {
           // pointing at it any more: firing on every matching record, unreachable even to dropTrigger(), which
           // would only ever find the newer one. Redundant after the sweep and harmless there - the adapter is
           // already gone, so this returns immediately.
-          unregisterTriggerListener(trigger.getName());
+          if (stage == null)
+            unregisterTriggerListener(trigger.getName());
 
-          triggers.put(trigger.getName(), trigger);
-          registerTriggerListener(trigger);
+          triggerTarget.put(trigger.getName(), trigger);
+          // Staged: registered by publishStagedMembers(), on the type the published graph carries.
+          if (stage == null)
+            registerTriggerListener(trigger);
 
         } catch (final Exception e) {
           ++failures;
@@ -3621,9 +3682,10 @@ public class LocalSchema implements Schema {
     // view down first, for the reason the trigger sweep above does: an INCREMENTAL view holds listeners on its
     // source types and a PERIODIC one holds a scheduled task, and neither goes away with the map entry.
     if (replaceExisting) {
-      for (final String viewName : new ArrayList<>(materializedViews.keySet()))
-        unregisterMaterializedViewRefresh(viewName);
-      materializedViews.clear();
+      if (stage == null)
+        for (final String viewName : new ArrayList<>(materializedViews.keySet()))
+          unregisterMaterializedViewRefresh(viewName);
+      viewTarget.clear();
     }
     if (root.has("materializedViews")) {
       final JSONObject mvJSON = root.getJSONObject("materializedViews");
@@ -3631,7 +3693,7 @@ public class LocalSchema implements Schema {
         // What was installed under this name before the restore touched it, so a replacement that fails halfway
         // can be undone rather than left as the registered view. Null on the replace path, where the sweep above
         // has already emptied the map.
-        final MaterializedViewImpl replaced = materializedViews.get(viewName);
+        final MaterializedViewImpl replaced = viewTarget.get(viewName);
 
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
@@ -3640,11 +3702,14 @@ public class LocalSchema implements Schema {
           // Same replacement rule as the trigger above, and the same merge-path hole: a same-named view already
           // installed has its own listeners and schedule, and the put below is the only thing that used to happen
           // to it - leaving the old instance maintaining itself off records the new one is also maintaining.
-          unregisterMaterializedViewRefresh(viewName);
+          if (stage == null)
+            unregisterMaterializedViewRefresh(viewName);
 
-          materializedViews.put(viewName, view);
+          viewTarget.put(viewName, view);
 
-          installMaterializedViewRefresh(view);
+          // Staged: installed by publishStagedMembers().
+          if (stage == null)
+            installMaterializedViewRefresh(view);
 
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
@@ -3659,6 +3724,12 @@ public class LocalSchema implements Schema {
           // target does not have, after the earlier ones are already registered - and by then the view this one
           // replaced has had its own resources taken down. Logging and moving on would leave the name mapped to a
           // view that is refreshed by nothing, which reads as a working view and is not one.
+          if (stage != null) {
+            // Nothing was installed and nothing was replaced: the staged map started empty.
+            viewTarget.remove(viewName);
+            continue;
+          }
+
           unregisterMaterializedViewRefresh(viewName);
 
           if (replaced != null) {
@@ -3679,14 +3750,14 @@ public class LocalSchema implements Schema {
 
     // Load continuous aggregates
     if (replaceExisting)
-      continuousAggregates.clear();
+      aggregateTarget.clear();
     if (root.has("continuousAggregates")) {
       final JSONObject caJSON = root.getJSONObject("continuousAggregates");
       for (final String caName : caJSON.keySet()) {
         try {
           final JSONObject caDef = caJSON.getJSONObject(caName);
           final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
-          continuousAggregates.put(caName, ca);
+          aggregateTarget.put(caName, ca);
 
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
@@ -3702,7 +3773,7 @@ public class LocalSchema implements Schema {
     // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
     // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
     // libraries registered programmatically from native Java code (getLanguage() == null).
-    if (replaceExisting)
+    if (replaceExisting && stage == null)
       functionLibraries.values().removeIf(l -> l.getLanguage() != null);
     if (root.has("functions")) {
       final JSONObject functionsJSON = root.getJSONObject("functions");
@@ -3740,7 +3811,7 @@ public class LocalSchema implements Schema {
                 funcJSON.getString("code"), params));
           }
 
-          functionLibraries.put(libraryName, library);
+          libraryTarget.put(libraryName, library);
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading function library '%s': %s", e, libraryName,
@@ -3754,12 +3825,12 @@ public class LocalSchema implements Schema {
     // alternative on the import path is an uncaught throw AFTER every type and every record has already landed,
     // which is the "abort everything over one bad member" outcome this whole method is shaped to avoid.
     if (replaceExisting)
-      extensions.clear();
+      extensionTarget.clear();
     if (root.has("extensions")) {
       final JSONObject extJSON = root.getJSONObject("extensions");
       for (final String extName : extJSON.keySet()) {
         try {
-          extensions.put(extName, extJSON.getJSONObject(extName));
+          extensionTarget.put(extName, extJSON.getJSONObject(extName));
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading extension '%s': %s", e, extName,
@@ -3769,6 +3840,118 @@ public class LocalSchema implements Schema {
     }
 
     return failures;
+  }
+
+  /**
+   * Replaces the previous generation's triggers, materialized views, continuous aggregates, function libraries,
+   * extensions and file-migration map with the ones the load staged, and only NOW brings up what they own: the
+   * trigger listeners and the materialized-view refresh resources (issue #8230). Runs right after the type graph is
+   * published, so the previous generation's listeners are taken down only once nothing can reach the types they
+   * were registered on, and a load that aborted before this point never touched them.
+   * <p>
+   * A member that cannot be brought up is reported and skipped, exactly as the restore does for one that cannot be
+   * installed: the generation is already published, so there is nothing left to abort.
+   */
+  private synchronized void publishStagedMembers() {
+    final StagedMembers stage = stagedMembers;
+    if (stage == null || !stage.restored)
+      return;
+
+    // Best effort from here on, like the install loops below: the generation is already published, so a teardown that
+    // throws must not leave the members half swapped
+    for (final String triggerName : new ArrayList<>(triggers.keySet()))
+      try {
+        unregisterTriggerListener(triggerName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error unregistering trigger '%s': %s", e, triggerName, e.getMessage());
+      }
+    triggers.clear();
+    triggers.putAll(stage.triggers);
+
+    for (final String viewName : new ArrayList<>(materializedViews.keySet()))
+      try {
+        unregisterMaterializedViewRefresh(viewName);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error releasing materialized view '%s': %s", e, viewName,
+            e.getMessage() != null ? e.getMessage() : e.toString());
+      }
+    materializedViews.clear();
+    materializedViews.putAll(stage.materializedViews);
+
+    continuousAggregates.clear();
+    continuousAggregates.putAll(stage.continuousAggregates);
+
+    // Libraries registered programmatically from native Java code (getLanguage() == null) are not in the file and
+    // survive, as they did when the restore replaced the persistable ones in place.
+    functionLibraries.values().removeIf(l -> l.getLanguage() != null);
+    functionLibraries.putAll(stage.functionLibraries);
+
+    extensions.clear();
+    extensions.putAll(stage.extensions);
+
+    migratedFileIds.clear();
+    migratedFileIds.putAll(stage.migratedFileIds);
+
+    for (final Trigger trigger : new ArrayList<>(triggers.values())) {
+      // A trigger whose type is absent keeps its definition without a listener, as the restore leaves it.
+      if (!existsType(trigger.getTypeName()))
+        continue;
+      try {
+        registerTriggerListener(trigger);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error loading trigger '%s': %s", e, trigger.getName(),
+            e.getMessage());
+      }
+    }
+
+    for (final MaterializedViewImpl view : new ArrayList<>(materializedViews.values())) {
+      try {
+        installMaterializedViewRefresh(view);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error loading materialized view '%s': %s", e, view.getName(),
+            e.getMessage() != null ? e.getMessage() : e.toString());
+        unregisterMaterializedViewRefresh(view.getName());
+        materializedViews.remove(view.getName());
+      }
+    }
+  }
+
+  /**
+   * What a schema load restores into, instead of the live maps, for as long as it has not published (issue #8230).
+   * Nothing here owns a listener, a scheduled task or an executor yet: those are created by
+   * {@link #publishStagedMembers()} once the generation is confirmed live, which is what keeps a load that aborts
+   * from having torn the previous generation's down.
+   * <p>
+   * The settings and version the load overwrites on its way in are remembered here too, so the abort path can put
+   * them back beside the types that were never replaced.
+   */
+  private static final class StagedMembers {
+    final Map<String, Trigger>                  triggers            = new HashMap<>();
+    final Map<String, MaterializedViewImpl>     materializedViews   = new LinkedHashMap<>();
+    final Map<String, ContinuousAggregateImpl>  continuousAggregates = new LinkedHashMap<>();
+    final Map<String, FunctionLibraryDefinition> functionLibraries  = new LinkedHashMap<>();
+    final Map<String, JSONObject>               extensions          = new LinkedHashMap<>();
+    final Map<Integer, Integer>                 migratedFileIds     = new HashMap<>();
+    /**
+     * Whether the schema file was actually read: a load that found no file leaves the live members alone. The
+     * file-migration map is staged with the members and shares this gate.
+     */
+    boolean                                     restored;
+
+    final TimeZone previousTimeZone;
+    final ZoneId   previousZoneId;
+    final String   previousDateFormat;
+    final String   previousDateTimeFormat;
+    final long     previousVersion;
+
+    StagedMembers(final TimeZone timeZone, final ZoneId zoneId, final String dateFormat, final String dateTimeFormat,
+        final long version) {
+      this.previousTimeZone = timeZone;
+      this.previousZoneId = zoneId;
+      this.previousDateFormat = dateFormat;
+      this.previousDateTimeFormat = dateTimeFormat;
+      this.previousVersion = version;
+    }
   }
 
   /**
@@ -3883,25 +4066,32 @@ public class LocalSchema implements Schema {
     final JSONObject triggersJson = new JSONObject();
     root.put("triggers", triggersJson);
 
-    for (final Trigger trigger : this.triggers.values())
+    // A load in flight serializes what IT has restored (issue #8230), like the types just above: the postponed save
+    // at the end of readConfiguration() must not write the previous generation's members beside the new types.
+    final StagedMembers members = isStagingPublication() && stagedMembers != null && stagedMembers.restored ?
+        stagedMembers : null;
+
+    for (final Trigger trigger : (members != null ? members.triggers : this.triggers).values())
       triggersJson.put(trigger.getName(), trigger.toJSON());
 
     // Serialize materialized views
     final JSONObject mvJSON = new JSONObject();
-    for (final Map.Entry<String, MaterializedViewImpl> entry : materializedViews.entrySet())
+    for (final Map.Entry<String, MaterializedViewImpl> entry : (members != null ? members.materializedViews :
+        materializedViews).entrySet())
       mvJSON.put(entry.getKey(), entry.getValue().toJSON());
     root.put("materializedViews", mvJSON);
 
     // Serialize continuous aggregates
     final JSONObject caJSON = new JSONObject();
-    for (final Map.Entry<String, ContinuousAggregateImpl> entry : continuousAggregates.entrySet())
+    for (final Map.Entry<String, ContinuousAggregateImpl> entry : (members != null ? members.continuousAggregates :
+        continuousAggregates).entrySet())
       caJSON.put(entry.getKey(), entry.getValue().toJSON());
     root.put("continuousAggregates", caJSON);
 
     // Serialize user-defined function libraries (DEFINE FUNCTION) so they survive a restart (issue #5121). Libraries
     // backed by native Java code are not persistable and return null from toJSON(): they are skipped here.
     final JSONObject functionsJSON = new JSONObject();
-    for (final FunctionLibraryDefinition library : functionLibraries.values()) {
+    for (final FunctionLibraryDefinition library : (members != null ? members.functionLibraries : functionLibraries).values()) {
       final JSONObject libraryJSON = library.toJSON();
       if (libraryJSON != null)
         functionsJSON.put(library.getName(), libraryJSON);
@@ -3909,18 +4099,20 @@ public class LocalSchema implements Schema {
     root.put("functions", functionsJSON);
 
     // Serialize extensions (module-specific configuration)
-    if (!extensions.isEmpty()) {
+    final Map<String, JSONObject> extensionsToWrite = members != null ? members.extensions : extensions;
+    if (!extensionsToWrite.isEmpty()) {
       final JSONObject extJSON = new JSONObject();
-      for (final Map.Entry<String, JSONObject> entry : extensions.entrySet())
+      for (final Map.Entry<String, JSONObject> entry : extensionsToWrite.entrySet())
         extJSON.put(entry.getKey(), entry.getValue());
       root.put("extensions", extJSON);
     }
 
     // Serialize compaction file-migration map so WAL recovery after a restart can distinguish
     // safe compaction skips from genuinely unexpected missing files.
-    if (!migratedFileIds.isEmpty()) {
+    final Map<Integer, Integer> migratedToWrite = members != null ? members.migratedFileIds : migratedFileIds;
+    if (!migratedToWrite.isEmpty()) {
       final JSONObject migratedJSON = new JSONObject();
-      for (final Map.Entry<Integer, Integer> entry : migratedFileIds.entrySet())
+      for (final Map.Entry<Integer, Integer> entry : migratedToWrite.entrySet())
         migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
       root.put("migratedFileIds", migratedJSON);
     }
@@ -3955,9 +4147,6 @@ public class LocalSchema implements Schema {
     }
 
     synchronized (files) {
-      while (files.size() < fileId + 1)
-        files.add(null);
-
       if (files.get(fileId) != null)
         throw new SchemaException(
             "File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");

@@ -1467,6 +1467,21 @@ public enum GlobalConfiguration {
           + "ArcadeData support. It is NOT a credential and is never used for authentication. Empty means generated. "
           + "A malformed value is ignored with a warning", String.class, ""),
 
+  SUPPORT_URL("arcadedb.support.url", SCOPE.SERVER,
+      "Base URL of the ArcadeData customer portal used by the Support tab of Studio. Must be HTTPS (plain HTTP is accepted only "
+          + "for localhost/127.0.0.1, for tests). Overrides the value registered in the file 'support.json' of the server "
+          + "configuration directory", String.class, "https://portal.arcadedb.com"),
+
+  SUPPORT_CLIENT_ID("arcadedb.support.clientId", SCOPE.SERVER,
+      "Client ID (workspace id) of the ArcadeData customer portal used by the Support tab of Studio. Together with "
+          + "arcadedb.support.clientKey it registers the server without using Studio (e.g. containers or Kubernetes secrets) "
+          + "and overrides the file 'support.json' of the server configuration directory. Empty means not set", String.class, ""),
+
+  SUPPORT_CLIENT_KEY("arcadedb.support.clientKey", SCOPE.SERVER,
+      "Client key (a 'wsk_...' workspace key) of the ArcadeData customer portal used by the Support tab of Studio. It is a "
+          + "credential: it is masked when settings are listed or dumped, never returned by any API and never logged. "
+          + "Empty means not set", String.class, ""),
+
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword", SCOPE.SERVER,
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user",
       String.class, null),
@@ -1517,8 +1532,10 @@ public enum GlobalConfiguration {
       "Enable pushing the server metrics to an OTLP endpoint, alongside (never replacing) the Prometheus scrape endpoint. Requires the optional metrics plugin on the classpath and arcadedb.serverMetrics to be true",
       Boolean.class, false),
 
-  SERVER_METRICS_OTLP_ENDPOINT("arcadedb.serverMetrics.otlp.endpoint", SCOPE.SERVER, "OTLP metrics export endpoint",
-      String.class, "http://localhost:4317"),
+  SERVER_METRICS_OTLP_ENDPOINT("arcadedb.serverMetrics.otlp.endpoint", SCOPE.SERVER, """
+      OTLP metrics export endpoint. Metrics are pushed over OTLP/HTTP (protobuf), not gRPC, so this is the collector's \
+      HTTP receiver (port 4318, path /v1/metrics), not the gRPC port 4317. A URL without a path gets /v1/metrics \
+      appended""", String.class, "http://localhost:4318/v1/metrics"),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
       "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
@@ -1781,6 +1798,18 @@ public enum GlobalConfiguration {
       Set to 0, or to any negative value, to leave streamed writes unbounded (WARNING: restores the indefinite \
       block). Default is 1 minute""",
       Integer.class, 60_000), // 1 MINUTE DEFAULT
+
+  SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL("arcadedb.server.httpStreamingKeepAliveInterval", SCOPE.SERVER,
+      """
+      Interval in milliseconds after which a streamed query answer (Accept: application/x-ndjson on /query and \
+      /command) that has had nothing to send writes a bare newline, which every consumer of the encoding skips. \
+      Without it a query whose next row takes a while to produce - a selective predicate over a large bucket, an \
+      expensive projection, a cold cache - is silent on the wire, and a client that bounds the silence (the Java \
+      remote client does, with 'arcadedb.network.socketTimeout' and a 30 second floor) cannot tell it from a \
+      server that went away and fails a healthy query (issue #8565). Keep it well below the smallest silence \
+      budget of the clients and of any proxy in front of the server. Set to 0, or to any negative value, to send \
+      no keep-alive. Default is 5 seconds""",
+      Integer.class, 5_000), // 5 SECONDS DEFAULT
 
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
@@ -2271,6 +2300,27 @@ public enum GlobalConfiguration {
       Defaults to 128MB, higher than Ratis's 64MB stock default, so reasonable bulk-load batches do not get rejected. \
       Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
       Long.class, 128L * 1024 * 1024),
+
+  HA_TX_SCHEMA_CHECK("arcadedb.ha.txSchemaCheck", SCOPE.SERVER,
+      """
+      Have every transaction a node replicates state the Raft log index that node had applied when the transaction \
+      began, so the leader can refuse a transaction that was prepared before a schema change it has already applied \
+      (issue #8686). Without it a replica that has not yet applied a committed CREATE INDEX ships transactions whose \
+      WAL carries no page changes for the new index; the leader accepts them, every node applies them as they are, \
+      and the record is missing from the index on all nodes, with no error anywhere. The refusal is a retryable \
+      ConcurrentModificationException, and the retry waits for the schema change to be applied locally first. \
+      \
+      The index is written only once every peer advertises the capability to read it, so a rolling upgrade needs no \
+      sequencing, but ONE peer that is old, not yet probed or offline turns the check off for every writer, so a \
+      mixed-version cluster is unprotected until the last node is upgraded. Protection is also best-effort across a \
+      leader restart or a snapshot install: the leader knows no schema change until it applies the next one. \
+      \
+      This setting only controls whether THIS node states an index. The leader checks every entry that carries one, so \
+      turning it off on the leader alone changes nothing. Expect retryable ConcurrentModificationExceptions on replicas \
+      during DDL and set transaction retries accordingly: a transaction begun before a schema change is refused, and \
+      callers that do not retry (the default for plain HTTP commands) see the error. Turn it off on the nodes that write \
+      if a workload running long transactions across frequent schema changes sees too many retries.""",
+      Boolean.class, true),
 
   HA_SCHEMA_DELTA("arcadedb.ha.schemaDelta", SCOPE.SERVER,
       """
@@ -3727,11 +3777,11 @@ public enum GlobalConfiguration {
    * cannot read here ({@code abc} for an {@code Integer} throws); {@code Boolean} was the one that did not.
    * <p>
    * This is the entry point for a value that arrived from an administrative command, where refusing loudly is an
-   * error the operator can read and act on. All four such writers use it: the {@code set server setting} and
-   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool, and
-   * {@code ALTER DATABASE ... SETTING} in SQL.
+   * error the operator can read and act on. The administrative writers use it: the {@code set server setting} and
+   * {@code set database setting} HTTP commands, the {@code set_server_setting} MCP tool,
+   * {@code ALTER DATABASE ... SETTING} in SQL, and the console's {@code SET} command and {@code -D} arguments (#7870).
    * <p>
-   * There is a FIFTH writer of raw text, and issue #7222 is what it cost to leave it out of that list:
+   * There is a further writer of raw text, and issue #7222 is what it cost to leave it out of that list:
    * {@link #readConfiguration()}, the system-property and environment-variable path, which used
    * {@link #setValue(Object)} and so got the permissive {@code Boolean.parseBoolean} - a container deployment
    * configures through exactly that path, and {@code requireAuthentication=yes} silently became {@code false}. It
@@ -3754,10 +3804,15 @@ public enum GlobalConfiguration {
    *       {@link #fromJSON(String)} twin through the same (#7296);</li>
    *   <li>{@code arcadedb.ha.raftPersistStorage} read straight off {@code System.getProperty} by
    *       {@code RaftHAServer.resolvePersistStorage}, which is a READER of raw text rather than a writer and so
-   *       calls {@link #coerceFromConfigurationSource(Object, String)} without storing (#7296).</li>
+   *       calls {@link #coerceFromConfigurationSource(Object, String)} without storing (#7296);</li>
+   *   <li>the console's {@code SET <key> = <value>} command and its {@code -D<key>=<value>} arguments
+   *       ({@code Console.setGlobalConfiguration} and {@code Console.applyCommandLineSetting}), which call this
+   *       method directly and report a refusal to the operator - as an error for {@code SET}, on {@code System.err}
+   *       for {@code -D} (#7870).</li>
    * </ol>
-   * The last one used to store what it read straight into the overlay map with a plain {@code put}, touching
-   * neither this method nor {@link #setValue(Object)}, so a {@code "yes"} written there survived as the string
+   * The configuration-file one ({@link ContextConfiguration#fromJSON(String)}) used to store what it read straight
+   * into the overlay map with a plain {@code put}, touching neither this method nor {@link #setValue(Object)}, so a
+   * {@code "yes"} written there survived as the string
    * {@code "yes"} and {@link ContextConfiguration#getValueAsBoolean(GlobalConfiguration)} read it as {@code false}
    * through {@code Boolean.parseBoolean} - which for {@code arcadedb.ha.tls.mutualAuth} meant an operator writing
    * down that they wanted mutual TLS on the Raft channel turned it off instead.
@@ -4035,7 +4090,7 @@ public enum GlobalConfiguration {
   }
 
   public boolean isHidden() {
-    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
+    return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password") || key.contains("clientKey");
   }
 
   /**

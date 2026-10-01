@@ -61,6 +61,7 @@ import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.support.SupportService;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.ServerPathUtils;
@@ -155,6 +156,17 @@ public class ArcadeDBServer {
       "The request failed. Check the server log for the details";
 
   /**
+   * What the keys segment of a duplicated-key answer carries when {@link #isProductionMode()} holds. The key VALUES
+   * are the customer's stored data, unlike the exception class, the index name and the RID, which are schema and
+   * addressing metadata a driver needs to rebuild a typed {@code DuplicatedKeyException} (issue #7760). A
+   * placeholder rather than an empty segment, so the pipe-separated {@code exceptionArgs} keeps its three parts for
+   * every consumer that splits it. HTTP ({@code exceptionArgs}) and gRPC (the {@code arcadedb-dup-keys} trailer) must both apply it, or the setting means one thing on each surface.
+   * Any new surface that serialises {@code getKeys()} or the exception message must apply it too: nothing enforces
+   * it, and the /ws insert session, Bolt and Redis do not yet (issue #8749).
+   */
+  public static final String                                CONCEALED_DUPLICATED_KEYS            = "[concealed]";
+
+  /**
    * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
    * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
    * this command restores straight into the final directory, so there is no temporary directory to swap in, and
@@ -218,6 +230,7 @@ public class ArcadeDBServer {
   private volatile    ServerSecurity                        security;
   private volatile    HttpServer                            httpServer;
   private             AiConfiguration                       aiConfiguration;
+  private             SupportService                        supportService;
   private             ServerQueryProfiler                   queryProfiler;
   // Admission for backups of a database, shared by every entry point that can start one on this server: the
   // auto-backup schedule, its immediate trigger, and the HTTP "trigger backup" command (issue #6753). Created with
@@ -537,6 +550,9 @@ public class ArcadeDBServer {
     // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
     aiConfiguration = new AiConfiguration(Paths.get(serverConfigPath));
     aiConfiguration.load();
+
+    // SUPPORT (registration with the ArcadeData customer portal, redacted diagnostics bundles): inactive until registered
+    supportService = new SupportService(this, Paths.get(serverConfigPath));
 
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
     httpServer = new HttpServer(this);
@@ -1111,6 +1127,12 @@ public class ArcadeDBServer {
     // Issue #7869: hand the profiler's disk figures back to another running server, or to the process-wide setting.
     Profiler.withdrawDiskSpaceConfiguration(configuration);
 
+    // The previews of the support bundle are temporary files: deleted on shutdown
+    if (supportService != null) {
+      CodeUtils.executeIgnoringExceptions(supportService::close, "Error on stopping the support service", false);
+      supportService = null;
+    }
+
     // Stop plugins managed by PluginManager first
     if (pluginManager != null)
       pluginManager.stopPlugins();
@@ -1640,6 +1662,10 @@ public class ArcadeDBServer {
 
   public AiConfiguration getAiConfiguration() {
     return aiConfiguration;
+  }
+
+  public SupportService getSupportService() {
+    return supportService;
   }
 
   public ServerQueryProfiler getQueryProfiler() {

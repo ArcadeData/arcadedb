@@ -23,6 +23,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Writes a response to a client as newline-delimited JSON, one line per event, without ever holding more
@@ -52,7 +53,18 @@ import java.nio.charset.StandardCharsets;
  * vocabulary on the same discipline instead of a second writer. {@code POST /api/v1/batch} does, with
  * {@code progress} / {@code summary} / {@code error} (issue #7311).
  * <p>
- * Not thread-safe, and does not need to be: one request is serialized by the one worker thread serving it.
+ * <b>Liveness.</b> A consumer cannot tell a server that is still scanning for the next matching row from one that
+ * has gone away: on the wire both are silence, and a client that bounds silence (the Java driver does, issue #8473)
+ * would fail a healthy query whose next row is slow to produce (issue #8565). {@link #keepAlive} therefore writes a
+ * bare newline when nothing has been flushed for a while, from a timer rather than from the worker thread, which is
+ * the one blocked producing the row. A blank line is part of the NDJSON convention every consumer already skips, so
+ * it carries no event and needs no opt-in: a driver that predates it ignores it, and it is not a row, a trailer or
+ * an error.
+ * <p>
+ * Not thread-safe in general, and does not need to be: one request is serialized by the one worker thread serving it.
+ * The one exception is {@link #keepAlive}, which may run on another thread, so every write and the close are
+ * serialized by a lock that {@code keepAlive} only ever tries, never waits on: a stream somebody is writing to is
+ * not silent.
  */
 public final class NdJsonResultStream implements AutoCloseable {
   /**
@@ -64,15 +76,19 @@ public final class NdJsonResultStream implements AutoCloseable {
    */
   public static final String CONTENT_TYPE = "application/x-ndjson";
 
+  private static final byte[] NEWLINE = { '\n' };
+
   static final int  FLUSH_THRESHOLD_BYTES = 8 * 1024;
   static final long FLUSH_INTERVAL_MS     = 50;
 
-  private final OutputStream out;
-  private final long         flushIntervalNanos;
+  private final OutputStream  out;
+  private final long          flushIntervalNanos;
+  private final ReentrantLock lock = new ReentrantLock();
 
   private int     pendingBytes;
   private long    lastFlushNanos;
-  private boolean started;
+  private volatile boolean started;
+  private boolean closed;
 
   public NdJsonResultStream(final OutputStream out) {
     this(out, FLUSH_INTERVAL_MS);
@@ -135,18 +151,57 @@ public final class NdJsonResultStream implements AutoCloseable {
     return started;
   }
 
-  private void writeLine(final JSONObject event, final boolean forceFlush) throws IOException {
-    final byte[] bytes = (event + "\n").getBytes(StandardCharsets.UTF_8);
-    out.write(bytes);
-    pendingBytes += bytes.length;
-
-    final long now = System.nanoTime();
-    if (forceFlush || !started || pendingBytes >= FLUSH_THRESHOLD_BYTES || now - lastFlushNanos >= flushIntervalNanos) {
+  /**
+   * Keeps the stream from looking dead while the engine is slow to produce the next row: when nothing has been
+   * flushed for {@code idleMs} it flushes what is pending, or writes a bare newline when nothing is (see the class
+   * javadoc, "Liveness"). Meant to be called from a timer thread. Never waits for a writer: when the stream is being
+   * written to it is not silent, and when the stream is closed there is nobody to tell.
+   *
+   * @return how long, in milliseconds, until the stream could next be idle for {@code idleMs}, so the caller can check
+   *         again then instead of a full interval later (which would let the silence reach twice the interval); or
+   *         -1 once the stream is closed or the write failed, so the caller stops its timer
+   */
+  public long keepAlive(final long idleMs) {
+    if (!lock.tryLock())
+      return idleMs;
+    try {
+      if (closed)
+        return -1;
+      final long idleNanos = System.nanoTime() - lastFlushNanos;
+      if (idleNanos < idleMs * 1_000_000L)
+        return Math.max(1, idleMs - idleNanos / 1_000_000L);
+      if (pendingBytes == 0)
+        out.write(NEWLINE);
       out.flush();
       pendingBytes = 0;
-      lastFlushNanos = now;
+      lastFlushNanos = System.nanoTime();
+      started = true;
+      return idleMs;
+    } catch (final IOException e) {
+      // The client is gone, or the write bound closed the connection: the worker thread finds out on its own write
+      return -1;
+    } finally {
+      lock.unlock();
     }
-    started = true;
+  }
+
+  private void writeLine(final JSONObject event, final boolean forceFlush) throws IOException {
+    final byte[] bytes = (event + "\n").getBytes(StandardCharsets.UTF_8);
+    lock.lock();
+    try {
+      out.write(bytes);
+      pendingBytes += bytes.length;
+
+      final long now = System.nanoTime();
+      if (forceFlush || !started || pendingBytes >= FLUSH_THRESHOLD_BYTES || now - lastFlushNanos >= flushIntervalNanos) {
+        out.flush();
+        pendingBytes = 0;
+        lastFlushNanos = now;
+      }
+      started = true;
+    } finally {
+      lock.unlock();
+    }
   }
 
   /**
@@ -154,8 +209,14 @@ public final class NdJsonResultStream implements AutoCloseable {
    */
   @Override
   public void close() throws IOException {
-    if (pendingBytes > 0)
-      out.flush();
-    out.close();
+    lock.lock();
+    try {
+      closed = true;
+      if (pendingBytes > 0)
+        out.flush();
+      out.close();
+    } finally {
+      lock.unlock();
+    }
   }
 }

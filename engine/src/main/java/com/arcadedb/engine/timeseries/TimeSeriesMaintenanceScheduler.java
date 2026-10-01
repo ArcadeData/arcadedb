@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
 
 import java.lang.ref.WeakReference;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -134,15 +135,16 @@ public class TimeSeriesMaintenanceScheduler {
       // all samples are in the sealed store and subject to truncation.
       engine.compactAll();
 
-      // Apply retention policy
-      if (type.getRetentionMs() > 0) {
-        final long cutoff = nowMs - type.getRetentionMs();
-        engine.applyRetention(cutoff);
-      }
+      // Each setting is read ONCE: the type can be altered concurrently, and a retention checked as positive but
+      // re-read as 0 would compute a cutoff of "now" and drop every sample (issue #7866).
+      final long retentionMs = type.getRetentionMs();
+      if (retentionMs > 0)
+        engine.applyRetention(nowMs - retentionMs);
 
       // Apply downsampling tiers
-      if (!type.getDownsamplingTiers().isEmpty())
-        engine.applyDownsampling(type.getDownsamplingTiers(), nowMs);
+      final List<DownsamplingTier> tiers = type.getDownsamplingTiers();
+      if (!tiers.isEmpty())
+        engine.applyDownsampling(tiers, nowMs);
 
     } catch (final Throwable e) {
       LogManager.instance().log(TimeSeriesMaintenanceScheduler.class, Level.WARNING,
