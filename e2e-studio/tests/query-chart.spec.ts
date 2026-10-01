@@ -74,8 +74,9 @@ test.describe('Studio Chart tab', () => {
     await page.locator('#tab-chart-sel').click();
     await expect(page.locator('#chartX')).toHaveValue('ts');
     await expect(page.locator('#chartSplit')).toHaveValue('host');
-    await expect(page.locator('#queryChart .apexcharts-line-series path').first()).toBeVisible();
-    expect(await page.locator('#queryChart .apexcharts-line-series path').count()).toBe(2);
+    // ApexCharts also draws each series' hover marker as a path inside .apexcharts-line-series: count the lines only
+    await expect(page.locator('#queryChart .apexcharts-line-series path.apexcharts-line').first()).toBeVisible();
+    await expect(page.locator('#queryChart .apexcharts-line-series path.apexcharts-line')).toHaveCount(2);
   });
 
   test('a grouped result is charted as categories, and PromQL opens the chart on its own', async ({ page }) => {
