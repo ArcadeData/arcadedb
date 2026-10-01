@@ -32,10 +32,11 @@ public class PNumber extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(value);
+    final String rendered = String.valueOf(value);
+    builder.append(rendered);
     // A BigDecimal of scale 0 renders as a plain integer, which re-lexes as an INTEGER_LITERAL (and overflows a long),
     // so it needs a fractional part to stay a floating point literal (issue #8872).
-    if (value instanceof BigDecimal && !hasFloatingPointMarker(value.toString()))
+    if (value instanceof BigDecimal && !hasFloatingPointMarker(rendered))
       builder.append(".0");
     // A suffix-less literal re-parses as a double, so a Float has to carry its suffix or rendering and re-parsing the
     // same statement (EXPLAIN, the statement cache key, a rewritten sub-query) would change its type. NaN and the
