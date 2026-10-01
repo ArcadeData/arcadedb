@@ -26,6 +26,7 @@ import com.arcadedb.server.ha.raft.BaseRaftHATest;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -91,6 +92,7 @@ class Issue8278RedisBatchFollowerForwardingIT extends BaseRaftHATest {
     waitForAllServers();
     assertEveryServerCounts(1, leader, follower);
 
+    // The redis engine ignores parameters: this value is never read, it only makes the handler pick the Object... overload.
     final JSONArray positional = new JSONArray().put("unused");
     final JSONObject response = postCommand(follower, "GET k8278b\nSET k8278b leader-ran-it\nHDEL " + TYPE + "[name] bob",
         positional);
@@ -138,7 +140,9 @@ class Issue8278RedisBatchFollowerForwardingIT extends BaseRaftHATest {
             key)
         .isEqualTo("leader-ran-it");
     assertThat(((DatabaseInternal) getServerDatabase(follower, getDatabaseName())).getGlobalVariable(key))
-        .as("follower %d must not have executed the batch locally, so it must not hold its SET %s", follower, key)
+        .as("follower %d must not have executed the batch locally, so it must not hold its SET %s (this relies on global "
+            + "variables NOT being replicated, issue #6560: if they now are, this witness no longer tells the nodes apart)",
+            follower, key)
         .isNull();
   }
 
@@ -167,9 +171,11 @@ class Issue8278RedisBatchFollowerForwardingIT extends BaseRaftHATest {
       }
 
       final int code = connection.getResponseCode();
-      if (code != 200)
+      if (code != 200) {
+        final InputStream error = connection.getErrorStream();
         throw new AssertionError("HTTP " + code + " from server " + serverIndex + ": "
-            + new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+            + (error != null ? new String(error.readAllBytes(), StandardCharsets.UTF_8) : "<no response body>"));
+      }
       return new JSONObject(new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
     } finally {
       connection.disconnect();
