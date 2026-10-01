@@ -148,7 +148,7 @@ final class SecurityCatchUp implements AutoCloseable {
     // covers the one dropped behind it - but it is not safe for the once-per-start LATCH: the queued task that
     // covers the dropped one may itself settle on an arm that releases the latch (NOBODY_TO_ASK), leaving the
     // dropped request both never made and recorded as made. Rearming on every rejection closes
-    // that gap: whichever task runs last leaves the latch telling the truth about whether anybody was asked
+    // that gap: the latch is released unless a later request took it over
     // (issue #8087). Only the dropped request's OWN hold is released (issue #8168): a snapshot install that took
     // the latch over from a queued request must not have it handed back by the rejection of the one it displaced.
     this.executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
