@@ -449,17 +449,19 @@ public class GraphQLResultSet implements ResultSet {
    * Otherwise the schema type the selections are written against. With neither known, the database type of the record
    * is the only type there is to report.
    * <p>
-   * The declared type of the record wins even when it is unrelated to {@code parentType}, as when a native query
-   * directive returns records of another type: {@code __typename} reports what the object is, not what was expected.
+   * The declared type of the record is reported only when the record is an instance of {@code parentType}: a native
+   * query directive can return records of an unrelated type, and naming a type the field cannot return breaks clients
+   * that check it against the possible types of the field (Apollo's {@code possibleTypes}). The other fields of a record
+   * are resolved against {@code parentType} either way.
    */
   private String typeNameOf(final Result current, final ObjectTypeDefinition parentType) {
     final DocumentType recordType = recordTypeOf(current);
     if (recordType != null) {
       final String declared = declaredObjectTypeOf(recordType);
-      if (declared != null)
-        return declared;
       if (parentType == null)
-        return recordType.getName();
+        return declared != null ? declared : recordType.getName();
+      if (declared != null && recordType.instanceOf(parentType.getName()))
+        return declared;
     }
     return parentType != null ? parentType.getName() : null;
   }
@@ -470,10 +472,10 @@ public class GraphQLResultSet implements ResultSet {
    * grandparent reached through another parent; within one level the order of the super types decides.
    */
   private String declaredObjectTypeOf(final DocumentType type) {
-    if (declaredObjectTypes.containsKey(type))
-      return declaredObjectTypes.get(type);
+    String declared = declaredObjectTypes.get(type);
+    if (declared != null || declaredObjectTypes.containsKey(type))
+      return declared;
 
-    String declared = null;
     final List<DocumentType> level = new ArrayList<>(2);
     level.add(type);
     for (int i = 0; i < level.size(); i++) {

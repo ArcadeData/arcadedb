@@ -197,9 +197,9 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
   }
 
   @Test
-  void typenameOfARecordOfAnotherDeclaredTypeIsItsOwnType() {
-    // A NATIVE QUERY CAN RETURN RECORDS OF A TYPE OTHER THAN THE ONE THE FIELD DECLARES: __typename REPORTS WHAT THE
-    // OBJECT IS
+  void typenameOfARecordOfAnUnrelatedTypeIsTheFieldType() {
+    // A NATIVE QUERY CAN RETURN RECORDS OF A TYPE THE FIELD CANNOT RETURN: NAMING THAT TYPE WOULD BREAK CLIENTS THAT CHECK
+    // __typename AGAINST THE POSSIBLE TYPES OF THE FIELD
     executeTest(database -> {
       defineTypes(database);
       database.command("graphql", """
@@ -209,8 +209,31 @@ class Issue8745TypenameOnDataObjectTest extends AbstractGraphQLTest {
           }""");
       try (final ResultSet resultSet = database.query("graphql", "{ mislabelled { __typename } }")) {
         assertThat(resultSet.hasNext()).isTrue();
-        assertThat(resultSet.next().<String>getProperty("__typename")).isEqualTo("Author");
+        assertThat(resultSet.next().<String>getProperty("__typename")).isEqualTo("Book");
         assertThat(resultSet.hasNext()).isFalse();
+      }
+      return null;
+    });
+  }
+
+  @Test
+  void typenameOnAProjectionThatIsNotARecordIsTheFieldType() {
+    executeTest(database -> {
+      defineTypes(database);
+      database.command("graphql", """
+          type Query {
+            bookById(id: String): Book
+            bookNames: [Book] @sql(statement: "select name from Book order by name")
+          }""");
+      try (final ResultSet resultSet = database.query("graphql", "{ bookNames { __typename name } }")) {
+        int count = 0;
+        while (resultSet.hasNext()) {
+          final Result record = resultSet.next();
+          assertThat(record.<String>getProperty("__typename")).isEqualTo("Book");
+          assertThat(record.<String>getProperty("name")).isNotNull();
+          ++count;
+        }
+        assertThat(count).isEqualTo(2);
       }
       return null;
     });
