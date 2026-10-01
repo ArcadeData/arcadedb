@@ -3972,7 +3972,7 @@ public class SelectExecutionPlanner {
    */
   private static String resolveOrderByProperty(final OrderByItem item, final QueryPlanningInfo info) {
     final String name = item.getAlias();
-    if (name == null || item.expression != null || item.getModifier() != null)
+    if (name == null || item.expression != null || item.getModifier() != null || item.getDirectionParameter() != null)
       return null;
 
     final Projection projection = info.projection;
@@ -4259,7 +4259,8 @@ public class SelectExecutionPlanner {
    * The property an ORDER BY item sorts on, or its record attribute name; null when it sorts on a derived value.
    */
   private static String orderByPropertyName(final OrderByItem item, final QueryPlanningInfo info) {
-    if (item.getModifier() != null)
+    // a direction bound at execution time is unknown to the planner: the sort step stays
+    if (item.getModifier() != null || item.getDirectionParameter() != null)
       return null;
     return item.getAlias() != null ? resolveOrderByProperty(item, info) : item.getName();
   }

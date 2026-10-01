@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,6 +114,17 @@ class Issue8836OrderByAliasRangeIndexTest extends TestHelper {
       while (rs.hasNext())
         got.add(rs.next().<Number>getProperty("b").longValue());
       assertThat(got).isEqualTo(List.of(899L, 898L, 897L));
+    }
+  }
+
+  @Test
+  void parameterizedDirectionKeepsTheSort() {
+    try (final ResultSet rs = database.command("sql", "SELECT a AS c FROM V WHERE a > 100 ORDER BY c :direction LIMIT 3",
+        Map.of("direction", "DESC"))) {
+      final List<Long> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().<Number>getProperty("c").longValue());
+      assertThat(got).isEqualTo(List.of(199L, 198L, 197L));
     }
   }
 }
