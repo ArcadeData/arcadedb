@@ -33,6 +33,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -96,6 +97,12 @@ public class ForeachStep extends AbstractExecutionStep {
    */
   private final boolean eagerExecution;
 
+  // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
+  // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
+  // THE INPUT ROWS AN EAGER EXECUTION HOLDS UNTIL THE LAST WRITE IS APPLIED (see eagerExecution), UNDER THE SAME LIMITS
+  private OperationHeapLimit eagerHeapLimit;
+
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
     this(foreachClause, context, functionFactory, false, false);
@@ -138,7 +145,15 @@ public class ForeachStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return buffer.get(bufferIndex++);
+        final Result result = buffer.get(bufferIndex++);
+        if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
+          // SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          eagerHeapLimit.release();
+        }
+        return result;
       }
 
       private boolean hasMoreInput() {
@@ -165,8 +180,18 @@ public class ForeachStep extends AbstractExecutionStep {
             // eagerMaterialize field doc and DeleteStep's identical mechanism for issue #6491.
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            while (prevResults.hasNext())
-              materializedInput.add(prevResults.next());
+            heapLimit = OperationHeapLimit.of(context, "FOREACH of a disconnected pattern");
+            try {
+              while (prevResults.hasNext()) {
+                final Result row = prevResults.next();
+                materializedInput.add(row);
+                heapLimit.add(materializedInput.size(), row);
+              }
+            } catch (final RuntimeException e) {
+              materializedInput = null;
+              releaseHeap();
+              throw e;
+            }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
           }
@@ -182,14 +207,27 @@ public class ForeachStep extends AbstractExecutionStep {
             executeForeach(inputRow, context);
             // Pass through the input row unchanged
             buffer.add(inputRow);
+            if (eagerExecution) {
+              // HELD UNTIL THE LAST WRITE IS APPLIED, NOT JUST FOR A BATCH (a materialized input shares the rows, so they
+              // are counted twice while both hold them: conservatively)
+              if (eagerHeapLimit == null)
+                eagerHeapLimit = OperationHeapLimit.of(context, "FOREACH eager execution");
+              eagerHeapLimit.add(buffer.size(), inputRow);
+            }
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
           }
         }
 
-        if (!hasMoreInput())
+        if (!hasMoreInput()) {
           finished = true;
+          // EVERY INPUT ROW WAS PROCESSED: THE MATERIALIZED INPUT IS NOT NEEDED ANYMORE (THE UPSTREAM IS DRAINED)
+          if (materializedInput != null) {
+            materializedInput = null;
+            releaseHeap();
+          }
+        }
       }
 
       @Override
@@ -373,6 +411,19 @@ public class ForeachStep extends AbstractExecutionStep {
       default:
         return null;
     }
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    if (eagerHeapLimit != null)
+      eagerHeapLimit.release();
+    super.close();
   }
 
   @Override

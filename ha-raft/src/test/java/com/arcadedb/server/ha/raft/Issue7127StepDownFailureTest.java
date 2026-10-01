@@ -31,9 +31,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -207,6 +209,12 @@ class Issue7127StepDownFailureTest {
   }
 
   private static class ControlledTransfers extends RaftHAServer {
+    // Every configured peer answers (issue #8556): these tests are about the step-down loop, not reachability.
+    @Override
+    Set<String> handoffReachablePeers() {
+      return getLivePeers().stream().map(peer -> peer.getId().toString()).collect(Collectors.toSet());
+    }
+
     private final RaftTransactionBroker broker = mock(RaftTransactionBroker.class);
     private int targetedAttempts;
     private int fallbackAttempts;

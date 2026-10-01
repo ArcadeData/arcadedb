@@ -103,14 +103,28 @@ class RemoteMaterializedViewIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7688: {@code buildMaterializedView()} used to throw remotely. It now renders the builder as
+   * {@code CREATE MATERIALIZED VIEW} and returns the view the server stored; the embedded-vs-remote parity is pinned by
+   * {@code Issue7688RemoteViewBuildersIT}.
+   */
   @Test
-  void buildMaterializedViewThrowsUnsupported() throws Exception {
+  void buildMaterializedViewCreatesTheViewRemotely() throws Exception {
     testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-      assertThatThrownBy(() -> database.getSchema().buildMaterializedView())
-          .isInstanceOf(UnsupportedOperationException.class);
+      database.command("sql", "CREATE DOCUMENT TYPE Account");
+      database.command("sql", "INSERT INTO Account SET name = 'Alice', active = true");
+
+      final MaterializedView view = database.getSchema().buildMaterializedView().withName("Built")
+          .withQuery("SELECT name FROM Account WHERE active = true").create();
+      assertThat(view.getName()).isEqualTo("Built");
+      assertThat(view.getRefreshMode()).isEqualTo(MaterializedViewRefreshMode.MANUAL);
+      assertThat(database.getSchema().existsMaterializedView("Built")).isTrue();
+
+      database.getSchema().dropMaterializedView("Built");
+      database.command("sql", "DROP TYPE Account");
     });
   }
 

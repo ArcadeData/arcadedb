@@ -294,6 +294,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
     // it, matching the inline property map and the clause-level all(e IN r WHERE ...) spelling. Built
     // per source row so the predicate sees that row's bindings.
     traverser.withEdgePredicate(pattern.buildInlineWherePredicate(currentResult, context));
+    traverser.withContext(context);
     return traverser;
   }
 

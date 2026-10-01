@@ -66,7 +66,7 @@ public class HTTPSSLIT extends BaseGraphServerTest {
       System.setProperty("javax.net.ssl.trustStorePassword", configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD));
       System.setProperty("jsse.enableSNIExtension", "false");
 
-      final HttpsURLConnection connection = (HttpsURLConnection) new URL("https://localhost:249" + serverIndex + "/api/v1/server").openConnection();
+      final HttpsURLConnection connection = (HttpsURLConnection) new URL("https://localhost:" + getServer(serverIndex).getHttpServer().getHttpsPort() + "/api/v1/server").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",

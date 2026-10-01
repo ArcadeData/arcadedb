@@ -44,10 +44,8 @@ final class PhysicalOrderRidBuffer {
   private              int      slots                   = 0;
   private              int      size                    = 0;
 
-  // Iteration state, valid after sort()
+  // The slots by ascending bucket id, valid after sort()
   private int[] slotOrder;
-  private int   iterSlot;
-  private int   iterPos;
 
   void add(final int bucketId, final long position) {
     int slot = bucketId < slotByBucketId.length ? slotByBucketId[bucketId] : -1;
@@ -68,7 +66,7 @@ final class PhysicalOrderRidBuffer {
   }
 
   /**
-   * Orders the buffered entries physically and rewinds the iteration. Duplicates are kept: an index can legitimately
+   * Orders the buffered entries physically, for {@link #slices} to cut. Duplicates are kept: an index can legitimately
    * return one record once per matching key (a multi-value index), and dropping them here would change the answer.
    */
   void sort() {
@@ -87,26 +85,30 @@ final class PhysicalOrderRidBuffer {
       }
       slotOrder[j + 1] = current;
     }
-    iterSlot = 0;
-    iterPos = 0;
-  }
-
-  boolean hasNext() {
-    while (iterSlot < slots) {
-      if (iterPos < sizes[slotOrder[iterSlot]])
-        return true;
-      ++iterSlot;
-      iterPos = 0;
-    }
-    return false;
   }
 
   /**
-   * @return the next RID in physical order. Call {@link #hasNext()} first.
+   * Cuts the buffered entries, in physical order, in slices of at most {@code sliceSize} positions of one bucket each.
+   * Only after {@link #sort()}. The slices share this buffer's arrays: they are valid until it changes.
+   *
+   * @param consumer receives every slice, or null to count them only
+   *
+   * @return the number of slices
    */
-  RID next() {
-    final int slot = slotOrder[iterSlot];
-    return new RID(bucketIds[slot], positions[slot][iterPos++]);
+  int slices(final int sliceSize, final PhysicalOrderRidFetcher.SliceConsumer consumer) {
+    int count = 0;
+    for (int i = 0; i < slots; i++) {
+      final int slot = slotOrder[i];
+      final int bucketSize = sizes[slot];
+      for (int from = 0; from < bucketSize; ++count) {
+        // long arithmetic: the slice size is Integer.MAX_VALUE when the split is disabled
+        final int to = (int) Math.min(bucketSize, (long) from + sliceSize);
+        if (consumer != null)
+          consumer.accept(bucketIds[slot], positions[slot], from, to);
+        from = to;
+      }
+    }
+    return count;
   }
 
   /**
@@ -117,8 +119,6 @@ final class PhysicalOrderRidBuffer {
       sizes[i] = 0;
     size = 0;
     slotOrder = null;
-    iterSlot = 0;
-    iterPos = 0;
   }
 
   private int newSlot(final int bucketId) {

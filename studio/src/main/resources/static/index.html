@@ -173,6 +173,7 @@
     <script src="js/studio-utils.js"></script>
     <script src="js/studio-database.js"></script>
     <script src="js/studio-server.js"></script>
+    <script src="js/studio-support.js"></script>
     <script src="js/studio-profiler.js"></script>
     <script src="js/studio-security.js"></script>
     <script src="js/studio-cluster.js"></script>
@@ -183,6 +184,7 @@
     <script src="js/studio-record-editor.js"></script>
     <script src="js/studio-timeseries.js"></script>
     <script src="js/studio-vector.js"></script>
+    <script src="js/studio-chart.js"></script>
     <script src="dist/js/marked.min.js"></script>
     <script src="js/studio-ai.js"></script>
   </head>
@@ -208,22 +210,6 @@
                   <center>
                     <i class="fa fa-database" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Database</div>
-                  </center>
-                </a>
-              </li>
-              <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel" title="TimeSeries">
-                  <center>
-                    <i class="fa fa-chart-line" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">TimeSeries</div>
-                  </center>
-                </a>
-              </li>
-              <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-vector" class="vertical-tab nav-link" id="tab-vector-sel" title="Vector Search">
-                  <center>
-                    <i class="fa fa-braille" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">Vector</div>
                   </center>
                 </a>
               </li>
@@ -276,10 +262,10 @@
                 </a>
               </li>
               <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-ai" class="vertical-tab nav-link" id="tab-ai-sel" title="AI">
+                <a data-bs-toggle="tab" href="#tab-support" class="vertical-tab nav-link" id="tab-support-sel" title="Support">
                   <center>
-                    <i class="fa fa-robot" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">AI</div>
+                    <i class="fa fa-headset" style="font-size: 1.5rem;"></i>
+                    <div class="nav-label">Support</div>
                   </center>
                 </a>
               </li>
@@ -344,7 +330,7 @@
               <div id="quickStartOverlay"></div>
             </div>
             <div class="tab-content" id="mainTabContent">
-              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:vector.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:ai.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:support.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -414,14 +400,14 @@
 
           // Tabs that don't require a database - always show main content
           var noDatabaseTabs = ["tab-server-sel", "tab-profiler-sel", "tab-security-sel",
-            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-ai-sel", "tab-settings-sel"];
+            "tab-cluster-sel", "tab-api-sel", "tab-resources-sel", "tab-support-sel", "tab-settings-sel"];
           if (noDatabaseTabs.indexOf(activeTab) >= 0) {
             $("#quickStartPanel").hide();
             $("#mainTabContent").show();
           }
 
           // Tabs that require a database - show quick start if none exists
-          var databaseTabs = ["tab-query-sel", "tab-database-sel", "tab-timeseries-sel", "tab-vector-sel"];
+          var databaseTabs = ["tab-query-sel", "tab-database-sel"];
           if (databaseTabs.indexOf(activeTab) >= 0 && !getCurrentDatabase()) {
             $("#mainTabContent").hide();
             showQuickStart();
@@ -430,12 +416,6 @@
           if (activeTab == "tab-query-sel") {
             studioCurrentTab = "query";
             editorFocus();
-          } else if (activeTab == "tab-timeseries-sel") {
-            studioCurrentTab = "timeseries";
-            initTimeSeries();
-          } else if (activeTab == "tab-vector-sel") {
-            studioCurrentTab = "vector";
-            initVector();
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
@@ -454,9 +434,9 @@
             studioCurrentTab = "api";
           } else if (activeTab == "tab-resources-sel") {
             studioCurrentTab = "resources";
-          } else if (activeTab == "tab-ai-sel") {
-            studioCurrentTab = "ai";
-            initAi();
+          } else if (activeTab == "tab-support-sel") {
+            studioCurrentTab = "support";
+            initSupportTab();
           } else if (activeTab == "tab-settings-sel") {
             studioCurrentTab = "settings";
           }
@@ -465,8 +445,6 @@
         // Initialize searchable database selectors
         initSearchableDbSelect("queryDbSelectContainer");
         initSearchableDbSelect("schemaDbSelectContainer");
-        initSearchableDbSelect("tsDbSelectContainer");
-        initSearchableDbSelect("vecDbSelectContainer");
 
         // Check for existing session in localStorage
         if (initSessionFromStorage()) {

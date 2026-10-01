@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.log.LogManager;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 
 import java.nio.ByteBuffer;
+import java.util.logging.Level;
 
 public class ExecutionResponse {
   private final int    code;
@@ -141,6 +143,14 @@ public class ExecutionResponse {
   public void send(final HttpServerExchange exchange) {
     if (alreadySent)
       return;
+    if (exchange.isResponseStarted()) {
+      // A handler that started streaming its answer and then returned a response anyway (issue #8642): a status
+      // code cannot be set on a response already on the wire, and trying makes Undertow throw UT000002. The
+      // handler owns the stream and has to end it itself; all that is left to do here is say so.
+      LogManager.instance().log(this, Level.WARNING,
+          "Discarded a %d response to a request whose response had already been started", code);
+      return;
+    }
     exchange.setStatusCode(code);
     applyHeaders(exchange.getResponseHeaders());
     if (binary != null) {

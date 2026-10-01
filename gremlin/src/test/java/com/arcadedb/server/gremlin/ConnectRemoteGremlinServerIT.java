@@ -39,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Manual test against a Gremlin Server.
  */
 class ConnectRemoteGremlinServerIT {
+  // A SERVER STARTED BY HAND, NOT ONE THIS TEST STARTS: IT LISTENS WHEREVER ITS OPERATOR CONFIGURED IT, TINKERPOP'S DEFAULT BY DEFAULT
+  private static final int EXTERNAL_GREMLIN_SERVER_PORT = 8182;
 
   @Disabled
   @Test
@@ -56,7 +58,7 @@ class ConnectRemoteGremlinServerIT {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182)
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(EXTERNAL_GREMLIN_SERVER_PORT)
         .credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer).create();
   }
 

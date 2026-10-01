@@ -87,6 +87,34 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   }
 
   /**
+   * Whether two instances of this function, each fed a disjoint part of the rows, can be combined by
+   * {@link #mergePartial} into the state one instance fed every row would have: the partial aggregation a parallel
+   * scan runs in its workers (issue #8523). {@code false} unless a function says otherwise, and a function answers
+   * {@code true} only in its cross-row form ({@link #aggregateResults()}).
+   */
+  public boolean canMergePartials() {
+    return false;
+  }
+
+  /**
+   * Whether the function keeps every value it aggregates until it hands out its result - list(), percentile(), the
+   * windows of the time-series functions - rather than a running state of a fixed size. What such a function holds is
+   * charged to the heap budget all the running queries share (issue #8591). {@code false} unless a function says
+   * otherwise.
+   */
+  public boolean holdsEveryValue() {
+    return false;
+  }
+
+  /**
+   * Folds into this instance the state of {@code other}, an instance of the same function configured with the same
+   * parameters and fed rows this one was not. Only called when {@link #canMergePartials()} is {@code true}.
+   */
+  public void mergePartial(final SQLAggregatedFunction other) {
+    throw new UnsupportedOperationException("Function '" + getName() + "' cannot merge partial aggregations");
+  }
+
+  /**
    * Returns the aggregated result after all records have been processed.
    * <p>
    * Subclasses must implement this to return their accumulated result.

@@ -301,6 +301,23 @@ public class BinarySerializer {
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
       final EmbeddedModifier embeddedModifier, final RID rid, final String... fieldNames) {
+    return deserializeProperties(database, buffer, embeddedModifier, rid, false, fieldNames);
+  }
+
+  /**
+   * The strict form of {@link #deserializeProperties}, for the integrity check (CHECK DATABASE DEEP): a header that does
+   * not parse or a property that does not decode is thrown instead of being logged and skipped. The lenient form keeps
+   * a partly damaged record usable, which is right for every read - and which is also why a record whose content was
+   * overwritten reads as a record with a property less, and nothing short of this form can tell.
+   *
+   * @throws SerializationException on the first part of the content that does not decode
+   */
+  public Map<String, Object> deserializePropertiesStrict(final Database database, final Binary buffer, final RID rid) {
+    return deserializeProperties(database, buffer, null, rid, true);
+  }
+
+  private Map<String, Object> deserializeProperties(final Database database, final Binary buffer,
+      final EmbeddedModifier embeddedModifier, final RID rid, final boolean strict, final String... fieldNames) {
     final Map<String, Object> values = new LinkedHashMap<>();
     try {
       final int initialPosition = buffer.position();
@@ -360,6 +377,9 @@ public class BinarySerializer {
 
           values.put(propertyName, propertyValue);
         } catch (Exception e) {
+          if (strict)
+            throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
+                + e.getMessage(), e);
           LogManager.instance().log(this, Level.WARNING,
               "Skipping corrupted property '%s' in record %s: %s", propertyName, rid, e.getMessage());
         }
@@ -371,6 +391,10 @@ public class BinarySerializer {
           break;
       }
     } catch (Exception e) {
+      if (strict)
+        throw e instanceof SerializationException serializationException ?
+            serializationException :
+            new SerializationException("Record " + rid + " cannot be decoded: " + e.getMessage(), e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s, returning %d properties read so far", e, rid,
           values.size());
     }

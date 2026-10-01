@@ -29,7 +29,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -56,6 +55,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -108,6 +108,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * goes back to replaying a block whose earlier half is already durable.
    */
   public static final String ARCADEDB_SESSION_PARTIAL_COMMIT = "arcadedb-session-partial-commit";
+
+  /**
+   * Response header the server sets when the request ended the session it named (issue #8618): a failed commit that
+   * carries it leaves nothing for this driver to release. Deliberately duplicated as
+   * {@code DatabaseAbstractHandler.SESSION_CLOSED} in the {@code server} module, which this module cannot depend on.
+   */
+  public static final String ARCADEDB_SESSION_CLOSED = "arcadedb-session-closed";
 
   private final    String                               databaseName;
   private          BinarySerializer                     serializer;
@@ -189,27 +196,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     open = false;
   }
 
+  /**
+   * Goes through {@code httpCommand} like {@link RemoteServer#drop}, for its election retry, failover and typed exceptions.
+   */
   @Override
   public void drop() {
     checkDatabaseIsOpen();
-    try {
-      final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
-      String payload = getRequestPayload(jsonRequest);
-
-      HttpRequest request =
-          createRequestBuilder("POST", getUrl("server")).POST(HttpRequest.BodyPublishers.ofString(payload))
-              .header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
-
-      if (response.statusCode() != 200) {
-        final Exception detail = manageException(response, "drop database");
-        throw new RemoteException("Error on deleting database", detail);
-      }
-
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on deleting database", e);
-    }
+    httpCommand("POST", null, "server", null, "drop database " + databaseName, null, true, true, null);
     close();
   }
 
@@ -267,6 +260,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (attempts < 1)
       attempts = 1;
 
+    boolean duplicatedKeyRetried = false;
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
       try {
@@ -304,7 +299,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // Close the server-side transaction before the next attempt: leaving it open keeps its locks until the
         // server times it out, so attempt N+1 would contend with the locks of attempt N and be MORE likely to
         // need a retry, not less (issue #7030). A failure raised by commit() has already ended the session
-        // (commit() clears the session id in its finally), so this only fires when the block itself failed.
+        // (commit() releases a session the server still holds and clears the id in its finally, issue #8618), so
+        // this only fires when the block itself failed.
         rollbackQuietly();
         setSessionId(null);
         // The tx (server-side) is gone: reset records created in it so a retry/re-save inserts cleanly (issue #4562)
@@ -331,6 +327,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           throw e;
         }
 
+        if (e instanceof DuplicatedKeyException) {
+          // #4959, ported from LocalDatabase.transaction(): a genuine duplicate is deterministic and fails identically
+          // on every attempt. Only racing a commit that landed between attempts can succeed on a retry, and one retry
+          // is enough to tell: fail fast instead of burning the remaining attempts and their pauses (issue #8617).
+          if (duplicatedKeyRetried)
+            throw e;
+          duplicatedKeyRetried = true;
+        }
+
+        if (retry + 1 < attempts)
+          pauseBeforeRetry(retry, e);
+
       } catch (final Exception e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
         // so release it now instead of holding its locks until the server-side timeout (issue #7030).
@@ -346,6 +354,48 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     }
 
     throw lastException;
+  }
+
+  /**
+   * Waits before the next attempt of {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}
+   * (issue #8617). The pause is the exponential backoff with full jitter {@code LocalDatabase.transaction()} applies
+   * ({@link RetryBackoff}: {@code arcadedb.txRetryDelayBase} doubling up to {@code arcadedb.txRetryDelay}), stretched to
+   * the {@code Retry-After} the server sent with the refusal, if any, bounded by
+   * {@code arcadedb.network.retryAfterMaxWait} and spread by a random tenth of it. Retrying at once spent the whole
+   * budget within a few milliseconds against a node that had said when to come back, and ran transport failures (gRPC's
+   * {@code UNAVAILABLE}) back to back.
+   * <p>
+   * The worst case a refused {@code begin()} or {@code commit()} adds is {@code attempts - 1} pauses of at most 1.1 times
+   * {@code retryAfterMaxWait}: both calls send their request once, outside the election retry loop of {@code httpCommand}.
+   * <p>
+   * An interrupt ends the retries: the exception of the attempt that just failed is the answer, and the interrupt flag is
+   * restored for the caller.
+   */
+  private void pauseBeforeRetry(final int attempt, final ArcadeDBException cause) {
+    final long delayMs = Math.max(
+        RetryBackoff.delayMs(attempt, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+            configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)), retryAfterPauseMs(cause));
+    if (delayMs <= 0)
+      return;
+
+    LogManager.instance()
+        .log(this, Level.FINE, "Waiting %d ms before retrying the transaction on remote database '%s' (attempt=%d cause=%s)",
+            null, delayMs, databaseName, attempt + 1, cause.getClass().getSimpleName());
+    try {
+      sleepBeforeRetry(delayMs);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw cause;
+    }
+  }
+
+  /**
+   * Sleeps the pause computed before the next attempt of
+   * {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)}. Overridable so a test can record the
+   * pauses instead of waiting them out.
+   */
+  protected void sleepBeforeRetry(final long delayMs) throws InterruptedException {
+    Thread.sleep(delayMs);
   }
 
   public boolean isTransactionActive() {
@@ -414,11 +464,25 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
+
+        // No transaction exists yet and nothing ran: a retryable refusal keeps its type for transaction()'s retry loop
+        if (detail instanceof NeedRetryException retryable)
+          throw retryable;
+
         throw new TransactionException("Error on transaction begin", detail);
       }
 
       captureResponseHeaders(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
+    } catch (final NeedRetryException e) {
+      throw e;
+    } catch (final IOException e) {
+      // A connection that could not even be established proves the begin never reached the server, the verdict gRPC's
+      // UNAVAILABLE carries on the same call: retryable as well (issue #8617). Any other transport failure may have
+      // left a session open on the server and stays a TransactionException, as a timeout does over gRPC.
+      if (provablyNeverSent(e))
+        throw new NeedRetryException("Error on transaction begin: the server could not be reached", e);
+      throw new TransactionException("Error on transaction begin", e);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     } finally {
@@ -451,15 +515,33 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "commit transaction");
 
-        if (detail instanceof DuplicatedKeyException || detail instanceof ConcurrentModificationException)
-          // SUPPORT RETRY
-          throw detail;
+        // Issue #8618: the server ANSWERED, so nothing of this commit is still running on it, and it may still hold the
+        // session. A refusal issued before the handler ran (the 503 of a node installing a snapshot) left the
+        // transaction open, and a server that predates the fix keeps the session of a commit that failed inside the
+        // handler. Released now rather than at the server's session timeout, and before the retry loop begins the next
+        // attempt. Best-effort: a node still installing refuses the rollback too, which leaves the timeout to do it.
+        //
+        // Only for the outcomes that prove the commit did not land, which are also the ones the retry loop re-runs. A
+        // commit that did or may have landed (409 committed remotely, a dispatched replication that timed out) is not
+        // retried, and a rollback sent for it would only count as one in the stats. Neither is a commit that failed in
+        // transport: it may still be running, on a server that may not be reachable at all. And not when the server
+        // says it already ended the session, which a server with the fix does for every commit its handler ran.
+        if ((detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+            && response.headers().firstValue(ARCADEDB_SESSION_CLOSED).isEmpty())
+          rollbackQuietly();
+
+        // SUPPORT RETRY. The server answers a NeedRetryException only for a commit it refused BEFORE the entry
+        // reached the replicated log, so a retry runs it for the first time. An outcome that may have landed is a
+        // TransactionException (ReplicationDispatchedTimeoutException) and one that did land is
+        // TransactionCommittedRemotelyException (409): neither is retried.
+        if (detail instanceof NeedRetryException || detail instanceof DuplicatedKeyException)
+          throw (RuntimeException) detail;
 
         throw new TransactionException("Error on transaction commit", detail);
       }
       captureResponseHeaders(response);
       committed = true;
-    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final NeedRetryException | DuplicatedKeyException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
@@ -960,7 +1042,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Accept", NDJSON_CONTENT_TYPE)
           .build();
 
-      final HttpResponse<InputStream> response = sendStreamed(request, getTimeout());
+      final HttpResponse<InputStream> response = sendStreamed(request, streamSilenceMs());
       body = response.body();
 
       // Before the status check, and deliberately: on an HA cluster the bookmark is meaningful on a refused
@@ -1470,7 +1552,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
           .header("Content-Type", NDJSON_CONTENT_TYPE);
 
       if (onProgress != null)
-        return readStreamedBatch(sendStreamed(builder.header("Accept", NDJSON_CONTENT_TYPE).build(), getTimeout()),
+        return readStreamedBatch(sendStreamed(builder.header("Accept", NDJSON_CONTENT_TYPE).build(), streamSilenceMs()),
             onProgress);
 
       final HttpResponse<String> response = sendWithWatchdog(builder.build());

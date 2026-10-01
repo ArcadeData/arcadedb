@@ -367,18 +367,21 @@ class Issue7603LeaderForwardHopTest {
     assertThat(forwarder.misconfigurationWarned()).isTrue();
   }
 
-  /** A peer that says nothing - an older node mid rolling upgrade - is answered exactly as before. */
+  /**
+   * A peer that says nothing - an older node mid rolling upgrade, or one that saw leadership change while it resolved
+   * the address - proves nothing about the address, and is answered as the election it usually is (issue #8393).
+   */
   @Test
-  void aRefusalWithNoIntendedLeaderIsAnsweredAsBefore() {
+  void aRefusalWithNoIntendedLeaderIsRetryable() {
     final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(30_000L)));
     LeaderForwardContext.markAlreadyForwarded();
 
     assertThatThrownBy(() -> forwarder.forwardIfReplica(exchange("/api/v1/server"), user("root"), "/api/v1/server",
         "{}", false))
         .isInstanceOf(ServerIsNotTheLeaderException.class)
-        .hasMessageContaining("Either leadership moved")
-        .satisfies(e -> assertThat(((ServerIsNotTheLeaderException) e).getLeaderAddress()).isEqualTo("leader"));
-    assertThat(forwarder.misconfigurationWarned()).isTrue();
+        .hasMessageContaining("retry")
+        .satisfies(e -> assertThat(((ServerIsNotTheLeaderException) e).getLeaderAddress()).isNull());
+    assertThat(forwarder.misconfigurationWarned()).isFalse();
   }
 
   /** The same split on the batch relay, the other follower-to-leader forward in this module. */

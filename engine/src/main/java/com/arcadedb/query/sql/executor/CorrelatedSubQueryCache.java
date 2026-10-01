@@ -21,23 +21,22 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
-import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -89,25 +88,6 @@ public final class CorrelatedSubQueryCache {
    * the same blind spot {@code eval()} is excluded for.
    */
   static final Set<String> UNTRUSTED_METHODS        = Set.of("remove", "removeall", "transform");
-  /** Read-only graph traversal methods, resolved at run time as the built-in graph functions of the same name. */
-  private static final Set<String> GRAPH_METHODS            = Set.of("out", "in", "both", "oute", "ine", "bothe", "outv", "inv",
-      "bothv");
-
-  private static final ClassValue<Field[]> AST_FIELDS = new ClassValue<>() {
-    @Override
-    protected Field[] computeValue(final Class<?> type) {
-      final List<Field> fields = new ArrayList<>();
-      for (Class<?> c = type; c != null && SimpleNode.class.isAssignableFrom(c); c = c.getSuperclass())
-        for (final Field f : c.getDeclaredFields()) {
-          if (Modifier.isStatic(f.getModifiers()) || f.getType().isPrimitive() || f.getType() == String.class)
-            continue;
-          f.setAccessible(true);
-          fields.add(f);
-        }
-      return fields.toArray(new Field[0]);
-    }
-  };
-
   private final int                          maxEntries;
   private final Map<List<Object>, List<Result>> entries;
   private final Set<Dependency>              dependencies = new LinkedHashSet<>();
@@ -155,42 +135,10 @@ public final class CorrelatedSubQueryCache {
       return false;
     Boolean cacheable = statement.resultCacheable;
     if (cacheable == null) {
-      cacheable = isCacheable(statement, new IdentityHashMap<>());
+      cacheable = SqlAstInspector.allNodesMatch(statement, CorrelatedSubQueryCache::isNodeCacheable);
       statement.resultCacheable = cacheable;
     }
     return cacheable;
-  }
-
-  private static boolean isCacheable(final Object node, final IdentityHashMap<Object, Boolean> visited) {
-    if (node instanceof SimpleNode simpleNode) {
-      if (visited.put(simpleNode, Boolean.TRUE) != null)
-        return true;
-      if (!isNodeCacheable(simpleNode))
-        return false;
-      for (final Field f : AST_FIELDS.get(simpleNode.getClass())) {
-        final Object value;
-        try {
-          value = f.get(simpleNode);
-        } catch (final IllegalAccessException e) {
-          return false;
-        }
-        if (value != null && !isCacheable(value, visited))
-          return false;
-      }
-    } else if (node instanceof Collection<?> collection) {
-      for (final Object item : collection)
-        if (!isCacheable(item, visited))
-          return false;
-    } else if (node instanceof Map<?, ?> map) {
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        if (!isCacheable(entry.getKey(), visited) || !isCacheable(entry.getValue(), visited))
-          return false;
-    } else if (node instanceof Object[] array) {
-      for (final Object item : array)
-        if (!isCacheable(item, visited))
-          return false;
-    }
-    return true;
   }
 
   private static boolean isNodeCacheable(final SimpleNode node) {
@@ -214,11 +162,9 @@ public final class CorrelatedSubQueryCache {
       final String name = call.methodName == null ? null : call.methodName.getStringValue().toLowerCase(Locale.ENGLISH);
       if (name == null)
         return false;
-      // GRAPH TRAVERSAL METHODS (.out(), .inE(), ...) ARE NOT IN THE METHOD REGISTRY: THEY RESOLVE AS FUNCTIONS. LISTED
-      // HERE RATHER THAN READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
-      if (GRAPH_METHODS.contains(name))
-        return true;
-      return !UNTRUSTED_METHODS.contains(name) && DefaultSQLMethodFactory.getInstance().isBuiltIn(name);
+      // GRAPH TRAVERSAL METHODS (.out(), .inE(), ...) ARE NOT IN THE METHOD REGISTRY: THEY RESOLVE AS FUNCTIONS, AND
+      // isBuiltInMethod() ADMITS THEM. NOT READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
+      return !UNTRUSTED_METHODS.contains(name) && SqlAstInspector.isBuiltInMethod(call);
     }
 
     return true;
@@ -322,12 +268,38 @@ public final class CorrelatedSubQueryCache {
     /** {@code $parent.name}: {@link CommandContext#getVariable(String)} on the outer context itself. */
     VARIABLE,
     /** {@link CommandContext#getVariablePath(String)} on the outer context itself. */
-    PATH
+    PATH,
+    /**
+     * {@code $parent.$current.office}: one member (a property or a record attribute) of a variable of the outer
+     * context, rather than the variable as a whole (issue #8441). The outer row is a different object on every row,
+     * so keying on it would never let two rows share an entry; the member the subquery reads often is shared.
+     */
+    VARIABLE_MEMBER
   }
 
-  record Dependency(Access access, String name) {
+  /**
+   * One read a run made on the outer context. {@code member} and {@code evaluator} are set only for
+   * {@link Access#VARIABLE_MEMBER}: the member's text is what identifies the read (a statement copied per run carries
+   * its own AST nodes, so the node itself cannot be the identity), the node is how to evaluate it again for the key.
+   */
+  record Dependency(Access access, String name, String member, SuffixIdentifier evaluator) {
+    Dependency(final Access access, final String name) {
+      this(access, name, null, null);
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+      return this == o || (o instanceof Dependency d && access == d.access && name.equals(d.name) && Objects.equals(member, d.member));
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(access, name, member);
+    }
+
     Object valueIn(final CommandContext outer) {
       return switch (access) {
+        case VARIABLE_MEMBER -> evaluator.execute(outer.getVariable(name), outer);
         case HIERARCHY -> {
           final Object value = outer instanceof BasicCommandContext basic ? basic.getVariableFromParentHierarchy(name) : null;
           // THE SAME FALLBACK getVariable() APPLIES WHEN NO CONTEXT HOLDS THE NAME
@@ -431,8 +403,9 @@ public final class CorrelatedSubQueryCache {
   /**
    * What {@code $parent} evaluates to inside a tracked run: the outer context, with each variable read on it recorded
    * and anything that could escape the tracker (walking further up, listing or writing variables) flagged instead.
+   * Public only for {@link #getVariableMember}, which the parser's modifier chain calls.
    */
-  static final class ParentView implements CommandContext {
+  public static final class ParentView implements CommandContext {
     private final CommandContext outer;
     private final Tracker        tracker;
 
@@ -457,6 +430,29 @@ public final class CorrelatedSubQueryCache {
       else
         tracker.reads.add(new Dependency(Access.VARIABLE, name));
       return outer.getVariable(name, defaultValue);
+    }
+
+    /**
+     * Evaluates {@code member} on the variable {@code name} of the outer context - the {@code .office} of
+     * {@code $parent.$current.office} - recording the member rather than the whole variable (issue #8441). The member
+     * is a property or a record attribute, whose value is a function of the variable's value alone, so the key stays
+     * exact. A name that walks further up, and a variable holding a context rather than a value, take the ordinary
+     * path, which records (or escapes on) the whole variable as before.
+     *
+     * @param member a {@link SuffixIdentifier#isMemberAccess() member access}
+     */
+    public Object getVariableMember(final String name, final SuffixIdentifier member, final CommandContext context) {
+      if (escapesOneVariable(name))
+        return member.execute(getVariable(name), context);
+
+      final Object value = outer.getVariable(name);
+      // A CONTEXT IS NOT A VALUE, AND AN ITERATOR IS CONSUMED BY READING IT: RE-EVALUATING THE MEMBER TO BUILD A KEY WOULD
+      // EXHAUST IT BEFORE THE SUBQUERY GETS TO READ IT. BOTH ARE KEYED ON THE VARIABLE ITSELF, AS BEFORE
+      if (value instanceof CommandContext || value instanceof Iterator)
+        return member.execute(getVariable(name), context);
+
+      tracker.reads.add(new Dependency(Access.VARIABLE_MEMBER, name, member.getMemberName(), member));
+      return member.execute(value, context);
     }
 
     @Override
@@ -495,6 +491,18 @@ public final class CorrelatedSubQueryCache {
     public CommandContext getParent() {
       escape();
       return outer.getParent();
+    }
+
+    /** The outer query's lookup: not a read of its state, so it neither escapes nor is recorded (issue #8625). */
+    @Override
+    public IncomingEdgeLookup getIncomingEdgeLookup() {
+      return outer.getIncomingEdgeLookup();
+    }
+
+    /** The outer query's tracker: not a read of its state, so it neither escapes nor is recorded (issue #8591). */
+    @Override
+    public QueryHeapTracker getQueryHeapTracker() {
+      return outer.getQueryHeapTracker();
     }
 
     @Override

@@ -60,25 +60,19 @@ class BmwScorerHeapRepairTest {
       final int n = 1 + rnd.nextInt(64);
       // A small key space on purpose: ties are the whole point, and a wide one would make the run a
       // single slot almost every time.
-      final int[] keyBucketIds = new int[n];
-      final long[] keyPositions = new long[n];
-      for (int i = 0; i < n; i++) {
-        keyBucketIds[i] = rnd.nextInt(2);
-        keyPositions[i] = rnd.nextInt(6);
-      }
-      final int[] heap = heapOfAllTerms(keyBucketIds, keyPositions, n);
+      final long[] keys = new long[n];
+      for (int i = 0; i < n; i++)
+        keys[i] = key(rnd.nextInt(2), rnd.nextInt(6));
+      final int[] heap = heapOfAllTerms(keys, n);
 
       final int[] aligned = new int[n];
       final int[] alignedSlots = new int[n];
-      final int alignedCount = BmwScorer.collectAlignedRun(keyBucketIds, keyPositions, heap, n, keyBucketIds[heap[0]],
-          keyPositions[heap[0]], aligned, alignedSlots);
+      final int alignedCount = BmwScorer.collectAlignedRun(keys, heap, n, keys[heap[0]], aligned, alignedSlots);
 
-      assertRunMatchesBruteForce(keyBucketIds, keyPositions, heap, n, aligned, alignedSlots, alignedCount);
+      assertRunMatchesBruteForce(keys, heap, n, aligned, alignedSlots, alignedCount);
 
-      final long[] frontier = new long[2];
-      BmwScorer.nextEssentialKey(keyBucketIds, keyPositions, heap, n, alignedSlots, alignedCount, keyBucketIds[heap[0]],
-          keyPositions[heap[0]], frontier);
-      assertFrontierMatchesBruteForce(keyBucketIds, keyPositions, heap, n, alignedSlots, alignedCount, frontier);
+      final long frontier = BmwScorer.nextEssentialKey(keys, heap, n, alignedSlots, alignedCount, keys[heap[0]]);
+      assertFrontierMatchesBruteForce(keys, heap, n, alignedSlots, alignedCount, frontier);
     }
   }
 
@@ -89,17 +83,18 @@ class BmwScorerHeapRepairTest {
       final int n = 1 + rnd.nextInt(64);
       final int[] keyBucketIds = new int[n];
       final long[] keyPositions = new long[n];
+      final long[] keys = new long[n];
       for (int i = 0; i < n; i++) {
         keyBucketIds[i] = rnd.nextInt(2);
         keyPositions[i] = rnd.nextInt(6);
+        keys[i] = key(keyBucketIds[i], keyPositions[i]);
       }
-      final int[] heap = heapOfAllTerms(keyBucketIds, keyPositions, n);
+      final int[] heap = heapOfAllTerms(keys, n);
       final int[] before = heap.clone();
 
       final int[] aligned = new int[n];
       final int[] alignedSlots = new int[n];
-      final int alignedCount = BmwScorer.collectAlignedRun(keyBucketIds, keyPositions, heap, n, keyBucketIds[heap[0]],
-          keyPositions[heap[0]], aligned, alignedSlots);
+      final int alignedCount = BmwScorer.collectAlignedRun(keys, heap, n, keys[heap[0]], aligned, alignedSlots);
 
       // Every cursor in the run advances, so its key only ever grows. That is the precondition the
       // in-place repair relies on, and the traversal guarantees it: a cursor either moves forward or
@@ -109,12 +104,13 @@ class BmwScorerHeapRepairTest {
         keyPositions[term] += 1 + rnd.nextInt(8);
         if (rnd.nextInt(4) == 0)
           keyBucketIds[term] += 1;
+        keys[term] = key(keyBucketIds[term], keyPositions[term]);
       }
 
       for (int j = alignedCount - 1; j >= 0; j--)
-        BmwScorer.siftDownFromFloyd(keyBucketIds, keyPositions, heap, n, alignedSlots[j]);
+        BmwScorer.siftDownFromFloyd(keys, heap, n, alignedSlots[j]);
 
-      assertIsMinHeap(keyBucketIds, keyPositions, heap, n);
+      assertIsMinHeap(keys, heap, n);
       assertThat(sorted(heap, n))
           .as("the repair must permute the heap, never lose or duplicate a term")
           .isEqualTo(sorted(before, n));
@@ -131,35 +127,26 @@ class BmwScorerHeapRepairTest {
     final Random rnd = new Random(5518L);
     for (int iteration = 0; iteration < 400; iteration++) {
       final int n = 1 + rnd.nextInt(48);
-      final int[] keyBucketIds = new int[n];
-      final long[] keyPositions = new long[n];
-      for (int i = 0; i < n; i++) {
-        keyBucketIds[i] = 0;
-        keyPositions[i] = rnd.nextInt(10);
-      }
-      final int[] heap = heapOfAllTerms(keyBucketIds, keyPositions, n);
+      final long[] keys = new long[n];
+      for (int i = 0; i < n; i++)
+        keys[i] = key(0, rnd.nextInt(10));
+      final int[] heap = heapOfAllTerms(keys, n);
       final int[] aligned = new int[n];
       final int[] alignedSlots = new int[n];
 
-      int lastBucketId = -1;
-      long lastPosition = -1L;
+      long last = -1L;
       for (int step = 0; step < 200; step++) {
-        final int candidateBucketId = keyBucketIds[heap[0]];
-        final long candidatePosition = keyPositions[heap[0]];
-        assertThat(SparseSegmentBuilder.compareRid(candidateBucketId, candidatePosition, lastBucketId, lastPosition))
-            .as("candidates must come out in non-decreasing order")
-            .isGreaterThanOrEqualTo(0);
-        assertThat(candidatePosition).isEqualTo(bruteForceMinPosition(keyPositions, heap, n));
-        lastBucketId = candidateBucketId;
-        lastPosition = candidatePosition;
+        final long candidate = keys[heap[0]];
+        assertThat(candidate).as("candidates must come out in non-decreasing order").isGreaterThanOrEqualTo(last);
+        assertThat(candidate).isEqualTo(bruteForceMin(keys, heap, n));
+        last = candidate;
 
-        final int alignedCount = BmwScorer.collectAlignedRun(keyBucketIds, keyPositions, heap, n, candidateBucketId,
-            candidatePosition, aligned, alignedSlots);
+        final int alignedCount = BmwScorer.collectAlignedRun(keys, heap, n, candidate, aligned, alignedSlots);
         for (int j = 0; j < alignedCount; j++)
-          keyPositions[aligned[j]] += 1 + rnd.nextInt(3);
+          keys[aligned[j]] += 1 + rnd.nextInt(3);
         for (int j = alignedCount - 1; j >= 0; j--)
-          BmwScorer.siftDownFromFloyd(keyBucketIds, keyPositions, heap, n, alignedSlots[j]);
-        assertIsMinHeap(keyBucketIds, keyPositions, heap, n);
+          BmwScorer.siftDownFromFloyd(keys, heap, n, alignedSlots[j]);
+        assertIsMinHeap(keys, heap, n);
       }
     }
   }
@@ -181,23 +168,26 @@ class BmwScorerHeapRepairTest {
 
   // ---------- helpers ----------
 
+  private static long key(final int bucketId, final long position) {
+    return SparseSegmentBuilder.packRid(bucketId, position, 0);
+  }
+
   /**
    * Build a valid min-heap over term indices {@code [0, n)}. Deliberately a plain reference sift-down
    * written here rather than {@link BmwScorer}'s own heapify: the input to the code under test should
    * not be produced by the code under test.
    */
-  private static int[] heapOfAllTerms(final int[] keyBucketIds, final long[] keyPositions, final int n) {
+  private static int[] heapOfAllTerms(final long[] keys, final int n) {
     final int[] heap = new int[n];
     for (int i = 0; i < n; i++)
       heap[i] = i;
     for (int i = (n >> 1) - 1; i >= 0; i--)
-      referenceSiftDown(keyBucketIds, keyPositions, heap, n, i);
-    assertIsMinHeap(keyBucketIds, keyPositions, heap, n);
+      referenceSiftDown(keys, heap, n, i);
+    assertIsMinHeap(keys, heap, n);
     return heap;
   }
 
-  private static void referenceSiftDown(final int[] keyBucketIds, final long[] keyPositions, final int[] heap, final int size,
-      final int from) {
+  private static void referenceSiftDown(final long[] keys, final int[] heap, final int size, final int from) {
     int i = from;
     while (true) {
       final int left = (i << 1) + 1;
@@ -205,9 +195,9 @@ class BmwScorerHeapRepairTest {
         return;
       int smallest = left;
       final int right = left + 1;
-      if (right < size && compare(keyBucketIds, keyPositions, heap[right], heap[left]) < 0)
+      if (right < size && keys[heap[right]] < keys[heap[left]])
         smallest = right;
-      if (compare(keyBucketIds, keyPositions, heap[i], heap[smallest]) <= 0)
+      if (keys[heap[i]] <= keys[heap[smallest]])
         return;
       final int tmp = heap[i];
       heap[i] = heap[smallest];
@@ -216,26 +206,21 @@ class BmwScorerHeapRepairTest {
     }
   }
 
-  private static int compare(final int[] keyBucketIds, final long[] keyPositions, final int a, final int b) {
-    return SparseSegmentBuilder.compareRid(keyBucketIds[a], keyPositions[a], keyBucketIds[b], keyPositions[b]);
-  }
-
-  private static void assertIsMinHeap(final int[] keyBucketIds, final long[] keyPositions, final int[] heap, final int size) {
+  private static void assertIsMinHeap(final long[] keys, final int[] heap, final int size) {
     for (int i = 1; i < size; i++) {
       final int parent = (i - 1) >>> 1;
-      assertThat(compare(keyBucketIds, keyPositions, heap[parent], heap[i]))
+      assertThat(keys[heap[parent]])
           .as("slot %d must not hold a larger key than slot %d", parent, i)
-          .isLessThanOrEqualTo(0);
+          .isLessThanOrEqualTo(keys[heap[i]]);
     }
   }
 
-  private static void assertRunMatchesBruteForce(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
-      final int size, final int[] aligned, final int[] alignedSlots, final int alignedCount) {
-    final int minBucketId = keyBucketIds[heap[0]];
-    final long minPosition = keyPositions[heap[0]];
+  private static void assertRunMatchesBruteForce(final long[] keys, final int[] heap, final int size, final int[] aligned,
+      final int[] alignedSlots, final int alignedCount) {
+    final long min = keys[heap[0]];
     final List<Integer> expected = new ArrayList<>();
     for (int slot = 0; slot < size; slot++)
-      if (keyBucketIds[heap[slot]] == minBucketId && keyPositions[heap[slot]] == minPosition)
+      if (keys[heap[slot]] == min)
         expected.add(slot);
 
     final List<Integer> got = new ArrayList<>();
@@ -249,32 +234,27 @@ class BmwScorerHeapRepairTest {
       assertThat(alignedSlots[j]).isGreaterThan(alignedSlots[j - 1]);
   }
 
-  private static void assertFrontierMatchesBruteForce(final int[] keyBucketIds, final long[] keyPositions, final int[] heap,
-      final int size, final int[] alignedSlots, final int alignedCount, final long[] frontier) {
+  private static void assertFrontierMatchesBruteForce(final long[] keys, final int[] heap, final int size,
+      final int[] alignedSlots, final int alignedCount, final long frontier) {
     final boolean[] inRun = new boolean[size];
     for (int j = 0; j < alignedCount; j++)
       inRun[alignedSlots[j]] = true;
 
-    int expectedBucketId = -1;
-    long expectedPosition = -1L;
+    long expected = -1L;
     for (int slot = 0; slot < size; slot++) {
       if (inRun[slot])
         continue;
-      final int term = heap[slot];
-      if (expectedBucketId < 0
-          || SparseSegmentBuilder.compareRid(keyBucketIds[term], keyPositions[term], expectedBucketId, expectedPosition) < 0) {
-        expectedBucketId = keyBucketIds[term];
-        expectedPosition = keyPositions[term];
-      }
+      final long k = keys[heap[slot]];
+      if (expected < 0 || k < expected)
+        expected = k;
     }
-    assertThat((int) frontier[0]).as("frontier bucket id").isEqualTo(expectedBucketId);
-    assertThat(frontier[1]).as("frontier position").isEqualTo(expectedPosition);
+    assertThat(frontier).as("frontier key").isEqualTo(expected);
   }
 
-  private static long bruteForceMinPosition(final long[] keyPositions, final int[] heap, final int size) {
+  private static long bruteForceMin(final long[] keys, final int[] heap, final int size) {
     long min = Long.MAX_VALUE;
     for (int slot = 0; slot < size; slot++)
-      min = Math.min(min, keyPositions[heap[slot]]);
+      min = Math.min(min, keys[heap[slot]]);
     return min;
   }
 
@@ -285,26 +265,25 @@ class BmwScorerHeapRepairTest {
   }
 
   private void assertShape(final long[] positions, final int n, final int expectedRunSize, final long expectedFrontier) {
-    final int[] keyBucketIds = new int[n];
-    final long[] keyPositions = Arrays.copyOf(positions, n);
-    final int[] heap = heapOfAllTerms(keyBucketIds, keyPositions, n);
+    // Bucket 0, so a packed key is the position itself and the expectations read as positions.
+    final long[] keys = new long[n];
+    for (int i = 0; i < n; i++)
+      keys[i] = key(0, positions[i]);
+    final int[] heap = heapOfAllTerms(keys, n);
 
     final int[] aligned = new int[n];
     final int[] alignedSlots = new int[n];
-    final int alignedCount = BmwScorer.collectAlignedRun(keyBucketIds, keyPositions, heap, n, keyBucketIds[heap[0]],
-        keyPositions[heap[0]], aligned, alignedSlots);
+    final int alignedCount = BmwScorer.collectAlignedRun(keys, heap, n, keys[heap[0]], aligned, alignedSlots);
     assertThat(alignedCount).as("run size for %s", Arrays.toString(positions)).isEqualTo(expectedRunSize);
-    assertRunMatchesBruteForce(keyBucketIds, keyPositions, heap, n, aligned, alignedSlots, alignedCount);
+    assertRunMatchesBruteForce(keys, heap, n, aligned, alignedSlots, alignedCount);
 
-    final long[] frontier = new long[2];
-    BmwScorer.nextEssentialKey(keyBucketIds, keyPositions, heap, n, alignedSlots, alignedCount, keyBucketIds[heap[0]],
-        keyPositions[heap[0]], frontier);
-    assertThat(frontier[1]).as("frontier for %s", Arrays.toString(positions)).isEqualTo(expectedFrontier);
+    final long frontier = BmwScorer.nextEssentialKey(keys, heap, n, alignedSlots, alignedCount, keys[heap[0]]);
+    assertThat(frontier).as("frontier for %s", Arrays.toString(positions)).isEqualTo(expectedFrontier);
 
     for (int j = 0; j < alignedCount; j++)
-      keyPositions[aligned[j]] += 100;
+      keys[aligned[j]] += 100;
     for (int j = alignedCount - 1; j >= 0; j--)
-      BmwScorer.siftDownFromFloyd(keyBucketIds, keyPositions, heap, n, alignedSlots[j]);
-    assertIsMinHeap(keyBucketIds, keyPositions, heap, n);
+      BmwScorer.siftDownFromFloyd(keys, heap, n, alignedSlots[j]);
+    assertIsMinHeap(keys, heap, n);
   }
 }

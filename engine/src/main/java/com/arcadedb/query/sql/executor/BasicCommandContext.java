@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.HashMap;
@@ -75,6 +76,10 @@ public class BasicCommandContext implements CommandContext {
   protected volatile boolean              commandDeadlinePartial  = false;
   /** Absolute {@link System#nanoTime()} deadline for regex evaluation. See {@link #getRegexDeadline()}. */
   protected volatile long                 regexDeadline           = UNRESOLVED;
+  /** Created by the root context on first use. See {@link #getQueryHeapTracker()}. */
+  private volatile   QueryHeapTracker     queryHeapTracker;
+  /** Created by the root context on first use. See {@link #getIncomingEdgeLookup()}. */
+  private volatile   IncomingEdgeLookup   incomingEdgeLookup;
 
   @Override
   public Object getVariablePath(final String name) {
@@ -424,6 +429,57 @@ public class BasicCommandContext implements CommandContext {
     return parent;
   }
 
+  /**
+   * Makes this context read the scans of an enclosing query, for a nested plan run on a context of its own. Null leaves
+   * the context to create its own.
+   */
+  public void setIncomingEdgeLookup(final IncomingEdgeLookup incomingEdgeLookup) {
+    this.incomingEdgeLookup = incomingEdgeLookup;
+  }
+
+  /**
+   * The lookup of the query: the parent's, or this context's own when it is the root. Same contract as
+   * {@link #getQueryHeapTracker()}: a derived context has to be given its parent before its first call.
+   */
+  @Override
+  public IncomingEdgeLookup getIncomingEdgeLookup() {
+    final IncomingEdgeLookup lookup = incomingEdgeLookup;
+    if (lookup != null)
+      return lookup;
+    if (parent != null) {
+      final IncomingEdgeLookup parentLookup = parent.getIncomingEdgeLookup();
+      if (parentLookup != null)
+        return parentLookup;
+    }
+    synchronized (this) {
+      if (incomingEdgeLookup == null)
+        incomingEdgeLookup = new IncomingEdgeLookup();
+      return incomingEdgeLookup;
+    }
+  }
+
+  /**
+   * The tracker of the query: the parent's, or this context's own when it is the root. A derived context has to be given
+   * its parent before its first call, since a context that has none yet creates and keeps a tracker of its own, and
+   * would then account the query's buffers apart from the rest of it.
+   */
+  @Override
+  public QueryHeapTracker getQueryHeapTracker() {
+    final QueryHeapTracker tracker = queryHeapTracker;
+    if (tracker != null)
+      return tracker;
+    if (parent != null) {
+      final QueryHeapTracker parentTracker = parent.getQueryHeapTracker();
+      if (parentTracker != null)
+        return parentTracker;
+    }
+    synchronized (this) {
+      if (queryHeapTracker == null)
+        queryHeapTracker = new QueryHeapTracker();
+      return queryHeapTracker;
+    }
+  }
+
   public CommandContext setParent(final CommandContext iParentContext) {
     if (parent != iParentContext) {
       parent = iParentContext;
@@ -531,6 +587,11 @@ public class BasicCommandContext implements CommandContext {
     // Share the same statistics accumulator so mutations performed through the copied context
     // aggregate into one place instead of silently vanishing.
     copy.statistics = statistics;
+    // Same for the heap the buffers hold: a parallel-scan worker charges the query it works for, whose budget it shares
+    // and whose release gives its buffers back (issue #8591)
+    copy.queryHeapTracker = getQueryHeapTracker();
+    // And for the incoming-edge lookup, so the workers share the one scan the query builds (issue #8625)
+    copy.incomingEdgeLookup = getIncomingEdgeLookup();
     return copy;
   }
 

@@ -26,6 +26,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -419,6 +420,39 @@ class RemoteHttpComponentTest {
     final Exception result = component.manageException(response, "test");
 
     assertThat(result).isInstanceOf(TransactionException.class);
+  }
+
+  /**
+   * Issue #8481: a transaction committed cluster-wide is answered 409 and must not be retried. The client used to turn it
+   * into an untyped RemoteException, so the caller could not tell a write that landed from one that failed.
+   */
+  @Test
+  void manageExceptionTransactionCommittedRemotely() {
+    final JSONObject json = new JSONObject();
+    json.put("exception", TransactionCommittedRemotelyException.class.getName());
+    json.put("detail", "Transaction committed cluster-wide but the local apply failed");
+
+    final Exception result = component.manageException(createMockResponse(409, json.toString()), "test");
+
+    assertThat(result).isInstanceOf(TransactionCommittedRemotelyException.class);
+    assertThat(result).isNotInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).isEqualTo("Transaction committed cluster-wide but the local apply failed");
+  }
+
+  /**
+   * Issue #8481: the HA leader's "ALL quorum missed after the MAJORITY committed" is a committed-remotely outcome too. Its
+   * class lives in a server module, so the client matches it by name and rebuilds the typed do-not-retry exception.
+   */
+  @Test
+  void manageExceptionMajorityCommittedAllFailedIsCommittedRemotely() {
+    final JSONObject json = new JSONObject();
+    json.put("exception", "com.arcadedb.server.ha.raft.MajorityCommittedAllFailedException");
+    json.put("detail", "ALL quorum not reached after MAJORITY commit at logIndex=42");
+
+    final Exception result = component.manageException(createMockResponse(409, json.toString()), "test");
+
+    assertThat(result).isInstanceOf(TransactionCommittedRemotelyException.class);
+    assertThat(result).isNotInstanceOf(NeedRetryException.class);
   }
 
   @Test
@@ -1119,6 +1153,16 @@ class RemoteHttpComponentTest {
     // A configured timeout below the floor (or unset) still gets a usable watchdog.
     assertThat(RemoteHttpComponent.computeWatchdogMs(100)).isEqualTo(30_000L);
     assertThat(RemoteHttpComponent.computeWatchdogMs(0)).isEqualTo(30_000L);
+  }
+
+  // Issue #8565: a streamed answer gets the same silence floor as a buffered call
+
+  @Test
+  void streamSilenceBudgetHasTheBufferedPathFloor() {
+    component.setTimeout(100);
+    assertThat(component.streamSilenceMs()).isEqualTo(30_000L);
+    component.setTimeout(120_000);
+    assertThat(component.streamSilenceMs()).isEqualTo(120_000L);
   }
 
   /**

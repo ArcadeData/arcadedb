@@ -30,6 +30,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
@@ -114,6 +115,11 @@ class Issue6201ErrorStatusParityTest {
       // that from exactly the PromQL/Grafana client the refusal was added for (review of PR #8197).
       new MappedFailure("TimeSeriesWalkCoarsenedException", 503,
           () -> new TimeSeriesWalkCoarsenedException("Sealed block [1..2] was replaced by a downsample")),
+      // A query refused its share of the heap budget all the running queries share (issue #8591): it fits the budget
+      // on its own, so the same request re-issued once the others complete can succeed. It extends
+      // CommandExecutionException, whose generic arm answers 500.
+      new MappedFailure("QueryHeapBudgetExceededException", 503,
+          () -> new QueryHeapBudgetExceededException("Query heap budget exceeded: the running queries hold it")),
       // A permanent DROP/CLOSE DATABASE race (not the transient resync above) that lost the retry-then-reresolve
       // round trip: allowLoad=false found no open handle for the name. An accurate 404, not the generic 500 the
       // un-typed DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up).

@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
@@ -62,6 +63,9 @@ public class OrderByStep extends AbstractExecutionStep {
   private final OrderByClause       orderByClause;
   private final ExpressionEvaluator evaluator;
   private final Integer             limit; // Downstream LIMIT value for Top-K optimization
+  // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
+  // STEP, NOT ON ITS RESULT SET: THE CLOSE() OF A QUERY REACHES THE STEPS
+  private       OperationHeapLimit  heapLimit;
 
   public OrderByStep(final OrderByClause orderByClause, final CommandContext context) {
     this(orderByClause, context, null, null);
@@ -99,7 +103,13 @@ public class OrderByStep extends AbstractExecutionStep {
       @Override
       public boolean hasNext() {
         if (sortedResults == null) {
-          materializeAndSort();
+          heapLimit = OperationHeapLimit.of(context, "ORDER BY");
+          try {
+            materializeAndSort();
+          } catch (final RuntimeException e) {
+            releaseBuffer();
+            throw e;
+          }
         }
         return currentIndex < sortedResults.size();
       }
@@ -109,7 +119,20 @@ public class OrderByStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return sortedResults.get(currentIndex++);
+        final Result result = sortedResults.get(currentIndex++);
+        if (currentIndex == sortedResults.size())
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN. THE
+          // STEP DOWNSTREAM MAY STILL HOLD THE LAST PULL BATCH OF THEM (UP TO nRecords ROWS), WHICH NO LIMIT COUNTS
+          releaseBuffer();
+        return result;
+      }
+
+      private void releaseBuffer() {
+        if (sortedResults != null) {
+          currentIndex = 0;
+          sortedResults = Collections.emptyList();
+        }
+        releaseHeap();
       }
 
       /**
@@ -126,11 +149,16 @@ public class OrderByStep extends AbstractExecutionStep {
           if (limit != null && limit > 0 && !orderByClause.isEmpty()) {
             sortedResults = materializeTopK(limit);
           } else {
-            // Standard sorting: materialize all results
+            // Standard sorting: materialize all results. Pulled at the plan's batch size, as the top-K path below and
+            // the aggregation steps do: Integer.MAX_VALUE made every streaming step upstream - the label scan, the
+            // projection - hold the whole input in its own batch while this step copied it, doubling the heap of the
+            // sort out of sight of both limits on it (issue #8591)
             sortedResults = new ArrayList<>();
-            final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+            final ResultSet prevResults = prev.syncPull(context, nRecords > 0 ? nRecords : 100);
             while (prevResults.hasNext()) {
-              sortedResults.add(prevResults.next());
+              final Result row = prevResults.next();
+              sortedResults.add(row);
+              heapLimit.add(sortedResults.size(), row);
             }
 
             // Sort results according to ORDER BY clause
@@ -184,8 +212,10 @@ public class OrderByStep extends AbstractExecutionStep {
           final Result row = prevResults.next();
 
           if (topK.size() < k) {
-            // Haven't reached K elements yet, add unconditionally
+            // Haven't reached K elements yet, add unconditionally. Only a LIMIT larger than the cap can make the heap
+            // outgrow it
             topK.offer(row);
+            heapLimit.add(topK.size(), row);
           } else {
             // Heap is full, check if new element is better than worst element
             final Result worst = topK.peek();
@@ -193,10 +223,15 @@ public class OrderByStep extends AbstractExecutionStep {
               // New row is better than worst row, replace it
               topK.poll();  // Remove worst
               topK.offer(row);  // Add new
+              heapLimit.replace(worst, row);
             }
             // Otherwise discard the row (it's worse than our current top K)
           }
         }
+
+        // The rows kept past the first ones were charged a sampled size and adjusted per replacement: charge exactly
+        // what the heap holds now
+        heapLimit.rechargeAll(topK);
 
         // Extract results from heap and reverse to get correct sort order
         final List<Result> results = new ArrayList<>(topK.size());
@@ -400,9 +435,21 @@ public class OrderByStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
+        releaseBuffer();
         OrderByStep.this.close();
       }
     };
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   /**

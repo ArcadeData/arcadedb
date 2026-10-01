@@ -222,8 +222,9 @@ class ByteArrayComparatorTest {
 
     // Test that both implementations give same results
     for (int i = 0; i < 100; i++) {
-      final byte[] a = new byte[random.nextInt(50) + 1];
-      final byte[] b = new byte[random.nextInt(50) + 1];
+      // Lengths start at 0: the zero-length equals() used to be excluded here, which hid issue #7890.
+      final byte[] a = new byte[random.nextInt(51)];
+      final byte[] b = new byte[random.nextInt(51)];
       random.nextBytes(a);
       random.nextBytes(b);
 
@@ -233,11 +234,9 @@ class ByteArrayComparatorTest {
       // Both should agree on sign
       assertThat(Integer.signum(result1)).isEqualTo(Integer.signum(result2));
 
-      // Test equals method
-      if (a.length > 0 && b.length > 0) {
-        final int len = Math.min(a.length, b.length);
-        assertThat(unsafe.equals(a, b, len)).isEqualTo(pureJava.equals(a, b, len));
-      }
+      // Test equals method, zero length included
+      final int len = Math.min(a.length, b.length);
+      assertThat(unsafe.equals(a, b, len)).isEqualTo(pureJava.equals(a, b, len));
     }
   }
 

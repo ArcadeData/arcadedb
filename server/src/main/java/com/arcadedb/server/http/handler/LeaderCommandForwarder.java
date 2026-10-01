@@ -126,7 +126,7 @@ public final class LeaderCommandForwarder {
   private final Transport  transport;
 
   /** Builds the target a relayed progress stream is written to. Package-private and swappable for tests only. */
-  Function<HttpServerExchange, StreamTarget> streamTargetFactory = LeaderCommandForwarder::exchangeTarget;
+  Function<HttpServerExchange, StreamTarget> streamTargetFactory = this::exchangeTarget;
 
   /**
    * Emits the "a peer forwarded a request here and this node is not the leader either" notice only once
@@ -230,38 +230,48 @@ public final class LeaderCommandForwarder {
       // leaving the leader address out of the exception (AbstractServerHttpHandler maps an unnamed refusal to the
       // retryable arm), and without touching the warning latch below: a routine election must not use up the one
       // notice the genuine misconfiguration gets.
+      //
+      // A refusal nobody can classify is answered the same way (issue #8393). The peer names no leader when leadership
+      // changed while it resolved the address, or when it runs a build that predates the header - a rolling upgrade,
+      // which is when leadership moves most. Both are elections far more often than configuration faults, and the
+      // asymmetry decides it: a 503 costs a misconfigured cluster one retry per request, while a 400 tells every
+      // client to give up on something that clears in milliseconds. Only the refusal that proves the address named
+      // the wrong node keeps the 400 and the notice.
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = ha.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          throw new ServerIsNotTheLeaderException(
+              "A cluster peer forwarded this server command here as the leader, and leadership moved away from this "
+                  + "node while the request was in flight" + nowLeads + ". The command was not executed: retry it", null);
+
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster peer forwarded a server command to this node as the leader without saying which node it meant "
+                + "to reach, and this node is not the leader: refused as retryable");
         throw new ServerIsNotTheLeaderException(
-            "A cluster peer forwarded this server command here as the leader, and leadership moved away from this node "
-                + "while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
-                + ". The command was not executed: retry it", null);
+            "A cluster peer already forwarded this server command to the leader and it arrived on this node, which is "
+                + "not the leader" + nowLeads + ". Leadership most likely moved while the request was in flight: the "
+                + "command was not executed, retry it. If this persists, the HTTP address that peer resolved for the "
+                + "leader may not identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+                + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents", null);
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Also said once in this node's log: the refusal goes back to the peer and from there to the client, so
       // otherwise the only node that can name the misconfiguration never mentions it.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a server command to this node as the leader, but this node is not the leader. "
-                + (misidentified ?
-                "That peer meant to reach another node, so " :
-                "Unless leadership just moved, ")
-                + "the HTTP address that peer resolved for the leader does not identify "
-                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
-                + "command is refused rather than forwarded on. This notice is logged only once.",
+                + "That peer meant to reach another node, so the HTTP address that peer resolved for the leader does "
+                + "not identify it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The command is refused rather than forwarded on. This notice is logged only once.",
             GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(misidentified ?
+      throw new ServerIsNotTheLeaderException(
           "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
               + "this node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
               + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
-              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-          "Refusing to forward a server command that a cluster peer already forwarded to the leader: it arrived on "
-              + "this node, which is not the leader. Either leadership moved while the request was in flight - retry - "
-              + "or the HTTP address that peer resolved for the leader does not identify it, which is what declaring "
-              + "every node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents", ha.getLeaderName());
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this",
+          ha.getLeaderName());
     }
 
     // Where to dial the leader and on which scheme: the HTTPS endpoint when the cluster has one for it,
@@ -487,16 +497,19 @@ public final class LeaderCommandForwarder {
     OutputStream open(String contentType) throws IOException;
   }
 
-  /** The production {@link StreamTarget}: the client's own exchange, set up the way the leader set up its stream. */
-  static StreamTarget exchangeTarget(final HttpServerExchange exchange) {
+  /**
+   * The production {@link StreamTarget}: the client's own exchange, set up the way the leader set up its stream.
+   * Every write is bounded (issue #7806) exactly like the leader's own stream: a follower relaying to a client that
+   * stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
+   */
+  StreamTarget exchangeTarget(final HttpServerExchange exchange) {
     return contentType -> {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache");
       exchange.getResponseHeaders().put(X_ACCEL_BUFFERING, "no");
       exchange.setStatusCode(200);
-      if (!exchange.isBlocking())
-        exchange.startBlocking();
-      return exchange.getOutputStream();
+      return WriteBoundedOutputStream.of(exchange, WriteBoundedOutputStream.budgetMs(httpServer),
+          () -> "the relayed progress stream of a command forwarded to the leader");
     };
   }
 

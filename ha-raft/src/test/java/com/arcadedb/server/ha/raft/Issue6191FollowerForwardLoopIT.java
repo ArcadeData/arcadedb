@@ -194,9 +194,11 @@ class Issue6191FollowerForwardLoopIT extends BaseRaftHATest {
         out.write(payload);
       }
 
+      // No intended leader id is sent, as from a peer on an older build: retryable, not the configuration error
+      // (issue #8393). The serverList advice is still offered as the secondary cause.
       assertThat(conn.getResponseCode())
           .as("a batch that arrives already forwarded must be refused by this follower, not relayed again")
-          .isEqualTo(400);
+          .isEqualTo(503);
       assertThat(new String(conn.getErrorStream().readAllBytes(), StandardCharsets.UTF_8))
           .contains("already forwarded")
           .contains(GlobalConfiguration.HA_SERVER_LIST.getKey());

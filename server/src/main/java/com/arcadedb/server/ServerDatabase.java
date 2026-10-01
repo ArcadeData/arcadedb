@@ -110,6 +110,34 @@ public class ServerDatabase implements DatabaseInternal {
     }
   }
 
+  /**
+   * The instance every operation of this handle runs on: the database's CURRENT wrapper, not the instance this handle
+   * was built around (issues #8282, #8383). A handle resolved before the HA plugin wrapped the database holds the plain
+   * {@link LocalDatabase}; the wrap installs the replicated wrapper on that same instance
+   * ({@link LocalDatabase#setWrappedDatabaseInstance}), so reading it here reaches the wrapper however old the handle is
+   * - and past a re-wrap too, for a handle built around a wrapper a plugin restart has since replaced
+   * ({@code ArcadeDBServer.rewrapDatabases()}), whose Raft server is the one the restart discarded. Connection-scoped
+   * handles - Postgres, MongoDB, Bolt, gRPC - live exactly that long, and what they would bypass is not only the commit:
+   * the wrapper's {@code command()} is where a follower forwards a write to the leader instead of executing it on its
+   * own state (issue #4039), its {@code query()} is where it applies the read-consistency barrier, and its reads and
+   * {@code begin()} are where it refuses a client while the database directory is being replaced.
+   * <p>
+   * On a database nobody wrapped this is the database itself, and on a handle built around the current wrapper it is
+   * that wrapper, so only a stale handle changes behavior. Resolved here and not in {@code LocalDatabase}: engine code
+   * calls the inner instance on purpose (a WAL-less vector graph persist, for one), and must keep doing so.
+   * <p>
+   * Resolved per call, so a transaction whose {@code begin()} and {@code commit()} fall on either side of a re-wrap
+   * begins through one wrapper and commits through the next. That is still one transaction: every wrapper delegates to
+   * the same embedded {@link LocalDatabase}, and the transaction lives in its thread context, keyed by the database path.
+   * <p>
+   * {@link #getWrappedDatabaseInstance()}, {@link #getEmbedded()}, {@code equals()}, {@code hashCode()} and
+   * {@code toString()} stay on the captured instance: they describe what this handle was built around, which is what the
+   * server's own registry maintenance ({@code rewrapDatabases()}) reads.
+   */
+  private DatabaseInternal current() {
+    return wrapped.getEmbedded().getWrappedDatabaseInstance();
+  }
+
   private ServerQueryProfiler getProfiler() {
     return server != null ? server.getQueryProfiler() : null;
   }
@@ -134,46 +162,74 @@ public class ServerDatabase implements DatabaseInternal {
 
   @Override
   public DatabaseAsyncExecutor async() {
-    return wrapped.async();
+    return current().async();
   }
 
   public Map<String, Object> getStats() {
-    return wrapped.getStats();
+    return current().getStats();
   }
 
   @Override
   public long getModificationCount() {
-    return wrapped.getModificationCount();
+    return current().getModificationCount();
   }
 
   @Override
   public String getDatabasePath() {
-    return wrapped.getDatabasePath();
+    return current().getDatabasePath();
   }
 
   @Override
   public long getSize() {
-    return wrapped.getSize();
+    return current().getSize();
   }
 
   @Override
   public String getCurrentUserName() {
-    return wrapped.getCurrentUserName();
+    return current().getCurrentUserName();
   }
 
   @Override
   public Select select() {
-    return wrapped.select();
+    return current().select();
   }
 
   @Override
   public GraphBatch.Builder batch() {
-    return wrapped.batch();
+    return current().batch();
   }
 
   @Override
   public boolean isReplicated() {
-    return wrapped.isReplicated();
+    return current().isReplicated();
+  }
+
+  /**
+   * Delegated like {@link #isReplicated()}, which it is read together with. Inheriting the interface default
+   * ({@code true}) made every handle on a follower answer "replicated, and the leader", so engine code handed a server
+   * handle - a graph analytical view built through the embedded API on {@code server.getDatabase()}, for one - that
+   * keeps work leader-only by asking {@code isReplicated() && !isLeader()} ran it on a follower anyway. The HA hooks
+   * below were likewise inherited as their standalone no-op defaults.
+   */
+  @Override
+  public boolean isLeader() {
+    return current().isLeader();
+  }
+
+  @Override
+  public boolean runWithCompactionReplication(final Callable<Boolean> compaction) throws IOException, InterruptedException {
+    return current().runWithCompactionReplication(compaction);
+  }
+
+  @Override
+  public void recordTimeSeriesSealedChange(final String typeName, final int shardIndex, final String sealedFileName,
+      final byte[] sealedBytes) {
+    current().recordTimeSeriesSealedChange(typeName, shardIndex, sealedFileName, sealedBytes);
+  }
+
+  @Override
+  public void countRecordsRead(final long count) {
+    current().countRecordsRead(count);
   }
 
   @Override
@@ -187,293 +243,287 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   public TransactionContext getTransactionIfExists() {
-    return wrapped.getTransactionIfExists();
+    return current().getTransactionIfExists();
   }
 
   @Override
   public void begin() {
-    wrapped.begin();
+    current().begin();
   }
 
   @Override
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
-    wrapped.begin(isolationLevel);
+    current().begin(isolationLevel);
   }
 
   /**
-   * Commits through the database's CURRENT wrapper, not through the instance this handle was built around (issue
-   * #8282). A handle resolved before the HA plugin wrapped the database holds the plain {@link LocalDatabase}, whose
-   * own {@code commit()} writes locally and never replicates; the wrap installs the replicated wrapper on that same
-   * instance ({@link LocalDatabase#setWrappedDatabaseInstance}), so reading it here reaches the wrapper however old the
-   * handle is - and past a re-wrap too, for a handle built around a wrapper a plugin restart has since replaced
-   * ({@code ArcadeDBServer.rewrapDatabases()}). Connection-scoped handles - Postgres, MongoDB, Bolt, gRPC - live
-   * exactly that long. Resolved here and not in {@code LocalDatabase.commit()}: engine code calls that one on the
-   * inner instance on purpose (a WAL-less vector graph persist, for one), and must keep doing so.
+   * Commits through the database's CURRENT wrapper (issue #8282), like every other operation of this handle: see
+   * {@link #current()}.
    */
   @Override
   public void commit() {
-    wrapped.getEmbedded().getWrappedDatabaseInstance().commit();
+    current().commit();
   }
 
   @Override
   public void rollback() {
-    wrapped.rollback();
+    current().rollback();
   }
 
   @Override
   public void rollbackAllNested() {
-    wrapped.rollbackAllNested();
+    current().rollbackAllNested();
   }
 
   @Override
   public long countBucket(final String bucketName) {
-    return wrapped.countBucket(bucketName);
+    return current().countBucket(bucketName);
   }
 
   @Override
   public long countType(final String typeName, final boolean polymorphic) {
-    return wrapped.countType(typeName, polymorphic);
+    return current().countType(typeName, polymorphic);
   }
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
-    wrapped.scanType(typeName, polymorphic, callback);
+    current().scanType(typeName, polymorphic, callback);
   }
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback,
       final ErrorRecordCallback errorRecordCallback) {
-    wrapped.scanType(typeName, polymorphic, callback, errorRecordCallback);
+    current().scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback) {
-    wrapped.scanBucket(bucketName, callback);
+    current().scanBucket(bucketName, callback);
   }
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
-    wrapped.scanBucket(bucketName, callback, errorRecordCallback);
+    current().scanBucket(bucketName, callback, errorRecordCallback);
   }
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    return wrapped.iterateType(typeName, polymorphic);
+    return current().iterateType(typeName, polymorphic);
   }
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    return wrapped.iterateBucket(bucketName);
+    return current().iterateBucket(bucketName);
   }
 
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
-    wrapped.checkPermissionsOnDatabase(access);
+    current().checkPermissionsOnDatabase(access);
   }
 
   public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
-    wrapped.checkPermissionsOnFile(fileId, access);
+    current().checkPermissionsOnFile(fileId, access);
   }
 
   @Override
   public void checkPermissionsOnType(final String typeName, final SecurityDatabaseUser.ACCESS access) {
-    wrapped.checkPermissionsOnType(typeName, access);
+    current().checkPermissionsOnType(typeName, access);
   }
 
   public long getResultSetLimit() {
-    return wrapped.getResultSetLimit();
+    return current().getResultSetLimit();
   }
 
   public long getReadTimeout() {
-    return wrapped.getReadTimeout();
+    return current().getReadTimeout();
   }
 
   @Override
   public boolean existsRecord(final RID rid) {
-    return wrapped.existsRecord(rid);
+    return current().existsRecord(rid);
   }
 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
-    return wrapped.lookupByRID(rid, loadContent);
+    return current().lookupByRID(rid, loadContent);
   }
 
   @Override
   public IndexCursor lookupByKey(final String type, final String keyName, final Object keyValue) {
-    return wrapped.lookupByKey(type, keyName, keyValue);
+    return current().lookupByKey(type, keyName, keyValue);
   }
 
   @Override
   public IndexCursor lookupByKey(final String type, final String[] keyNames, final Object[] keyValues) {
-    return wrapped.lookupByKey(type, keyNames, keyValues);
+    return current().lookupByKey(type, keyNames, keyValues);
   }
 
   public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
-    wrapped.registerCallback(event, callback);
+    current().registerCallback(event, callback);
   }
 
   public void unregisterCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
-    wrapped.unregisterCallback(event, callback);
+    current().unregisterCallback(event, callback);
   }
 
   public GraphEngine getGraphEngine() {
-    return wrapped.getGraphEngine();
+    return current().getGraphEngine();
   }
 
   public TransactionManager getTransactionManager() {
-    return wrapped.getTransactionManager();
+    return current().getTransactionManager();
   }
 
   @Override
   public boolean isReadYourWrites() {
-    return wrapped.isReadYourWrites();
+    return current().isReadYourWrites();
   }
 
   @Override
   public Database setReadYourWrites(final boolean readYourWrites) {
-    wrapped.setReadYourWrites(readYourWrites);
+    current().setReadYourWrites(readYourWrites);
     return this;
   }
 
   @Override
   public Database setTransactionIsolationLevel(final TRANSACTION_ISOLATION_LEVEL level) {
-    return wrapped.setTransactionIsolationLevel(level);
+    return current().setTransactionIsolationLevel(level);
   }
 
   @Override
   public TRANSACTION_ISOLATION_LEVEL getTransactionIsolationLevel() {
-    return wrapped.getTransactionIsolationLevel();
+    return current().getTransactionIsolationLevel();
   }
 
   @Override
   public Database setUseWAL(final boolean useWAL) {
-    return wrapped.setUseWAL(useWAL);
+    return current().setUseWAL(useWAL);
   }
 
   @Override
   public Database setWALFlush(final WALFile.FlushType flush) {
-    return wrapped.setWALFlush(flush);
+    return current().setWALFlush(flush);
   }
 
   @Override
   public boolean isAsyncFlush() {
-    return wrapped.isAsyncFlush();
+    return current().isAsyncFlush();
   }
 
   @Override
   public Database setAsyncFlush(final boolean value) {
-    return wrapped.setAsyncFlush(value);
+    return current().setAsyncFlush(value);
   }
 
   public void createRecord(final MutableDocument record) {
-    wrapped.createRecord(record);
+    current().createRecord(record);
   }
 
   public void createRecord(final Record record, final String bucketName) {
-    wrapped.createRecord(record, bucketName);
+    current().createRecord(record, bucketName);
   }
 
   public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
-    wrapped.createRecordNoLock(record, bucketName, false);
+    current().createRecordNoLock(record, bucketName, false);
   }
 
   @Override
   public RID restoreRecord(final Record record, final LocalBucket bucket, final long position) {
-    return wrapped.restoreRecord(record, bucket, position);
+    return current().restoreRecord(record, bucket, position);
   }
 
   public void updateRecord(final Record record) {
-    wrapped.updateRecord(record);
+    current().updateRecord(record);
   }
 
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
-    wrapped.updateRecordNoLock(record, discardRecordAfter);
+    current().updateRecordNoLock(record, discardRecordAfter);
   }
 
   @Override
   public boolean deleteRecordNoLock(final Record record) {
-    return wrapped.deleteRecordNoLock(record);
+    return current().deleteRecordNoLock(record);
   }
 
   @Override
   public void deleteEdgeSkippingEndpoint(final Edge edge, final RID skipEndpoint) {
-    wrapped.deleteEdgeSkippingEndpoint(edge, skipEndpoint);
+    current().deleteEdgeSkippingEndpoint(edge, skipEndpoint);
   }
 
   @Override
   public void deleteRecord(final Record record) {
-    wrapped.deleteRecord(record);
+    current().deleteRecord(record);
   }
 
   @Override
   public boolean isTransactionActive() {
-    return wrapped.isTransactionActive();
+    return current().isTransactionActive();
   }
 
   @Override
   public int getNestedTransactions() {
-    return wrapped.getNestedTransactions();
+    return current().getNestedTransactions();
   }
 
   @Override
   public TransactionExplicitLock acquireLock() {
-    return wrapped.acquireLock();
+    return current().acquireLock();
   }
 
   @Override
   public void transaction(final TransactionScope txBlock) {
-    wrapped.transaction(txBlock);
+    current().transaction(txBlock);
   }
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx) {
-    return wrapped.transaction(txBlock, joinCurrentTx);
+    return current().transaction(txBlock, joinCurrentTx);
   }
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries) {
-    return wrapped.transaction(txBlock, joinCurrentTx, retries);
+    return current().transaction(txBlock, joinCurrentTx, retries);
   }
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts, final OkCallback ok,
       final ErrorCallback error) {
-    return wrapped.transaction(txBlock, joinCurrentTx, attempts, ok, error);
+    return current().transaction(txBlock, joinCurrentTx, attempts, ok, error);
   }
 
   public RecordFactory getRecordFactory() {
-    return wrapped.getRecordFactory();
+    return current().getRecordFactory();
   }
 
   @Override
   public Schema getSchema() {
-    return wrapped.getSchema();
+    return current().getSchema();
   }
 
   @Override
   public RecordEvents getEvents() {
-    return wrapped.getEvents();
+    return current().getEvents();
   }
 
   public BinarySerializer getSerializer() {
-    return wrapped.getSerializer();
+    return current().getSerializer();
   }
 
   public PageManager getPageManager() {
-    return wrapped.getPageManager();
+    return current().getPageManager();
   }
 
   @Override
   public MutableDocument newDocument(final String typeName) {
-    return wrapped.newDocument(typeName);
+    return current().newDocument(typeName);
   }
 
   public MutableEmbeddedDocument newEmbeddedDocument(final EmbeddedModifier modifier, final String typeName) {
-    return wrapped.newEmbeddedDocument(modifier, typeName);
+    return current().newEmbeddedDocument(modifier, typeName);
   }
 
   @Override
   public MutableVertex newVertex(final String typeName) {
-    return wrapped.newVertex(typeName);
+    return current().newVertex(typeName);
   }
 
   @Override
@@ -481,7 +531,7 @@ public class ServerDatabase implements DatabaseInternal {
       final Object[] sourceVertexKeyValues, final String destinationVertexType, final String[] destinationVertexKeyNames,
       final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
       final boolean bidirectional, final Object... properties) {
-    return wrapped.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType,
+    return current().newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType,
         destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
@@ -489,173 +539,183 @@ public class ServerDatabase implements DatabaseInternal {
   public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
       final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
       final boolean bidirectional, final Object... properties) {
-    return wrapped.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
+    return current().newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
         createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
   public QueryEngine getQueryEngine(final String language) {
-    return wrapped.getQueryEngine(language);
+    return current().getQueryEngine(language);
   }
 
   @Override
   public boolean isAutoTransaction() {
-    return wrapped.isAutoTransaction();
+    return current().isAutoTransaction();
   }
 
   @Override
   public void setAutoTransaction(final boolean autoTransaction) {
-    wrapped.setAutoTransaction(autoTransaction);
+    current().setAutoTransaction(autoTransaction);
   }
 
   public FileManager getFileManager() {
-    return wrapped.getFileManager();
+    return current().getFileManager();
   }
 
   @Override
   public String getName() {
-    return wrapped.getName();
+    return current().getName();
   }
 
   @Override
   public ComponentFile.MODE getMode() {
-    return wrapped.getMode();
+    return current().getMode();
   }
 
   @Override
   public boolean checkTransactionIsActive(final boolean createTx) {
-    return wrapped.checkTransactionIsActive(createTx);
+    return current().checkTransactionIsActive(createTx);
   }
 
   @Override
   public boolean isAsyncProcessing() {
-    return wrapped.isAsyncProcessing();
+    return current().isAsyncProcessing();
   }
 
   @Override
   public void waitForAsyncCompletion() {
-    wrapped.waitForAsyncCompletion();
+    current().waitForAsyncCompletion();
   }
 
   @Override
   public AsyncQuiesce quiesceAsync() {
-    return wrapped.quiesceAsync();
+    return current().quiesceAsync();
   }
 
   public DocumentIndexer getIndexer() {
-    return wrapped.getIndexer();
+    return current().getIndexer();
   }
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Object... args) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.command(language, query, configuration, args);
+      return db.command(language, query, configuration, args);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.command(language, query, configuration, args);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.command(language, query, configuration, args);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet command(final String language, final String query) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.command(language, query);
+      return db.command(language, query);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.command(language, query);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.command(language, query);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.command(language, query, parameters);
+      return db.command(language, query, parameters);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.command(language, query, parameters);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.command(language, query, parameters);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.command(language, query, parameters);
+      return db.command(language, query, parameters);
     final Map<String, Object> profilingParams = new HashMap<>(parameters);
     profilingParams.put("$profileExecution", true);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.command(language, query, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.command(language, query, profilingParams);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet command(final String language, final String query, final ContextConfiguration configuration,
       final Map<String, Object> args) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.command(language, query, configuration, args);
+      return db.command(language, query, configuration, args);
     final Map<String, Object> profilingArgs = new HashMap<>(args);
     profilingArgs.put("$profileExecution", true);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.command(language, query, configuration, profilingArgs);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.command(language, query, configuration, profilingArgs);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.execute(language, script, params);
+      return db.execute(language, script, params);
     final Map<String, Object> profilingParams = new HashMap<>(params);
     profilingParams.put("$profileExecution", true);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.execute(language, script, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script, beginNanos);
+    final ResultSet rs = db.execute(language, script, profilingParams);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, script, beginNanos);
   }
 
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.execute(language, script, args);
+      return db.execute(language, script, args);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.execute(language, script, args);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, script, beginNanos);
+    final ResultSet rs = db.execute(language, script, args);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, script, beginNanos);
   }
 
   @Override
   public ResultSet query(final String language, final String query) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.query(language, query);
+      return db.query(language, query);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.query(language, query);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.query(language, query);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... parameters) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.query(language, query, parameters);
+      return db.query(language, query, parameters);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.query(language, query, parameters);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.query(language, query, parameters);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
+    final DatabaseInternal db = current();
     final ServerQueryProfiler profiler = getProfiler();
     if (profiler == null || !profiler.isRecording())
-      return wrapped.query(language, query, parameters);
+      return db.query(language, query, parameters);
     final Map<String, Object> profilingParams = new HashMap<>(parameters);
     profilingParams.put("$profileExecution", true);
     final long beginNanos = System.nanoTime();
-    final ResultSet rs = wrapped.query(language, query, profilingParams);
-    return new ProfilingResultSet(rs, profiler, wrapped.getName(), language, query, beginNanos);
+    final ResultSet rs = db.query(language, query, profilingParams);
+    return new ProfilingResultSet(rs, profiler, db.getName(), language, query, beginNanos);
   }
 
   @Override
@@ -664,58 +724,58 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   public DatabaseContext.DatabaseContextTL getContext() {
-    return wrapped.getContext();
+    return current().getContext();
   }
 
   @Override
   public <RET> RET executeInReadLock(final Callable<RET> callable) {
-    return wrapped.executeInReadLock(callable);
+    return current().executeInReadLock(callable);
   }
 
   @Override
   public <RET> RET executeInWriteLock(final Callable<RET> callable) {
-    return wrapped.executeInWriteLock(callable);
+    return current().executeInWriteLock(callable);
   }
 
   @Override
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, final Callable<RET> callable) {
-    return wrapped.executeLockingFiles(fileIds, callable);
+    return current().executeLockingFiles(fileIds, callable);
   }
 
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
-    return wrapped.recordFileChanges(callback);
+    return current().recordFileChanges(callback);
   }
 
   @Override
   public void saveConfiguration() throws IOException {
-    wrapped.saveConfiguration();
+    current().saveConfiguration();
   }
 
   public StatementCache getStatementCache() {
-    return wrapped.getStatementCache();
+    return current().getStatementCache();
   }
 
   public ExecutionPlanCache getExecutionPlanCache() {
-    return wrapped.getExecutionPlanCache();
+    return current().getExecutionPlanCache();
   }
 
   @Override
   public CypherStatementCache getCypherStatementCache() {
-    return wrapped.getCypherStatementCache();
+    return current().getCypherStatementCache();
   }
 
   @Override
   public CypherPlanCache getCypherPlanCache() {
-    return wrapped.getCypherPlanCache();
+    return current().getCypherPlanCache();
   }
 
   @Override
   public GraphStatisticsCache getGraphStatisticsCache() {
-    return wrapped.getGraphStatisticsCache();
+    return current().getGraphStatisticsCache();
   }
 
   public WALFileFactory getWALFileFactory() {
-    return wrapped.getWALFileFactory();
+    return current().getWALFileFactory();
   }
 
   @Override
@@ -724,7 +784,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   public void executeCallbacks(final DatabaseInternal.CALLBACK_EVENT event) throws IOException {
-    wrapped.executeCallbacks(event);
+    current().executeCallbacks(event);
   }
 
   public DatabaseInternal getEmbedded() {
@@ -733,17 +793,17 @@ public class ServerDatabase implements DatabaseInternal {
 
   @Override
   public ContextConfiguration getConfiguration() {
-    return wrapped.getConfiguration();
+    return current().getConfiguration();
   }
 
   @Override
   public boolean isOpen() {
-    return wrapped.isOpen();
+    return current().isOpen();
   }
 
   @Override
   public boolean isFencedForRecovery() {
-    return wrapped.isFencedForRecovery();
+    return current().isFencedForRecovery();
   }
 
   @Override
@@ -752,60 +812,60 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   public Map<String, Object> getWrappers() {
-    return wrapped.getWrappers();
+    return current().getWrappers();
   }
 
   public void setWrapper(final String name, final Object instance) {
-    wrapped.setWrapper(name, instance);
+    current().setWrapper(name, instance);
   }
 
   @Override
   public Object getGlobalVariable(final String name) {
-    return wrapped.getGlobalVariable(name);
+    return current().getGlobalVariable(name);
   }
 
   @Override
   public Object setGlobalVariable(final String name, final Object value) {
-    return wrapped.setGlobalVariable(name, value);
+    return current().setGlobalVariable(name, value);
   }
 
   @Override
   public Object setGlobalVariableIfAbsent(final String name, final Object value) {
-    return wrapped.setGlobalVariableIfAbsent(name, value);
+    return current().setGlobalVariableIfAbsent(name, value);
   }
 
   @Override
   public Object setGlobalVariableIfPresent(final String name, final Object value) {
-    return wrapped.setGlobalVariableIfPresent(name, value);
+    return current().setGlobalVariableIfPresent(name, value);
   }
 
   @Override
   public Object computeGlobalVariable(final String name, final UnaryOperator<Object> remapping) {
-    return wrapped.computeGlobalVariable(name, remapping);
+    return current().computeGlobalVariable(name, remapping);
   }
 
   @Override
   public Map<String, Object> getGlobalVariables() {
-    return wrapped.getGlobalVariables();
+    return current().getGlobalVariables();
   }
 
   @Override
   public SecurityManager getSecurity() {
-    return wrapped.getSecurity();
+    return current().getSecurity();
   }
 
   @Override
   public long getLastUpdatedOn() {
-    return wrapped.getLastUpdatedOn();
+    return current().getLastUpdatedOn();
   }
 
   @Override
   public long getLastUsedOn() {
-    return wrapped.getLastUsedOn();
+    return current().getLastUsedOn();
   }
 
   @Override
   public long getOpenedOn() {
-    return wrapped.getOpenedOn();
+    return current().getOpenedOn();
   }
 }

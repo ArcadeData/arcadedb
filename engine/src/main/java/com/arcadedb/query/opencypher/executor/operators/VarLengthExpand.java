@@ -40,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Lazy physical operator for an ordinary variable-length MATCH relationship. It deliberately
@@ -193,15 +194,17 @@ public class VarLengthExpand extends AbstractPhysicalOperator {
     final VariableLengthPathTraverser traverser = new VariableLengthPathTraverser(
         direction, types, properties, pattern.getEffectiveMinHops(), pattern.getEffectiveMaxHops(),
         true, false, pathMode != null ? pathMode : PathMode.TRAIL);
-    traverser.withEdgePredicate(pattern.buildInlineWherePredicate(row, context));
+    final Predicate<Edge> edgePredicate = pattern.buildInlineWherePredicate(row, context);
+    traverser.withEdgePredicate(edgePredicate);
+    traverser.withContext(context);
+    // Relationships no one reads are followed without loading their records (issue #8537)
+    traverser.withEdgesUnread((relationshipVariable == null || relationshipVariable.isEmpty())
+        && (pathVariable == null || pathVariable.isEmpty()) && (properties == null || properties.isEmpty()) && edgePredicate == null);
     return traverser;
   }
 
   private static ResultInternal copy(final Result input) {
-    final ResultInternal result = new ResultInternal();
-    for (final String property : input.getPropertyNames())
-      result.setProperty(property, input.getProperty(property));
-    return result;
+    return ResultInternal.copyBindings(input, 2);
   }
 
   private static TraversalPath extendPath(final Object existing, final TraversalPath extension) {

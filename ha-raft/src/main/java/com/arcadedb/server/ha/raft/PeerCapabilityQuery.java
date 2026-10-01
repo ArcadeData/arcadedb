@@ -70,8 +70,19 @@ import java.util.logging.Level;
  */
 public final class PeerCapabilityQuery {
 
-  /** What a peer says about itself. {@code version} is operator-facing only; nothing decides on it. */
-  public record Advertisement(String peerId, String version, Set<String> capabilities) {
+  /**
+   * What a peer says about itself. {@code version} is operator-facing only; nothing decides on it.
+   * <p>
+   * {@code serviceGap} is the peer's own {@code ArcadeStateMachine#hasLeaderServiceGap()} (issue #8665): true when the
+   * peer, were it the leader, would hold a database it cannot serve. It is NOT a capability - it moves with the
+   * peer's state, not its build - and it rides on this poll only because the leader already asks every peer this
+   * question every few seconds, over an authenticated route that binds the answer to its author. A peer that predates
+   * the field omits it, which reads as no gap: the pre-#8665 behaviour, where a peer's gap was invisible.
+   */
+  public record Advertisement(String peerId, String version, Set<String> capabilities, boolean serviceGap) {
+    public Advertisement(final String peerId, final String version, final Set<String> capabilities) {
+      this(peerId, version, capabilities, false);
+    }
   }
 
   private static final HttpClient HTTP = HttpClient.newBuilder()
@@ -202,6 +213,7 @@ public final class PeerCapabilityQuery {
     for (int i = 0; i < array.length(); i++)
       capabilities.add(array.getString(i));
 
-    return new Advertisement(peerId, json.getString("version", ""), capabilities);
+    return new Advertisement(peerId, json.getString("version", ""), capabilities,
+        json.getBoolean(PostCapabilitiesHandler.SERVICE_GAP, false));
   }
 }

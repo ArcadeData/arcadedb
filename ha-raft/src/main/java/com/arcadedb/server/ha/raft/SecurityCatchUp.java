@@ -27,7 +27,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -119,9 +119,21 @@ final class SecurityCatchUp implements AutoCloseable {
    */
   private static final long START_JITTER_MS      = 3_000L;
 
+  /** Latch value meaning nobody holds the once-per-start request. Tokens are always greater than zero. */
+  private static final long FREE = 0L;
+
   static final String THREAD_NAME = "arcadedb-raft-security-catchup";
 
-  private final AtomicBoolean      requestedSinceStart = new AtomicBoolean(false);
+  /**
+   * The once-per-start latch, as the token of the request that currently holds it, or {@link #FREE}.
+   * <p>
+   * A bare boolean cannot say WHOSE request it is, so whichever attempt finished first released it - including
+   * one belonging to a different trigger whose own request had not been made yet (issue #8168). Every request
+   * now carries the token it took the latch with, and only that request's outcome can release it: a stale
+   * attempt finishing late finds the latch held by somebody else and leaves it alone.
+   */
+  private final AtomicLong         requestOwner        = new AtomicLong(FREE);
+  private final AtomicLong         tokenSequence       = new AtomicLong();
   private final ThreadPoolExecutor executor;
   /**
    * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
@@ -135,15 +147,16 @@ final class SecurityCatchUp implements AutoCloseable {
     // room is still safe for the WORK - the one already queued reads the fingerprints when it RUNS and therefore
     // covers the one dropped behind it - but it is not safe for the once-per-start LATCH: the queued task that
     // covers the dropped one may itself settle on an arm that releases the latch (NOBODY_TO_ASK), leaving the
-    // dropped request both never made and recorded as made. Rearming unconditionally on every rejection closes
-    // that gap: whichever task runs last leaves the latch telling the truth about whether anybody was asked
-    // (issue #8087).
+    // dropped request both never made and recorded as made. Rearming on every rejection closes
+    // that gap: the latch is released unless a later request took it over
+    // (issue #8087). Only the dropped request's OWN hold is released (issue #8168): a snapshot install that took
+    // the latch over from a queued request must not have it handed back by the rejection of the one it displaced.
     this.executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
       final Thread thread = new Thread(r, THREAD_NAME);
       worker = thread;
       thread.setDaemon(true);
       return thread;
-    }, (r, exec) -> rearm());
+    }, (r, exec) -> onRejected(r));
   }
 
   /**
@@ -159,8 +172,33 @@ final class SecurityCatchUp implements AutoCloseable {
    * it, on the leader change that puts this node back under somebody who can answer.
    */
   void onFirstLeaderObserved(final ArcadeDBServer server, final RaftHAServer raft) {
-    if (requestedSinceStart.compareAndSet(false, true))
-      submit(server, raft, "this node rejoining the cluster as an existing member", true);
+    final long token = tryTakeRequest();
+    if (token != FREE)
+      submit(token, server, raft, "this node rejoining the cluster as an existing member", true);
+  }
+
+  /**
+   * Takes the once-per-start latch if nobody holds it.
+   *
+   * @return the new request's token, or {@link #FREE} when the latch is already held
+   */
+  long tryTakeRequest() {
+    if (requestOwner.get() != FREE)
+      return FREE;
+    final long token = tokenSequence.incrementAndGet();
+    return requestOwner.compareAndSet(FREE, token) ? token : FREE;
+  }
+
+  /**
+   * Takes the once-per-start latch whether or not somebody holds it, displacing the holder (the latest takeover wins): the caller's request
+   * is the one whose outcome now decides the latch, and the displaced attempt's late release is a no-op.
+   *
+   * @return the new request's token
+   */
+  long takeOverRequest() {
+    final long token = tokenSequence.incrementAndGet();
+    requestOwner.accumulateAndGet(token, Math::max);
+    return token;
   }
 
 
@@ -169,10 +207,31 @@ final class SecurityCatchUp implements AutoCloseable {
    * <p>
    * Called when the request could not be completed for a transient reason after its own retries are spent, and
    * from {@link #settle} for every attempt that ended without asking anybody. The latch exists to stop a
-   * re-election on a healthy node from dialling, not to make one unlucky moment permanent.
+   * re-election on a healthy node from dialling, not to make one unlucky moment permanent. It releases only the
+   * hold {@code token} took (issue #8168).
    */
-  private void rearm() {
-    requestedSinceStart.set(false);
+  private void rearm(final long token) {
+    requestOwner.compareAndSet(token, FREE);
+  }
+
+  /**
+   * A task the executor had no room for: its request was never made, so its own hold on the latch goes.
+   * <p>
+   * Known, accepted gap: if the rejected request had displaced an older one that is still queued or in flight and
+   * later settles {@link Outcome#ASKED}, the latch ends up free after a request that was made, so one extra
+   * catch-up can happen on the next leader change. The request is idempotent, and the queued task covers the work.
+   */
+  void onRejected(final Runnable task) {
+    if (task instanceof Attempt attempt)
+      rearm(attempt.token());
+  }
+
+  /** A queued request, carrying the token it took the latch with so a rejection can release exactly that hold. */
+  record Attempt(long token, Runnable body) implements Runnable {
+    @Override
+    public void run() {
+      body.run();
+    }
   }
 
   /**
@@ -206,22 +265,23 @@ final class SecurityCatchUp implements AutoCloseable {
    * <p>
    * Package-private rather than private so the latch discipline can be driven without a cluster.
    *
+   * @param token the token of the request this attempt belongs to; the latch is released only if it still holds it
    * @return {@code true} when there is nothing left to retry, {@code false} when the caller should back off and
    * try again
    */
-  boolean settle(final Outcome outcome) {
+  boolean settle(final long token, final Outcome outcome) {
     if (outcome == Outcome.TRANSIENT_FAILURE)
       return false;
     if (outcome == Outcome.NOBODY_TO_ASK)
       // Nothing was asked, so the once-per-start request was not made. Releasing it here is what stops a node
       // that led through its own catch-up from staying out of step for good (issue #8034).
-      rearm();
+      rearm(token);
     return true;
   }
 
   /** Whether the once-per-start request has been made and not released. Visible for testing. */
   boolean hasRequestedSinceStart() {
-    return requestedSinceStart.get();
+    return requestOwner.get() != FREE;
   }
 
   /**
@@ -230,7 +290,7 @@ final class SecurityCatchUp implements AutoCloseable {
    * {@code PlainHttpFallbackNotice.rearmForTests()}.
    */
   void rearmForTests() {
-    rearm();
+    requestOwner.set(FREE);
   }
 
   /**
@@ -238,9 +298,11 @@ final class SecurityCatchUp implements AutoCloseable {
    * - which, since issue #8087, release it again immediately when there is nothing to queue. Lets a test put the
    * latch in its taken state to drive {@link #settle} on its own, the same way {@link #rearmForTests} lets one
    * put it back.
+   *
+   * @return the token of the request that now holds the latch
    */
-  void takeRequestForTests() {
-    requestedSinceStart.set(true);
+  long takeRequestForTests() {
+    return takeOverRequest();
   }
 
   /**
@@ -253,35 +315,34 @@ final class SecurityCatchUp implements AutoCloseable {
     // same reason onFirstLeaderObserved takes it at submit time - it is what stops a second trigger dialling
     // while this one is in flight - and it is safe to take up front because every arm of the attempt that ends
     // without asking anybody releases it again (issue #8034), this trigger's own leader arm included.
-    requestedSinceStart.set(true);
-    submit(server, raft, "a snapshot install, which carries no security document", false);
+    submit(takeOverRequest(), server, raft, "a snapshot install, which carries no security document", false);
   }
 
-  private void submit(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
+  private void submit(final long token, final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
     if (server == null || raft == null) {
       // Nothing to submit: both callers take the once-per-start latch before calling this (or unconditionally,
       // for afterSnapshotInstall), on the assumption that a task is about to run and eventually settle it. With
       // nothing to run behind it, releasing it here is what stops the latch from being taken for the life of
       // the node with no attempt ever having been made (issue #8087).
-      rearm();
+      rearm(token);
       return;
     }
-    executor.execute(() -> run(server, raft, reason, waitForCatchUp));
+    executor.execute(new Attempt(token, () -> run(token, server, raft, reason, waitForCatchUp)));
   }
 
-  private void run(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
+  private void run(final long token, final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
     long backoffMs = TRANSIENT_BACKOFF_MS;
     for (int attempt = 1; ; attempt++) {
-      if (settle(attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1)))
+      if (settle(token, attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1)))
         return;
 
       if (attempt >= TRANSIENT_ATTEMPTS) {
         // Out of attempts, and the node is still a follower holding documents nobody is going to send it. The
         // once-per-start latch is released so the next leader this node sees asks again, rather than the gap
         // lasting until a snapshot install, a replicated change, or an operator notices.
-        rearm();
+        rearm(token);
         LogManager.instance().log(this, Level.WARNING,
             "Gave up asking the leader to check this node's security documents after %s (%d attempts); the next "
                 + "leader change will try again", reason, TRANSIENT_ATTEMPTS);
@@ -292,7 +353,7 @@ final class SecurityCatchUp implements AutoCloseable {
         Thread.sleep(backoffMs);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        rearm();
+        rearm(token);
         return;
       }
       backoffMs *= 2;

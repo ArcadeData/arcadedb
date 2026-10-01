@@ -182,7 +182,7 @@ class RaftDictionaryManyNewKeysIT extends BaseRaftHATest {
 
   private String httpCommand(final int serverIndex, final String sql) throws Exception {
     final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName())
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + getDatabaseName())
         .toURL().openConnection();
     try {
       conn.setRequestMethod("POST");

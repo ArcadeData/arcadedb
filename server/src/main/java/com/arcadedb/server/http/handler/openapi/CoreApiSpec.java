@@ -86,6 +86,23 @@ public class CoreApiSpec implements OpenApiContributor {
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
       transaction, and on the commit or rollback that ends it. Omit it to run outside a transaction.""";
 
+  // What the session header means on a bulk load (issue #7682). Not the query/command wording: the load runs under the
+  // session but does not join its transaction, because GraphBatch commits as it goes.
+  private static final String BATCH_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction'. It makes the load run under that session's lock and \
+      principal and refreshes its idle timer, and it turns a session id this server no longer knows - or one \
+      owned by another user - into a 404 rather than a silent load outside the transaction you believe you \
+      are in.
+
+      It does NOT put the loaded records in that transaction. The load commits every 'commitEvery' records \
+      whatever you have open, so the records are readable by everyone before you commit anything and rolling \
+      the transaction back does not remove them; a failed load does not roll it back either. Records the \
+      transaction wrote but has not committed are not visible to the load.
+
+      The load holds the session's lock until it ends. Other calls of the same session, including its commit \
+      and rollback, wait for it and fail with 503 if it outlasts the session's lock wait, so do not overlap \
+      them with a load.""";
+
   private static final String BEGIN_SESSION_REQUEST_DESCRIPTION = """
       Normally omitted: 'beginTransaction' opens a new transaction and returns its own session id. \
       Supplying a session id here that still resolves to an open transaction does not start a nested \
@@ -493,6 +510,7 @@ public class CoreApiSpec implements OpenApiContributor {
 
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.addParametersItem(batchNdJsonAcceptParam());
+    post.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, BATCH_SESSION_REQUEST_DESCRIPTION, false));
     post.addParametersItem(SpecBuilders.queryParam("batchSize",
         "Records buffered per GraphBatch flush. Default 100000.", false, "integer"));
     post.addParametersItem(SpecBuilders.queryParam("lightEdges",
@@ -567,6 +585,7 @@ public class CoreApiSpec implements OpenApiContributor {
     // retrying. Every other failure keeps the base handler's standard error shape.
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", SpecBuilders.jsonResponse("Load completed", "BatchResponse"));
+    responses.get("200").addHeaderObject(SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     // The streaming encoding answers 200 for a FAILED load too: by the time the verdict is reached the status
     // line is already sent, so the failure is the terminal 'error' line and its 'status' field instead.
     final MediaType ndjsonBatch = new MediaType();
@@ -580,7 +599,8 @@ public class CoreApiSpec implements OpenApiContributor {
         "The body ended before it was fully consumed, with the counts attempted before that", "BatchError"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found, or the 'arcadedb-session-id' names a session this server cannot resolve"));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
         "Concurrent modification: a page the load touched changed underneath it"));
     responses.addApiResponse("413", SpecBuilders.errorResponse("Request body too large"));
@@ -974,8 +994,10 @@ public class CoreApiSpec implements OpenApiContributor {
   private static Parameter ndJsonAcceptParam() {
     final Parameter accept = SpecBuilders.headerParam("Accept", """
         Send 'application/x-ndjson' to receive the result as a stream of newline-delimited JSON events, one row \
-        per line, flushed as the engine produces them instead of buffered in full server-side. Anything else - \
-        including an absent header - returns the buffered application/json body unchanged.""", false);
+        per line, flushed as the engine produces them instead of buffered in full server-side. Read the stream \
+        as it arrives: a response write that makes no progress for 'arcadedb.server.httpStreamingWriteTimeout' \
+        closes the connection, and the stream ends without its stats trailer. Anything else - including an \
+        absent header - returns the buffered application/json body unchanged.""", false);
     accept.getSchema().setEnum(List.of(SpecBuilders.JSON, NDJSON));
     return accept;
   }
@@ -1016,6 +1038,9 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("user", user);
     schema.addProperty("version", SpecBuilders.string("Server version"));
     schema.addProperty("serverName", SpecBuilders.string("This server's configured name"));
+    schema.addProperty("instanceId", SpecBuilders.string(
+        "Instance id ('adb-' followed by a UUID) of this server, to copy into the ArcadeData support portal. "
+            + "Never a credential"));
     schema.addProperty("languages", SpecBuilders.arrayOf(SpecBuilders.string("Query language name"),
         "Query languages this build can run, e.g. sql, sqlscript, cypher, gremlin"));
     schema.addProperty("metrics", SpecBuilders.freeFormObject("""
@@ -1035,6 +1060,11 @@ public class CoreApiSpec implements OpenApiContributor {
         lastEntryAppliedAt / lastSweepAt. entriesApplied rising while sweepsCompleted does not is a node \
         enforcing permissions it has already been told to replace; the same numbers are scrapable as the \
         arcadedb.ha.security.* meters."""));
+    schema.addProperty("ports", SpecBuilders.mapOf(SpecBuilders.integer("Bound TCP port"), """
+        The client-facing listeners of the active plugins other than HTTP, by service name (for example 'gremlin'), \
+        with the port each one is bound to. Present with mode=cluster only, empty when no plugin listens. A remote \
+        client that must reach such a listener reads it here instead of assuming the protocol's default port \
+        (issue #8578). Service names are unique: a second plugin advertising a name already taken is ignored."""));
     schema.setRequired(List.of("user", "version", "serverName", "languages"));
     return schema;
   }

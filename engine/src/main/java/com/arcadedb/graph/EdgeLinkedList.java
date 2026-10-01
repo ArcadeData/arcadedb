@@ -75,6 +75,24 @@ public class EdgeLinkedList {
   }
 
   /**
+   * {@link #edgeIterator}, with every edge it yields already knowing its two endpoints: the entry it is read from is
+   * the pair (edge RID, vertex at the other end) and this list belongs to the vertex at this end, so
+   * {@link Edge#getOut()}, {@link Edge#getIn()} and their vertex twins answer without loading the edge record (issue
+   * #8537). The record is read only when the edge's own content is.
+   * <p>
+   * FOR A CALLER THAT FOLLOWS EDGES WITHOUT READING THEM - an anonymous relationship of a traversal, kept only to tell
+   * one edge from another. The price is the one the neighbour walk ({@link #vertexIterator}) has always paid: a ghost,
+   * an entry whose edge record is gone, is not noticed by following it, because noticing it is exactly the record read
+   * this avoids. A caller that hands the edge to a user, or reads its properties, uses {@link #edgeIterator}, where
+   * following a ghost fails and the traversals skip it.
+   */
+  public Iterator<Edge> edgeIteratorKnowingEndpoints(final String... edgeTypes) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction, true);
+    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes, true);
+  }
+
+  /**
    * #5680: {@link #edgeIterator} for a caller that is about to REMOVE every edge it yields (today,
    * {@code GraphEngine.deleteVertex}), so a part of the list that cannot be read must surface rather than be
    * skipped - the caller deletes the vertex record on top of whatever this walk returned, and an entry silently
@@ -135,17 +153,17 @@ public class EdgeLinkedList {
    * this walk could not pin would leave the collection reading a page it never pinned, which is the exact window
    * this whole mechanism exists to close.
    * <p>
-   * The self-reference guard matches every other walk in this class: a chunk pointing at itself ends the chain
-   * instead of looping forever. A longer cycle would hang here exactly as it already hangs {@link #deleteAll},
-   * which walks the same chain immediately afterwards, so this adds no exposure that was not there.
+   * The cycle guard matches every other walk in this class: a chunk pointing at itself, or a longer cycle (#8713),
+   * ends the chain instead of looping forever.
    */
   protected final EdgeSegment anchorChain(final RID headRID) {
     final EdgeSegment head = loadChunkForWrite(headRID);
     EdgeSegment current = head;
+    final ChainCycleGuard guard = new ChainCycleGuard(headRID);
     while (true) {
       try {
         final RID previousRID = current.getPreviousRID();
-        if (previousRID == null || previousRID.equals(current.getIdentity()))
+        if (previousRID == null || previousRID.equals(current.getIdentity()) || guard.revisits(previousRID))
           return head;
         current = loadChunkForWrite(previousRID);
       } catch (final ConcurrentModificationException | BrokenChunkChainException | SerializationException
@@ -199,16 +217,12 @@ public class EdgeLinkedList {
    */
   public boolean containsLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       if (current.containsLightEdge(edgeTypeBucketId, vertexRID))
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current, guard);
     }
 
     return false;
@@ -216,16 +230,12 @@ public class EdgeLinkedList {
 
   public boolean containsEdge(final RID rid) {
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       if (current.containsEdge(rid))
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current, guard);
     }
 
     return false;
@@ -235,14 +245,15 @@ public class EdgeLinkedList {
     final JSONArray array = new JSONArray();
 
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final JSONObject j = current.toJSON(false);
-      if (j.has("array")) {
-        final JSONArray a = j.getJSONArray("array");
+      if (j.has("entries")) {
+        final JSONArray a = j.getJSONArray("entries");
         for (int i = 0; i < a.length(); ++i)
-          array.put(a.getString(i));
+          array.put(a.getJSONObject(i));
       }
-      current = current.getPrevious();
+      current = previousOf(current, guard);
     }
 
     return array;
@@ -250,17 +261,13 @@ public class EdgeLinkedList {
 
   public RID getFirstEdgeConnectedToVertex(final RID ridVertex, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(ridVertex, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
         return edgeConnectedToVertex;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current, guard);
     }
 
     return null;
@@ -290,20 +297,61 @@ public class EdgeLinkedList {
 
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(rid, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
         return true;
 
-      final EdgeSegment prev = current.getPrevious();
-      if (prev != null && prev.getIdentity().equals(current.getIdentity()))
-        // CURRENT POINT TO ITSELF, AVOID LOOPS
-        break;
-
-      current = prev;
+      current = previousOf(current, guard);
     }
 
     return false;
+  }
+
+  private ChainCycleGuard newCycleGuard() {
+    return new ChainCycleGuard(lastSegment == null ? null : lastSegment.getIdentity());
+  }
+
+  /**
+   * For the walks that delete what they visit: O(chunks) memory, allocated lazily on the first hop.
+   */
+  private ChainCycleGuard newExactCycleGuard() {
+    return ChainCycleGuard.exact(lastSegment == null ? null : lastSegment.getIdentity());
+  }
+
+  /**
+   * The chunk before {@code current} in the chain, or null at the head of the list AND on a chunk whose previous
+   * pointer names the chunk itself: that corruption ENDS the walk instead of looping forever, the policy every walker
+   * of the chain shares (see {@link ResettableIteratorBase#moveToPreviousChunk()}) and {@code CHECK DATABASE} reports.
+   * Every walk in this class hops through here or {@link #previousRIDOf}, so none can be the one left without the
+   * guard: {@link #count} was, and hung the thread running an ordinary degree query on such a chain (issue #8568).
+   */
+  private EdgeSegment previousOf(final EdgeSegment current, final ChainCycleGuard guard) {
+    final RID previousRID = previousRIDOf(current, guard);
+    return previousRID == null ? null : (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(previousRID, true);
+  }
+
+  /**
+   * The chunk before {@code current} for the callers that do not walk the chain (only the self-pointer is checked).
+   */
+  private EdgeSegment previousOf(final EdgeSegment current) {
+    return previousOf(current, null);
+  }
+
+  /**
+   * {@link #previousOf} for the walks that hop by RID; null on a self-referencing chunk.
+   */
+  private static RID previousRIDOf(final EdgeSegment current, final ChainCycleGuard guard) {
+    final RID previousRID = current.getPreviousRID();
+    if (previousRID == null || previousRID.equals(current.getIdentity()))
+      return null;
+    // A LONGER CYCLE (A -> B -> A) ENDS THE WALK TOO (#8713)
+    return guard != null && guard.revisits(previousRID) ? null : previousRID;
+  }
+
+  private static RID previousRIDOf(final EdgeSegment current) {
+    return previousRIDOf(current, null);
   }
 
   /**
@@ -332,9 +380,10 @@ public class EdgeLinkedList {
       fileIdToFilter = null;
 
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       total += current.count(fileIdToFilter);
-      current = current.getPrevious();
+      current = previousOf(current, guard);
     }
 
     return total;
@@ -455,6 +504,7 @@ public class EdgeLinkedList {
 
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       // #5155: walk the chain with unanchored reads. A chunk that does not hold the target is read-only, so
       // anchoring it (loadChunkForWrite -> fetchPageInTransaction -> page.modify()) would copy its whole page
@@ -477,7 +527,7 @@ public class EdgeLinkedList {
       }
 
       prevBrowsedRID = current.getIdentity();
-      final RID prevRID = current.getPreviousRID();
+      final RID prevRID = previousRIDOf(current, guard);
       current = prevRID == null ? null : readChunk(prevRID);
     }
   }
@@ -485,6 +535,7 @@ public class EdgeLinkedList {
   public void removeEdgeRID(final RID edge) {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newCycleGuard();
     while (current != null) {
       // #5155: probe read-only, anchor only the chunk that actually holds the edge (see removeEdge).
       if (current.containsEdge(edge)) {
@@ -495,7 +546,7 @@ public class EdgeLinkedList {
         }
       }
       prevBrowsedRID = current.getIdentity();
-      final RID prevRID = current.getPreviousRID();
+      final RID prevRID = previousRIDOf(current, guard);
       current = prevRID == null ? null : readChunk(prevRID);
     }
   }
@@ -503,8 +554,9 @@ public class EdgeLinkedList {
   public void removeVertex(final RID vertexRID) {
     RID prevBrowsedRID = null;
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newExactCycleGuard();
     while (current != null) {
-      final RID nextRID = current.getPreviousRID();
+      final RID nextRID = previousRIDOf(current, guard);
       // #5155: a chunk with no edge to the vertex is read-only during this removal - probe unanchored and skip
       // anchoring it. Only when the chunk holds at least one matching edge do we anchor and drain it.
       if (current.getFirstEdgeConnectedToVertex(vertexRID, null) != null) {
@@ -596,13 +648,10 @@ public class EdgeLinkedList {
       // accumulated bytes already exceed any practical threshold anyway (4096 cap-size chunks ~= 4M edges).
       long totalBytes = 0;
       EdgeSegment segment = lastSegment;
+      final ChainCycleGuard guard = newCycleGuard();
       for (int walked = 0; segment != null && walked < 4096; ++walked) {
         totalBytes += segment.getRecordSize();
-        final EdgeSegment prev = segment.getPrevious();
-        if (prev != null && prev.getIdentity().equals(segment.getIdentity()))
-          // CURRENT POINT TO ITSELF, AVOID LOOPS
-          break;
-        segment = prev;
+        segment = previousOf(segment, guard);
       }
       estimatedEdges = totalBytes / 8;
       if (estimatedEdges < threshold)
@@ -682,12 +731,15 @@ public class EdgeLinkedList {
     final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
     // Edge removal/relink does not commute with a concurrent append: exclude the touched pages from the merge.
     final TransactionContext tx = database.getTransactionIfExists();
-    if (prevBrowsedRID != null && current.isEmpty() && current.getPrevious() != null) {
+    // The guarded predecessor: a chunk whose previous pointer names itself ends the chain like a tail does, so it is
+    // never deleted and relinked around - that would point the chunk in front of it at the chunk just deleted (#8568)
+    // (single hops below: nothing to loop on, so the self-pointer check is all they need)
+    if (prevBrowsedRID != null && current.isEmpty() && previousRIDOf(current) != null) {
       // SEGMENT EMPTY: DELETE ONLY IF IT IS NOT THE FIRST SEGMENT. DELETE CURRENT SEGMENT AND REATTACH THE LINKED LIST.
       // #5155: the previous-browsed chunk was only read unanchored during the walk; anchor it now, before its
       // relink write, so the modification lands on a tx-retained page and is MVCC-version-checked at commit.
       final EdgeSegment prevBrowsed = loadChunkForWrite(prevBrowsedRID);
-      prevBrowsed.setPrevious(current.getPrevious());
+      prevBrowsed.setPrevious(previousOf(current));
       database.updateRecord(prevBrowsed);
       if (tx != null) {
         tx.poisonEdgeAppendPage(prevBrowsed.getIdentity());
@@ -704,8 +756,9 @@ public class EdgeLinkedList {
   public void deleteAll() {
     final TransactionContext tx = ((DatabaseInternal) vertex.getDatabase()).getTransactionIfExists();
     EdgeSegment current = lastSegment;
+    final ChainCycleGuard guard = newExactCycleGuard();
     while (current != null) {
-      final EdgeSegment prev = current.getPrevious();
+      final EdgeSegment prev = previousOf(current, guard);
       // Deleting a chunk does not commute with a concurrent append on its page: exclude the page from the
       // append-merge so a rebase can never re-derive it from committed-state + appends and lose the deletion
       // (uniformly enforces the "every non-append edge-list write poisons its page" invariant).

@@ -258,8 +258,8 @@ class Issue8432StaticMemberSnapshotInstallHoldTest {
   /** A reconciler that touches nothing and installs every database. */
   private static class NoOpReconciler extends DatabaseReconciler {
     @Override
-    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
-        final String clusterToken) {
+    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
+        final String clusterToken, final long installedBoundaryIndex) {
       return new ReconcileFromLeaderResult(Set.of(), null);
     }
   }

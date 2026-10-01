@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.LeaderForwardContext;
@@ -147,15 +148,64 @@ class Issue7603LeaderForwardHopIT extends BaseRaftHATest {
     assertThat(misidentified.statusCode()).as("body: %s", misidentified.body()).isEqualTo(400);
   }
 
+  /**
+   * Issue #8393: a peer that names no intended leader - one on an older build during a rolling upgrade, or one that
+   * saw leadership change while it resolved the leader's address - proves nothing about the address. All three
+   * refusal sites answer it as the election it usually is: 503, retryable, and the once-per-database configuration
+   * warning is left for the refusal that does prove the address wrong.
+   */
+  @Test
+  @Timeout(180)
+  void aRefusalFromAPeerThatNamedNoLeaderIsRetryableOnEveryForward() throws Exception {
+    final int follower = follower(findLeaderIndex(), -1);
+    final RaftReplicatedDatabase sqlForwarder = (RaftReplicatedDatabase) ((DatabaseInternal) getServerDatabase(follower,
+        getDatabaseName())).getWrappedDatabaseInstance();
+
+    final HttpResponse<String> command = send(follower, "/api/v1/server", new JSONObject().put("command",
+            "create user { \"name\": \"issue8393undetermined\", \"password\": \"issue8393password\", \"databases\": {} }")
+        .toString(), forwardedFrom(follower, null));
+    assertThat(command.statusCode()).as("body: %s", command.body()).isEqualTo(503);
+    assertThat(command.body()).contains("retry");
+
+    final HttpResponse<String> sql = send(follower, "/api/v1/command/" + getDatabaseName(), new JSONObject()
+        .put("language", "sql").put("command", "INSERT INTO " + VERTEX1_TYPE_NAME + " SET id = 8393001").toString(),
+        forwardedFrom(follower, null));
+    assertThat(sql.statusCode()).as("body: %s", sql.body()).isEqualTo(503);
+    assertThat(sqlForwarder.misconfigurationWarned())
+        .as("an unclassifiable refusal must not spend the misconfiguration's once-per-database notice").isFalse();
+
+    final HttpResponse<String> batch = sendBatch(follower,
+        "{\"@type\":\"vertex\",\"@class\":\"" + VERTEX1_TYPE_NAME + "\",\"id\":8393002}\n", forwardedFrom(follower, null));
+    assertThat(batch.statusCode()).as("body: %s", batch.body()).isEqualTo(503);
+    assertThat(batch.body()).contains("retry");
+
+    // The refusal that does prove the address wrong still gets the configuration error and the notice.
+    final HttpResponse<String> misidentified = send(follower, "/api/v1/command/" + getDatabaseName(), new JSONObject()
+            .put("language", "sql").put("command", "INSERT INTO " + VERTEX1_TYPE_NAME + " SET id = 8393003").toString(),
+        forwardedFrom(follower, ownPeerId(findLeaderIndex())));
+    assertThat(misidentified.statusCode()).as("body: %s", misidentified.body()).isEqualTo(400);
+    assertThat(sqlForwarder.misconfigurationWarned()).isTrue();
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServer(i).getSecurity().existsUser("issue8393undetermined")).isFalse();
+  }
+
   // ---------------------------------------------------------------------------------------------
 
-  /** What a peer relaying a Basic-authenticated request to {@code intendedLeader} sends. */
+  /**
+   * What a peer relaying a Basic-authenticated request to {@code intendedLeader} sends; with a null
+   * {@code intendedLeader}, what a peer that cannot name the leader - or predates the header - sends.
+   */
   private UnaryOperator<HttpRequest.Builder> forwardedFrom(final int receiver, final String intendedLeader) {
     final String token = getRaftPlugin(receiver).getRaftHAServer().getClusterToken();
-    return b -> b.header("Authorization", basic("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS))
-        .header("X-ArcadeDB-Cluster-Token", token)
-        .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true")
-        .header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeader);
+    return b -> {
+      b.header("Authorization", basic("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS))
+          .header("X-ArcadeDB-Cluster-Token", token)
+          .header(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER, "true");
+      if (intendedLeader != null)
+        b.header(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER, intendedLeader);
+      return b;
+    };
   }
 
   private String ownPeerId(final int serverIndex) {

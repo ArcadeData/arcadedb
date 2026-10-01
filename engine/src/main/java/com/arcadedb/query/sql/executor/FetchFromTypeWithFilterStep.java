@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * This avoids the separate FilterStep overhead by evaluating the predicate inline
  * during scanning, which is significantly faster for selective queries.
  */
-public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
+public class FetchFromTypeWithFilterStep extends AbstractExecutionStep implements ParallelAggregationSource {
 
   private       String      typeName;
   private       WhereClause whereClause;
@@ -45,6 +45,11 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
 
   private ResultSet currentResultSet;
   private int       currentStep = 0;
+
+  // #8523: the filter used to make this scan sequential. It runs in the workers of a parallel scan now, decided per
+  // execution exactly as FetchFromTypeExecutionStep does.
+  private boolean          parallelDecided;
+  private ParallelTypeScan parallelScan;
 
   private FetchFromTypeWithFilterStep(final CommandContext context) {
     super(context);
@@ -103,6 +108,15 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     pullPrevious(context, nRecords);
 
+    if (!parallelDecided) {
+      parallelDecided = true;
+      if (!orderByRidAsc && !orderByRidDesc && SqlAstInspector.isParallelSafe(whereClause))
+        parallelScan = ParallelTypeScan.plan(context, typeName, subSteps);
+    }
+
+    if (parallelScan != null)
+      return parallelScan.pull(context, nRecords);
+
     return new ResultSet() {
       int totDispatched = 0;
 
@@ -155,6 +169,25 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
     };
   }
 
+  /** Whether an execution starting now would scan in parallel: what an EXPLAIN shows. */
+  @Override
+  public boolean wouldRunInParallel(final CommandContext context) {
+    return !parallelDecided && !orderByRidAsc && !orderByRidDesc && SqlAstInspector.isParallelSafe(whereClause) && ParallelTypeScan.plan(context, typeName, subSteps) != null;
+  }
+
+  /**
+   * Plans a parallel execution of this scan, filter included, for an aggregation that consumes its rows in the scan's
+   * workers (issue #8523), or returns {@code null} when this execution cannot run in parallel, or has already started.
+   */
+  @Override
+  public ParallelTypeScan planParallelAggregation(final CommandContext context) {
+    if (parallelDecided || orderByRidAsc || orderByRidDesc || !SqlAstInspector.isParallelSafe(whereClause))
+      return null;
+    pullPrevious(context, Integer.MAX_VALUE);
+    parallelDecided = true;
+    return ParallelTypeScan.plan(context, typeName, subSteps);
+  }
+
   @Override
   public void sendTimeout() {
     for (final ExecutionStep step : subSteps)
@@ -165,6 +198,8 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
+    if (parallelScan != null)
+      parallelScan.close();
     for (final ExecutionStep step : subSteps)
       ((AbstractExecutionStep) step).close();
     if (prev != null)
@@ -177,6 +212,8 @@ public class FetchFromTypeWithFilterStep extends AbstractExecutionStep {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(typeName).append(" WITH FILTER");
+    FetchFromTypeExecutionStep.appendParallelism(builder, parallelDecided, parallelScan,
+        !orderByRidAsc && !orderByRidDesc && SqlAstInspector.isParallelSafe(whereClause), context, typeName, subSteps);
     if (context.isProfiling())
       // The subtree roll-up rather than a self cost this pure-dispatch step does not have - see
       // FetchFromTypeExecutionStep.prettyPrint() (issue #7329).

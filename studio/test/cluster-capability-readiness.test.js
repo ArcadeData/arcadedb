@@ -67,8 +67,18 @@ eval(extractFn(fs.readFileSync(path.join(STATIC, "js", "studio-utils.js"), "utf8
 eval(extractVar(clusterSrc, "CLUSTER_SECURITY_CAPABILITIES"));
 eval(extractFn(clusterSrc, "clusterCapabilityReadiness"));
 eval(extractFn(clusterSrc, "clusterSecurityCapabilityGaps"));
+eval(extractFn(clusterSrc, "peerCapabilitiesLine"));
+eval(extractFn(clusterSrc, "clusterCapabilityPeerList"));
+eval(extractFn(clusterSrc, "clusterCapabilityUnverifiedNote"));
 eval(extractFn(securitySrc, "securityCapabilityBanner"));
 eval(extractFn(securitySrc, "clusterCapabilityRefusal"));
+
+// The helpers the rendering functions call, as source for the new Function sandboxes below: those only see globals,
+// and the eval()s above bind into this module's scope.
+const RENDER_HELPERS =
+  extractFn(clusterSrc, "clusterCapabilityPeerList") + "\n" +
+  extractFn(clusterSrc, "clusterCapabilityUnverifiedNote") + "\n" +
+  extractFn(securitySrc, "securityCapabilityBlocks") + "\n";
 
 const GROUPS = "security-groups-entry";
 const TOKENS = "security-api-tokens-entry";
@@ -142,18 +152,259 @@ test("the two capabilities are judged separately", () => {
   assert.match(gaps[0].what, /API-token/);
 });
 
-// The property that stops the banner being a lie: only the LEADER probes its peers. On a follower the payload
-// carries a capabilities array for the local node and for nobody else, and reading that as "not ready" would
-// put a red banner on every follower of a perfectly healthy cluster.
-test("a follower does not claim the cluster is unready just because it did not ask", () => {
-  const data = readyCluster();
+// Issue #8055: since #7549 EVERY node probes its peers, so a follower's GET /api/v1/cluster carries a
+// 'capabilities' array (or a 'capabilitiesUnknownReason') on every peer row - the payload
+// Issue7549FollowerCapabilityReportingIT pins. The gate used to answer "indeterminable" for any payload whose
+// isLeader was not true, which switched the banner and the Security page's gate off on the node Studio is most
+// often served from, and the operator met the leader's 409 the gate was written to prevent.
+
+/** The same cluster seen from a follower, in the shape #7549 produces: every row carries what this node probed. */
+function followerView(data) {
   data.isLeader = false;
-  data.peers[1] = { id: "arcadedb2", role: "FOLLOWER" }; // no capabilities: this node never probed it
+  data.localPeerId = "arcadedb2";
+  return data;
+}
+
+test("a follower reaches the same verdict as the leader on a fully upgraded cluster", () => {
+  const data = followerView(readyCluster());
 
   const readiness = clusterCapabilityReadiness(data, GROUPS);
-  assert.equal(readiness.determinable, false, "a follower cannot answer for its peers");
-  assert.equal(readiness.ready, true, "and must not pretend it can");
+  assert.equal(readiness.determinable, true, "every row carries an answer, so a follower can judge every peer");
+  assert.equal(readiness.ready, true);
+  assert.deepEqual(clusterSecurityCapabilityGaps(data), [], "no banner on a healthy cluster, whatever node answers");
+});
+
+test("a follower reports a peer that runs an older build, exactly as the leader does", () => {
+  const leader = readyCluster();
+  leader.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
+  const follower = followerView(JSON.parse(JSON.stringify(leader)));
+
+  const onLeader = clusterSecurityCapabilityGaps(leader);
+  const onFollower = clusterSecurityCapabilityGaps(follower);
+
+  assert.equal(onFollower.length, 2, "both security capabilities are missing on arcadedb3");
+  assert.deepEqual(onFollower, onLeader, "the verdict must not depend on the role of the node Studio is served from");
+  assert.deepEqual(onFollower[0].missing.map((m) => m.id), ["arcadedb3"]);
+  assert.match(onFollower[0].missing[0].reason, /predates/);
+});
+
+test("a follower passes on the reason its own probe recorded", () => {
+  const data = followerView(readyCluster());
+  data.peers[0] = { id: "arcadedb1", role: "LEADER", capabilitiesUnknownReason: "probe timed out after 2000ms" };
+
+  const gaps = clusterSecurityCapabilityGaps(data);
+  assert.equal(gaps.length, 2, "the banner still tells the operator this node could not verify the peer");
+  assert.equal(gaps[0].unverified[0].id, "arcadedb1");
+  assert.match(gaps[0].unverified[0].reason, /probe timed out/);
+});
+
+// Issue #8540: a follower's failed probe is not the leader's verdict, and the leader is where the write is decided.
+
+test("on a follower, a peer only this node could not reach is unverified, not missing", () => {
+  const data = followerView(readyCluster());
+  data.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" });
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, true, "this node's failed probe is not the leader's verdict");
+  assert.equal(readiness.determinable, false, "nor can this node claim the cluster is ready");
+  assert.deepEqual(readiness.missing, []);
+  assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb3"]);
+  assert.match(readiness.unverified[0].reason, /Connection refused/);
+});
+
+test("on a follower that cannot probe the leader itself, the leader's row is unverified and Create stays open", () => {
+  const data = followerView(readyCluster());
+  data.peers[0] = { id: "arcadedb1", role: "LEADER", capabilitiesUnknownReason: "Connection refused" };
+
+  const gaps = clusterSecurityCapabilityGaps(data);
+  assert.equal(gaps.length, 2);
+  for (const gap of gaps) {
+    assert.equal(gap.ready, true, gap.capability + " is not known to be refused");
+    assert.deepEqual(gap.missing, []);
+    assert.deepEqual(gap.unverified.map((u) => u.id), ["arcadedb1"]);
+  }
+});
+
+// GetClusterHandler always writes isLeader; a payload without it is not the leader's, so it is read as a
+// follower's view. Pinned so a change to that default is a decision rather than an accident.
+test("a payload without isLeader is read as a non-leader view, so a probe failure is unverified", () => {
+  const data = readyCluster();
+  delete data.isLeader;
+  data.peers[1] = { id: "arcadedb2", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" };
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, true);
+  assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb2"]);
+});
+
+test("on the leader, a probe failure is still missing, because the leader's own gate refuses on it", () => {
+  const data = readyCluster();
+  data.peers[1] = { id: "arcadedb2", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" };
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, false);
+  assert.deepEqual(readiness.missing.map((m) => m.id), ["arcadedb2"]);
+  assert.deepEqual(readiness.unverified, []);
+});
+
+test("on a follower, a peer that answered without the capability still gates, next to one it could not reach", () => {
+  const data = followerView(readyCluster());
+  data.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" });
+  data.peers.push({ id: "arcadedb4", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.ready, false, "arcadedb4 told this node itself that it predates the capability");
+  assert.deepEqual(readiness.missing.map((m) => m.id), ["arcadedb4"]);
+  assert.deepEqual(readiness.unverified.map((u) => u.id), ["arcadedb3"]);
+
+  const html = securityCapabilityBanner(clusterSecurityCapabilityGaps(data)[0]);
+  assert.match(html, /arcadedb4/);
+  assert.match(html, /arcadedb3/, "the unreachable peer is still named");
+});
+
+test("the Security page keeps Create enabled on a follower whose only gaps are peers it could not reach", () => {
+  const calls = {};
+  const fake$ = (selector) => {
+    const el = {
+      html: (v) => ((calls[selector] = Object.assign(calls[selector] || {}, { html: v })), el),
+      prop: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+      attr: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+    };
+    return el;
+  };
+  const run = new Function(
+    "$", "clusterSecurityCapabilityGaps", "escapeHtml", "securityClusterStatus",
+    RENDER_HELPERS + extractFn(securitySrc, "securityCapabilityGap") + "\n" +
+      extractFn(securitySrc, "securityCapabilityBanner") + "\n" +
+      extractFn(securitySrc, "renderSecurityCapabilityGate") + "\n" +
+      extractFn(securitySrc, "applyGroupModalCapabilityGate") + "\n" +
+      "renderSecurityCapabilityGate(); applyGroupModalCapabilityGate();"
+  );
+
+  const partitioned = followerView(readyCluster());
+  partitioned.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, partitioned);
+
+  assert.equal(calls["#btnCreateGroup"].disabled, false, "the leader may well accept it, so the operator can try");
+  assert.equal(calls["#btnCreateToken"].disabled, false);
+  assert.equal(calls["#groupModalSaveBtn"].disabled, false, "and the Edit Group modal can save");
+  assert.match(calls["#groupsCapabilityGate"].html, /alert-info/, "an informational banner, not a warning");
+  assert.match(calls["#groupsCapabilityGate"].html, /arcadedb3/, "the banner still names the peer");
+  assert.match(calls["#groupsCapabilityGate"].html, /this node/i, "and says the verdict is this node's view");
+  assert.match(calls["#groupsCapabilityGate"].html, /leader/, "and that the leader decides");
+  assert.ok(!/is not ready/.test(calls["#groupsCapabilityGate"].html), "it must not claim the cluster refuses");
+
+  // The same peer seen by the LEADER is a refusal the operator would get, so there the gate closes.
+  const onLeader = readyCluster();
+  onLeader.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, onLeader);
+  assert.equal(calls["#btnCreateGroup"].disabled, true);
+  assert.equal(calls["#groupModalSaveBtn"].disabled, true);
+});
+
+test("the cluster page banner does not say 'refused' when this follower merely could not reach a peer", () => {
+  const container = { html: "", empty() { this.html = ""; }, append(v) { this.html += v; }, length: 1 };
+  const row = { shown: null, show() { this.shown = true; }, hide() { this.shown = false; } };
+  const fake$ = (selector) => (selector === "#clusterCapabilityReadiness" ? container : row);
+  const run = new Function(
+    "$", "clusterSecurityCapabilityGaps", "escapeHtml", "data",
+    RENDER_HELPERS + extractFn(clusterSrc, "renderClusterCapabilityReadiness") + "\nrenderClusterCapabilityReadiness(data);"
+  );
+
+  const partitioned = followerView(readyCluster());
+  partitioned.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilitiesUnknownReason: "Connection refused" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, partitioned);
+
+  assert.equal(row.shown, true, "the operator is still told");
+  assert.match(container.html, /arcadedb3/);
+  assert.match(container.html, /this node/i);
+  assert.ok(!/are refused right now/.test(container.html), "but not that the change is refused");
+  assert.match(container.html, /alert-info/);
+  assert.ok(!/alert-warning/.test(container.html));
+
+  const lagging = followerView(readyCluster());
+  lagging.peers.push({ id: "arcadedb4", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, lagging);
+  assert.match(container.html, /are refused right now/, "a peer that answered without it is a refusal");
+  assert.match(container.html, /alert-warning/);
+});
+
+// The one case the old role arm was right about, kept without the role: a row carrying neither field is a peer
+// THIS node has no answer for yet (its first probe round has not finished - unknownReasonOf returns null). On a
+// follower that is not evidence of anything, and a red banner there would be a lie on a healthy cluster.
+test("a follower that has not finished its first probe round claims nothing about the peers it has not heard", () => {
+  const data = followerView(readyCluster());
+  data.peers[0] = { id: "arcadedb1", role: "LEADER" };
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.determinable, false, "one peer could not be judged");
+  assert.equal(readiness.ready, true, "and an unjudged peer is not a missing one");
+  assert.deepEqual(readiness.missing, []);
+  assert.deepEqual(readiness.unjudged, ["arcadedb1"]);
   assert.deepEqual(clusterSecurityCapabilityGaps(data), []);
+});
+
+test("an unjudged peer does not hide one this follower DID judge", () => {
+  const data = followerView(readyCluster());
+  data.peers[0] = { id: "arcadedb1", role: "LEADER" };
+  data.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.determinable, false);
+  assert.equal(readiness.ready, false, "arcadedb3 is known to predate the capability");
+  assert.deepEqual(readiness.missing.map((m) => m.id), ["arcadedb3"]);
+  assert.equal(clusterSecurityCapabilityGaps(data).length, 2, "and the banner says so");
+});
+
+// On the LEADER a row with neither field is still reported: the leader's own gate refuses the change for any
+// peer that has not proved it can decode the entry, so there it IS the answer the operator would get.
+test("on the leader, a peer with no answer yet is still reported, because the leader refuses on it", () => {
+  const data = readyCluster();
+  data.peers[1] = { id: "arcadedb2", role: "FOLLOWER" };
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+  assert.equal(readiness.determinable, true);
+  assert.equal(readiness.ready, false);
+  assert.deepEqual(readiness.unjudged, []);
+});
+
+// The caller, not only the capability: the Security page's gate is what disables Create Group / Create Token.
+test("the Security page gate disables the create buttons when Studio is served by a follower", () => {
+  const calls = {};
+  const fake$ = (selector) => {
+    const el = {
+      html: (v) => ((calls[selector] = Object.assign(calls[selector] || {}, { html: v })), el),
+      prop: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+      attr: (k, v) => ((calls[selector] = Object.assign(calls[selector] || {}, { [k]: v })), el),
+    };
+    return el;
+  };
+  const run = new Function(
+    "$", "clusterSecurityCapabilityGaps", "escapeHtml", "securityClusterStatus",
+    RENDER_HELPERS + extractFn(securitySrc, "securityCapabilityGap") + "\n" +
+      extractFn(securitySrc, "securityCapabilityBanner") + "\n" +
+      extractFn(securitySrc, "renderSecurityCapabilityGate") + "\nrenderSecurityCapabilityGate();"
+  );
+
+  const lagging = followerView(readyCluster());
+  lagging.peers.push({ id: "arcadedb3", role: "FOLLOWER", capabilities: ["schema-delta"], version: "26.9.1" });
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, lagging);
+  assert.equal(calls["#btnCreateGroup"].disabled, true, "Create Group must be disabled on a follower too");
+  assert.equal(calls["#btnCreateToken"].disabled, true, "and so must Create Token");
+  assert.match(calls["#groupsCapabilityGate"].html, /arcadedb3/, "with the banner naming the lagging peer");
+
+  run(fake$, clusterSecurityCapabilityGaps, escapeHtml, followerView(readyCluster()));
+  assert.equal(calls["#btnCreateGroup"].disabled, false, "and enabled again once every peer advertises it");
+  assert.equal(calls["#groupsCapabilityGate"].html, "");
+});
+
+// The node card's capabilities line had the same premise: "only the leader asks", so a follower printed nothing
+// for a peer its own probe could not reach. Every node asks now, and the reason is true whoever reports it.
+test("a follower's node card shows why a peer's capabilities are unknown", () => {
+  const line = peerCapabilitiesLine({ id: "arcadedb1", capabilitiesUnknownReason: "probe timed out after 2000ms" });
+  assert.match(line, /capabilities unknown: probe timed out/);
+  assert.equal(peerCapabilitiesLine(null), "");
+  assert.match(peerCapabilitiesLine({ id: "arcadedb1", capabilities: [GROUPS] }), /security-groups-entry/);
 });
 
 // This renderer runs on every cluster poll, so an entry it cannot read must not take the page with it: the
@@ -259,7 +510,7 @@ test("every other status, and a missing jqXHR, are not a capability refusal", ()
 
 test("the cluster page renders the readiness banner and the per-peer capabilities", () => {
   assert.match(clusterSrc, /renderClusterCapabilityReadiness\(data\);/, "renderClusterData must call the banner");
-  assert.match(clusterSrc, /peerCapabilitiesLine\(peer, data\)/, "each node card must carry the peer's capabilities");
+  assert.match(clusterSrc, /peerCapabilitiesLine\(peer\)/, "each node card must carry the peer's capabilities");
 
   const clusterHtml = fs.readFileSync(path.join(STATIC, "cluster.html"), "utf8");
   assert.match(clusterHtml, /id="clusterCapabilityReadiness"/, "the banner needs somewhere to render");

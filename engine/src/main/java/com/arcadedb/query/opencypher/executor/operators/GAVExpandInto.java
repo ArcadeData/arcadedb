@@ -195,9 +195,7 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
         for (int occurrence = 0; occurrence < parallel; occurrence++) {
           if (GAVEdgeRef.conflicts(bound, type, out, in, occurrence))
             continue;
-          final ResultInternal result = new ResultInternal();
-          for (final String prop : inputResult.getPropertyNames())
-            result.setProperty(prop, inputResult.getProperty(prop));
+          final ResultInternal result = ResultInternal.copyBindings(inputResult, 2);
           result.setProperty(edgeTrackingVar, GAVEdgeRef.ranked(type, out, in, occurrence));
           buffer.add(result);
         }

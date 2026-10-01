@@ -40,7 +40,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
   void serverInfo() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server?mode=cluster").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -95,7 +95,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
   void checkQuery() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -212,7 +212,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
     int leaderCount = 0;
     for (int i = 0; i < getServerCount(); i++) {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + i + "/api/v1/cluster").openConnection();
+          "http://127.0.0.1:" + getServerHttpPort(i) + "/api/v1/cluster").openConnection();
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

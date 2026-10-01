@@ -258,6 +258,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /** Throttle window for the "deltas are on but withheld" report (issue #7219), per database. */
   private static final long                                              SCHEMA_DELTA_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private static final long                                              TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
+  private volatile long                                                  lastTxPreparedAtWithheldLog;
 
   /**
    * When {@link #logSchemaDeltaWithheld} last reported that a peer is holding deltas back. Plain volatile rather
@@ -354,11 +356,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // these entries they fell through to a plain, non-retryable TransactionException: the follower's retry loop
       // gave up on the first attempt and its HTTP client got a 500 for a conflict that a retry resolves. The page
       // conflict's (String) constructor parses its '[6965 ...]' header back, so the page and version survive the hop.
-      // The two QuorumNotReachedException subtypes are deliberately NOT here, although the leader answers them with
-      // 503 as well: MajorityCommittedAllFailedException means the entry IS committed and
-      // ReplicationDispatchedTimeoutException that it may yet be, so a retry could run the write twice. They keep the
-      // TransactionException fallback, which is non-retryable.
+      // #8481: neither of the two outcomes that follow a DISPATCHED entry is retryable, and neither is a
+      // NeedRetryException any more: MajorityCommittedAllFailedException means the entry IS committed (the leader answers
+      // it 409 "do not retry", as the TransactionCommittedRemotelyException it now is, and it is rebuilt as itself so this
+      // node answers its client the same), and ReplicationDispatchedTimeoutException that it may yet be. The latter keeps
+      // the TransactionException fallback, which is non-retryable too.
+      Map.entry(MajorityCommittedAllFailedException.class.getName(), MajorityCommittedAllFailedException::new),
       Map.entry(ReplicatedPageConflictException.class.getName(), ReplicatedPageConflictException::new),
+      // #8686: the refusal of a transaction prepared before a schema change the leader has applied. Same as the page conflict
+      // above: without an entry it would fall through to the non-retryable TransactionException.
+      Map.entry(ReplicatedSchemaConflictException.class.getName(), ReplicatedSchemaConflictException::new),
       Map.entry(ReplicationQueueFullException.class.getName(), ReplicationQueueFullException::new),
       Map.entry(QuorumNotReachedException.class.getName(), QuorumNotReachedException::new),
       Map.entry(TimeoutException.class.getName(), TimeoutException::new),
@@ -404,6 +411,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * wrong also says so in its own log (issue #6191).
    */
   private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+
+  /** Whether the once-per-database "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
+  }
 
   /** Logged at most once: {@code arcadedb.ha.proxyCommandTimeout} was misconfigured to 0 or negative. */
   private final AtomicBoolean commandTimeoutClampWarned = new AtomicBoolean(false);
@@ -594,8 +606,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               state.bufferedBytes += wal.length;
           } else
             tx.reset();
-          if (getSchema().getEmbedded().isDirty())
-            getSchema().getEmbedded().saveConfiguration();
+          // THIS ARM RUNS ONLY ON THE THREAD OF AN OPEN recordFileChanges FRAME, WHICH WRITES THE FILE ON ITS WAY OUT (#8635)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         } catch (final ArcadeDBException e) {
           // Issue #8149: the same answer as the ordinary arm below. Without it a refused DDL commit left its
           // transaction ACTIVE - the pop in the finally removes nothing from a single-level stack - with the read
@@ -638,8 +650,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         // Read-only transaction: nothing to replicate.
         tx.reset();
-        if (leader && getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+        if (leader)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
         current.popIfNotLastTransaction();
         return null;
       } catch (final ArcadeDBException e) {
@@ -737,16 +751,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     long committedLogIndex = -1;
     try {
       final RaftHAServer raft = requireRaftServer();
-      committedLogIndex = RaftHAServer.requireTransactionBroker(raft)
-          .replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
+      final RaftTransactionBroker broker = RaftHAServer.requireTransactionBroker(raft);
+      final long preparedAt = preparedAtIndexToState(raft, payload);
+      committedLogIndex = preparedAt >= 0 ?
+          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas(), preparedAt) :
+          broker.replicateTransaction(getName(), payload.walData(), payload.bucketDeltas());
     } catch (final MajorityCommittedAllFailedException e) {
-      // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide and this leader's state
-      // machine has applied it (the MAJORITY acknowledgement follows the local apply), so the local commit is completed
-      // before the failure is reported, to prevent a permanent divergence of the leader.
+      // MAJORITY committed but the ALL-quorum watch failed: the entry is durable cluster-wide, so the local commit is
+      // completed before the failure is reported, to prevent a permanent divergence of this node. The MAJORITY
+      // acknowledgement follows an apply, but not necessarily THIS node's: a replica's, or a deposed leader's, apply
+      // thread may still be behind the entry (issue #8781).
       HALog.log(this, HALog.BASIC,
           "ALL quorum watch failed after MAJORITY commit; completing the local commit to prevent leader divergence: db=%s",
           getName());
-      concludeAfterMajorityCommit(local, stateMachine, payload);
+      concludeAfterMajorityCommit(local, leader, stateMachine, payload, e.getLogIndex());
       throw e;
     } catch (final ReplicationDispatchedTimeoutException e) {
       // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait timed out before we
@@ -769,7 +787,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // issue #6965). The entry never reached the log, unless the apply thread proves otherwise by holding a claim.
       if (local == null || stateMachine.withdrawLocalCommit(local)) {
         rollback();
-        if (e instanceof ReplicatedPageConflictException conflict)
+        if (e instanceof ReplicatedSchemaConflictException schemaConflict)
+          // Prepared under a schema the cluster has moved past: the retry is prepared under the same one, and refused again,
+          // until the schema change has been applied here.
+          awaitSchemaChange(schemaConflict);
+        else if (e instanceof ReplicatedPageConflictException conflict)
           // The page this node validated against is behind the log: the retry only stands a chance once the entry
           // that moved it on is applied here. On a replica the apply trails the leader by a couple of entries and a
           // retry that does not wait is refused every time; on the leader the entry that took the page over is still
@@ -794,59 +816,116 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       postReplicationHook.accept(getName());
 
     if (!leader) {
-      // #5503: this replica never runs phase 2 - the state machine writes the pages asynchronously - so
-      // the local page cache still holds the pre-commit version of every page this transaction touched.
-      // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
-      // would read that stale version, pass its own version check and ship a delta stamped with the same
-      // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
-      // the replica's own commit index still trails the leader here, so waiting for it would not cover
-      // the entry just written.
-      //
-      // The field is read directly instead of through requireRaftServer(): the cluster has already
-      // committed this transaction, so a server that disappeared under a concurrent shutdown must not
-      // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
-      final RaftHAServer raft = raftHAServer;
-      if (raft != null && committedLogIndex > 0) {
-        raft.waitForAppliedIndex(getName(), committedLogIndex);
-
-        // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
-        // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
-        // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
-        // plainly here what is being risked and what to look at.
-        // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
-        // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
-        // the wait above will simply have run its full deadline, which is inherent to the restart window.
-        final long applied = raft.getLastAppliedIndex();
-        if (applied >= 0 && applied < committedLogIndex)
-          LogManager.instance().log(this, Level.WARNING,
-              "Replica commit on database '%s' is releasing its commit locks before entry %d was applied locally "
-                  + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
-                  + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
-              getName(), committedLogIndex, applied);
-      }
-      payload.tx().reset();
-      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-      ctx.popIfNotLastTransaction();
+      awaitLocalApplyAndRelease(payload, committedLogIndex);
       return;
     }
 
     // Ratis acknowledges an entry only after the state machine applied it, so by now the apply thread has claimed the
-    // transaction and published its pages. A registration still unclaimed here means no apply thread ran for this
-    // entry - a Raft server torn down or stubbed out between dispatch and acknowledgement - and waiting would hang
-    // the caller for good: withdraw it and publish on this thread instead, the way every leader commit did before
-    // issue #6965. A withdrawal that fails is the normal case (the claim happened) and the outcome is awaited.
+    // transaction and published its pages. A registration still unclaimed here means this node's apply thread did not
+    // publish it: either it is behind (a leader deposed mid-commit, #8781: it applies the entry from its WAL bytes once
+    // the registration is withdrawn) or it is gone - a Raft server torn down between dispatch and acknowledgement -
+    // and waiting for a claim would hang the caller for good. Withdraw it, then leave the pages to a live state
+    // machine, or publish on this thread when there is none, the way every leader commit did before issue #6965. A
+    // withdrawal that fails is the normal case (the claim happened) and the outcome is awaited.
     if (local != null && !stateMachine.withdrawLocalCommit(local)) {
       concludeLocalCommit(local, payload);
       return;
     }
-    if (local != null)
+    if (local != null) {
+      // Issue #8781: "acknowledged" does not prove this node's apply thread is gone. A leader deposed mid-commit has its
+      // entry re-sent to the new leader and acknowledged after THAT leader's apply, while this node's apply thread is
+      // alive and entries behind: with the registration withdrawn it applies the entry from its WAL bytes, and a second
+      // publication here would fold the record delta into the bucket counters twice. While the state machine lives,
+      // this thread never publishes, however long the apply takes: it waits like a replica does, then releases.
+      if (isLive(stateMachine)) {
+        awaitLocalApplyAndRelease(payload, committedLogIndex);
+        return;
+      }
       LogManager.instance().log(this, Level.WARNING,
-          "Entry of tx %d on database '%s' was acknowledged without the state machine applying it; publishing its pages "
+          "Entry of tx %d on database '%s' was acknowledged while the state machine is shut down; publishing its pages "
               + "on the committing thread", local.walTxId(), getName());
+    }
 
     // No state machine wired (the Raft server is still starting), or none applied the entry: nobody publishes the
     // pages at the log position, so this thread does.
     commitLocallyWithoutStateMachine(payload);
+  }
+
+  /**
+   * Waits for the state machine to apply the entry this transaction was replicated at, then releases the transaction
+   * without publishing anything: the replica's commit tail (#5503), and since issue #8781 also the tail of a leader
+   * whose unclaimed entry a live state machine applies from its WAL bytes.
+   */
+  private void awaitLocalApplyAndRelease(final ReplicationPayload payload, final long committedLogIndex) {
+    // #5503: this thread never runs phase 2 - the state machine writes the pages asynchronously, on a replica and on a
+    // leader whose entry it applies from the WAL bytes - so the local page cache still holds the pre-commit version of
+    // every page this transaction touched.
+    // reset() below releases the commit locks taken in phase 1, and the next transaction to take them
+    // would read that stale version, pass its own version check and ship a delta stamped with the same
+    // next version, which the state machine then splices onto this one. Wait for THIS entry's index:
+    // the replica's own commit index still trails the leader here, so waiting for it would not cover
+    // the entry just written.
+    //
+    // The field is read directly instead of through requireRaftServer(): the cluster has already
+    // committed this transaction, so a server that disappeared under a concurrent shutdown must not
+    // turn into a NeedRetryException telling the caller to retry a write that is durably committed.
+    final RaftHAServer raft = raftHAServer;
+    if (raft != null && committedLogIndex > 0) {
+      raft.waitForAppliedIndex(getName(), committedLogIndex);
+
+      // The wait degrades to best-effort on timeout, and releasing the locks below with the pages still
+      // behind is exactly the pre-#5503 condition. waitForAppliedIndex does log, but as a READ_YOUR_WRITES
+      // consistency warning, which reads like a stale-read risk rather than a page-corruption one - so say
+      // plainly here what is being risked and what to look at.
+      // getLastAppliedIndex() reports -1 ("unknown") while an in-place restart re-initializes the Ratis
+      // division (#5271). That is not a race with another committer, so do not raise the alarm for it -
+      // the wait above will simply have run its full deadline, which is inherent to the restart window.
+      final long applied = raft.getLastAppliedIndex();
+      if (applied >= 0 && applied < committedLogIndex)
+        LogManager.instance().log(this, Level.WARNING,
+            "Commit on database '%s' is releasing its commit locks before entry %d was applied locally "
+                + "(applied=%d). Concurrent transactions on these files can now validate against stale page "
+                + "versions - the condition behind issue #5503. Investigate the state machine apply lag.",
+            getName(), committedLogIndex, applied);
+    }
+    payload.tx().reset();
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+    ctx.popIfNotLastTransaction();
+  }
+
+  /**
+   * The entry's index, or when the exception lost it this node's current Raft commit index. That fallback is a weak bound:
+   * on a replica the commit index may still trail the entry, so the wait may not cover it. It covers at least every entry
+   * this node already knows committed, which beats releasing the commit locks at once (#5503). Every leader-side message
+   * carries the index, so this is reached only for a garbled or foreign one.
+   */
+  private long committedLogIndexOrCommitIndex(final long committedLogIndex) {
+    if (committedLogIndex > 0)
+      return committedLogIndex;
+    final RaftHAServer raft = raftHAServer;
+    final long commitIndex = raft != null ? raft.getCommitIndex() : -1L;
+    if (commitIndex > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "MAJORITY-committed transaction on database '%s' carries no log index; waiting for the local commit index %d instead",
+          getName(), commitIndex);
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "MAJORITY-committed transaction on database '%s' carries no log index and the local commit index is unknown; "
+              + "releasing its commit locks without waiting for the local apply", getName());
+    return commitIndex;
+  }
+
+  /**
+   * Whether {@code stateMachine} still applies entries on this node: not closed, not replaced by a Ratis restart, and
+   * no shutdown requested. Only when it does not can the committing thread publish an acknowledged entry itself
+   * without racing an apply of the same entry (issue #8781).
+   * <p>
+   * Evaluated once: a state machine closing right after it answers live leaves the transaction released unpublished
+   * after the bounded wait, which the log replay on restart covers, since a shutdown is what closes it.
+   */
+  private boolean isLive(final ArcadeStateMachine stateMachine) {
+    final RaftHAServer raft = raftHAServer;
+    return raft != null && !raft.isShutdownRequested() && raft.getStateMachine() == stateMachine && !stateMachine.isClosed();
   }
 
   /** Upper bound on the wait for a refused page to catch up locally: a committed entry is a heartbeat away, not more. */
@@ -854,6 +933,46 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /** With the default 10 s quorum timeout, one warning per minute per stalled committer after the first. */
   private static final int PUBLICATION_WAIT_WARN_EVERY_CYCLES = 6;
+
+  /**
+   * The index to state on the entry (issue #8686): the position the transaction began at, or {@code -1} to state none when
+   * there is none to state or a peer could not read the section. Every peer is asked, this node's own build being covered
+   * by the same answer, because an older build halts on the trailing bytes of a section it does not know.
+   */
+  private long preparedAtIndexToState(final RaftHAServer raft, final ReplicationPayload payload) {
+    final long preparedAt = payload.tx().getReplicationBasePosition();
+    if (preparedAt < 0)
+      return -1L;
+    if (!raft.canStateTxPreparedAt()) {
+      // Silent protection loss is the failure this check exists against, so it is said out loud, but not once per commit.
+      final long now = System.currentTimeMillis();
+      if (now - lastTxPreparedAtWithheldLog > TX_PREPARED_AT_WITHHELD_LOG_THROTTLE_MS) {
+        lastTxPreparedAtWithheldLog = now;
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': transactions do not state the index they were prepared at, so a replica transaction prepared before a "
+                + "schema change is NOT refused. Some peer does not advertise '%s' (older build, not probed yet, or offline)",
+            getName(), PeerCapabilities.TX_PREPARED_AT_INDEX);
+      }
+      return -1L;
+    }
+    return preparedAt;
+  }
+
+  /** Waits for the schema change the leader refused a transaction over to be applied locally, so the retry sees it. */
+  private void awaitSchemaChange(final ReplicatedSchemaConflictException conflict) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || conflict.getSchemaIndex() < 0)
+      return;
+    try {
+      if (!raft.awaitApplied(() -> raft.getTrustedAppliedIndex(getName()) >= conflict.getSchemaIndex(),
+          Math.min(raft.getQuorumTimeout(), CONFLICT_CATCH_UP_TIMEOUT_MS)))
+        HALog.log(this, HALog.BASIC,
+            "Timed out waiting to apply the schema change at index %d on database '%s'; the retry may be refused again",
+            conflict.getSchemaIndex(), getName());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
 
   /** Best effort: waits for the page the leader refused this replica on to reach, locally, the version the cluster is at. */
   private void awaitPageVersion(final ReplicatedPageConflictException conflict) {
@@ -899,8 +1018,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (outcome == LocalCommit.Outcome.PUBLISHED) {
           try {
             payload.tx().completeCommit();
-            if (getSchema().getEmbedded().isDirty())
-              getSchema().getEmbedded().saveConfiguration();
+            getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
             return null;
           } catch (final Exception e) {
             // The pages are published: only the bookkeeping after them failed (completeCommit fenced and reset the
@@ -961,13 +1079,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Completes the local commit after a MAJORITY commit whose ALL-quorum watch failed. The caller reports the watch
    * failure itself, so a local failure here is logged and recovered from (reconcile, step down) rather than surfaced.
    */
-  private void concludeAfterMajorityCommit(final LocalCommit local, final ArcadeStateMachine stateMachine,
-      final ReplicationPayload payload) {
+  private void concludeAfterMajorityCommit(final LocalCommit local, final boolean leader, final ArcadeStateMachine stateMachine,
+      final ReplicationPayload payload, final long committedLogIndex) {
     try {
-      // Same rule as the acknowledged path: a registration the apply thread never claimed means no apply ran for the
-      // entry here, so this thread publishes rather than waiting for a claim that cannot come.
+      // Same rule as the acknowledged path (issue #8781): an entry nobody claimed is applied from its WAL bytes by this
+      // node's state machine - always on a replica, on a leader while its state machine lives - so this thread only
+      // waits and releases; it publishes only when no state machine is left to do it.
       if (local != null && !stateMachine.withdrawLocalCommit(local))
         concludeLocalCommit(local, payload);
+      else if (!leader || (local != null && isLive(stateMachine)))
+        awaitLocalApplyAndRelease(payload, committedLogIndexOrCommitIndex(committedLogIndex));
       else
         commitLocallyWithoutStateMachine(payload);
     } catch (final TransactionCommittedRemotelyException e) {
@@ -994,13 +1115,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
         payload.tx().commit2ndPhase(payload.phase1());
 
-        if (getSchema().getEmbedded().isDirty())
-          getSchema().getEmbedded().saveConfiguration();
+        getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
       } catch (final Exception e) {
-        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
-        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
-        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
-        // the same absolute bytes (idempotent), a lower-version one is skipped.
+        // NOTE (#5075 review): this catch can fire after commit2ndPhase SUCCEEDED, when the failure came from the
+        // bookkeeping after it (the schema save itself never throws). Reconciling then replays the payload WAL
+        // against pages the commit already published - safe by the #4926 replay semantics: an equal-version entry
+        // re-applies the same absolute bytes (idempotent), a lower-version one is skipped.
         throw committedRemotelyButNotApplied(payload, e, reconcileLeaderPagesAfterPhase2Failure(payload));
       } finally {
         current.popIfNotLastTransaction();
@@ -1611,13 +1731,41 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void begin() {
     refuseClientWhileDirectoryIsReplaced();
+    final long applied = appliedPositionAtBegin();
     proxied.begin();
+    stampReplicationBase(applied);
   }
 
   @Override
   public void begin(final TRANSACTION_ISOLATION_LEVEL isolationLevel) {
     refuseClientWhileDirectoryIsReplaced();
+    final long applied = appliedPositionAtBegin();
     proxied.begin(isolationLevel);
+    stampReplicationBase(applied);
+  }
+
+  /**
+   * The Raft log index this node has applied, read BEFORE the transaction begins (issue #8686): a transaction stages its
+   * index changes as its records are saved, against the schema this node holds at that moment, so a position sampled
+   * before the first save can only be older than the schema the transaction was prepared under, never newer. Older is
+   * the safe direction - at worst the leader refuses a transaction that would have been fine and it is retried.
+   * <p>
+   * Relies on the apply order in {@code ArcadeStateMachine}: a schema-changing entry is applied and recorded BEFORE the applied
+   * index advances past it, so an index read here always stands for a schema at least as new as it says.
+   * <p>
+   * {@code -1} when there is no Raft server, when the check is switched off ({@code arcadedb.ha.txSchemaCheck}), or when
+   * the node has applied nothing yet, all of which read as "unknown" on the leader and are never refused.
+   */
+  private long appliedPositionAtBegin() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null || !raft.isTxSchemaCheckEnabled())
+      return -1L;
+    return raft.getTrustedAppliedIndex(getName());
+  }
+
+  private void stampReplicationBase(final long applied) {
+    if (applied >= 0)
+      DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath()).getLastTransaction().setReplicationBasePosition(applied);
   }
 
   @Override
@@ -2093,12 +2241,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     isSchemaCommitThread.set(Boolean.TRUE);
     schemaInstalments.set(instalmentState);
 
+    // Exclusive on the cluster for the whole session (issue #7438). The session publishes its pages locally before its
+    // SCHEMA_ENTRY is appended, and the write lock keeps out this leader's own writers but not a replica's: an entry
+    // accepted in between would claim the same page versions as the DDL's embedded WAL. Ended in the finally below,
+    // after the final entry is committed and applied, which is when the log carries the DDL's versions itself.
+    ArcadeStateMachine exclusiveOn = null;
+
     // Set only once the session's FINAL entry has gone out. Everything an instalment shipped before that is
     // delivery-only, so leaving this false is what tells the finally block that the followers are holding an
     // abandoned prefix and it has to be retired - see retireAbandonedInstalments (issue #6136).
     boolean published = false;
 
     try {
+      // Inside the try so a refusal to start (entries still in flight) unwinds through the finally like any failure.
+      exclusiveOn = beginLeaderExclusive();
       final RET result = proxied.recordFileChanges(callback);
 
       // Capture file changes
@@ -2208,30 +2364,60 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       return result;
     } finally {
-      if (!published)
-        retireAbandonedInstalments(instalmentState);
-      if (outerSchemaCommitThread == null)
-        isSchemaCommitThread.remove();
-      else
-        isSchemaCommitThread.set(outerSchemaCommitThread);
-      if (outerInstalments == null)
-        schemaInstalments.remove();
-      else {
-        // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
-        // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
-        // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
-        // the counter and the buffer telling the same story.
-        //
-        // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
-        // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
-        // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
-        outerInstalments.bufferedBytes = 0;
-        schemaInstalments.set(outerInstalments);
+      // Released last and in a finally of its own: this cleanup must not be able to leave the registration open, which is
+      // silent and permanent (every replica write to the database is refused until the node restarts). It stays open
+      // through the retire submit above, which still belongs to the exclusive operation.
+      try {
+        if (!published)
+          retireAbandonedInstalments(instalmentState);
+        if (outerSchemaCommitThread == null)
+          isSchemaCommitThread.remove();
+        else
+          isSchemaCommitThread.set(outerSchemaCommitThread);
+        if (outerInstalments == null)
+          schemaInstalments.remove();
+        else {
+          // The WAL buffers are STATIC thread-locals shared with the outer frame, and the lines below clear them.
+          // The outer frame's byte count must not go on describing WAL that is no longer there, or its next
+          // threshold test would fire against a buffer that no longer holds what the count claims. Zeroing it keeps
+          // the counter and the buffer telling the same story.
+          //
+          // NOTE this does not make a nested session on ANOTHER database safe - the outer frame's buffered WAL is
+          // destroyed by that clear, which is a pre-existing property of sharing one static buffer and is why
+          // isSchemaCommitThread is saved and restored around it. Nothing in the index-rebuild path nests that way.
+          outerInstalments.bufferedBytes = 0;
+          schemaInstalments.set(outerInstalments);
+        }
+        schemaWalBuffer.get().clear();
+        schemaBucketDeltaBuffer.get().clear();
+        proxied.getFileManager().stopRecordingChanges();
+      } finally {
+        endLeaderExclusive(exclusiveOn);
       }
-      schemaWalBuffer.get().clear();
-      schemaBucketDeltaBuffer.get().clear();
-      proxied.getFileManager().stopRecordingChanges();
     }
+  }
+
+  /**
+   * Makes the leader exclusive on this database for a DDL, a drop or a reinstall (issue #7438), see
+   * {@link ArcadeStateMachine#beginLeaderExclusive}. Returns the state machine the registration was made on, to hand
+   * back to {@link #endLeaderExclusive}, or {@code null} when there is none (a database outside a Raft server).
+   */
+  private ArcadeStateMachine beginLeaderExclusive() {
+    final ArcadeStateMachine stateMachine = stateMachineOrNull();
+    if (stateMachine != null && !stateMachine.beginLeaderExclusive(getName(), RaftHAServer.CLIENT_REQUEST_TIMEOUT_MS)) {
+      // Entries the log already gave page versions to are still not applied here: going ahead would publish this
+      // operation's pages over versions the followers have been told are taken, the corruption the window exists to
+      // prevent. Failing is the safe answer, and a retryable one - the entries apply or expire and the caller asks again.
+      stateMachine.endLeaderExclusive(getName());
+      throw new NeedRetryException("Database '" + getName() + "' still has replicated transactions in flight on the "
+          + "leader, so a schema change, drop or install cannot start safely right now. Please retry");
+    }
+    return stateMachine;
+  }
+
+  private void endLeaderExclusive(final ArcadeStateMachine stateMachine) {
+    if (stateMachine != null)
+      stateMachine.endLeaderExclusive(getName());
   }
 
   /**
@@ -3625,6 +3811,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void createInReplicas() {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
@@ -3632,12 +3819,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' install-database entry committed via Raft", getName());
   }
 
   @Override
   public void createInReplicas(final boolean forceSnapshot) {
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot);
@@ -3645,6 +3835,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error sending install-database entry via Raft for database '" + getName() + "'", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance()
         .log(this, Level.INFO, "Database '%s' install-database (forceSnapshot=%s) entry committed via Raft", getName(),
@@ -3677,6 +3869,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void dropInReplicas() {
     final long committedLogIndex;
+    // Exclusive until this node has applied the drop (issue #7438): an entry of another node that wins the append race
+    // against the drop would otherwise be published on a database the drop has just closed, and surface as a
+    // transaction committed remotely that its originator never sees applied.
+    final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
       // Registered for the length of the submit and the wait (issue #8035): the caller holds this database's
@@ -3699,6 +3895,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // the drop is not confirmed done on this node, and ServerControlPlane.dropDatabase's finally is about to
       // release the DROP slot regardless.
       throw new TransactionException("Error dropping database '" + getName() + "' via Raft", e);
+    } finally {
+      endLeaderExclusive(exclusiveOn);
     }
     LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry applied locally at index %d", getName(),
         committedLogIndex);
@@ -3728,39 +3926,49 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // THIS node, the address was right and leadership moved while the write travelled: an ordinary election the
       // retry gets past. The refusal then names no leader, which the HTTP layer answers 503 - retryable - rather
       // than the 400 a named leader gets, and it leaves the warning latch to the misconfiguration it reports.
+      //
+      // A refusal nobody can classify is answered the same way (issue #8393). The peer names no leader when
+      // leadership changed while it resolved the address, or when it predates the header during a rolling upgrade:
+      // an election far more often than a configuration fault. Only the refusal that proves the address named the
+      // wrong node keeps the 400 and the notice.
       final RaftPeerId localPeer = raft.getLocalPeerId();
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(
           localPeer != null ? localPeer.toString() : null);
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = raft.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          throw new ServerIsNotTheLeaderException(
+              "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
+                  + "the request was in flight" + nowLeads + ". The write was not executed: retry it", null);
+
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster peer forwarded a write to this node as the leader without saying which node it meant to reach, "
+                + "and this node is not the leader (db=%s): refused as retryable", getName());
         throw new ServerIsNotTheLeaderException(
-            "A cluster peer forwarded this write here as the leader, and leadership moved away from this node while "
-                + "the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader + ")" : "")
-                + ". The write was not executed: retry it", null);
+            "A cluster peer already forwarded this write to the leader and it arrived on this node, which is not the "
+                + "leader" + nowLeads + ". Leadership most likely moved while the request was in flight: the write was "
+                + "not executed, retry it. If this persists, the HTTP address that peer resolved for the leader may not "
+                + "identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+                + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents", null);
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Said once in this node's own log too: the refusal travels back to the peer that forwarded the write
       // and from there to the client, so without this line the only node that can name the misconfiguration -
       // the one that proved the address wrong by receiving the request - says nothing about it anywhere.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a write to this node as the leader, but this node is not the leader (db=%s). "
-                + "That peer resolved an HTTP address for the leader which does not identify it - "
-                + (misidentified ? "it meant to reach another node, so " : "unless leadership just moved, ")
-                + "declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in "
-                + "%s. The write is refused rather than forwarded on. This notice is logged only once per database.",
+                + "That peer resolved an HTTP address for the leader which does not identify it - it meant to reach "
+                + "another node, so declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The write is refused rather than forwarded on. This notice is logged only once per database.",
             getName(), GlobalConfiguration.HA_SERVER_LIST.getKey());
-      throw new ServerIsNotTheLeaderException(misidentified ?
+      throw new ServerIsNotTheLeaderException(
           "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
               + "which is neither the leader nor the node that peer meant to reach, so the HTTP address that peer "
               + "resolved for the leader does not identify it. Declaring every node's HTTP port "
-              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-          "Refusing to forward a write that a cluster peer already forwarded to the leader: it arrived on this node, "
-              + "which is not the leader. Either leadership moved while the request was in flight - retry - or the "
-              + "HTTP address that peer resolved for the leader does not identify it, which is what declaring every "
-              + "node's HTTP port ('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey()
-              + " prevents", raft.getLeaderName());
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this",
+          raft.getLeaderName());
     }
 
     // During cluster startup or a leader change there is a window with no elected leader. Rather than failing

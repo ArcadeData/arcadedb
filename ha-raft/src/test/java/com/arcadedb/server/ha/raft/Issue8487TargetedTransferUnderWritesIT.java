@@ -108,10 +108,10 @@ class Issue8487TargetedTransferUnderWritesIT extends BaseRaftHATest {
               .isEqualTo(targetId);
           settledLeader = targetId;
         } else {
-          // Ratis can still make the target lose the election it was sent to win (a commit-index metadata entry the
-          // leader appends after sending StartLeaderElection leaves the target one entry short, #8487). That is a real
-          // failure, and the call must report it as one: naming where leadership went, not the client that the
-          // resulting leader change closed under the RPC.
+          // A transfer can still genuinely fail. The one known way it did under writes - a commit-index metadata entry
+          // the leader appends after sending StartLeaderElection leaving the target one entry short - is closed by #8533
+          // (Issue8533TargetedTransferUnderWritesWinsIT requires every round to succeed), but whatever fails must be
+          // reported as a failure: naming where leadership went, not the client the leader change closed under the RPC.
           assertThat(failure).as("round %d: a failed transfer is a ConfigurationException", round)
               .isInstanceOf(ConfigurationException.class);
           assertThat(failure.getMessage()).as("round %d: the failure names the outcome", round)

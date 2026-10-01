@@ -20,9 +20,13 @@ package com.arcadedb.function;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 
 /**
@@ -51,6 +55,10 @@ import java.util.function.Function;
  * can render two different strings depending on load state alone, even though they represent one
  * value. Canonicalizing to the identity ({@link RID}) up front, whose own {@code toString()} is just
  * the RID text, sidesteps that instability. See issue #6488.
+ * <p>
+ * <p>
+ * <b>Collections:</b> a list or map canonicalizes to a copy whose elements (map values) are canonicalized, so {@code [1]} and
+ * {@code [1.0]} share a key; one holding nothing to change is returned as is. A lazy range is never walked.
  * <p>
  * Other values pass through unchanged.
  */
@@ -83,6 +91,33 @@ public final class DistinctNumericKey {
       final RID rid = identifiable.getIdentity();
       if (rid != null)
         return rid;
+    }
+
+    // Lists and maps are equal under Cypher's = when their elements are, so [1] and [1.0] share a key (issue #8561). A lazy
+    // range is left alone: walking it would materialise what it exists not to, and its elements are all Longs already
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      // Copied only when an element changes: the usual list of strings or already canonical numbers is its own key
+      List<Object> key = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object element = list.get(i);
+        final Object canonical = canonicalize(element);
+        if (key == null && !Objects.equals(canonical, element))
+          key = new ArrayList<>(list);
+        if (key != null)
+          key.set(i, canonical);
+      }
+      return key != null ? key : value;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> key = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object canonical = canonicalize(entry.getValue());
+        if (key == null && !Objects.equals(canonical, entry.getValue()))
+          key = new LinkedHashMap<>(map);
+        if (key != null)
+          key.put(entry.getKey(), canonical);
+      }
+      return key != null ? key : value;
     }
 
     return value;

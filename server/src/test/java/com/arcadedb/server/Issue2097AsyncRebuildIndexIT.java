@@ -113,7 +113,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
 
       // Execute REBUILD INDEX * asynchronously via HTTP API
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -200,7 +200,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
 
       // Execute REBUILD INDEX * synchronously via HTTP API (awaitResponse=true or omitted)
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -265,7 +265,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
 
       // Execute REBUILD INDEX on specific index asynchronously
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

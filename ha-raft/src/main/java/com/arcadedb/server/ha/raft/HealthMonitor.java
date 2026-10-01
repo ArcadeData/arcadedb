@@ -84,6 +84,15 @@ public final class HealthMonitor {
     }
 
     /**
+     * This node's last-applied Raft log index, or {@code -1} when it cannot be read. The stuck-at-stale-term streak
+     * restarts whenever it advances (issue #8375): a follower that is still applying entries is making progress, not
+     * stuck, even if it matches {@link #isFollowerStuckDiverged()} at every tick.
+     */
+    default long getLastAppliedIndex() {
+      return -1;
+    }
+
+    /**
      * Reconciles the inbound Raft gRPC peer allowlist with cluster membership and with current DNS. A peer
      * that restarted with a new pod IP is admitted without first being rejected (issue #4696), a peer that
      * joined at runtime is admitted at all (issue #7132), and a peer removed from the Raft configuration is
@@ -127,6 +136,27 @@ public final class HealthMonitor {
     }
 
     /**
+     * Describes a Ratis {@code StateMachineUpdater} thread that has terminated on this node, or returns {@code null}
+     * while it is alive or has not been seen yet (issue #8652). The updater is the one thread that applies committed
+     * entries; when a throwable escapes it, Ratis closes the division from the dying thread, and that close can stay
+     * in {@code CLOSING} or leave the proxy reporting {@code RUNNING} while the node rejects every append. Reading the
+     * thread itself needs no help from the lifecycle state Ratis reports, which is what a zombie corrupts.
+     * Implementations must return {@code null} when the state cannot be read.
+     */
+    default String getDeadStateMachineUpdater() {
+      return null;
+    }
+
+    /**
+     * Whether the division's Raft log is closed under a division that reports RUNNING (issue #8652). The monitor counts
+     * consecutive sightings, so a log closed and reopened by an in-place restart or a snapshot reload is not mistaken for a
+     * zombie. Implementations must return {@code false} when it cannot be read.
+     */
+    default boolean isRaftLogClosed() {
+      return false;
+    }
+
+    /**
      * Whether the Raft storage volume currently has enough free space for the log writer to resume after an
      * in-place restart. A restart on a still-full volume fails the same way at once, so the monitor defers it
      * until the periodic log compaction (or the operator) has freed room. Implementations that cannot read the
@@ -165,8 +195,11 @@ public final class HealthMonitor {
     /**
      * Hands leadership to a peer when this node is the leader and is replacing one of its databases with the leader's
      * copy (issue #8491): it cannot download that copy from itself nor serve the database until it has one, so every
-     * write to it fails while it stays leader. No-op on a follower, when nothing is being replaced, and between
-     * throttled attempts. May block for the length of one leadership transfer.
+     * write to it fails while it stays leader. Likewise for a leader missing a database the bootstrap baseline
+     * committed, holding a pending bootstrap replacement, or holding an unfilled stale-snapshot gap (issue #8529):
+     * each needs an install a leader cannot run from itself. No-op on a follower, when none of those holds, and between
+     * throttled attempts. Must not run the transfer on the calling thread: it is queued behind any other automatic
+     * hand-off of this node (issue #8557).
      * <p>
      * Its own hook because nothing else sees the condition: the node's log is complete and it is not lagging, which
      * is exactly why Raft elected it.
@@ -176,8 +209,9 @@ public final class HealthMonitor {
 
     /**
      * Whether a previous process lifetime of this node already escalated a crash loop on the current Raft storage
-     * and recorded it there (issue #7736). Read once, when the monitor is built. Implementations that cannot tell
-     * must return {@code false}: the monitor then walks the escalation ladder from the top, as it did before.
+     * and recorded it next to that storage (issues #7736, #8380). Read when the monitor is built, and again after
+     * every escalation's write. Implementations that cannot tell must return {@code false}: the monitor then walks
+     * the escalation ladder from the top, as it did before.
      */
     default boolean hasPersistedCrashLoopEscalation() {
       return false;
@@ -246,10 +280,34 @@ public final class HealthMonitor {
    */
   static final long CRASH_LOOP_RECORD_RESET_MS = 10L * 60_000L;
 
+  /** Consecutive ticks a division must stay CLOSING before it is recovered like a CLOSED one (issue #8651). */
+  static final int CLOSING_TICKS_BEFORE_RECOVERY = 2;
+
+  /**
+   * Consecutive ticks a dead StateMachineUpdater must be seen before the node is recovered (issue #8652). A division
+   * that is being closed on purpose ends its updater thread before this monitor learns of the close, so a single
+   * sighting is an ordinary shutdown racing the tick; the same finding on the next tick is a node that stayed up.
+   */
+  static final int DEAD_UPDATER_TICKS_BEFORE_RECOVERY = 2;
+
+  /** Consecutive ticks a closed Raft log must be seen before the node is recovered (issue #8652). */
+  static final int CLOSED_LOG_TICKS_BEFORE_RECOVERY = 2;
+
   private final    HealthTarget             target;
   private final    long                     intervalMs;
+  // Consecutive ticks the division was seen CLOSING (issue #8651). Health-monitor thread only.
+  private          int                      closingStreak;
+  // Consecutive ticks a dead StateMachineUpdater was seen on a division that reports itself healthy (issue #8652).
+  // Health-monitor thread only.
+  private          int                      deadUpdaterStreak;
+  // Consecutive ticks the Raft log was seen closed under a RUNNING division (issue #8652). Health-monitor thread only.
+  private          int                      closedLogStreak;
+  // When the last dead-updater recovery ran, or -1 (issue #8652). Health-monitor thread only.
+  private          long                     lastDeadUpdaterRecoveryMs = -1;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
+  // Persistence window of the stuck-at-stale-term reformat (issue #8375), separate from the lag-recovery one above.
+  private final    long                     divergedFollowerRecoveryDurationMs;
   private final    boolean                  divergedFollowerRecoveryEnabled;
   private final    int                      divergedFollowerMaxReformats;
   // Crash-loop escalation (issue #5291): how many consecutive CLOSED/EXCEPTION restarts may fail to stick
@@ -261,6 +319,9 @@ public final class HealthMonitor {
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
   private          long                     stuckObservedSinceMs        = -1;
+  // Last readable applied index seen while the stuck signature held; -1 = none yet. An advance restarts the streak
+  // (issue #8375). Tick executor only.
+  private          long                     stuckLastAppliedIndex       = -1;
   // Whether a tick has seen the stuck signature AGAIN after the one that started the streak (issue #8289). Set and
   // cleared only on the tick executor, read from an HTTP worker via isFollowerStuckDivergedConfirmed(), hence
   // volatile - see crashLoopEscalated above. A flag rather than "the streak is older than intervalMs": that would
@@ -322,10 +383,25 @@ public final class HealthMonitor {
   public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
       final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
       final int divergedFollowerMaxReformats, final int crashLoopRestartThreshold) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, divergedFollowerRecoveryEnabled,
+        divergedFollowerMaxReformats, crashLoopRestartThreshold, staleFollowerRecoveryDurationMs);
+  }
+
+  /**
+   * @param divergedFollowerRecoveryDurationMs how long the stuck-at-stale-term signature must persist, with no
+   *                                           applied-index progress, before the reformat fires (issue #8375). The
+   *                                           shorter constructors pass {@code staleFollowerRecoveryDurationMs}, the
+   *                                           single duration both paths shared before the split.
+   */
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
+      final int divergedFollowerMaxReformats, final int crashLoopRestartThreshold,
+      final long divergedFollowerRecoveryDurationMs) {
     this.target = target;
     this.intervalMs = intervalMs;
     this.staleFollowerLagThreshold = staleFollowerLagThreshold;
     this.staleFollowerRecoveryDurationMs = staleFollowerRecoveryDurationMs;
+    this.divergedFollowerRecoveryDurationMs = divergedFollowerRecoveryDurationMs;
     this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
     this.divergedFollowerMaxReformats = divergedFollowerMaxReformats;
     this.crashLoopRestartThreshold = crashLoopRestartThreshold;
@@ -351,8 +427,8 @@ public final class HealthMonitor {
                 + "to the Raft storage. The Raft-storage reformat will NOT run again on this storage and this node "
                 + "will not ask for another process restart: if the Raft layer does not stay up, operator "
                 + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
-                + "coordinated full-cluster Raft-storage reformat). Delete the '%s' file in the Raft storage "
-                + "directory to re-arm the automatic recovery (issues #5291, #7736)",
+                + "coordinated full-cluster Raft-storage reformat). Delete the '<raft-storage-dir>.%s' file next to "
+                + "the Raft storage directory to re-arm the automatic recovery (issues #5291, #7736, #8380)",
             RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
       }
     }
@@ -415,8 +491,15 @@ public final class HealthMonitor {
    * Package-private for tests. Runs one check synchronously.
    */
   void tick() {
-    if (target.isShutdownRequested())
+    // Every early return below skips checkStaleFollower()/checkStuckFollower(), so each drops the observation streaks
+    // those checks own (issue #8389): a streak means "seen on every tick since it started", and a tick that did not look
+    // cannot extend it. Left standing, the confirmed stuck flag kept the cluster status reporting a critical incident
+    // whose promised self-heal those same returns made unreachable, and an old streak fired a reformat or a snapshot
+    // re-arm on the first tick back without the fresh second observation it exists to demand.
+    if (target.isShutdownRequested()) {
+      dropFollowerObservations();
       return;
+    }
     // Reconcile the inbound peer allowlist with current DNS every tick, regardless of Ratis lifecycle
     // state, so a returned peer's new pod IP is admitted proactively (issue #4696). The filter throttles
     // the actual re-resolution to its configured refresh interval.
@@ -437,28 +520,78 @@ public final class HealthMonitor {
     // previous tick's refreshLeaderCommitIndex() learned: at most one tick old, and a lower bound either way.
     target.trackFollowerStall();
     final LifeCycle.State state = target.getRaftLifeCycleState();
-    if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
-      handleUnhealthyState(state);
+    if (state == LifeCycle.State.CLOSING) {
+      // One tick in CLOSING is an ordinary close in progress; the same state on consecutive ticks is a division whose
+      // close never finished - the StateMachineUpdater died and closed it from its own thread (issue #8651).
+      closingStreak++;
+      dropFollowerObservations();
+      if (closingStreak >= CLOSING_TICKS_BEFORE_RECOVERY) {
+        // A fresh streak before the next attempt: a restart needs time to leave CLOSING.
+        closingStreak = 0;
+        handleUnhealthyState(state);
+      }
       return;
     }
-    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak.
-    crashRestartStreak = 0;
-    crashLoopEscalated = false;
+    closingStreak = 0;
+    if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
+      handleUnhealthyState(state);
+      dropFollowerObservations();
+      return;
+    }
+    // Above the healthy-lifecycle reset below, deliberately: a poisoned log that keeps killing the updater on a node that
+    // reports RUNNING again must count toward the crash-loop escalation, which that reset would otherwise zero on every
+    // recovery.
+    // The thread that applies committed entries is gone while the division still reports RUNNING (issue #8652): Ratis
+    // closes the division from the dying thread, and that close can hang or be reported as RUNNING again once the node
+    // rejoined, leaving a zombie that rejects every append. Read from the thread, not from the lifecycle it corrupts.
+    final String deadUpdater = target.getDeadStateMachineUpdater();
+    if (deadUpdater != null) {
+      deadUpdaterStreak++;
+      dropFollowerObservations();
+      if (deadUpdaterStreak >= DEAD_UPDATER_TICKS_BEFORE_RECOVERY) {
+        deadUpdaterStreak = 0;
+        // A restart gives a fresh state machine that has seen no thread, so the next tick reads healthy: without this the
+        // reset below would zero the crash-loop streak after every recovery and the escalation could never be reached
+        lastDeadUpdaterRecoveryMs = clock.getAsLong();
+        LogManager.instance().log(this, Level.SEVERE,
+            "Raft state machine cannot apply entries: %s while the division reports %s. Restarting Ratis in place "
+                + "(issue #8652)", deadUpdater, state);
+        handleUnhealthyState(LifeCycle.State.EXCEPTION);
+      }
+      return;
+    }
+    deadUpdaterStreak = 0;
+    // Healthy lifecycle observed: a restart stuck, so a genuinely new incident later starts a fresh streak. Not right
+    // after a dead-updater recovery, whose fresh state machine looks healthy until it applies something: the streak is
+    // forgotten only once the node has stayed healthy for CRASH_LOOP_RECORD_RESET_MS.
+    if (lastDeadUpdaterRecoveryMs < 0 || clock.getAsLong() - lastDeadUpdaterRecoveryMs >= CRASH_LOOP_RECORD_RESET_MS) {
+      lastDeadUpdaterRecoveryMs = -1;
+      crashRestartStreak = 0;
+      crashLoopEscalated = false;
+    }
     noteCrashLoopHealthy();
     // A wedged log writer keeps the lifecycle RUNNING, so it is checked here, after the lifecycle branch and
     // before the follower checks: a node that rejects every append is behind for a reason neither a snapshot
     // re-arm nor a storage reformat can fix (issue #7037).
-    final String logFailure = target.getRaftLogFailure();
+    String logFailure = target.getRaftLogFailure();
+    if (logFailure == null && target.isRaftLogClosed()) {
+      if (++closedLogStreak >= CLOSED_LOG_TICKS_BEFORE_RECOVERY)
+        logFailure = "(the Raft log is closed under a division that reports RUNNING: every append is rejected, issue #8652)";
+    } else
+      closedLogStreak = 0;
     if (logFailure != null) {
+      closedLogStreak = 0;
       handleFailedLogWriter(logFailure);
+      dropFollowerObservations();
       return;
     }
-    noteLogWriterHealthy();
+    if (closedLogStreak == 0)
+      noteLogWriterHealthy();
     // A RUNNING division with a working log writer, which is what a leader needs to hand its leadership over. Before
-    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). A hand-off
-    // blocks this tick for up to one leadership transfer (ArcadeStateMachine.REPLACING_LEADER_HAND_OFF_TIMEOUT_MS), so
-    // the checks after it wait that long too - on a node that is the leader, where the follower checks are no-ops, and
-    // at most once per REPLACING_LEADER_HAND_OFF_INTERVAL_MS.
+    // the follower checks below: those never apply to a leader, and this only ever does (issue #8491). The hand-off
+    // itself runs on the recovery executor the other automatic hand-offs share, so it cannot race them for the one
+    // transfer Ratis keeps pending, and this tick does not wait for it (issue #8557). Attempts are throttled to one per
+    // ArcadeStateMachine.replacingLeaderHandOffIntervalMs after the previous attempt ended (#8556).
     target.handOffLeadershipWhileReplacingDatabase();
     // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
@@ -526,8 +659,13 @@ public final class HealthMonitor {
           crashRestartStreak, crashLoopReformatTried ? " and a storage reformat" : "", state);
       // Recorded BEFORE the flag is raised, so a liveness read that sees the escalation also sees whether it was
       // recorded (issue #7736): the probe asks for a restart only for a recorded one.
-      if (!crashLoopEscalationPersisted)
-        crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason);
+      // Written on EVERY escalation and the flag re-derived from the disk, never trusted from memory (issue #8380):
+      // the flag is a cache of a file something else can delete - an operator, or a Raft-storage reformat on a
+      // layout that keeps the record inside the storage - and a stale-true flag skipped this write, so the node
+      // escalated with nothing on disk and its next process start walked the whole ladder again. The write is
+      // idempotent and costs one fsync on a path that is already failing. A failed rewrite of a record that is
+      // still there keeps the flag: the record the next start reads is intact.
+      crashLoopEscalationPersisted = target.persistCrashLoopEscalation(reason) || target.hasPersistedCrashLoopEscalation();
       crashLoopEscalated = true;
       LogManager.instance().log(this, Level.SEVERE, "%s. %s", reason, crashLoopEscalationPersisted ?
           "The escalation is recorded next to the Raft storage: the liveness probe now fails ONCE so the process is "
@@ -645,6 +783,18 @@ public final class HealthMonitor {
   }
 
   /**
+   * Drops the stale-follower and stuck-divergence observation streaks, and with them the confirmed stuck flag, on a
+   * tick that returns before the follower checks run (issue #8389). Unlike {@link #resetStreaksAfterRestart()} it
+   * leaves the reformat budget alone: nothing was restarted or reformatted, so the divergence episode that budget
+   * belongs to is not over.
+   */
+  private void dropFollowerObservations() {
+    lagObservedSinceMs = -1;
+    stuckObservedSinceMs = -1;
+    stuckConfirmed = false;
+  }
+
+  /**
    * Drops any pending stale-follower / stuck-divergence streak (and the reformat budget) after a Ratis
    * restart, because the restart reinitializes the state machine and re-detects any snapshot gap, so a
    * lag/divergence recovery fired right after would be redundant.
@@ -652,6 +802,7 @@ public final class HealthMonitor {
   private void resetStreaksAfterRestart() {
     lagObservedSinceMs = -1;
     stuckObservedSinceMs = -1;
+    stuckLastAppliedIndex = -1;
     stuckConfirmed = false;
     divergenceReformatCount = 0;
     divergenceHealthySinceMs = -1;
@@ -690,10 +841,11 @@ public final class HealthMonitor {
 
   /**
    * Reformats and rejoins a follower that has been stuck-diverged from the leader for at least
-   * {@link #staleFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
+   * {@link #divergedFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
    * the first observation only starts the streak, any tick where the stuck condition clears resets
-   * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
-   * so both self-healing paths share the same "must persist this long" knob.
+   * it, and the recovery fires at most once per streak. Since issue #8375 the window is its own knob,
+   * shorter by default than the lag-recovery one, and any advance of the applied index restarts it:
+   * the streak measures how long the follower has been stuck, not merely how long it has matched the signature.
    * <p>
    * The streak itself is tracked regardless of {@link #divergedFollowerRecoveryEnabled} (issue #8289):
    * only the destructive reformat action is gated on that flag. With it {@code false} a node that gets
@@ -706,6 +858,7 @@ public final class HealthMonitor {
 
     if (!target.isFollowerStuckDiverged()) {
       stuckObservedSinceMs = -1;
+      stuckLastAppliedIndex = -1;
       stuckConfirmed = false;
       // Forget a prior reformat episode once the follower has looked healthy long enough that the
       // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
@@ -713,7 +866,7 @@ public final class HealthMonitor {
       if (divergenceReformatCount > 0) {
         if (divergenceHealthySinceMs == -1)
           divergenceHealthySinceMs = now;
-        else if (now - divergenceHealthySinceMs >= staleFollowerRecoveryDurationMs * REFORMAT_EPISODE_RESET_MULTIPLIER) {
+        else if (now - divergenceHealthySinceMs >= divergedFollowerRecoveryDurationMs * REFORMAT_EPISODE_RESET_MULTIPLIER) {
           divergenceReformatCount = 0;
           divergenceHealthySinceMs = -1;
           divergenceRecoveryExhausted = false;
@@ -724,17 +877,28 @@ public final class HealthMonitor {
 
     divergenceHealthySinceMs = -1; // still stuck: the episode is ongoing
 
-    if (stuckObservedSinceMs == -1) {
-      stuckObservedSinceMs = now; // first observation; require persistence before acting
+    // Issue #8375: the raw signature does not look at progress, so a follower still applying old-term entries - a
+    // slow catch-up whose applier drains every batch before the next one lands, leaving commitIndex == appliedIndex at
+    // every tick - matches it too. A genuinely diverged follower rejects the leader's entries and cannot apply
+    // anything, so an advance proves this is not that case: restart the streak from here. An unreadable index (-1)
+    // is no information either way and neither restarts the streak nor becomes the baseline.
+    final long appliedIndex = target.getLastAppliedIndex();
+    final boolean advanced = appliedIndex >= 0 && stuckLastAppliedIndex >= 0 && appliedIndex > stuckLastAppliedIndex;
+    if (appliedIndex >= 0)
+      stuckLastAppliedIndex = appliedIndex;
+
+    if (stuckObservedSinceMs == -1 || advanced) {
+      stuckObservedSinceMs = now; // first observation (or progress since the last one); require persistence before acting
+      stuckConfirmed = false;
       return;
     }
 
-    stuckConfirmed = true; // seen again on a later tick: no longer a single-tick blip
+    stuckConfirmed = true; // seen again on a later tick with no progress: no longer a single-tick blip
 
     if (!divergedFollowerRecoveryEnabled)
       return; // observed and reported (see isFollowerStuckDivergedConfirmed), but auto-recovery is off
 
-    if (now - stuckObservedSinceMs < staleFollowerRecoveryDurationMs)
+    if (now - stuckObservedSinceMs < divergedFollowerRecoveryDurationMs)
       return; // not persisted long enough yet
 
     // Bounded reformat budget (#4741 review): a reformat that restarts cleanly resets the shared Ratis
@@ -760,6 +924,7 @@ public final class HealthMonitor {
         now - stuckObservedSinceMs, divergenceReformatCount);
     target.recoverFromDivergence();
     stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
+    stuckLastAppliedIndex = -1;
     stuckConfirmed = false;
   }
 
@@ -770,9 +935,9 @@ public final class HealthMonitor {
    * the new leader's current-term no-op (see that method's javadoc) - so reporting it unfiltered to an
    * operator would flag a routine leader change as an incident on every status poll. This applies the same
    * "must not be a single-tick blip" reasoning {@link #checkStuckFollower()} already relies on before it will
-   * even start counting toward {@link #staleFollowerRecoveryDurationMs}, without waiting for that much longer
+   * even start counting toward {@link #divergedFollowerRecoveryDurationMs}, without waiting for that longer
    * duration: {@code intervalMs} is typically a few seconds (the default health-check interval) against a
-   * default recovery duration of a full minute.
+   * default recovery duration of several times that. An advance of the applied index clears it (issue #8375).
    * <p>
    * Independent of {@link #divergedFollowerRecoveryEnabled}: see {@link #checkStuckFollower()}.
    */

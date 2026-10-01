@@ -361,7 +361,9 @@ public class SnapshotHttpHandler implements HttpHandler {
       // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
       // requires it and rejects a download truncated at a ZIP-entry boundary.
       exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
-      // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454).
+      // The follower refuses a copy behind the entries it already applied to the one it is replacing (issue #8454),
+      // and does not re-apply any TX or schema entry at or below this index once it installs the copy (issue #8579):
+      // the index must never run ahead of what the captured copy carries.
       if (appliedIndex != Long.MIN_VALUE)
         exchange.getResponseHeaders().put(new HttpString(SnapshotManager.APPLIED_INDEX_HEADER), String.valueOf(appliedIndex));
       exchange.startBlocking();

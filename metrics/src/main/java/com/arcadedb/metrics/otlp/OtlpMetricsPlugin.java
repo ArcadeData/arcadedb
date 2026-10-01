@@ -23,12 +23,16 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.monitor.OtelResourceAttributes;
 import io.micrometer.core.instrument.Clock;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.registry.otlp.OtlpConfig;
 import io.micrometer.registry.otlp.OtlpMeterRegistry;
 
+import java.util.Map;
 import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Optional {@link ServerPlugin} that pushes Micrometer metrics to an OTLP endpoint, alongside (never
@@ -37,6 +41,11 @@ import java.util.logging.Level;
  * unchanged. The Prometheus scrape path is untouched whether or not OTLP is enabled.
  */
 public class OtlpMetricsPlugin implements ServerPlugin {
+  // scheme://authority, then an optional lone "/", then an optional query and/or fragment
+  private static final Pattern URL_WITHOUT_PATH = Pattern.compile("^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\\s]+)/?([?#].*)?$");
+  private static final Pattern GRPC_PORT        = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/?#@\\s]*@)?[^/?#@\\s]*:4317(?:[/?#].*)?$");
+
+
   private OtlpMeterRegistry registry;
   private boolean           enabled;
 
@@ -56,9 +65,7 @@ public class OtlpMetricsPlugin implements ServerPlugin {
     if (!enabled)
       return;
 
-    final String endpoint = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
-    final OtlpConfig otlpConfig = key -> "otlp.url".equals(key) ? endpoint : null;
-    registry = new OtlpMeterRegistry(otlpConfig, Clock.SYSTEM);
+    registry = new OtlpMeterRegistry(otlpConfig(configuration, System.getenv()), Clock.SYSTEM);
     Metrics.addRegistry(registry);
   }
 
@@ -75,6 +82,61 @@ public class OtlpMetricsPlugin implements ServerPlugin {
       registry.close();
       registry = null;
     }
+  }
+
+  /**
+   * The OTLP registry's configuration: the endpoint from the ArcadeDB setting, and the resource attributes resolved by
+   * {@link OtelResourceAttributes}, the same resolution the tracing plugin uses, so metrics and spans report the same
+   * {@code service.name} (issue #7295). Micrometer's own default read the OpenTelemetry variables too, but let a
+   * {@code service.name} in {@code OTEL_RESOURCE_ATTRIBUTES} win over {@code OTEL_SERVICE_NAME} and otherwise reported
+   * {@code unknown_service}.
+   */
+  static OtlpConfig otlpConfig(final ContextConfiguration configuration, final Map<String, String> environment) {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT);
+    if (looksLikeGrpcEndpoint(configured))
+      LogManager.instance().log(OtlpMetricsPlugin.class, Level.WARNING,
+          "The OTLP metrics endpoint (%s) looks like the OTLP/gRPC port (4317), but metrics are exported over OTLP/HTTP: use the collector's HTTP receiver, e.g. http://host:4318/v1/metrics",
+          GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT.getKey());
+    final String endpoint = normalizeEndpoint(configured);
+    final Map<String, String> resourceAttributes = OtelResourceAttributes.resolve(configuration, environment);
+    return new OtlpConfig() {
+      @Override
+      public String get(final String key) {
+        return "otlp.url".equals(key) ? endpoint : null;
+      }
+
+      @Override
+      public Map<String, String> resourceAttributes() {
+        return resourceAttributes;
+      }
+    };
+  }
+
+  /**
+   * Micrometer POSTs to the configured URL as is, so a base URL without a path reaches the collector root and is
+   * answered with 404. The standard OTLP/HTTP metrics path is appended in that case; an explicit path is kept.
+   * The authority is checked rather than the host, because {@code URI} reports no host for names such as
+   * {@code otel_collector} (an underscore, common in Docker Compose service names).
+   */
+  static String normalizeEndpoint(final String endpoint) {
+    if (endpoint == null)
+      return null;
+    final String trimmed = endpoint.trim();
+    final Matcher matcher = URL_WITHOUT_PATH.matcher(trimmed);
+    if (!matcher.matches())
+      return endpoint;
+    final String suffix = matcher.group(2);
+    return matcher.group(1) + "/v1/metrics" + (suffix != null ? suffix : "");
+  }
+
+  /**
+   * True for an endpoint on the OTLP/gRPC port 4317, which the HTTP-based metrics registry cannot talk to.
+   */
+  static boolean looksLikeGrpcEndpoint(final String endpoint) {
+    if (endpoint == null)
+      return false;
+    final Matcher matcher = GRPC_PORT.matcher(endpoint.trim());
+    return matcher.matches();
   }
 
   /**

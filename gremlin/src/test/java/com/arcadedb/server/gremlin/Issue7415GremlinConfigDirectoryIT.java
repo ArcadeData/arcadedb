@@ -54,6 +54,7 @@ class Issue7415GremlinConfigDirectoryIT extends BaseGraphServerTest {
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
     config.setValue(GlobalConfiguration.SERVER_CONFIG_DIRECTORY, CONFIG_DIR.getPath());
+    GremlinTestPorts.assign(config);
   }
 
   @Override

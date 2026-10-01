@@ -119,7 +119,8 @@ class BootstrapElection {
     FAILED                      // unexpected error; bootstrap will be re-attempted on next leader change
   }
 
-  private static final HttpClient HTTP = HttpClient.newBuilder()
+  /** The shared plain-HTTP client for bootstrap-state probes, reused by {@link UnverifiedClosedCopyCheck} (issue #8605). */
+  static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
@@ -303,16 +304,13 @@ class BootstrapElection {
     try {
       final boolean useSSL = server != null
           && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-      final RaftPeerId localId = haServer.getLocalPeerId();
-      final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
-      final List<String> urls = new ArrayList<>();
-      for (final RaftPeer peer : haServer.getLivePeers()) {
-        if (peer.getId().equals(localId))
-          continue;
-        final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
-        if (url != null)
-          urls.add(url);
-      }
+      // Every peer behind a URL is kept: two peers that resolve to one address get one request, but each of them is owed
+      // the report when a stranger answers it
+      final Map<String, List<RaftPeerId>> peerByUrl = new LinkedHashMap<>();
+      for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet())
+        if (entry.getValue() != null)
+          peerByUrl.computeIfAbsent(entry.getValue(), u -> new ArrayList<>(1)).add(entry.getKey());
+      final List<String> urls = new ArrayList<>(peerByUrl.keySet());
       if (urls.isEmpty())
         return;
 
@@ -328,16 +326,21 @@ class BootstrapElection {
         }
       try (final HttpClient client = httpsClient) {
         final List<CompletableFuture<HttpResponse<String>>> sends = new ArrayList<>(urls.size());
+        final List<List<RaftPeerId>> sentTo = new ArrayList<>(urls.size());
         for (final String url : urls) {
           final boolean https = url.startsWith("https://");
           if (https && client == null)
             continue;
           final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), probeAttemptTimeoutMs, body);
           sends.add((https ? client : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+          sentTo.add(peerByUrl.get(url));
         }
         try {
           CompletableFuture.allOf(sends.toArray(new CompletableFuture[0]))
               .get(probeAttemptTimeoutMs, TimeUnit.MILLISECONDS);
+          for (int i = 0; i < sends.size(); i++)
+            for (final RaftPeerId meantFor : sentTo.get(i))
+              reportStrangerAnswer(meantFor, sends.get(i).getNow(null));
         } finally {
           // Cancelled before the client closes, on every way out: close() is an orderly shutdown that waits for the
           // exchanges still running on it, and a peer that stalls inside its body keeps one running with no bound on
@@ -352,6 +355,28 @@ class BootstrapElection {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap: could not tell every peer the pass concluded (their hold lapses on its own): %s", e.getMessage());
+    }
+  }
+
+  /**
+   * Says so when the release for {@code peerId} was answered by another node (issue #8658). Nothing else changes: the
+   * conclusion carries no state back, so a stranger merely misses it, and {@code peerId} keeps its hold until its
+   * deadline. The line is what tells an operator why that hold lasted the whole deadline.
+   */
+  private static void reportStrangerAnswer(final RaftPeerId peerId, final HttpResponse<String> response) {
+    if (response == null || response.statusCode() != 200)
+      return;
+    try {
+      final String answeredBy = new JSONObject(response.body()).getString("peerId", "");
+      if (!answeredBy.equals(peerId.toString()))
+        LogManager.instance().log(BootstrapElection.class, Level.INFO,
+            "Bootstrap: the pass conclusion meant for peer %s was answered by %s, so that peer's hold lapses on its own; "
+                + "the address does not identify it (declare each node's 'http' port explicitly in %s)", peerId,
+            answeredBy.isEmpty() ? "a node that names no peer" : "peer '" + answeredBy + "'",
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
+    } catch (final Exception e) {
+      LogManager.instance().log(BootstrapElection.class, Level.FINE, "Unreadable answer to the pass conclusion sent to %s: %s",
+          peerId, e.getMessage());
     }
   }
 
@@ -443,9 +468,7 @@ class BootstrapElection {
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
     final RaftPeerId localId = haServer.getLocalPeerId();
-    final Collection<RaftPeer> peers = haServer.getLivePeers();
     final Set<String> dbFilter = new HashSet<>(dbNames);
-    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
     final String announceBody = announcePassBody(passId, dbNames);
 
     // Self state computed locally to avoid a self-loop HTTP call.
@@ -460,16 +483,15 @@ class BootstrapElection {
     final boolean useSSL = server != null
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> peerAddresses = new LinkedHashMap<>();
-    for (final RaftPeer peer : peers) {
-      if (peer.getId().equals(localId))
-        continue;
-      final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
-      if (url == null) {
+    for (final Map.Entry<RaftPeerId, String> entry : peerProbeUrls(useSSL).entrySet()) {
+      if (entry.getValue() == null) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: peer %s has no known HTTP address; the election assumes it holds NO local data", peer.getId());
+            "Bootstrap: peer %s has no known HTTP address that identifies it and is not this node's own; the election "
+                + "assumes it holds NO local data. Declare each node's 'http' port explicitly in %s", entry.getKey(),
+            GlobalConfiguration.HA_SERVER_LIST.getKey());
         continue;
       }
-      peerAddresses.put(peer.getId(), url);
+      peerAddresses.put(entry.getKey(), entry.getValue());
     }
 
     // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
@@ -618,6 +640,58 @@ class BootstrapElection {
   }
 
   /**
+   * The bootstrap-state URL of every live peer but this node, in peer order, for the two fan-outs of a pass: the
+   * state collection and the conclusion broadcast. A peer with no endpoint this node may dial maps to {@code null}
+   * rather than being left out, so the collection can name it in its warning and count it as holding no data.
+   * <p>
+   * Both halves are asked the two questions every other peer dial asks ({@link PeerDialAddress}): does the address
+   * identify this peer alone, and is it this node's own? An endpoint that fails either is withheld, because a probe
+   * sent to it is answered by the wrong node - most often by this one, with its own state - and the election would
+   * file that answer under the peer's id and pick a baseline from it without a line in the log.
+   * <ul>
+   * <li>The HTTPS half goes through {@link PeerDialAddress#encryptedEndpointOf}. The raw resolver derives a missing
+   * {@code https} port as the peer's Raft host plus <em>this</em> node's HTTPS port, so on a cluster whose nodes
+   * differ by port and declare only their {@code http} ports every peer collapsed onto this node's own listener, and
+   * {@link #chooseUrl} preferred that over the declared HTTP endpoint (issue #8033). Withheld, the probe falls back
+   * to the plain-HTTP half.</li>
+   * <li>The plain-HTTP half stays restricted to the {@code http} endpoint each peer DECLARED in
+   * {@link GlobalConfiguration#HA_SERVER_LIST}, as it always was, and is additionally withheld when that declared
+   * endpoint is shared with another peer or is this node's own spelled another way ({@code 127.0.0.1} against
+   * {@code localhost}).</li>
+   * </ul>
+   */
+  Map<RaftPeerId, String> peerProbeUrls(final boolean useSSL) {
+    final RaftPeerId localId = haServer.getLocalPeerId();
+    final Map<RaftPeerId, String> httpAddresses = haServer.getHttpAddresses();
+    // Resolved once for the whole fan-out rather than once per peer.
+    final String localHttpAddress = haServer.getLocalHttpAddress();
+    final Map<RaftPeerId, String> urls = new LinkedHashMap<>();
+    for (final RaftPeer peer : haServer.getLivePeers()) {
+      final RaftPeerId peerId = peer.getId();
+      if (peerId.equals(localId))
+        continue;
+      final String httpAddress = declaredHttpEndpointOf(peerId, httpAddresses.get(peerId), localHttpAddress);
+      final String httpsAddress = useSSL ? PeerDialAddress.encryptedEndpointOf(haServer, peerId) : null;
+      urls.put(peerId, chooseUrl(httpAddress, httpsAddress, useSSL));
+    }
+    return urls;
+  }
+
+  /**
+   * {@code declared} when it identifies {@code peerId} alone and is not this node's own endpoint, {@code null}
+   * otherwise. The same checks {@link PeerDialAddress#resolve} makes on its HTTP arm, restricted to the declared
+   * endpoint: the unambiguous accessor answers with the declared address whenever there is one, so any other answer
+   * means the declaration identifies nobody.
+   */
+  private String declaredHttpEndpointOf(final RaftPeerId peerId, final String declared, final String localHttpAddress) {
+    if (declared == null || !declared.equals(haServer.getUnambiguousPeerHttpAddress(peerId)))
+      return null;
+    if (localHttpAddress != null && RaftHAServer.isSameHttpEndpoint(localHttpAddress, declared))
+      return null;
+    return declared;
+  }
+
+  /**
    * Picks the URL this probe is sent to. Prefers the peer's HTTPS endpoint when SSL is enabled and one
    * resolves; otherwise plain HTTP. {@code null} when no usable address was provided. Package-private and
    * pure for unit testing.
@@ -702,7 +776,12 @@ class BootstrapElection {
    */
   static Map<String, ArcadeStateMachine.BootstrapBaseline> parseBootstrapState(final String body,
       final Set<String> dbFilter) {
-    final JSONObject json = new JSONObject(body);
+    return parseBootstrapState(new JSONObject(body), dbFilter);
+  }
+
+  /** As {@link #parseBootstrapState(String, Set)}, over an answer already parsed. */
+  static Map<String, ArcadeStateMachine.BootstrapBaseline> parseBootstrapState(final JSONObject json,
+      final Set<String> dbFilter) {
     final JSONArray dbs = json.getJSONArray("databases");
     final Map<String, ArcadeStateMachine.BootstrapBaseline> result = new HashMap<>();
     for (int i = 0; i < dbs.length(); i++) {
@@ -722,7 +801,7 @@ class BootstrapElection {
    * tick rather than drawing a conclusion from a failed probe.
    */
   static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final ArcadeDBServer server,
-      final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
+      final String expectedPeerId, final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
       final long timeoutMs) {
     final boolean useSSL = server != null
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
@@ -748,9 +827,16 @@ class BootstrapElection {
             "bootstrap-state probe of %s answered HTTP %d", url, response.statusCode());
         return null;
       }
-      return parseBootstrapState(response.body(), dbFilter);
+      final JSONObject json = new JSONObject(response.body());
+      // A verdict on the leader's fingerprints from another node's would clear or raise a divergence it never had
+      // (issue #8658); refused like a failed probe, so the mark stays as it was and the next window asks again.
+      LeaderDatabaseQuery.requireAnsweredBy(json, expectedPeerId, url);
+      return parseBootstrapState(json, dbFilter);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      return null;
+    } catch (final LeaderDatabaseQuery.WrongPeerAnsweredException e) {
+      LogManager.instance().log(BootstrapElection.class, Level.WARNING, "bootstrap-state probe refused: %s", e.getMessage());
       return null;
     } catch (final Exception e) {
       LogManager.instance().log(BootstrapElection.class, Level.INFO,
@@ -792,28 +878,17 @@ class BootstrapElection {
 
     return (https ? httpsClient : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
-          final int status = resp.statusCode();
-          if (status != 200) {
-            final boolean retryable = isRetryableProbeStatus(status);
-            // Transient failures are expected during a parallel cold boot and are retried below, so
-            // log them at INFO (not WARNING) to avoid alarming operators mid-recovery (issue #5273).
-            LogManager.instance().log(this, retryable ? Level.INFO : Level.WARNING,
-                "Bootstrap: peer %s responded with HTTP %d to /bootstrap-state%s", peerId, status,
-                retryable ? " (transient; retrying within the bootstrap budget)" : "");
-            return retryable ? ProbeOutcome.retryable("HTTP " + status) : ProbeOutcome.fatal("HTTP " + status);
+          final ProbeOutcome outcome = probeOutcomeOf(peerId, resp.statusCode(), resp.body(), dbFilter);
+          if (outcome.result() != ProbeResult.OK) {
+            // A transient status is expected during a parallel cold boot and is retried, so it is logged at INFO (not
+            // WARNING) to avoid alarming operators mid-recovery (issue #5273). A malformed answer is retried too, but
+            // stays a WARNING as it always was: it is not what a peer still starting up sends.
+            final boolean quiet = outcome.result() == ProbeResult.RETRYABLE && !outcome.detail().startsWith(MALFORMED_ANSWER);
+            LogManager.instance().log(this, quiet ? Level.INFO : Level.WARNING,
+                "Bootstrap: probe of peer %s at %s gave no usable state: %s%s", peerId, url, outcome.detail(),
+                outcome.result() == ProbeResult.RETRYABLE ? " (retrying within the bootstrap budget)" : "");
           }
-          try {
-            final Map<String, PeerState> result = new HashMap<>();
-            for (final Map.Entry<String, ArcadeStateMachine.BootstrapBaseline> e :
-                parseBootstrapState(resp.body(), dbFilter).entrySet())
-              result.put(e.getKey(), new PeerState(peerId, e.getKey(), e.getValue().fingerprint(),
-                  e.getValue().lastTxId()));
-            return ProbeOutcome.ok(result);
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING,
-                "Bootstrap: peer %s returned malformed JSON: %s", peerId, e.getMessage());
-            return ProbeOutcome.retryable("malformed JSON: " + e.getMessage());
-          }
+          return outcome;
         })
         .exceptionally(t -> {
           LogManager.instance().log(this, Level.INFO,
@@ -822,6 +897,48 @@ class BootstrapElection {
           return ProbeOutcome.retryable(t.getMessage());
         });
   }
+
+  /**
+   * What one {@code /bootstrap-state} answer from the probe of {@code peerId} tells the election. Package-private and
+   * pure for unit testing.
+   * <p>
+   * A 200 counts as {@code peerId}'s state only when the answer names {@code peerId} as the node that wrote it (issue
+   * #8548). The election files the answer under the id of the peer it meant to ask, so an answer from another node -
+   * the dialled address being another peer's, or a server of another cluster on the same host - would otherwise elect
+   * from a {@code lastTxId} and fingerprint that peer does not hold, without a line in the log. Every build that serves
+   * this endpoint names itself in {@code peerId}, so an answer that names nobody is refused too. The refusal is
+   * {@code FATAL}: the address is resolved once per pass, so a retry would dial the same node and get the same answer
+   * until the bootstrap budget ran out. The peer then reaches the SEVERE line naming the peers the election assumes
+   * hold no data.
+   * <p>
+   * "Assumed empty" is the conscious choice here, not a neutral one: a peer that really holds the freshest copy behind
+   * a misdeclared address is outvoted. It is no worse than before - that peer's own state was never read then either,
+   * only replaced by another node's - and it is the same outcome as for an unreachable peer, so it needs no new
+   * handling. Failing the pass instead would turn one wrong port into a cluster that cannot bootstrap at all.
+   */
+  static ProbeOutcome probeOutcomeOf(final RaftPeerId peerId, final int status, final String body,
+      final Set<String> dbFilter) {
+    if (status != 200)
+      return isRetryableProbeStatus(status) ? ProbeOutcome.retryable("HTTP " + status) : ProbeOutcome.fatal("HTTP " + status);
+    try {
+      final JSONObject json = new JSONObject(body);
+      final String answeredBy = json.getString("peerId", "");
+      if (!answeredBy.equals(peerId.toString()))
+        return ProbeOutcome.fatal("the answer was written by " + (answeredBy.isEmpty() ? "a node that names no peer" :
+            "peer '" + answeredBy + "'") + ", not by '" + peerId + "': the address does not identify that peer "
+            + "(declare each node's 'http' port explicitly in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + ")");
+
+      final Map<String, PeerState> result = new HashMap<>();
+      for (final Map.Entry<String, ArcadeStateMachine.BootstrapBaseline> e : parseBootstrapState(json, dbFilter).entrySet())
+        result.put(e.getKey(), new PeerState(peerId, e.getKey(), e.getValue().fingerprint(), e.getValue().lastTxId()));
+      return ProbeOutcome.ok(result);
+    } catch (final Exception e) {
+      return ProbeOutcome.retryable(MALFORMED_ANSWER + e.getMessage());
+    }
+  }
+
+  /** Prefix of the {@link ProbeOutcome#detail()} {@link #probeOutcomeOf} gives an answer it cannot parse. */
+  static final String MALFORMED_ANSWER = "malformed JSON: ";
 
   private Map<String, PeerState> computeLocalStates(final RaftPeerId localId, final Set<String> dbFilter) {
     final Map<String, PeerState> result = new HashMap<>();

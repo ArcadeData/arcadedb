@@ -53,9 +53,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 public class LocalDocumentType implements DocumentType {
+  /**
+   * Serialises renames of THIS type against each other (issue #7937). Deliberately a lock of the type instance and
+   * not the database write lock: every bucket rename waits for the whole database's page flush queue to drain, and
+   * holding the schema write lock across N such drains is the stall the engine keeps outside every lock. Two
+   * renames of DIFFERENT types do not contend. Reentrant because {@code LocalVertexType.rename()} calls
+   * {@code super.rename()} - and again to roll back - inside its own critical section.
+   * <p>
+   * Lock hierarchy: this lock is taken BEFORE the database write lock, never after. No path may hold the database
+   * write lock and then call {@code rename()} (today only {@code ALTER TYPE} does, without holding it).
+   */
+  final ReentrantLock renameLock = new ReentrantLock();
+
   // Reassigned by rename() under the schema write lock (with a rollback assignment on failure) and read lock-free by
   // getName() and by instanceOf(String), which openCypher's Labels calls during query planning while holding no
   // database lock. Volatile for the same reason as the copy-on-write members below: without it a planning thread has
@@ -310,9 +323,25 @@ public class LocalDocumentType implements DocumentType {
    * flush queue to drain ({@link com.arcadedb.engine.PaginatedComponent#rename}), which is the long part this
    * engine deliberately keeps outside every lock. So only the reservation takes the lock, and it is the map
    * operations alone.
+   * <p>
+   * Two renames of the SAME type are serialised by {@link #renameLock}, a per-type lock that never touches the
+   * database write lock, so the unsynchronised middle of this method (the name capture, the bucket renames and
+   * their rollback) is never run by two threads at once (issue #7937).
    */
   public void rename(final String newName) {
     checkForSchemaMutation();
+
+    // A second rename of this same type waits here and then starts from whatever name the first one left, instead of
+    // capturing a name the first is in the middle of replacing and racing it over the same bucket files (#7937).
+    renameLock.lock();
+    try {
+      renameInternal(newName);
+    } finally {
+      renameLock.unlock();
+    }
+  }
+
+  private void renameInternal(final String newName) {
     if (schema.existsType(newName))
       throw new IllegalArgumentException("Type with name '" + newName + "' already exists");
 

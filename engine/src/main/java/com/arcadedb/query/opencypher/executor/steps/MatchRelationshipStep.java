@@ -28,6 +28,7 @@ import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -407,9 +408,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             }
 
             // Create result with GAVVertex (no OLTP load)
-            final ResultInternal result = new ResultInternal();
-            for (final String prop : lastResult.getPropertyNames())
-              result.setProperty(prop, lastResult.getProperty(prop));
+            final ResultInternal result = ResultInternal.copyBindings(lastResult, 2);
             result.setProperty(targetVariable,
                 new GAVVertex(targetRid, neighborId, currentGavProvider, db));
 
@@ -461,12 +460,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             }
 
             // Create result with target vertex (no edge binding in fast path)
-            final ResultInternal result = new ResultInternal();
-
-            // Copy all properties from previous result
-            for (final String prop : lastResult.getPropertyNames()) {
-              result.setProperty(prop, lastResult.getProperty(prop));
-            }
+            final ResultInternal result = ResultInternal.copyBindings(lastResult, 2);
 
             // Add target vertex binding
             result.setProperty(targetVariable, targetVertex);
@@ -568,12 +562,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             }
 
             // Create result with edge and target vertex
-            final ResultInternal result = new ResultInternal();
-
-            // Copy all properties from previous result
-            for (final String prop : lastResult.getPropertyNames()) {
-              result.setProperty(prop, lastResult.getProperty(prop));
-            }
+            final ResultInternal result = ResultInternal.copyBindings(lastResult, 2);
 
             // Add relationship binding if variable is specified
             if (relationshipVariable != null && !relationshipVariable.isEmpty()) {
@@ -754,17 +743,46 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     // for instance the NOT EXISTS a loader wraps around each insert - the edge list can be filtered on
     // the neighbour pointer held in the segment. Without this the step materialises every edge of the
     // source and only rejects it at the bound-target check below, which on a super-node means hundreds
-    // of thousands of record loads to answer a question about one edge.
+    // of thousands of record loads to answer a question about one edge. Over an edge type declared
+    // unidirectional, which stores no incoming side, the edges are looked for from the end that stores them
+    // (issue #8625).
     final RID boundTarget = getBoundTargetRID(lastResult);
-    if (boundTarget != null && vertex instanceof VertexInternal internalVertex)
+    if (boundTarget != null && vertex instanceof VertexInternal internalVertex) {
+      if (IncomingEdgeLookup.isIncomingSideMissing(context.getDatabase().getSchema(), direction.toArcadeDirection(), types))
+        return IncomingEdgeLookup.getEdgesConnectedTo(internalVertex, direction.toArcadeDirection(), boundTarget, types);
       return ((DatabaseInternal) context.getDatabase()).getGraphEngine()
           .getEdgesConnectedTo(internalVertex, direction.toArcadeDirection(), boundTarget, types);
+    }
+
+    // The incoming side of an edge type declared unidirectional is stored by no vertex: the query's lookup answers it
+    // (issue #8625)
+    if (IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(), types))
+      return IncomingEdgeLookup.getEdges(context, vertex, direction.toArcadeDirection(), types);
+
+    // A relationship nothing reads - the anonymous one a multi-hop pattern binds under an internal name only so the
+    // later hops can check uniqueness - is followed on the endpoints its edge-list entry holds, without loading its
+    // record (issue #8537). A user variable, a path, or an inline predicate on the relationship all read it.
+    if (isRelationshipUnread(lastResult) && vertex instanceof VertexInternal internalVertex)
+      return ((DatabaseInternal) context.getDatabase()).getGraphEngine()
+          .getEdgesKnowingEndpoints(internalVertex, direction.toArcadeDirection(), types);
 
     if (types == null || types.length == 0) {
       return vertex.getEdges(direction.toArcadeDirection()).iterator();
     } else {
       return vertex.getEdges(direction.toArcadeDirection(), types).iterator();
     }
+  }
+
+  /**
+   * True when the edges this step walks are never read, only told apart: the relationship is anonymous or bound
+   * under an internal name, no path is built from it, it carries no inline property map or WHERE, and it is not
+   * pinned by an earlier binding.
+   */
+  private boolean isRelationshipUnread(final Result lastResult) {
+    if (relationshipVariable != null && !relationshipVariable.isEmpty()
+        && (!relationshipVariable.startsWith("  ") || lastResult.hasProperty(relationshipVariable)))
+      return false;
+    return (pathVariable == null || pathVariable.isEmpty()) && !pattern.hasProperties() && !pattern.hasWhereExpression();
   }
 
   /**
@@ -828,7 +846,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     }
 
     final Iterator<Vertex> it;
-    if (types == null || types.length == 0)
+    if (IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(), types))
+      it = IncomingEdgeLookup.getVertices(context, vertex, direction.toArcadeDirection(), types);
+    else if (types == null || types.length == 0)
       it = vertex.getVertices(direction.toArcadeDirection()).iterator();
     else
       it = vertex.getVertices(direction.toArcadeDirection(), types).iterator();
@@ -921,14 +941,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     } else if (direction == Direction.IN) {
       return edge.getOutVertex();
     } else {
-      // BOTH direction - need to check which vertex is the source
-      // Load out vertex first (more common case for directed graphs)
-      final Vertex out = edge.getOutVertex();
-      if (out.getIdentity().equals(sourceVertex.getIdentity())) {
-        return edge.getInVertex();
-      } else {
-        return out;
-      }
+      // BOTH direction - compare the endpoint RIDs, which an edge walked from an edge list answers without loading
+      // its record (issue #8537), and resolve only the far end
+      return edge.getOut().equals(sourceVertex.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
     }
   }
 

@@ -130,6 +130,28 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // the moment issue #7021 made this lookup polymorphic. Same write-once-per-execution contract as the
   // fields above, and cleared with them.
   private       Collection<TypeIndex> polymorphicIndexes;
+  /** Context variable the plan sets to TRUE for a read-only statement; the scan hash below is only ever built for one. */
+  public static final String READ_ONLY_STATEMENT_KEY = "cypherReadOnlyStatement";
+  /**
+   * Upper bound on the records a transient scan hash may hold, so it cannot outweigh the scans it replaces. Each
+   * concurrent query, and each unindexed chained MATCH step in it, holds its own hash (tens of MB at the cap).
+   */
+  private static final long  SCAN_HASH_MAX_RECORDS   = 200_000L;
+
+  // Issue #8695: a chained single-label MATCH whose inline equality has no index re-scans the whole type once per outer
+  // row. From the second such scan on, the type is read once into a hash over one property (see
+  // {@link ScanPropertyHashIndex}) and each row only visits the records sharing its value. Per-execution state like
+  // the fields above, never reset because the step instance lives for one execution. {@code unindexedScanOpens} counts
+  // the scans so a query that opens it once (a LIMIT, a single outer row) never pays for the build. Only for a
+  // read-only statement: the snapshot would not see a record an upstream CREATE/SET/MERGE produced mid-query, which
+  // the live scan does. Under READ_COMMITTED it likewise does not see records other transactions commit after the
+  // build; accepted, since the statement is a point-in-time read anyway. A dynamic-label pattern never uses it: the
+  // hash is built for one label.
+  private       int                   unindexedScanOpens;
+  private       String                scanHashProperty;
+  private       ScanPropertyHashIndex scanHashIndex;
+  private       boolean               scanHashDeclined;
+  private       int                   scanHashMisses;
 
   /**
    * Creates a match node step.
@@ -219,6 +241,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return false;
     final Expression arg = func.getArguments().get(0);
     return arg instanceof VariableExpression varExpr && variable.equals(varExpr.getVariableName());
+  }
+
+  /** The variable this step binds. */
+  public String getVariable() {
+    return variable;
   }
 
   @Override
@@ -627,6 +654,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
             return partitionedIter;
         }
 
+        // No index available - a chained match re-opens this scan per outer row, which a transient hash answers
+        // without the repeated full scans (issue #8695)
+        if (prev != null && !pattern.hasDynamicLabels() && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+          final Iterator<Identifiable> hashed = tryScanHashIndex(label, currentInputResult);
+          if (hashed != null)
+            return hashed;
+        }
+
         // No index available - fall back to full type scan
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
@@ -658,6 +693,63 @@ public class MatchNodeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
+  }
+
+  /**
+   * Answers a chained, unindexed inline-equality match from a hash built over one full scan, or returns null to
+   * leave the plain scan in charge (first open, unsupported value type, type too large).
+   */
+  private Iterator<Identifiable> tryScanHashIndex(final String label, final Result currentInputResult) {
+    if (scanHashDeclined)
+      return null;
+    if (scanHashIndex == null) {
+      if (!Boolean.TRUE.equals(context.getVariable(READ_ONLY_STATEMENT_KEY))) {
+        scanHashDeclined = true;
+        return null;
+      }
+      if (++unindexedScanOpens < 2)
+        return null;
+      if (context.getDatabase().countType(label, true) > SCAN_HASH_MAX_RECORDS) {
+        scanHashDeclined = true;
+        return null;
+      }
+      // Prefer a property whose value comes from the row (an expression or a parameter): a literal in the map is the
+      // same for every row and usually the low-cardinality one ({kind: 'X', name: r.v}), a poor key.
+      String fallback = null;
+      for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+        final Object declared = entry.getValue();
+        if (!ScanPropertyHashIndex.isSupported(InlineProperties.resolve(declared, currentInputResult, context)))
+          continue;
+        if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)) {
+          scanHashProperty = entry.getKey();
+          break;
+        }
+        if (fallback == null)
+          fallback = entry.getKey();
+      }
+      if (scanHashProperty == null)
+        scanHashProperty = fallback;
+      if (scanHashProperty == null) {
+        // a row whose values are null (an earlier OPTIONAL MATCH) says nothing about the next ones: give up only after a few
+        if (++scanHashMisses >= 8)
+          scanHashDeclined = true;
+        return null;
+      }
+
+      @SuppressWarnings("unchecked") final Iterator<Identifiable> scan =
+          (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+      final ScanPropertyHashIndex built = new ScanPropertyHashIndex(scan, scanHashProperty, WorkGuard.forCommandDeadline(context));
+      if (!built.isSelective()) {
+        scanHashDeclined = true;
+        return null;
+      }
+      scanHashIndex = built;
+    }
+
+    final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
+    if (value == null)
+      return Collections.emptyIterator(); // a null inline value equals nothing (InlineProperties.matchesResolvedValue)
+    return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null; // null: plain scan for this row
   }
 
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {

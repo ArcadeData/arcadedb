@@ -26,6 +26,8 @@ import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -120,5 +122,40 @@ class RaftPropertiesBuilderTest {
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("arcadedb.ha.writeBufferSize")
         .hasMessageContaining("must be >= arcadedb.ha.appendBufferSize");
+  }
+
+  // ---- issue #8672: an election timeout window with no room for jitter livelocks the election ----
+
+  /**
+   * Found running the chaos harness with the low-timeout arm of issue #8672: {@code electionTimeoutMax=5000} against the
+   * default {@code electionTimeoutMin=5000} leaves no jitter, so both surviving followers of a split time out at the same
+   * instant, split the vote and do it again, with no leader elected for over a minute.
+   */
+  @Test
+  void aMaximumEqualToTheMinimumIsWidenedSoElectionsKeepTheirJitter() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX, 5000);
+
+    final RaftProperties props = RaftPropertiesBuilder.build(config);
+
+    assertThat(RaftServerConfigKeys.Rpc.timeoutMin(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(5000L);
+    assertThat(RaftServerConfigKeys.Rpc.timeoutMax(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(10_000L);
+  }
+
+  @Test
+  void aMaximumBelowTheMinimumIsWidenedToo() {
+    assertThat(RaftPropertiesBuilder.effectiveElectionTimeoutMaxMs(8000, 3000)).isEqualTo(16_000);
+  }
+
+  @Test
+  void aValidWindowIsLeftAlone() {
+    assertThat(RaftPropertiesBuilder.effectiveElectionTimeoutMaxMs(2500, 5000)).isEqualTo(5000);
+    assertThat(RaftPropertiesBuilder.effectiveElectionTimeoutMaxMs(5000, 10_000)).isEqualTo(10_000);
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN, 2500);
+    config.setValue(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX, 5000);
+    final RaftProperties props = RaftPropertiesBuilder.build(config);
+    assertThat(RaftServerConfigKeys.Rpc.timeoutMax(props).toLong(TimeUnit.MILLISECONDS)).isEqualTo(5000L);
   }
 }

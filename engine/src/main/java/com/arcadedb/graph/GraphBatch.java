@@ -236,6 +236,7 @@ public class GraphBatch implements AutoCloseable {
   private int[]      edgeTypeBucketIds;   // first bucket id of the edge type (for light edge RID)
   private boolean[]  edgeHasProperties;
   private boolean[]  edgeIsLightweight;
+  private boolean[]  edgeIsBidirectional; // the edge type's declaration: only a bidirectional type gets its incoming side
   private long       duplicateLightEdges;
   private Object[][] edgeProperties;      // null for light edges
   private int        edgeCount;
@@ -307,6 +308,7 @@ public class GraphBatch implements AutoCloseable {
   // --- Edge type cache: avoids repeated schema lookups ---
   private final Map<String, Integer> edgeTypeFirstBucketCache = new ConcurrentHashMap<>();
   private final Map<String, Boolean> lightweightTypeCache     = new ConcurrentHashMap<>();
+  private final Map<String, Boolean> bidirectionalTypeCache   = new ConcurrentHashMap<>();
 
   // --- Head chunk RID cache: avoids vertex loads when chunk is already known ---
   // Bounded LRU wrapped in synchronizedMap (issue #5664): getOrCreate*EdgeChunk() is called from parallel async
@@ -432,6 +434,7 @@ public class GraphBatch implements AutoCloseable {
     edgeTypeBucketIds = new int[batchSize];
     edgeHasProperties = new boolean[batchSize];
     edgeIsLightweight = new boolean[batchSize];
+    edgeIsBidirectional = new boolean[batchSize];
     edgeProperties = new Object[batchSize][];
     sortIndex = new int[batchSize];
     mergeTmp = new int[batchSize / 2 + 1];
@@ -720,6 +723,9 @@ public class GraphBatch implements AutoCloseable {
    * @param edgeTypeName    edge type name (must exist in schema)
    * @param destVertexRID   destination vertex RID (must be already persisted)
    * @param edgeProperties  optional key-value pairs (if empty and lightEdges=true, a light edge is created)
+   *
+   * @throws IllegalArgumentException if the batch was built {@link Builder#withBidirectional(boolean) unidirectional}
+   *                                  and the edge type is declared bidirectional
    */
   public void newEdge(final RID sourceVertexRID, final String edgeTypeName, final RID destVertexRID,
       final Object... edgeProperties) {
@@ -730,10 +736,20 @@ public class GraphBatch implements AutoCloseable {
 
     // Cached edge type bucket ID lookup
     final int typeBucketId = edgeTypeFirstBucketCache.computeIfAbsent(edgeTypeName,
-        name -> ((EdgeType) database.getSchema().getType(name)).getFirstBucketId());
+        name -> edgeType(name).getFirstBucketId());
 
     final boolean typeIsLightweight = lightweightTypeCache.computeIfAbsent(edgeTypeName,
-        name -> ((EdgeType) database.getSchema().getType(name)).isLightweight());
+        name -> edgeType(name).isLightweight());
+
+    // The direction belongs to the schema, as the storage shape does (issue #8625). A unidirectional batch on a
+    // bidirectional type would leave edges the type promises to reach from their target unreachable from it, and a
+    // query walking the pattern from that end would silently answer nothing: refused, as Vertex.newEdge() refuses it.
+    // A unidirectional type gets no incoming side whatever the batch was told.
+    final boolean typeIsBidirectional = bidirectionalTypeCache.computeIfAbsent(edgeTypeName,
+        name -> edgeType(name).isBidirectional());
+    if (typeIsBidirectional && !bidirectional)
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeTypeName)
+          + ". Build the batch with withBidirectional(true), or declare the type UNIDIRECTIONAL");
 
     final int idx = edgeCount;
     edgeSrcBucketIds[idx] = sourceVertexRID.getBucketId();
@@ -753,11 +769,19 @@ public class GraphBatch implements AutoCloseable {
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
     edgeIsLightweight[idx] = typeIsLightweight || (lightEdges && !hasProps);
+    edgeIsBidirectional[idx] = typeIsBidirectional;
 
     edgeCount++;
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /** The edge type {@code name}, or a clear refusal for a name that is missing or not an edge type. */
+  private EdgeType edgeType(final String name) {
+    if (!(database.getSchema().getTypeOrNull(name) instanceof EdgeType edgeType))
+      throw new IllegalArgumentException("Edge type '" + name + "' not found");
+    return edgeType;
   }
 
   /**
@@ -1854,6 +1878,8 @@ public class GraphBatch implements AutoCloseable {
 
     for (int k = from; k < to; k++) {
       final int i = throughSortIndex ? sortIndex[k] : k;
+      if (!edgeIsBidirectional[i])
+        continue;
       final int pos = inEdgeCount;
       inEdgeBucketIds[pos] = edgeRIDs[i].getBucketId();
       inEdgePositions[pos] = edgeRIDs[i].getPosition();
@@ -3400,8 +3426,10 @@ public class GraphBatch implements AutoCloseable {
     }
 
     /**
-     * If true (default), incoming edges are also connected. Set to false for
-     * unidirectional graphs or when incoming edges will be connected later.
+     * If true (default), incoming edges are connected for the edge types declared bidirectional; an edge type declared
+     * unidirectional never gets them, whatever this flag says. Set to false to load only unidirectional edge types:
+     * {@link GraphBatch#newEdge} then refuses an edge of a bidirectional type, since a query walking it from its
+     * target would find nothing (issue #8625).
      */
     public Builder withBidirectional(final boolean bidirectional) {
       this.bidirectional = bidirectional;

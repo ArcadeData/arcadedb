@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.TimeBoundRegex;
 
@@ -147,6 +148,26 @@ public interface CommandContext {
   Map<String, Object> getVariables();
 
   CommandContext getParent();
+
+  /**
+   * The heap the buffers of this command's query hold, which reserves them from the budget every query in the JVM shares
+   * (issue #8591): the tracker of the root context, handed out as well by every context derived from it, so sub-queries
+   * and parallel-scan workers charge the query they work for. Null when the context belongs to no query.
+   */
+  default QueryHeapTracker getQueryHeapTracker() {
+    final CommandContext parent = getParent();
+    return parent != null ? parent.getQueryHeapTracker() : null;
+  }
+
+  /**
+   * The lookup that answers the incoming side of the unidirectional edge types for this command's query (issue #8625):
+   * the root context's, handed out by every context derived from it, so the scan it builds once serves the whole query.
+   * Null when the context belongs to no query.
+   */
+  default IncomingEdgeLookup getIncomingEdgeLookup() {
+    final CommandContext parent = getParent();
+    return parent != null ? parent.getIncomingEdgeLookup() : null;
+  }
 
   CommandContext setParent(CommandContext parentContext);
 

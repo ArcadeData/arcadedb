@@ -118,6 +118,10 @@ public class PostgresPortal {
    */
   public PostgresCopyStatement     copyStatement;
   /**
+   * The parameter name of a {@code SHOW}, whose value every Execute reads afresh rather than the one fixed at Parse.
+   */
+  public String                    showName;
+  /**
    * The complete materialized result of this portal's statement (issue #6458), set once - by whichever of a
    * Describe('P') or the first Execute runs the statement first - and read by every Execute after that to
    * hand out {@code limit}-sized slices via {@link #resultCursor}. {@link #cachedResultSet} holds only the
@@ -189,8 +193,11 @@ public class PostgresPortal {
     portal.isolationLevel = template.isolationLevel;
     portal.setting = template.setting;
     portal.copyStatement = template.copyStatement;
+    portal.showName = template.showName;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
+    // The answer PARSE materialized (SHOW, system and catalog queries). Read-only: a slice is copied out of it
+    portal.fullResultSet = template.fullResultSet;
     portal.columns = template.columns;
     portal.columnsDescribed = template.columnsDescribed;
     portal.statement = template;

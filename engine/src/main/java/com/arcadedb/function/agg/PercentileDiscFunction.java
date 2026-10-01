@@ -19,9 +19,11 @@
 package com.arcadedb.function.agg;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.HeapBufferingFunction;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,9 +33,19 @@ import java.util.List;
  * Returns the nearest value to the given percentile (no interpolation).
  * Example: percentileDisc(n.age, 0.5) returns the median age
  */
-public class PercentileDiscFunction implements StatelessFunction {
-  private final List<Number> values = new ArrayList<>();
-  private double percentile = -1;
+public class PercentileDiscFunction implements StatelessFunction, HeapBufferingFunction {
+  private final List<Number>       values     = new ArrayList<>();
+  private       double             percentile = -1;
+  // THE VALUES ARE HELD UNTIL THE AGGREGATION ENDS: CHARGED TO THE HEAP BUDGET OF ALL THE QUERIES (ISSUE #8591)
+  private       OperationHeapLimit limit;
+  // TRUE WHEN NO STEP HANDED AN OPERATION: THE CHARGE IS THEN THIS FUNCTION'S TO GIVE BACK
+  private       boolean            ownLimit;
+
+  @Override
+  public void setHeapLimit(final OperationHeapLimit owner) {
+    limit = owner.child("percentileDisc()");
+    ownLimit = false;
+  }
 
   @Override
   public String getName() {
@@ -60,8 +72,14 @@ public class PercentileDiscFunction implements StatelessFunction {
       if (percentile < 0.0 || percentile > 1.0)
         throw new CommandExecutionException("NumberOutOfRange: percentile must be between 0.0 and 1.0, got: " + percentile);
     }
-    if (args[0] instanceof Number)
-      values.add((Number) args[0]);
+    if (args[0] instanceof Number number) {
+      values.add(number);
+      if (limit == null) {
+        limit = OperationHeapLimit.of(context, "percentileDisc()");
+        ownLimit = true;
+      }
+      limit.chargeElement(number, 0);
+    }
     return null;
   }
 
@@ -72,6 +90,8 @@ public class PercentileDiscFunction implements StatelessFunction {
 
   @Override
   public Object getAggregatedResult() {
+    if (ownLimit)
+      limit.release();
     if (values.isEmpty())
       return null;
     values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));

@@ -152,6 +152,7 @@ public class MutableEdge extends MutableDocument implements Edge {
       else
         this.in = newIn;
       dirty = true;
+      propertiesAssigned = true;
       return this;
     } else if ("@out".equals(name)) {
       final RID newOut = toRID(value);
@@ -162,6 +163,7 @@ public class MutableEdge extends MutableDocument implements Edge {
       else
         this.out = newOut;
       dirty = true;
+      propertiesAssigned = true;
       return this;
     }
     return (MutableEdge) super.set(name, value);

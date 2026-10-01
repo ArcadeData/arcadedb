@@ -192,8 +192,8 @@ class Issue8449SnapshotInstallBoundaryTest {
     }
 
     @Override
-    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
-        final String clusterToken) {
+    ReconcileFromLeaderResult reconcileDatabasesFromLeader(final String leaderPeerId, final String leaderHttpAddr, final String leaderHttpsAddr,
+        final String clusterToken, final long installedBoundaryIndex) {
       return new ReconcileFromLeaderResult(Set.of(), leaderSnapshotTermIndex);
     }
   }

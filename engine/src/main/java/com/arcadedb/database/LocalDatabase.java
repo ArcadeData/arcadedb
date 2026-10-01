@@ -102,6 +102,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
@@ -136,6 +137,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.stream.Stream;
@@ -728,6 +730,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DatabaseContext.DatabaseContextTL current =
           DatabaseContext.INSTANCE.getContext(LocalDatabase.this.getDatabasePath());
       try {
+        schema.saveConfigurationBeforeCommit();
         final Binary result = current.getLastTransaction().commit();
         if (result != null) {
           stats.writeTx.incrementAndGet();
@@ -736,6 +739,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           stats.readTx.incrementAndGet();
       } finally {
         current.popIfNotLastTransaction();
+        // AFTER THE POP, AND FOR A FAILED COMMIT TOO: THE DDL IT RAN STANDS EITHER WAY (#8635)
+        schema.saveConfigurationAtTransactionEnd();
       }
 
       return null;
@@ -757,6 +762,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final TransactionException e) {
         // ALREADY ROLLED BACK
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -786,6 +793,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // ALREADY ROLLED BACK
         }
       }
+
+      schema.saveConfigurationAtTransactionEnd();
       return null;
     });
   }
@@ -1078,6 +1087,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
         final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
+        // #8610: recorded before the read events run, which may hand back another record
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(tx.getBeginSequence());
         record = invokeAfterReadEvents(record);
         if (record == null)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -1085,6 +1097,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
 
       record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+      if (record instanceof ImmutableDocument document)
+        document.setReadInTransaction(tx.getBeginSequence());
 
       return record;
     });
@@ -1376,7 +1390,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Throwable cause) {
     final RID rid = record.getIdentity();
     try {
-      bucket.deleteRecord(rid, false);
+      bucket.retractRecord(rid);
     } catch (final Exception e) {
       cause.addSuppressed(e);
       transaction.setRollbackOnly(
@@ -1568,6 +1582,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // #7149: false means this transaction has already deleted the record, so there is nothing to write and
           // nothing to index - the delete wins, and the index entries went with it. Returning here also keeps the
           // after-update events from firing for a write that never happened.
+          // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
+          final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
           if (!tx.addUpdatedRecord(record))
             return null;
 
@@ -1589,7 +1605,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // for the diff) ONLY when an index actually changed: otherwise the previous diff source
               // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
               // that touch only non-indexed properties pay no snapshot cost at all.
-              final Document refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
+              // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
+              // the caller was already told was refused, discarding every row that was accepted.
+              final TransactionIndexContext indexChanges = tx.getIndexChanges();
+              indexChanges.armRecordUndo();
+              final Document refreshedSnapshot;
+              try {
+                refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              } catch (final RuntimeException | Error e) {
+                indexChanges.undoRecordChanges();
+                // The deferred write must not reach the commit either: it would store the refused values in a body
+                // no index entry describes. A record already queued by an earlier update keeps its queue entry,
+                // because the earlier update's indexed state is still what the index holds.
+                // (The page pinned and the off-page fingerprint recorded by addUpdatedRecord stay: the next update of
+                // the record overwrites them, so they are harmless.)
+                if (!alreadyQueued)
+                  tx.removeRecordFromCache(rid);
+                throw e;
+              } finally {
+                indexChanges.disarmRecordUndo();
+              }
               if (refreshedSnapshot != null)
                 tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
             }
@@ -2168,7 +2204,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final String edgeType,
       final boolean bidirectional, final Object... properties) {
     if (!bidirectional && schema.getType(edgeType) instanceof EdgeType type && type.isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues,
         createVertexIfNotExist, edgeType, properties);
@@ -2848,6 +2884,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
 
+  /**
+   * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
+   * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
+   */
+  static volatile Consumer<LocalDatabase> TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
+
   private void closeInternal(final boolean drop) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
@@ -3231,6 +3273,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
 
+    // #8626: A SYNC FORCES ONLY THE FILES WRITTEN SINCE THEIR LAST FSYNC, AND A CLEAN CLOSE IS WHAT LEAVES EVERY FILE
+    // SYNCED FOR THE NEXT OPEN. AFTER A CRASH NOTHING IS KNOWN ABOUT WHICH WRITES OF THE DEAD PROCESS REACHED THE DISK
+    // (A PROCESS CRASH LEAVES THEM IN THE OS PAGE CACHE, WHERE A LATER POWER LOSS STILL DROPS THEM), SO EVERY FILE IS
+    // TREATED AS UNSYNCED UNTIL THE FIRST SUCCESSFUL SYNC
+    fileManager.markAllFilesUnsynced();
+
+    final Consumer<LocalDatabase> beforeReplayHook = TEST_BEFORE_RECOVERY_REPLAY_HOOK;
+    if (beforeReplayHook != null)
+      beforeReplayHook.accept(this);
+
     transactionManager.checkIntegrity();
   }
 
@@ -3301,7 +3353,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure();
+      releaseResourcesOnOpenFailure(null);
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -3312,6 +3364,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
+    } catch (final Error e) {
+      // An Error (an OutOfMemoryError replaying a large WAL, a StackOverflowError, a class that failed to load) used to
+      // skip the release above: the instance stayed marked open, kept database.lck locked and its WAL timer running,
+      // and the path could not be opened again in this JVM until a restart. Rethrown as it is, never wrapped.
+      open = false;
+      try {
+        PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
+      } catch (final Throwable t) {
+        e.addSuppressed(t);
+      }
+      releaseResourcesOnOpenFailure(e);
+      throw e;
     }
   }
 
@@ -3320,8 +3384,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * In particular it releases the JVM file lock and closes the lock-file I/O channels, the {@link FileManager} and the
    * {@link TransactionManager}. The {@code database.lck} marker is intentionally left on disk so the next open still
    * performs recovery. Every step is best-effort and isolated so a failure in one does not skip the others.
+   *
+   * @param primaryError the Error that failed the open, or null when an Exception did. With one, a step's failure of
+   *                     any kind is attached to it as suppressed and the next step still runs: a second Error thrown
+   *                     from here (an OutOfMemoryError is likely to strike again right away) would otherwise replace
+   *                     the original and skip the steps after it, leaving database.lck locked.
    */
-  private void releaseResourcesOnOpenFailure() {
+  private void releaseResourcesOnOpenFailure(final Error primaryError) {
     try {
       if (lockFile != null) {
         if (lockFileLock != null) {
@@ -3337,15 +3406,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           lockFileIO = null;
         }
       }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on releasing lock file '%s' after a failed open", e, lockFile);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on releasing lock file '%s' after a failed open", lockFile);
     }
 
     try {
       if (fileManager != null)
         fileManager.close();
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on closing file manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing file manager after a failed open of database '%s'", name);
     }
 
     try {
@@ -3356,10 +3425,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // recovery-capable open needs to replay - discarding every change that had not yet reached the
         // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
         transactionManager.close(false, true);
-    } catch (final Exception e) {
-      LogManager.instance()
-          .log(this, Level.WARNING, "Error on closing transaction manager after a failed open of database '%s'", e, name);
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on closing transaction manager after a failed open of database '%s'",
+          name);
     }
+  }
+
+  /**
+   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. Without a primary Error the behaviour is the one
+   * the Exception path always had: an Exception is logged and the next step runs, an Error propagates.
+   */
+  private void onOpenFailureReleaseError(final Error primaryError, final Throwable failure, final String message,
+      final Object argument) {
+    if (primaryError != null)
+      primaryError.addSuppressed(failure);
+    else if (failure instanceof Error error)
+      throw error;
+    else
+      LogManager.instance().log(this, Level.WARNING, message, failure, argument);
   }
 
   /**
@@ -3443,16 +3526,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 
-    final long now = System.currentTimeMillis();
-
+    // #8523: THIS RUNS ON EVERY SCHEMA LOOKUP AND RECORD READ OF EVERY THREAD, SO IT READS THE COARSE CLOCK (A VOLATILE)
+    // RATHER THAN THE SYSTEM ONE, AND WRITES THE STAMPS ONLY WHEN THE TICK CHANGED. AN UNCONDITIONAL STORE MADE EACH CORE TAKE
+    // THE CACHE LINE (SHARED WITH open AND fenceReason, READ JUST ABOVE) AWAY FROM ALL THE OTHERS: A SCAN ON 12 THREADS
+    // RAN NO FASTER THAN ON ONE
+    final long now = CoarseClock.currentTimeMillis();
     if (updateIntent) {
       if (mode == ComponentFile.MODE.READ_ONLY)
         throw new DatabaseIsReadOnlyException(databaseReadOnlyErrorMessage);
 
-      lastUpdatedOn = now;
+      if (lastUpdatedOn != now)
+        lastUpdatedOn = now;
     }
 
-    lastUsedOn = now;
+    if (lastUsedOn != now)
+      lastUsedOn = now;
   }
 
   private void setDefaultValues(final Record record) {

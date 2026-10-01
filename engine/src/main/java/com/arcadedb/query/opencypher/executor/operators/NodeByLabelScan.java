@@ -24,6 +24,7 @@ import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -56,6 +57,13 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
   private final String            variable;
   private final String            label;
   private BooleanExpression whereFilter; // Optional inline WHERE predicate (pushdown)
+  /**
+   * Whether the calling thread's last execution filtered in parallel, for the PROFILE that follows it on the same thread.
+   * Per thread because the operator belongs to a cached plan that concurrent executions share; null before it decided. Not
+   * cleared on close(): the PROFILE text is rendered after the execution closes. What stays behind is one Boolean per
+   * worker thread per cached plan, weakly keyed on this operator, so it goes with the plan.
+   */
+  private final ThreadLocal<Boolean> servedInParallel = new ThreadLocal<>();
 
   public NodeByLabelScan(final String variable, final String label,
                         final double estimatedCost, final long estimatedCardinality) {
@@ -97,8 +105,12 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    // A predicate of nodes that read only the row runs in the workers of a parallel scan (issue #8725), as SQL's does
+    final BooleanExpression filter = whereFilter;
+    final boolean parallelCandidate = filter != null && ParallelSafeExpressions.isParallelSafe(filter, variable);
     return new ResultSet() {
       private Iterator<Identifiable> iterator = null;
+      private ResultSet parallelRows = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -130,7 +142,7 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
         bufferIndex = 0;
 
         // Initialize iterator on first call
-        if (iterator == null) {
+        if (iterator == null && parallelRows == null) {
           // Check if type exists before iterating
           // This handles multi-label queries where the composite type may not exist.
           // A non-vertex type with the same name (edge/document type) matches no node: labels and
@@ -146,7 +158,17 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
           // single bucket: read that one instead of the whole type.
           final String prunedBucket = PartitionPruning.prunedBucketName(
               context.getDatabase().getSchema().getType(label), patternProperties);
-          if (prunedBucket != null) {
+          final ParallelRecordScan parallelScan = parallelCandidate && prunedBucket == null ?
+              ParallelRecordScan.plan(context, label, (record, workerContext) -> {
+                final ResultInternal row = new ResultInternal();
+                row.setProperty(variable, record.asVertex());
+                return filter.evaluate(row, workerContext) ? row : null;
+              }) : null;
+          servedInParallel.set(parallelScan != null);
+          if (parallelScan != null) {
+            // The rows come back already filtered, in the order the sequential scan reads them
+            parallelRows = parallelScan.pull(context);
+          } else if (prunedBucket != null) {
             usedPartitionBucket = prunedBucket;
             @SuppressWarnings("unchecked")
             final Iterator<Identifiable> prunedIter =
@@ -158,6 +180,16 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
                 context.getDatabase().iterateType(label, true);
             iterator = iter;
           }
+        }
+
+        if (parallelRows != null) {
+          while (buffer.size() < n && parallelRows.hasNext()) {
+            guard.check();
+            buffer.add(parallelRows.next());
+          }
+          if (!parallelRows.hasNext())
+            finished = true;
+          return;
         }
 
         // Fetch up to n vertices
@@ -186,7 +218,13 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
 
       @Override
       public void close() {
-        // No resources to close
+        // The workers of a parallel scan stop when its result set is closed
+        if (parallelRows != null) {
+          parallelRows.close();
+          parallelRows = null;
+        }
+        // Nothing is read after a close: the scan must not plan itself again
+        finished = true;
       }
     };
   }
@@ -207,6 +245,8 @@ public class NodeByLabelScan extends AbstractPhysicalOperator {
       sb.append(" [partition:").append(usedPartitionBucket).append("]");
     if (whereFilter != null)
       sb.append(" [filter: ").append(whereFilter.getText()).append("]");
+    if (Boolean.TRUE.equals(servedInParallel.get()))
+      sb.append(" [parallel]");
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

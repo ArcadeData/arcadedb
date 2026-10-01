@@ -42,8 +42,10 @@ public class LimitExecutionStep extends AbstractExecutionStep {
     if (limitVal == -1)
       return getPrev().syncPull(context, nRecords);
 
-    if (limitVal <= loaded)
+    if (limitVal <= loaded) {
+      releaseUpstream();
       return new InternalResultSet();
+    }
 
     checkForPrevious();
 
@@ -67,7 +69,8 @@ public class LimitExecutionStep extends AbstractExecutionStep {
         if (loaded >= limitVal)
           throw new NoSuchElementException();
         final Result result = upstream.next();
-        loaded++;
+        if (++loaded >= limitVal)
+          releaseUpstream();
         return result;
       }
 
@@ -86,6 +89,18 @@ public class LimitExecutionStep extends AbstractExecutionStep {
         return upstream.getStatistics();
       }
     };
+  }
+
+  /**
+   * The limit is reached: no row will ever be pulled from upstream again, so its resources go now rather than when the
+   * caller closes the result set - which a caller that reads a result set to its end often never does. A parallel scan
+   * would otherwise keep its producers, and the threads of the JVM-wide pool they run on, parked on full channels
+   * until the abandonment timeout (issue #8594); an index scan its cursors. {@link #close()} is idempotent down the
+   * chain, so the caller's close later is a no-op.
+   */
+  private void releaseUpstream() {
+    if (prev != null)
+      prev.close();
   }
 
   @Override

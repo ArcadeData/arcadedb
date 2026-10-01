@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.ImmutableLightEdge;
 import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
@@ -329,7 +330,7 @@ public class RemoteVertex {
   public MutableEdge newEdge(final String edgeType, final Identifiable toVertex, final boolean bidirectional,
       final Object... properties) {
     if (!bidirectional && ((EdgeType) remoteDatabase.getSchema().getType(edgeType)).isBidirectional())
-      throw new IllegalArgumentException("Edge type '" + edgeType + "' is not bidirectional");
+      throw new IllegalArgumentException(GraphEngine.unidirectionalEdgeOnBidirectionalTypeMessage(edgeType));
 
     return newEdge(edgeType, toVertex, properties);
   }

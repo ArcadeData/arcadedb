@@ -55,6 +55,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,6 +104,12 @@ public final class SnapshotInstaller {
 
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
+  static final String SNAPSHOT_ORPHANS_DIR   = ".snapshot-orphans";
+  /**
+   * Written before a legacy rollback consumes the backup, and listing the live entries it found, so a crash before
+   * the quarantine of colliding snapshot files is resumed.
+   */
+  static final String SNAPSHOT_QUARANTINE_FILE = ".snapshot-quarantine";
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
@@ -168,6 +175,15 @@ public final class SnapshotInstaller {
    * lock gets no floor, which is exactly what it got before.
    */
   private static final ThreadLocal<Long> REQUIRED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
+
+  /**
+   * Where the install {@link #runRequiringSourceAppliedIndex} scopes on this thread records the applied index the
+   * leader reported for the copy it downloaded (issue #8579), {@code -1} until a download is extracted or when the
+   * leader did not report one. A one-element array so the download, several overloads deep, can write what the caller
+   * that took the install lock reads back, the same reach {@link #REQUIRED_SOURCE_APPLIED_INDEX} has in the other
+   * direction. Overwritten by every extracted download, so a retried install reports the copy it actually kept.
+   */
+  private static final ThreadLocal<long[]> SERVED_SOURCE_APPLIED_INDEX = new ThreadLocal<>();
 
   /** Logged at most once: a leader predating issue #8454 cannot say how current its copy is. */
   private static final AtomicBoolean APPLIED_INDEX_HEADER_MISSING_WARNED = new AtomicBoolean(false);
@@ -492,17 +508,20 @@ public final class SnapshotInstaller {
     final boolean keepMarkerIfDownloadFails = Files.exists(pendingMarker) && !looksLikeADatabaseDirectory(dbPath);
 
     // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
-    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
+    // one) has been reconciled away, so these deletes only ever drop genuinely disposable state. The pending marker
+    // is NOT part of it: over a torn directory it is the only thing keeping that directory unopenable, and deleting
+    // it here left a window - the staging directory creation and the marker rewrite below, both writes on what is
+    // often a full volume - in which a failure or a crash stripped it for good (issue #8381). It is rewritten in
+    // place instead, so a marker present on entry stays present at every instant.
     deleteDirectoryIfExists(snapshotNew);
     deleteDirectoryIfExists(snapshotBackup);
-    Files.deleteIfExists(pendingMarker);
     deleteSwapState(dbPath);
 
     Files.createDirectories(snapshotNew);
 
     // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
     // directory so a crash right after this point still leaves the marker on disk for startup
-    // recovery to find (issue #4830).
+    // recovery to find (issue #4830). Over an existing marker this truncates it in place.
     writeMarkerDurable(pendingMarker);
 
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
@@ -864,6 +883,46 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Marks the copy of {@code databaseName} closed on this node as one a resync could not verify - the leader did not
+   * hold it - so {@code ArcadeDBServer.getDatabase} refuses to reopen it while this node is a follower (issue #8589).
+   * Durable, so a restart does not reopen it either. A no-op for a REGISTERED database - this node serves it, and what
+   * keeps it from serving it stale is the caller's own verdict - and for a name with no directory left.
+   * <p>
+   * The check and the write hold the registry lock, so no reopen can slip between them: a reopen that ran before sees
+   * no marker and registers the copy (which the caller then finds registered), and one that runs after is refused.
+   *
+   * @return {@code true} when the marker is on disk, {@code false} when there was no closed copy to mark
+   * @throws IOException when the marker cannot be written durably: the caller must then treat the copy as the failed
+   *                     install it is, rather than leave it reopenable
+   */
+  static boolean markUnverifiedClosedCopy(final ArcadeDBServer server, final String databaseName) throws IOException {
+    // Lock-free early outs first, so a reconcile that reports the same databases LEADER_MISSING on every install does not
+    // queue on the registry lock for each of them: a registered database is not marked, and an existing mark stays -
+    // only an install or a drop removes it, and neither can run concurrently with the caller's install.
+    if (server.existsDatabase(databaseName))
+      return false;
+    final Path dbDir = Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName);
+    final Path marker = dbDir.resolve(ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE);
+    if (Files.exists(marker))
+      return true;
+    synchronized (server.getDatabasesLock()) {
+      if (server.existsDatabase(databaseName) || !Files.isDirectory(dbDir))
+        return false;
+      // The marker itself is deliberately not re-checked: a concurrent caller that wrote it first makes this a second,
+      // idempotent write of the same empty file, which is cheaper than another branch on a path this rare.
+      writeMarkerDurable(marker);
+      return true;
+    }
+  }
+
+  /** Whether {@code databaseName}'s directory carries the {@link ArcadeDBServer#UNVERIFIED_CLOSED_COPY_FILE} marker. */
+  static boolean isUnverifiedClosedCopy(final ArcadeDBServer server, final String databaseName) {
+    return Files.exists(Path.of(server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
+        databaseName, ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE));
+  }
+
+  /**
    * Resolves the on-disk path of a database, so callers no longer need to keep it open just to read its
    * path before an install. Two cases:
    * <ul>
@@ -964,9 +1023,16 @@ public final class SnapshotInstaller {
       // the installer-only entry point rather than the one that refuses a marked directory (issue #7129).
       server.reopenDatabaseUnderSnapshotRecovery(databaseName);
     } catch (final Exception e) {
-      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-          "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
-          e, databaseName);
+      // The rollback restored a closed copy a resync could not verify, marker and all: it stays closed, as it was
+      // before the install, which is not a failure (issue #8589).
+      if (isUnverifiedClosedCopy(server, databaseName))
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Database '%s' stays closed after a snapshot-install rollback: its copy is still unverified (%s)", null,
+            databaseName, e.getMessage());
+      else
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
+            e, databaseName);
     }
   }
 
@@ -1024,7 +1090,11 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to install a snapshot for '" + databaseName
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
-          + "resolve the underlying problem (typically a full or read-only volume) and retry");
+          + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
+          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
+          + "the only intact copy; delete the entries in the database directory that do not start with '.snapshot', "
+          + "move the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
+          + ".snapshot-pending");
 
     if (Files.exists(pendingMarker))
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
@@ -1455,12 +1525,36 @@ public final class SnapshotInstaller {
           completeSwapRecovery(dbDir);
           return;
         }
-        // Otherwise a live file may be an un-moved original OR an already-installed snapshot file. Re-running
-        // phase 1 would destroy the latter (#7769); leave ambiguous layouts intact.
+        // A live file may be an un-moved original OR an installed snapshot file, so classify the layout (#8304).
         if (hasLiveDatabaseFiles(dbDir)) {
-          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-              "Cannot determine the phase of the legacy snapshot swap for %s. Preserving the live files, "
-                  + "staging, backup and pending marker for manual recovery", null, dbDir);
+          if (liveFilesShareANameWithTheBackup(dbDir, snapshotBackup)) {
+            // Phase 1 renames, so a name in both places can only be a snapshot file installed over an original:
+            // phase 2 (assuming nothing recreated a backed-up name in the live directory since). Roll forward like
+            // a recorded INSTALLING phase.
+            LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+                "Resuming the legacy snapshot swap for %s, which was interrupted while installing the snapshot",
+                null, dbDir);
+            writeSwapPhase(dbDir, SwapPhase.INSTALLING);
+            atomicSwap(dbDir, snapshotNew, snapshotBackup);
+          } else {
+            // Disjoint names: almost surely a phase-1 crash, so the backup restored over the live directory is the
+            // original database. A phase-2 crash that moved only snapshot-only names lands here too; the snapshot
+            // is dropped and the next install fetches a current one.
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
+                    + "database, to the retained backup", null, dbDir);
+            // The marker goes first: deleting the staging can remove its completion marker, after which a later
+            // pass takes the generic restore branch and needs the marker to finish the quarantine.
+            writeFileForced(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE), String.join("\n", liveEntryNames(dbDir)));
+            fsyncDirectory(dbDir);
+            snapshotSwapProgress("QUARANTINE_MARKED");
+            deleteDirectoryIfExists(snapshotNew);
+            restoreBackup(dbDir, snapshotBackup);
+            snapshotSwapProgress("RESTORED");
+            quarantineCollidingFiles(dbDir);
+          }
+          requireRecoveredDatabase(dbDir);
+          completeSwapRecovery(dbDir);
           return;
         }
         // No live files: phase 1 finished, so complete the swap from the staging, as recovery always has. (A legacy
@@ -1493,8 +1587,13 @@ public final class SnapshotInstaller {
         deleteDirectoryIfExists(snapshotNew);
         // Move backup contents back into dbDir
         restoreBackup(dbDir, snapshotBackup);
+        // Also where an interrupted legacy rollback (above) is finished by a later pass.
+        quarantineCollidingFiles(dbDir);
 
       } else {
+        // A legacy rollback that consumed its backup but crashed before the orphan quarantine: finish it first.
+        quarantineCollidingFiles(dbDir);
+
         // No completion marker and no backup. "The download was interrupted before the backup was created" is
         // only ONE way to reach this state, and it leaves dbDir intact. The other is "a backup was created, used
         // for a failed rollback, and is now gone", which leaves dbDir TORN - and this branch used to bless both,
@@ -1575,9 +1674,80 @@ public final class SnapshotInstaller {
     }
   }
 
+  /** Whether an entry of the database directory belongs to the database, rather than to the snapshot machinery. */
+  private static boolean isLiveDatabaseEntry(final Path entry) {
+    return !entry.getFileName().toString().startsWith(".snapshot");
+  }
+
+  /**
+   * Finishes a legacy rollback: moves the live entries that {@link #SNAPSHOT_QUARANTINE_FILE} recorded from before
+   * the backup was restored, and whose component file id is also held by another live file, into
+   * {@link #SNAPSHOT_ORPHANS_DIR}, then removes the marker. A no-op without the marker.
+   * <p>
+   * Those entries are originals after a phase-1 crash, so nothing happens then. After a phase-2 crash that moved
+   * only snapshot-only names they are snapshot files, and one whose file id collides with a restored original makes
+   * the engine refuse to open the database (file ids are unique per database, the file manager refuses a second
+   * file on one id). Judging by the id, rather than by what the schema lists, leaves every
+   * file that does not collide (standalone and external buckets included) where it is. Moved, not deleted.
+   */
+  private static void quarantineCollidingFiles(final Path dbDir) throws IOException {
+    final Path marker = dbDir.resolve(SNAPSHOT_QUARANTINE_FILE);
+    if (!Files.isRegularFile(marker))
+      return;
+    final Map<String, Integer> filesPerId = new HashMap<>();
+    for (final String name : liveEntryNames(dbDir)) {
+      final String id = componentFileId(name);
+      if (id != null)
+        filesPerId.merge(id, 1, Integer::sum);
+    }
+    final List<String> moved = new ArrayList<>();
+    for (final String name : Files.readAllLines(marker)) {
+      final String id = componentFileId(name);
+      if (id == null || filesPerId.getOrDefault(id, 0) < 2 || !Files.exists(dbDir.resolve(name)))
+        continue;
+      Files.createDirectories(dbDir.resolve(SNAPSHOT_ORPHANS_DIR));
+      Path target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name);
+      for (int suffix = 1; Files.exists(target); suffix++)
+        target = dbDir.resolve(SNAPSHOT_ORPHANS_DIR).resolve(name + "." + suffix);
+      Files.move(dbDir.resolve(name), target);
+      moved.add(name);
+    }
+    if (!moved.isEmpty()) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Moved files of %s whose file id collides with a restored original to %s: %s. They are safe to delete "
+              + "once the database has been verified", null, dbDir, SNAPSHOT_ORPHANS_DIR, moved);
+    }
+    Files.deleteIfExists(marker);
+    fsyncDirectory(dbDir);
+  }
+
+  /** The file id of a component file named {@code <name>.<fileId>.<pageSize>.v<version>.<ext>} (see ComponentFile), or null. */
+  private static String componentFileId(final String fileName) {
+    final String[] parts = fileName.split("\\.");
+    return parts.length >= 5 && parts[parts.length - 2].startsWith("v") ? parts[parts.length - 4] : null;
+  }
+
+  private static List<String> liveEntryNames(final Path dbDir) throws IOException {
+    final List<String> names = new ArrayList<>();
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
+      for (final Path entry : live)
+        names.add(entry.getFileName().toString());
+    }
+    return names;
+  }
+
+  /** Whether any live database entry has the name of an entry in the backup. */
+  private static boolean liveFilesShareANameWithTheBackup(final Path dbDir, final Path backupDir) throws IOException {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
+      for (final Path entry : live)
+        if (Files.exists(backupDir.resolve(entry.getFileName().toString())))
+          return true;
+    }
+    return false;
+  }
+
   private static boolean hasLiveDatabaseFiles(final Path dbDir) throws IOException {
-    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir, SnapshotInstaller::isLiveDatabaseEntry)) {
       return live.iterator().hasNext();
     }
   }
@@ -1706,8 +1876,13 @@ public final class SnapshotInstaller {
       }
     }
 
-    throw new IOException("Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'",
-        lastException);
+    final String message = "Snapshot download failed after " + (maxRetries + 1) + " attempts for '" + databaseName + "'";
+    // Judged on the LAST attempt only: a 404 followed by any other failure says nothing definite about the leader, and
+    // a leader that answered 404 every time it was reachable still answers 404 (issue #8559). Retried like any other
+    // failure rather than given up on at once, so a leader still loading its databases is given the same backoff.
+    if (lastException instanceof LeaderDoesNotHoldDatabaseException)
+      throw new LeaderDoesNotHoldDatabaseException(message + ": the leader does not hold it", lastException);
+    throw new IOException(message, lastException);
   }
 
   private static void downloadSnapshot(final String databaseName, final Path targetDir, final String snapshotUrl,
@@ -1740,12 +1915,17 @@ public final class SnapshotInstaller {
 
     try {
       final int responseCode = connection.getResponseCode();
+      // The leader's handler answers 404 exactly when it does not hold the database registered: a verdict about the
+      // cluster, not about this transfer, so it is typed apart from every other failure (issue #8559).
+      if (responseCode == HttpURLConnection.HTTP_NOT_FOUND)
+        throw new LeaderDoesNotHoldDatabaseException(
+            "Failed to download snapshot: HTTP 404, the leader does not hold database '" + databaseName + "'");
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
       // Before anything else about the body: a copy behind what this node already applied is not worth reading.
-      checkSourceAppliedIndex(databaseName, connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER),
-          requiredSourceAppliedIndex());
+      final String appliedIndexHeader = connection.getHeaderField(SnapshotManager.APPLIED_INDEX_HEADER);
+      checkSourceAppliedIndex(databaseName, appliedIndexHeader, requiredSourceAppliedIndex());
 
       // A leader on issue #4831 or later advertises a completeness manifest via this header; when present
       // the manifest becomes mandatory, so a truncated download (manifest dropped) fails loudly. A leader
@@ -1772,6 +1952,12 @@ public final class SnapshotInstaller {
         source = new ProgressReportingInputStream(rawCounter, new SnapshotDownloadProgressMeter(dbName, intervalMs));
       }
       extractAndVerifySnapshot(source, rawCounter, targetDir, manifestRequired, server);
+
+      // Only once the copy is extracted and verified: a transfer that fails after the headers says nothing about the
+      // copy that ends up installed (issue #8579).
+      final long[] served = SERVED_SOURCE_APPLIED_INDEX.get();
+      if (served != null)
+        served[0] = parseAppliedIndex(appliedIndexHeader);
     } finally {
       connection.disconnect();
     }
@@ -1790,18 +1976,44 @@ public final class SnapshotInstaller {
   /**
    * Runs {@code install} with {@code floor} as the lowest applied index a snapshot it downloads may be served at
    * (issue #8454). Restores the previous floor afterwards, because the apply thread installs reentrantly.
+   *
+   * @return the applied index the leader reported for the last copy {@code install} downloaded and extracted (issue
+   * #8579), or {@code -1} when it downloaded none or the leader did not report one. A nested install reports to its
+   * own caller only.
    */
-  static void runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
+  static long runRequiringSourceAppliedIndex(final long floor, final DatabaseReconciler.InstallAction install)
       throws IOException {
     final Long previous = REQUIRED_SOURCE_APPLIED_INDEX.get();
+    final long[] previousServed = SERVED_SOURCE_APPLIED_INDEX.get();
+    final long[] served = { -1L };
     REQUIRED_SOURCE_APPLIED_INDEX.set(floor);
+    SERVED_SOURCE_APPLIED_INDEX.set(served);
     try {
       install.run();
+      return served[0];
     } finally {
       if (previous == null)
         REQUIRED_SOURCE_APPLIED_INDEX.remove();
       else
         REQUIRED_SOURCE_APPLIED_INDEX.set(previous);
+      if (previousServed == null)
+        SERVED_SOURCE_APPLIED_INDEX.remove();
+      else
+        SERVED_SOURCE_APPLIED_INDEX.set(previousServed);
+    }
+  }
+
+  /**
+   * Parses the {@link SnapshotManager#APPLIED_INDEX_HEADER} value (issue #8579): absent, malformed or negative reads
+   * as unknown ({@code -1}), which records no boundary.
+   */
+  static long parseAppliedIndex(final String header) {
+    if (header == null || header.isBlank())
+      return -1L;
+    try {
+      return Math.max(-1L, Long.parseLong(header.trim()));
+    } catch (final NumberFormatException e) {
+      return -1L;
     }
   }
 

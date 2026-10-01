@@ -207,10 +207,14 @@ public class RemoteSchema implements Schema {
         "alterMaterializedView() is not supported in remote database. Use SQL ALTER MATERIALIZED VIEW instead.");
   }
 
+  /**
+   * A builder that accumulates the same state as the embedded one and renders it as {@code CREATE MATERIALIZED VIEW}
+   * DDL at {@code create()} (issue #7688). One body of builder code therefore runs against an embedded {@code Database}
+   * and against a {@link RemoteDatabase} unchanged.
+   */
   @Override
   public MaterializedViewBuilder buildMaterializedView() {
-    throw new UnsupportedOperationException(
-        "buildMaterializedView() is not supported in remote database. Use SQL CREATE MATERIALIZED VIEW instead.");
+    return new RemoteMaterializedViewBuilder(remoteDatabase, this);
   }
 
   @Override
@@ -220,16 +224,26 @@ public class RemoteSchema implements Schema {
     return result.hasNext();
   }
 
+  /**
+   * Read from {@code schema:continuousaggregates}, like {@link #getMaterializedView(String)} (issue #7688: the remote
+   * {@link #buildContinuousAggregate()} returns what the server stored, so it needs this read-back).
+   */
   @Override
   public ContinuousAggregate getContinuousAggregate(final String name) {
-    throw new UnsupportedOperationException(
-        "getContinuousAggregate() is not supported in remote database. Use SQL SELECT FROM schema:continuousaggregates instead.");
+    final ResultSet result = remoteDatabase.command("sql",
+        "SELECT FROM schema:continuousaggregates WHERE name = :name", Map.of("name", name));
+    if (result.hasNext())
+      return new RemoteContinuousAggregate(result.next());
+    throw new SchemaException("Continuous aggregate '" + name + "' not found");
   }
 
   @Override
   public ContinuousAggregate[] getContinuousAggregates() {
-    throw new UnsupportedOperationException(
-        "getContinuousAggregates() is not supported in remote database. Use SQL SELECT FROM schema:continuousaggregates instead.");
+    final ResultSet result = remoteDatabase.command("sql", "SELECT FROM schema:continuousaggregates");
+    final List<ContinuousAggregate> aggregates = new ArrayList<>();
+    while (result.hasNext())
+      aggregates.add(new RemoteContinuousAggregate(result.next()));
+    return aggregates.toArray(new ContinuousAggregate[0]);
   }
 
   @Override
@@ -237,10 +251,13 @@ public class RemoteSchema implements Schema {
     remoteDatabase.command("sql", "DROP CONTINUOUS AGGREGATE " + Identifier.quote(name));
   }
 
+  /**
+   * A builder that accumulates the same state as the embedded one and renders it as {@code CREATE CONTINUOUS AGGREGATE}
+   * DDL at {@code create()} (issue #7688).
+   */
   @Override
   public ContinuousAggregateBuilder buildContinuousAggregate() {
-    throw new UnsupportedOperationException(
-        "buildContinuousAggregate() is not supported in remote database. Use SQL CREATE CONTINUOUS AGGREGATE instead.");
+    return new RemoteContinuousAggregateBuilder(remoteDatabase, this);
   }
 
   @Override

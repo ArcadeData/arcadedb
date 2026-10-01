@@ -19,6 +19,9 @@
 package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.sql.executor.QueryHelper;
+
+import java.util.List;
 
 /**
  * Represents a range predicate on a property that can be used for index range scans.
@@ -33,13 +36,49 @@ public class RangePredicate {
   private final ComparisonExpression.Operator operator;
   private final Object value;
   private final boolean isParameter;
+  private final boolean prefixSuccessor;
+  private final boolean fromPrefix;
 
   public RangePredicate(final String propertyName, final ComparisonExpression.Operator operator,
                        final Object value, final boolean isParameter) {
+    this(propertyName, operator, value, isParameter, false, false);
+  }
+
+  private RangePredicate(final String propertyName, final ComparisonExpression.Operator operator,
+                        final Object value, final boolean isParameter, final boolean prefixSuccessor,
+                        final boolean fromPrefix) {
     this.propertyName = propertyName;
     this.operator = operator;
     this.value = value;
     this.isParameter = isParameter;
+    this.prefixSuccessor = prefixSuccessor;
+    this.fromPrefix = fromPrefix;
+  }
+
+  /**
+   * The two bounds of {@code prop STARTS WITH prefix} (issue #8666): {@code prop >= prefix}, and {@code prop <} the
+   * smallest string after every string with that prefix, which the scan works out when it resolves the parameter. The
+   * predicate itself stays in the WHERE as a filter.
+   */
+  public static List<RangePredicate> forPrefix(final String propertyName, final Object prefix, final boolean isParameter) {
+    return List.of(new RangePredicate(propertyName, ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL, prefix, isParameter, false, true),
+        new RangePredicate(propertyName, ComparisonExpression.Operator.LESS_THAN, prefix, isParameter, true, true));
+  }
+
+  /**
+   * Whether the bound is the string that follows every string starting with {@link #getValue()} rather than the value
+   * itself, see {@link QueryHelper#prefixSuccessor(String)}.
+   */
+  public boolean isPrefixSuccessor() {
+    return prefixSuccessor;
+  }
+
+  /**
+   * Whether the bound comes from a {@code STARTS WITH}, either of its two: a bound that is only valid on an index whose
+   * order is the order of the values, which a case-insensitive one is not.
+   */
+  public boolean isFromPrefix() {
+    return fromPrefix;
   }
 
   public String getPropertyName() {

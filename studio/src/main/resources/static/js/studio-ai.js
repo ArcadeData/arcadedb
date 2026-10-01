@@ -482,6 +482,12 @@ function aiSendMessageStreaming(db, message) {
               // Inject accumulated tool calls into the done data
               event.toolCalls = toolCalls.length > 0 ? toolCalls : undefined;
               aiHandleResponse(event);
+            } else if (event.type === "error") {
+              // The server cut the stream short after it started (issue #8642) and says why: no 'done' follows.
+              gotDone = true;
+              aiCurrentXhr = null;
+              aiSetSending(false);
+              globalNotify("Error", event.error || "Connection to AI service was interrupted", "danger");
             }
           } catch (e) { /* ignore malformed events */ }
         }
@@ -509,7 +515,7 @@ function aiSendMessageStreaming(db, message) {
       }
     } catch (e) { /* ignore */ }
 
-    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+    if (aiIsTokenError(errorCode)) {
       aiConfigured = false;
       $("#aiActivePanel").hide();
       $("#aiInactivePanel").show();
@@ -517,6 +523,10 @@ function aiSendMessageStreaming(db, message) {
     } else
       globalNotify("Error", errorMsg, "danger");
   });
+}
+
+function aiIsTokenError(code) {
+  return code === "token_invalid" || code === "token_expired" || code === "token_disabled";
 }
 
 function aiSendMessageLegacy(db, message) {
@@ -551,7 +561,7 @@ function aiSendMessageLegacy(db, message) {
     } catch (e) { /* ignore parse errors */ }
 
     // If token is invalid or expired, reset to inactive state
-    if (errorCode === "token_invalid" || errorCode === "token_expired" || errorCode === "token_disabled") {
+    if (aiIsTokenError(errorCode)) {
       aiConfigured = false;
       $("#aiActivePanel").hide();
       $("#aiInactivePanel").show();
@@ -819,10 +829,11 @@ function aiOpenInQuery(blockId) {
 
   // Set language and command in Query panel
   setTimeout(function() {
-    $("#inputLanguage").val(language);
     if (typeof editor !== "undefined" && editor) {
+      setEditorLanguage(language);
       editor.setValue(command);
-    }
+    } else
+      $("#inputLanguage").val(language);
   }, 100);
 }
 

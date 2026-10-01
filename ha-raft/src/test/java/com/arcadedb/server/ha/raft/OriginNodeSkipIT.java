@@ -51,6 +51,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
+import static com.arcadedb.server.StaticBaseServerTest.allocateFreePorts;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -64,7 +65,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("IntegrationTest")
 class OriginNodeSkipIT {
 
-  private static final int BASE_PORT  = 19870;
   private static final int NODE_COUNT = 3;
 
   private final List<RaftServer>                 servers       = new ArrayList<>();
@@ -75,12 +75,14 @@ class OriginNodeSkipIT {
   @BeforeEach
   void setUp() throws Exception {
     tempDir = Files.createTempDirectory("ratis-origin-skip-");
+    // Drawn free rather than pinned to a fixed base: Ratis answers a bind failure with System.exit(1).
+    final int[] ports = allocateFreePorts(NODE_COUNT);
 
     final List<RaftPeer> peers = new ArrayList<>();
     for (int i = 0; i < NODE_COUNT; i++)
       peers.add(RaftPeer.newBuilder()
           .setId(RaftPeerId.valueOf("node" + i))
-          .setAddress("localhost:" + (BASE_PORT + i))
+          .setAddress("localhost:" + ports[i])
           .build());
 
     group = RaftGroup.valueOf(
@@ -92,7 +94,7 @@ class OriginNodeSkipIT {
       final Path storagePath = tempDir.resolve("node" + i);
       Files.createDirectories(storagePath);
       RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storagePath.toFile()));
-      GrpcConfigKeys.Server.setPort(properties, BASE_PORT + i);
+      GrpcConfigKeys.Server.setPort(properties, ports[i]);
       properties.set("raft.server.rpc.type", "GRPC");
 
       RaftServerConfigKeys.Rpc.setTimeoutMin(properties, TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));

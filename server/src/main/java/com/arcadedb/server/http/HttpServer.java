@@ -86,6 +86,7 @@ import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
 import com.arcadedb.server.ai.ChatStorage;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.support.SupportHandler;
 import com.arcadedb.utility.CodeUtils;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
@@ -303,6 +304,18 @@ public class HttpServer implements ServerPlugin {
         .post("/server/users", new PostUserHandler(this))
         .put("/server/users", new PutUserHandler(this))
         .delete("/server/users", new DeleteUserHandler(this))
+        .get("/server/support", new SupportHandler(this, SupportHandler.Action.STATUS))
+        .post("/server/support/register", new SupportHandler(this, SupportHandler.Action.REGISTER))
+        .delete("/server/support/register", new SupportHandler(this, SupportHandler.Action.UNREGISTER))
+        .post("/server/support/installation", new SupportHandler(this, SupportHandler.Action.REGISTER_INSTALLATION))
+        .post("/server/support/preview", new SupportHandler(this, SupportHandler.Action.PREVIEW))
+        .post("/server/support/bundle", new SupportHandler(this, SupportHandler.Action.BUNDLE))
+        .get("/server/support/issues", new SupportHandler(this, SupportHandler.Action.LIST_ISSUES))
+        .post("/server/support/issues", new SupportHandler(this, SupportHandler.Action.CREATE_ISSUE))
+        .get("/server/support/issues/{number}", new SupportHandler(this, SupportHandler.Action.GET_ISSUE))
+        .put("/server/support/issues/{number}", new SupportHandler(this, SupportHandler.Action.SET_OPEN))
+        .post("/server/support/issues/{number}/comments", new SupportHandler(this, SupportHandler.Action.COMMENT))
+        .post("/server/support/issues/{number}/attachments", new SupportHandler(this, SupportHandler.Action.ATTACH))
         .get("/server/groups", new GetGroupsHandler(this))
         .post("/server/groups", new PostGroupHandler(this))
         .delete("/server/groups", new DeleteGroupHandler(this))

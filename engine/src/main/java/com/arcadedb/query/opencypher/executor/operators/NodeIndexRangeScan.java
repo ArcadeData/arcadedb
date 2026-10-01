@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -31,6 +30,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
+import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -74,11 +74,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
    */
   private boolean indexOrdered;
   private boolean ascending = true;
-  /**
-   * Whether the vertices of the label the index does not hold, those with no value for the key, follow the index entries:
-   * set on a scan with no bound that stands for a whole label, where they sort last.
-   */
-  private boolean nullKeysLast;
+  /** Where the vertices with no value for the key come in a scan that stands for a whole label, see {@link NullKeys}. */
+  private NullKeys nullKeys = NullKeys.NONE;
   /**
    * How the calling thread's last execution was served, for the PROFILE that follows it on the same thread. Per thread
    * because the operator belongs to a cached plan that concurrent executions share; null before it decided. Not cleared
@@ -133,17 +130,36 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   }
 
   /**
+   * Where the vertices with no value for the key come in a scan that stands for a whole label (issue #8724).
+   */
+  public enum NullKeys {
+    /** None: no vertex can lack a key, or the statement excludes them, and the index holds no null key. */
+    NONE,
+    /**
+     * The index does not hold them and they sort last: after the index entries, found by a scan of the label. Only for an
+     * ascending scan, where the first rows of the index are the answer.
+     */
+    LAST_FROM_LABEL,
+    /** The index holds them (NULL_STRATEGY INDEX) and the statement excludes them: the entries with a null key are skipped. */
+    SKIPPED_IN_INDEX,
+    /**
+     * The index holds them (NULL_STRATEGY INDEX) and they are part of the answer: read from the start of the index, where a
+     * null key sorts lowest, they come after the values ascending and before them descending, as openCypher sorts them.
+     */
+    PLACED_FROM_INDEX
+  }
+
+  /**
    * Makes the scan produce its rows in index key order, which the plan then uses in place of a sort (issue #8422): no
    * adaptive serving, which loads the rows in another order.
    *
-   * @param ascending    the direction to walk the index in
-   * @param nullKeysLast whether the vertices of the label with no value for the key follow the index entries, so that
-   *                     a scan with no bound returns the whole label in Cypher order, where null sorts last
+   * @param ascending the direction to walk the index in
+   * @param nullKeys  where the vertices with no value for the key come, for a scan with no bound
    */
-  public void setIndexOrder(final boolean ascending, final boolean nullKeysLast) {
+  public void setIndexOrder(final boolean ascending, final NullKeys nullKeys) {
     this.indexOrdered = true;
     this.ascending = ascending;
-    this.nullKeysLast = nullKeysLast;
+    this.nullKeys = nullKeys;
     this.adaptive = false;
   }
 
@@ -177,6 +193,11 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       private Iterator<Record> labelScan;
       // Index order with the null keys last: the label scan that follows the index, for the vertices it does not hold
       private Iterator<Record> nullKeyScan;
+      // Index order of an index that holds the null keys: the pass that reads them, from the start of the index
+      private IndexCursor nullKeyCursor;
+      private boolean nullKeysDone = false;
+      // The entries of the index with a value are all read
+      private boolean valuesDone = false;
 
       @Override
       public boolean hasNext() {
@@ -220,19 +241,68 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           return;
         }
 
+        final boolean nullKeysInIndex = nullKeys == NullKeys.SKIPPED_IN_INDEX || nullKeys == NullKeys.PLACED_FROM_INDEX;
+
+        // A null key sorts lowest in the index: descending, the vertices that have one come before the values
+        if (nullKeys == NullKeys.PLACED_FROM_INDEX && !ascending && !readNullKeyEntries(n))
+          return;
+
         // Fetch up to n matching vertices, in key order
-        while (buffer.size() < n && cursor.hasNext()) {
+        while (!valuesDone && buffer.size() < n && cursor.hasNext()) {
           guard.check();
           final Identifiable identifiable = cursor.next();
+          if (nullKeysInIndex && isNullKey(cursor.getKeys())) {
+            if (ascending)
+              continue; // the null keys lead the index: skip them, they are read at the end when they are part of the answer
+            valuesDone = true; // descending they trail it: nothing but null keys is left
+            break;
+          }
           addVertex(identifiable.asVertex());
         }
 
-        if (!cursor.hasNext()) {
-          if (nullKeysLast)
+        if (valuesDone || !cursor.hasNext()) {
+          valuesDone = true;
+          // Ascending, the vertices that have no key come after the values
+          if (nullKeys == NullKeys.PLACED_FROM_INDEX && ascending) {
+            if (readNullKeyEntries(n))
+              finished = true;
+          } else if (nullKeys == NullKeys.LAST_FROM_LABEL)
             fetchNullKeys(n);
           else
             finished = true;
         }
+      }
+
+      /**
+       * Reads the entries of the index whose key is null, which lead it, into the buffer.
+       *
+       * @return true when they are all read, false when the buffer filled before
+       */
+      private boolean readNullKeyEntries(final int n) {
+        if (nullKeysDone)
+          return true;
+        if (nullKeyCursor == null)
+          nullKeyCursor = rangeIndex.iterator(true);
+        boolean reachedValues = false;
+        while (buffer.size() < n && nullKeyCursor.hasNext()) {
+          guard.check();
+          final Identifiable identifiable = nullKeyCursor.next();
+          if (!isNullKey(nullKeyCursor.getKeys())) {
+            reachedValues = true;
+            break;
+          }
+          addVertex(identifiable.asVertex());
+        }
+        if (!reachedValues && nullKeyCursor.hasNext())
+          return false; // the buffer filled first: the next call goes on from here
+        nullKeyCursor.close();
+        nullKeyCursor = null;
+        nullKeysDone = true;
+        return true;
+      }
+
+      private boolean isNullKey(final Object[] keys) {
+        return keys == null || keys.length == 0 || keys[0] == null;
       }
 
       /**
@@ -264,7 +334,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         final List<Integer> bucketIds = new ArrayList<>();
         for (final Bucket bucket : type.getBuckets(true))
           bucketIds.add(bucket.getFileId());
-        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds);
+        // A label scan runs on this thread alone
+        final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), bucketIds, 1);
         if (scanThreshold < 0)
           return false;
 
@@ -307,7 +378,8 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         }
 
         while (buffer.size() < n) {
-          final Object entry = fetcher.next();
+          // Loaded through the buckets, every page read once; a record deleted since the index answered is skipped
+          final Object entry = fetcher.nextRecord(context.getDatabase());
           if (entry == null) {
             finished = true;
             fetcher.close();
@@ -316,11 +388,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           }
           guard.check();
           try {
-            addVertex(entry instanceof RID rid ?
-                context.getDatabase().lookupByRID(rid, true).asVertex() :
-                ((Identifiable) entry).asVertex());
+            addVertex(((Identifiable) entry).asVertex());
           } catch (final RecordNotFoundException e) {
-            // Deleted since the index answered: nothing to match
+            // An entry that is not a stored record's address is resolved here, and can be gone since the index answered:
+            // nothing to match. A record the fetcher loaded itself arrives resolved, a deleted one already skipped
           }
         }
       }
@@ -361,6 +432,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         rangeIndex = (RangeIndex) typeIndex;
 
         // Resolve bounds from predicates (may involve parameter resolution)
+        final boolean foldedKeys = typeIndex.getMetadata() != null && typeIndex.getMetadata().hasAnyCaseInsensitive();
+        // No bound is a range of a case-insensitive index, whose keys are case-folded (issues #8666, #8699), and the scan
+        // does not re-check what it consumes: the planner never anchors on one, so this plan predates the index
+        if (foldedKeys && !predicates.isEmpty())
+          throw new CommandExecutionException(
+              "Index '" + indexName + "' on type '" + label + "' is case-insensitive now: re-plan the query");
         for (final RangePredicate predicate : predicates) {
           // Resolve the value (may be a parameter)
           Object value = predicate.getValue();
@@ -368,6 +445,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
             // Resolve parameter at execution time
             final String paramName = (String) value;
             value = context.getInputParameters().get(paramName);
+          }
+
+          if (predicate.isPrefixSuccessor()) {
+            // STARTS WITH (issue #8666): the bound is the string after every one with the prefix. With none (an empty or
+            // non-string prefix, a prefix of characters that cannot be bumped) the range is open above, and the
+            // predicate the scan stands for is evaluated on each row anyway
+            if (!(value instanceof String prefix) || (value = QueryHelper.prefixSuccessor(prefix)) == null)
+              continue;
           }
 
           if (predicate.isLowerBound()) {
@@ -406,7 +491,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
                   resolvedUpperBound != null ? new Object[] { resolvedUpperBound } : null, resolvedUpperInclusive,
                   resolvedLowerBound != null ? new Object[] { resolvedLowerBound } : null, resolvedLowerInclusive);
         if (resolvedLowerBound == null && resolvedUpperBound == null)
-          return rangeIndex.iterator(true);
+          // Past the null keys that lead an index holding them (a null key sorts lowest), when they are not read here: the
+          // first row is the first value. The skip in fetchMore is only a safety net for a comparator that disagrees
+          return nullKeys == NullKeys.SKIPPED_IN_INDEX || nullKeys == NullKeys.PLACED_FROM_INDEX ?
+              rangeIndex.iterator(true, new Object[] { null }, false) : rangeIndex.iterator(true);
         if (resolvedUpperBound == null)
           return rangeIndex.iterator(true, new Object[] { resolvedLowerBound }, resolvedLowerInclusive);
         return rangeIndex.range(true,
@@ -421,6 +509,10 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         if (cursor != null) {
           cursor.close();
           cursor = null;
+        }
+        if (nullKeyCursor != null) {
+          nullKeyCursor.close();
+          nullKeyCursor = null;
         }
         if (fetcher != null) {
           fetcher.close();
@@ -454,18 +546,26 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         sb.append(predicate.isInclusive() ? "<=" : "<");
       }
       sb.append(" ");
+      if (predicate.isPrefixSuccessor())
+        sb.append("next(");
       if (predicate.isParameter()) {
         sb.append("$").append(predicate.getValue());
       } else {
         sb.append(predicate.getValue());
       }
+      if (predicate.isPrefixSuccessor())
+        sb.append(")");
     }
 
     sb.append(", cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]");
     if (indexOrdered)
-      sb.append(ascending ? " [index order" : " [index order, descending").append(nullKeysLast ? ", then null keys]" : "]");
+      sb.append(ascending ? " [index order" : " [index order, descending").append(switch (nullKeys) {
+        case LAST_FROM_LABEL -> ", then null keys]";
+        case PLACED_FROM_INDEX -> ", null keys from the index]";
+        default -> "]";
+      });
     if (adaptive) {
       final Boolean scan = servedByScan.get();
       sb.append(scan == null ? " [physical order, or label scan on a large range]" :

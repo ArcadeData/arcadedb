@@ -28,4 +28,17 @@ public interface AggregationContext {
   Object getFinalValue();
 
   void apply(Result next, CommandContext context);
+
+  /**
+   * Whether {@link #merge} can fold into this context another one of the same aggregation fed a disjoint part of the
+   * rows - the partial aggregation a parallel scan runs in its workers (issue #8523).
+   */
+  default boolean canMerge() {
+    return false;
+  }
+
+  /** Folds {@code other}'s state into this one. Only called when {@link #canMerge()} is {@code true}. */
+  default void merge(final AggregationContext other) {
+    throw new UnsupportedOperationException("This aggregation cannot merge partial results");
+  }
 }

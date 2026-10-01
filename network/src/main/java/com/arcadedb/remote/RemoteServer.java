@@ -30,7 +30,6 @@ import java.util.Map;
 import java.util.Objects;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -68,7 +67,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public List<String> databases() {
-    return (List<String>) serverCommand("POST", "list databases", true, true,
+    return (List<String>) serverCommand("POST", "list databases", "list databases", true, true, true,
         (connection, response) -> response.getJSONArray("result").toList());
   }
 
@@ -78,25 +77,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public void drop(final String databaseName) {
-    try {
-      final JSONObject jsonRequest = new JSONObject().put("command", "drop database " + databaseName);
-      String payload = getRequestPayload(jsonRequest);
-
-      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
-          .POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json")
-          .build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
-
-      if (response.statusCode() != 200) {
-        final Exception detail = manageException(response, "drop database");
-        throw new RemoteException("Error on deleting database", detail);
-      }
-
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on deleting database", e);
-    }
+    serverCommand("POST", "drop database " + databaseName, true, true, null);
   }
 
   @Override
@@ -104,36 +85,21 @@ public class RemoteServer extends RemoteHttpComponent {
     return protocol + "://" + currentServer + ":" + currentPort;
   }
 
-  public void createUser(final String userName, final String password, final Map<String,String> databases) {
-    try {
-      final JSONObject jsonUser = new JSONObject();
-      jsonUser.put("name", userName);
-      jsonUser.put("password", password);
-      if (databases != null && !databases.isEmpty()) {
-        final JSONObject databasesJson = new JSONObject();
-        for (Map.Entry<String, String> entry : databases.entrySet())
-          databasesJson.put(entry.getKey(), new String[] { entry.getValue() });
-        jsonUser.put("databases", databasesJson);
-      }
-
-      final JSONObject jsonRequest = new JSONObject().put("command", "create user " + jsonUser);
-      String payload = getRequestPayload(jsonRequest);
-
-      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
-          .POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json")
-          .build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
-
-      if (response.statusCode() != 200) {
-        final Exception detail = manageException(response, "create user");
-        throw new SecurityException("Error on creating user", detail);
-      }
-
-    } catch (final Exception e) {
-      throw new DatabaseOperationException("Error on creating user", e);
+  /**
+   * The error label names the user only: the command text carries the password.
+   */
+  public void createUser(final String userName, final String password, final Map<String, String> databases) {
+    final JSONObject jsonUser = new JSONObject();
+    jsonUser.put("name", userName);
+    jsonUser.put("password", password);
+    if (databases != null && !databases.isEmpty()) {
+      final JSONObject databasesJson = new JSONObject();
+      for (final Map.Entry<String, String> entry : databases.entrySet())
+        databasesJson.put(entry.getKey(), new String[] { entry.getValue() });
+      jsonUser.put("databases", databasesJson);
     }
+
+    serverCommand("POST", "create user " + jsonUser, "create user " + userName, true, true, null);
   }
 
   public void createUser(final String userName, final String password, final List<String> databases) {
@@ -146,25 +112,7 @@ public class RemoteServer extends RemoteHttpComponent {
   }
 
   public void dropUser(final String userName) {
-    try {
-      final JSONObject jsonRequest = new JSONObject().put("command", "drop user " + userName);
-      String payload = getRequestPayload(jsonRequest);
-
-      HttpRequest request = createRequestBuilder("POST", getUrl("server"))
-          .POST(HttpRequest.BodyPublishers.ofString(payload))
-          .header("Content-Type", "application/json")
-          .build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
-
-      if (response.statusCode() != 200) {
-        final Exception detail = manageException(response, "drop user");
-        throw new RemoteException("Error on deleting user", detail);
-      }
-
-    } catch (final Exception e) {
-      throw new RemoteException("Error on deleting user", e);
-    }
+    serverCommand("POST", "drop user " + userName, true, true, null);
   }
 
 
@@ -434,8 +382,29 @@ public class RemoteServer extends RemoteHttpComponent {
     return URLEncoder.encode(value, StandardCharsets.UTF_8);
   }
 
+  /**
+   * Every server command goes through {@code httpCommand}, for its election retry, failover and typed exceptions.
+   */
   private Object serverCommand(final String method, final String command, final boolean leaderIsPreferable,
       final boolean autoReconnect, final Callback callback) {
-    return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback);
+    return serverCommand(method, command, command, leaderIsPreferable, autoReconnect, callback);
+  }
+
+  /**
+   * As above, naming the command as {@code errorOperation} in an error message, for a command carrying a secret.
+   */
+  private Object serverCommand(final String method, final String command, final String errorOperation,
+      final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
+    return serverCommand(method, command, errorOperation, leaderIsPreferable, autoReconnect, false, callback);
+  }
+
+  /**
+   * As above, stating that the command is read-only so a transport failure after it was sent does not stop the
+   * failover loop (issue #8570). Every other server command may write, so it defaults to not replayable.
+   */
+  private Object serverCommand(final String method, final String command, final String errorOperation,
+      final boolean leaderIsPreferable, final boolean autoReconnect, final boolean replayable, final Callback callback) {
+    return httpCommand(method, null, "server", null, command, null, leaderIsPreferable, autoReconnect, callback,
+        errorOperation, replayable);
   }
 }

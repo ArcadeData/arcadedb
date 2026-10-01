@@ -37,6 +37,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.UnidirectionalEdgeChanges;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
@@ -52,6 +53,7 @@ import com.arcadedb.utility.RidHashSet;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -131,8 +133,15 @@ public class TransactionContext implements Transaction {
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
   // so AtomicInteger was only a mutable-cell trick. IntIntHashMap.add(key, delta) covers it directly.
   private final IntIntHashMap                        bucketRecordDelta     = new IntIntHashMap();
-  private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
-  private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  // #8492: the record caches, the page cache and the deleted-record set below are reused by every transaction of this
+  // context, and clearing or iterating a hash table costs in proportion to its capacity, not to its size - which never
+  // shrinks. Past these sizes a transaction has grown them, and reset() replaces them rather than clearing them, so a
+  // single large transaction does not tax every small one that follows it.
+  private static final int                           RECORDS_CACHE_CAPACITY = 1024;
+  private static final int                           PAGES_CACHE_CAPACITY   = 64;
+  private static final int                           DELETED_SET_CAPACITY   = 256;
+  private       Map<RID, Record>                     immutableRecordsCache = new HashMap<>(RECORDS_CACHE_CAPACITY);
+  private       Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(RECORDS_CACHE_CAPACITY);
   // Records created in this transaction (they got an optimistically-assigned RID at creation time). On rollback that
   // RID no longer exists, so the identity is reset to provisional (null) letting the same in-memory object be cleanly
   // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
@@ -147,8 +156,8 @@ public class TransactionContext implements Transaction {
   // replay rather than one per operation, and insertion-ordered so a failure logged while concluding names them in
   // a stable order. See IndexReplayConclusion.
   private       Map<IndexInternal, IndexReplayConclusion> indexReplayConclusion = null;
-  private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
-  private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
+  private       Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(PAGES_CACHE_CAPACITY);
+  private       RidHashSet                            deletedRecordsInTx    = new RidHashSet(DELETED_SET_CAPACITY);
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   // GRAPH_EDGE_APPEND_MERGE (super-node write contention): appends to an edge-list chunk commute, so a
@@ -262,6 +271,20 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
+  // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
+  private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
+  // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
+  // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
+  private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
+  private       long                                 beginSequence         = -1;
+  /**
+   * The position of the replication log the node had applied when this transaction began, or {@code -1} when none was
+   * recorded (issue #8686). Stamped by the replicated database AFTER {@link #begin}, which clears it, so a transaction
+   * begun by any other route reads as "unknown" and is never held to a schema it was not prepared under.
+   */
+  private       long                                 replicationBasePosition = -1L;
+  private       boolean                              staleReadCheck;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -346,12 +369,19 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    replicationBasePosition = -1L;
+    // Also in reset(): a context is reused across transactions, and whichever of the two runs first must move it on;
+    // moving it twice only skips a transaction number, which nothing compares but for equality
+    if (unidirectionalEdgeChanges != null)
+      unidirectionalEdgeChanges.transactionEnded();
+    beginSequence = BEGIN_SEQUENCE.incrementAndGet();
     begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
     edgeAppendMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.GRAPH_EDGE_APPEND_MERGE);
     slotMerge = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_PAGE_SLOT_MERGE);
+    staleReadCheck = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_STALE_READ_CHECK);
     slotMergeMaxBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.TX_PAGE_SLOT_MERGE_MAX_BYTES);
     slotRebaseTrackedBytes = 0;
 
@@ -364,6 +394,10 @@ public class TransactionContext implements Transaction {
     newPages = new LinkedHashMap<>(16);
   }
 
+  /**
+   * Commits this transaction. It does not save a pending schema change: {@link LocalDatabase#commit()} does, once this
+   * context has left the stack (#8635), so a commit has to go through it rather than call this directly.
+   */
   @Override
   public Binary commit() {
     if (status == STATUS.INACTIVE)
@@ -379,9 +413,6 @@ public class TransactionContext implements Transaction {
       commit2ndPhase(phase1);
     } else
       resetAndFireCallbacks();
-
-    if (database.getSchema().getEmbedded().isDirty())
-      database.getSchema().getEmbedded().saveConfiguration();
 
     return phase1 != null ? phase1.result : null;
   }
@@ -859,6 +890,36 @@ public class TransactionContext implements Transaction {
     }
   }
 
+  /**
+   * The identity of this transaction among every transaction begun in this JVM (issue #8610), or -1 when it is not
+   * active. A vertex read inside a transaction remembers it, which is what tells a read made in THIS transaction from a
+   * vertex held across transactions.
+   */
+  public long getBeginSequence() {
+    return isActive() ? beginSequence : -1;
+  }
+
+  /**
+   * The position of the replication log this node had applied when the transaction began, or {@code -1} when unknown
+   * (issue #8686). A transaction stages its index changes as its records are saved, against the schema this node holds
+   * at that moment, so the position at begin is a lower bound of the schema the whole transaction was prepared under.
+   */
+  public long getReplicationBasePosition() {
+    return replicationBasePosition;
+  }
+
+  public void setReplicationBasePosition(final long replicationBasePosition) {
+    this.replicationBasePosition = replicationBasePosition;
+  }
+
+  /**
+   * Whether a property write on a record read in this transaction is refused when a concurrent transaction committed a
+   * change to that record since the read ({@link GlobalConfiguration#TX_STALE_READ_CHECK}, issue #8610).
+   */
+  public boolean isStaleReadCheck() {
+    return staleReadCheck;
+  }
+
   public void assureIsActive() {
     if (!isActive())
       throw new TransactionException("Transaction not begun");
@@ -924,6 +985,13 @@ public class TransactionContext implements Transaction {
     if (deletedRecordsInTx.contains(rid))
       return false;
 
+    // #8610: modify() reloaded this record because a concurrent transaction committed a change to it after this
+    // transaction read it; assigning properties now would write values computed from the older read over that change. A
+    // change to a vertex edge lists only (edge creation) assigns no property and goes through.
+    if (record instanceof MutableDocument document && document.isBasedOnStaleRead() && document.arePropertiesAssigned())
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction after it was "
+          + "read in this transaction. Please retry the operation");
+
     if (updatedRecords == null)
       updatedRecords = new HashMap<>();
     if (updatedRecords.put(record.getIdentity(), record) == null) {
@@ -953,6 +1021,11 @@ public class TransactionContext implements Transaction {
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
     return true;
+  }
+
+  /** Whether {@link #addUpdatedRecord(Record)} has already queued a deferred write for this RID in this transaction. */
+  public boolean isUpdateQueued(final RID rid) {
+    return updatedRecords != null && updatedRecords.containsKey(rid);
   }
 
   /**
@@ -2434,6 +2507,10 @@ public class TransactionContext implements Transaction {
 
       // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
       // never by aborting.
+      // #8492: nothing writes these images again - the transaction drops them at reset() - so the read cache can
+      // share their arrays instead of copying every page
+      for (final MutablePage page : pagesToPublish)
+        page.markPublished();
       database.getPageManager().publishPages(pagesToPublish, newPages, isAsyncFlush());
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
@@ -2714,7 +2791,21 @@ public class TransactionContext implements Transaction {
     this.asyncFlush = value;
   }
 
+  /** The unidirectional edge changes of this context, created on the first call. */
+  public UnidirectionalEdgeChanges getUnidirectionalEdgeChanges() {
+    if (unidirectionalEdgeChanges == null)
+      unidirectionalEdgeChanges = new UnidirectionalEdgeChanges();
+    return unidirectionalEdgeChanges;
+  }
+
+  /** The unidirectional edge changes of this context, or null when it never made one. */
+  public UnidirectionalEdgeChanges getUnidirectionalEdgeChangesIfAny() {
+    return unidirectionalEdgeChanges;
+  }
+
   public void reset() {
+    if (unidirectionalEdgeChanges != null)
+      unidirectionalEdgeChanges.transactionEnded();
     // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
     // rollback passes through - the commit, and each durable-but-locally-failed regime concludePhase2 routes here -
     // so it is where a replay that deferred its non-transactional writes gets to make them. A rollback never
@@ -2752,11 +2843,14 @@ public class TransactionContext implements Transaction {
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
-    modifiedRecordsCache.clear();
-    immutableRecordsCache.clear();
-    immutablePages.clear();
+    modifiedRecordsCache = clearOrReplace(modifiedRecordsCache, RECORDS_CACHE_CAPACITY);
+    immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
+    immutablePages = clearOrReplace(immutablePages, PAGES_CACHE_CAPACITY);
     bucketRecordDelta.clear();
-    deletedRecordsInTx.clear();
+    if (deletedRecordsInTx.size() > DELETED_SET_CAPACITY * 3 / 4)
+      deletedRecordsInTx = new RidHashSet(DELETED_SET_CAPACITY);
+    else
+      deletedRecordsInTx.clear();
     newRecords.clear();
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
@@ -2764,6 +2858,18 @@ public class TransactionContext implements Transaction {
     commitLockTimeout = null;
     useWALOverride = null;
     txId = -1;
+  }
+
+  /**
+   * Empties a map reused across transactions, replacing it with a fresh one of its initial capacity when this
+   * transaction outgrew that capacity (issue #8492): {@link HashMap#clear()} and every iteration of the map walk its
+   * whole table, which only ever grows.
+   */
+  private static <K, V> Map<K, V> clearOrReplace(final Map<K, V> map, final int initialCapacity) {
+    if (map.size() > initialCapacity * 3 / 4)
+      return new HashMap<>(initialCapacity);
+    map.clear();
+    return map;
   }
 
   public void removeFile(final int fileId) {

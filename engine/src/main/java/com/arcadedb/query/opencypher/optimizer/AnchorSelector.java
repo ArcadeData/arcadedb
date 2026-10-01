@@ -33,6 +33,8 @@ import com.arcadedb.schema.DocumentType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -182,6 +184,11 @@ public class AnchorSelector {
     // side and reverse-traversing (which silently returns empty over unidirectional edges or a GAV).
     final Map<String, List<Expression>> inListPredicates = extractInListPredicates(variable, plan);
 
+    // An OR whose every disjunct is an equality or IN-list on an indexed property is a union of index seeks (issue #8723).
+    // Over one property that is the IN-list seek above; over several it is a seek per property, tried further down. The
+    // whole WHERE is still evaluated above the anchor, so a seek that finds a superset of the matching rows is safe.
+    final Map<String, SeekValues> orBranches = extractOrSeekBranches(variable, plan);
+
     if (!allPredicates.isEmpty() || !inListPredicates.isEmpty()) {
       // Look for indexed properties with equality predicates
       final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
@@ -253,6 +260,14 @@ public class AnchorSelector {
       }
     }
 
+    if (orBranches != null) {
+      final AnchorSelection seek = orBranches.size() == 1 ?
+          trySingleOrSeek(node, label, typeCount, orBranches, allPredicates) :
+          tryUnionIndexSeek(node, label, typeCount, orBranches);
+      if (seek != null)
+        return seek;
+    }
+
     if (!allPredicates.isEmpty()) {
       // FILTERED SCAN - ACCEPTABLE (no index available)
       // Use first property for selectivity estimation
@@ -285,6 +300,13 @@ public class AnchorSelector {
 
         // Check if there's an index on this property
         final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+
+        // A case-insensitive index holds its keys case-folded, so no bound of the statement is a range of it: 'AZ' bumped
+        // to 'A[' and folded is 'a[', which sorts below 'azb' (issue #8666), and c.s < 'a' is a range of the folded keys
+        // that holds none of the eight values the predicate accepts (issue #8699). The scan does not re-check what it
+        // consumes, so the property falls back to the label scan with its filter
+        if (indexStats != null && indexStats.isCaseInsensitive())
+          continue;
 
         if (indexStats != null) {
           // INDEX RANGE SCAN - Good performance for range queries
@@ -635,26 +657,207 @@ public class AnchorSelector {
       if (!propAccess.getVariableName().equals(variable))
         return;
 
-      List<Expression> list = inExpr.getList();
-      if (list == null || list.isEmpty())
+      // A parenthesized list literal (x IN [a, b, c]) is unwrapped to its elements, and only constant ones (literals /
+      // parameters) can seed a static anchor seek. A single parameter is allowed too (it resolves to a whole list at
+      // runtime, e.g. x IN $ids).
+      final List<Expression> list = seekableInListValues(inExpr);
+      if (list == null)
         return;
-
-      // A parenthesized list literal (x IN [a, b, c]) is parsed as a single ListExpression element;
-      // unwrap it to the individual value expressions.
-      if (list.size() == 1 && list.get(0) instanceof ListExpression listExpr)
-        list = listExpr.getElements();
-
-      if (list.isEmpty())
-        return;
-
-      // Only constant elements (literals / parameters) can seed a static anchor seek. A single
-      // parameter is allowed too (it resolves to a whole list at runtime, e.g. x IN $ids).
-      for (final Expression element : list)
-        if (!(element instanceof LiteralExpression) && !(element instanceof ParameterExpression))
-          return;
 
       predicates.putIfAbsent(propAccess.getPropertyName(), list);
     }
+  }
+
+  /**
+   * The values one property is sought with by an OR's disjuncts (issue #8723). {@code scalar} holds, by identity, the ones that
+   * are the operand of an equality: a parameter there that resolves to a collection is one value to compare, not a list to
+   * split into keys as an IN-list's is.
+   */
+  private static final class SeekValues {
+    final List<Expression> values = new ArrayList<>();
+    final Set<Expression>  scalar = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    InListValues toInList() {
+      return new InListValues(values, scalar);
+    }
+  }
+
+  /**
+   * Costs an OR of index-served predicates on different properties as a union of one index seek per property, the shape
+   * SQL plans for {@code WHERE x = 1 OR s = 'a'} (issue #8723). All-or-nothing: a property without an index would need a
+   * scan of the whole label to answer its disjunct, so the union is then not worth it and the caller falls back.
+   *
+   * @return the union anchor, or {@code null} when some property has no index
+   */
+  private AnchorSelection tryUnionIndexSeek(final LogicalNode node, final String label, final long typeCount,
+      final Map<String, SeekValues> branches) {
+    final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
+    final List<AnchorSelection.UnionIndexSeek> seeks = new ArrayList<>(branches.size());
+    double totalCost = 0;
+    long estimatedRows = 0;
+
+    for (final Map.Entry<String, SeekValues> branch : branches.entrySet()) {
+      final String propertyName = branch.getKey();
+      final List<Expression> values = branch.getValue().values;
+      final IndexStatistics indexStats = findIndexForProperty(indexes, propertyName);
+      if (indexStats == null)
+        return null;
+
+      // Always the IN-list form: a single `x IN $xs` is one parameter that resolves to a whole list at runtime, which a plain
+      // equality seek would look up as one key
+      final Object value = branch.getValue().toInList();
+      final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
+      totalCost += values.size() * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
+      estimatedRows += indexStats.isUnique() ? values.size() : (long) (values.size() * typeCount * perSeekSelectivity);
+      seeks.add(new AnchorSelection.UnionIndexSeek(propertyName, value, indexStats, List.of(value)));
+    }
+
+    // A union of unselective seeks loads a large share of the label one random access at a time: the scan is cheaper then
+    if (totalCost >= costModel.estimateScanCost(label))
+      return null;
+
+    return new AnchorSelection(node.getVariable(), node, seeks, totalCost, Math.min(typeCount, Math.max(1, estimatedRows)));
+  }
+
+  /**
+   * An OR of equalities and IN-lists on one indexed property is the multi-value seek an IN-list is (issue #8723).
+   */
+  private AnchorSelection trySingleOrSeek(final LogicalNode node, final String label, final long typeCount,
+      final Map<String, SeekValues> branches, final Map<String, Object> allPredicates) {
+    final Map.Entry<String, SeekValues> only = branches.entrySet().iterator().next();
+    final String propertyName = only.getKey();
+    final IndexStatistics indexStats = findIndexForProperty(statisticsProvider.getIndexesForType(label), propertyName);
+    if (indexStats == null)
+      return null;
+
+    final InListValues inListValues = only.getValue().toInList();
+    final int nValues = Math.max(1, only.getValue().values.size());
+    final double perSeekSelectivity = indexStats.isUnique() ? 1.0 / Math.max(1, typeCount) : 0.1;
+    final long estimatedRows = indexStats.isUnique() ? nValues : Math.min(typeCount, (long) (nValues * typeCount * perSeekSelectivity));
+    final double cost = nValues * costModel.estimateIndexSeekCost(label, propertyName, perSeekSelectivity);
+    return new AnchorSelection(node.getVariable(), node, true, indexStats, propertyName, inListValues,
+        collectKeyPrefixValues(indexStats, allPredicates, inListValues), cost, estimatedRows);
+  }
+
+  /**
+   * Finds, in the WHERE clauses, a top-level conjunct that is an OR every disjunct of which an index seek on
+   * {@code variable} can serve, and returns the values each property is sought with (issue #8723). A disjunct is an
+   * equality or an IN-list of literals and parameters on a property of the variable, or an AND with at least one such
+   * conjunct: the rest of the AND only narrows what the seek found, and the WHERE is re-evaluated above the anchor.
+   * Disjuncts on the same property are merged, so {@code x = 1 OR x = 2} comes back as one property with two values.
+   *
+   * @return property name to the values to seek, in the order written, or {@code null} when no conjunct qualifies
+   */
+  private Map<String, SeekValues> extractOrSeekBranches(final String variable, final LogicalPlan plan) {
+    if (plan.getWhereFilters() == null)
+      return null;
+    for (final WhereClause whereClause : plan.getWhereFilters()) {
+      final Map<String, SeekValues> branches = orSeekBranchesOfConjunct(variable, whereClause.getConditionExpression());
+      if (branches != null)
+        return branches;
+    }
+    return null;
+  }
+
+  private Map<String, SeekValues> orSeekBranchesOfConjunct(final String variable, final BooleanExpression expression) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return orSeekBranchesOfConjunct(variable, wrapper.getBooleanExpression());
+    if (!(expression instanceof LogicalExpression logical))
+      return null;
+    if (logical.getOperator() == LogicalExpression.Operator.AND) {
+      final Map<String, SeekValues> left = orSeekBranchesOfConjunct(variable, logical.getLeft());
+      return left != null ? left : orSeekBranchesOfConjunct(variable, logical.getRight());
+    }
+    if (logical.getOperator() != LogicalExpression.Operator.OR)
+      return null;
+    final Map<String, SeekValues> branches = new LinkedHashMap<>();
+    return collectSeekDisjuncts(variable, logical, branches) ? branches : null;
+  }
+
+  private boolean collectSeekDisjuncts(final String variable, final BooleanExpression expression,
+      final Map<String, SeekValues> branches) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      return collectSeekDisjuncts(variable, wrapper.getBooleanExpression(), branches);
+
+    if (expression instanceof LogicalExpression logical) {
+      if (logical.getOperator() == LogicalExpression.Operator.OR)
+        return collectSeekDisjuncts(variable, logical.getLeft(), branches)
+            && collectSeekDisjuncts(variable, logical.getRight(), branches);
+      if (logical.getOperator() == LogicalExpression.Operator.AND) {
+        // One seekable conjunct is enough: the seek finds a superset of the rows the AND keeps
+        final Map<String, SeekValues> left = new LinkedHashMap<>();
+        if (collectSeekDisjuncts(variable, logical.getLeft(), left)) {
+          mergeSeekBranches(branches, left);
+          return true;
+        }
+        final Map<String, SeekValues> right = new LinkedHashMap<>();
+        if (collectSeekDisjuncts(variable, logical.getRight(), right)) {
+          mergeSeekBranches(branches, right);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    if (expression instanceof InExpression inExpr) {
+      if (!(inExpr.getExpression() instanceof PropertyAccessExpression access) || !access.getVariableName().equals(variable))
+        return false;
+      final List<Expression> values = seekableInListValues(inExpr);
+      if (values == null)
+        return false;
+      branches.computeIfAbsent(access.getPropertyName(), k -> new SeekValues()).values.addAll(values);
+      return true;
+    }
+
+    if (expression instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS) {
+      final Expression left = comparison.getLeft();
+      final Expression right = comparison.getRight();
+      if (left instanceof PropertyAccessExpression access && access.getVariableName().equals(variable) && isConstant(right)) {
+        addEquality(branches, access.getPropertyName(), right);
+        return true;
+      }
+      if (right instanceof PropertyAccessExpression access && access.getVariableName().equals(variable) && isConstant(left)) {
+        addEquality(branches, access.getPropertyName(), left);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static void mergeSeekBranches(final Map<String, SeekValues> into, final Map<String, SeekValues> from) {
+    for (final Map.Entry<String, SeekValues> entry : from.entrySet()) {
+      final SeekValues target = into.computeIfAbsent(entry.getKey(), k -> new SeekValues());
+      target.values.addAll(entry.getValue().values);
+      target.scalar.addAll(entry.getValue().scalar);
+    }
+  }
+
+  private static void addEquality(final Map<String, SeekValues> branches, final String property, final Expression operand) {
+    final SeekValues seekValues = branches.computeIfAbsent(property, k -> new SeekValues());
+    seekValues.values.add(operand);
+    seekValues.scalar.add(operand);
+  }
+
+  private static boolean isConstant(final Expression expression) {
+    return expression instanceof LiteralExpression || expression instanceof ParameterExpression;
+  }
+
+  /**
+   * The elements of an IN-list a seek can look up: literals and parameters only, a parenthesized list literal unwrapped to
+   * its elements. {@code null} when the list is empty or has an element only a row can evaluate.
+   */
+  private static List<Expression> seekableInListValues(final InExpression inExpr) {
+    List<Expression> list = inExpr.getList();
+    if (list == null || list.isEmpty())
+      return null;
+    if (list.size() == 1 && list.get(0) instanceof ListExpression listExpr)
+      list = listExpr.getElements();
+    if (list.isEmpty())
+      return null;
+    for (final Expression element : list)
+      if (!isConstant(element))
+        return null;
+    return list;
   }
 
   /**
@@ -757,6 +960,22 @@ public class AnchorSelector {
           predicates.computeIfAbsent(propertyName, k -> new ArrayList<>()).add(predicate);
         }
       }
+    }
+
+    // prop STARTS WITH 'abc' is the range [abc, abd) on an ordered index (issue #8666). The predicate stays in the WHERE
+    // as a filter, so what the range returns beyond it (a different collation, a non-string key) is dropped there.
+    if (expression instanceof StringMatchExpression match
+        && match.getMatchType() == StringMatchExpression.MatchType.STARTS_WITH
+        && match.getExpression() instanceof PropertyAccessExpression propAccess
+        && propAccess.getVariableName().equals(variable)) {
+      final Expression pattern = match.getPattern();
+      if (pattern instanceof LiteralExpression literal) {
+        if (literal.getValue() instanceof String prefix && !prefix.isEmpty())
+          predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+              .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), prefix, false));
+      } else if (pattern instanceof ParameterExpression parameter)
+        predicates.computeIfAbsent(propAccess.getPropertyName(), k -> new ArrayList<>())
+            .addAll(RangePredicate.forPrefix(propAccess.getPropertyName(), parameter.getParameterName(), true));
     }
 
     // Handle AND expressions - both sides may contain range predicates

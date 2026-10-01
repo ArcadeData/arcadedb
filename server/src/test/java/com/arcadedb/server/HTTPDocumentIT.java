@@ -54,7 +54,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void serverInfo() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/server").openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -80,7 +80,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void serverInfoReturnsLanguages() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/server").openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -123,7 +123,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void serverInfoBasicModeReturnsLanguages() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/server?mode=basic").openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/server?mode=basic").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -159,7 +159,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void serverClusterInfo() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/server?mode=cluster").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -186,7 +186,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void serverReady() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/ready").openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/ready").openConnection();
       connection.setRequestMethod("GET");
       try {
         connection.connect();
@@ -203,7 +203,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkAuthenticationError() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
@@ -224,7 +224,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInGet() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
@@ -253,7 +253,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInGetWithLimitAboveDefaultCut() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%20" + (TOTAL - 1)).openConnection();
 
       connection.setRequestMethod("GET");
@@ -284,7 +284,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInPostWithLimitAboveDefaultCut() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -316,7 +316,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInPostReportsDefaultLimitTruncation() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -344,7 +344,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInGetWithDefaultLimit() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person").openConnection();
 
       connection.setRequestMethod("GET");
@@ -371,7 +371,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInGetWithSqlScript() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sqlscript/select%20from%20Person%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
@@ -396,7 +396,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryCommandEncoding() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%201%20%2B%201%20as%20result").openConnection();
 
       connection.setRequestMethod("GET");
@@ -421,7 +421,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkQueryInPost() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -445,7 +445,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkCommand() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -469,7 +469,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkAsyncCommand() throws Exception {
     testEachServer(serverIndex -> {
       HttpURLConnection post = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       post.setRequestMethod("POST");
       post.setRequestProperty("Authorization",
@@ -487,7 +487,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       }
 
       final HttpURLConnection get = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20name%20from%20schema%3Atypes").openConnection();
       get.setRequestMethod("GET");
       get.setRequestProperty("Authorization",
@@ -514,7 +514,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void checkCommandNoDuplication() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -545,7 +545,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // CREATE DOCUMENT
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -570,7 +570,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
         connection.disconnect();
       }
 
-      HTTPTransactionIT.checkDocumentWasCreated(DATABASE_NAME, serverIndex, payload, rid, null);
+      HTTPTransactionIT.checkDocumentWasCreated(DATABASE_NAME, getServerHttpPort(serverIndex), payload, rid, null);
 
     });
   }
@@ -593,7 +593,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // First, create the document type via command (ignore error if already exists)
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -611,7 +611,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       final String escapedCommand = "INSERT INTO Field SET value = 'LdhgfdY&hgff2&a'";
 
       connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -643,7 +643,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Query the record back to verify the data is stored correctly
       connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -686,7 +686,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Create the document type (ignore error if already exists)
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -714,7 +714,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       for (final String testValue : testValues) {
         // Insert using parameterized query (cleaner approach without HTML escaping)
         connection = (HttpURLConnection) new URL(
-            "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+            "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -760,7 +760,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Setup: Create test type and document via HTTP commands
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -769,7 +769,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       setupConnection.disconnect();
 
       setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -779,7 +779,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Test 1: Query with $parent.$current in subquery FROM clause
       final HttpURLConnection connection1 = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection1.setRequestMethod("POST");
       connection1.setRequestProperty("Authorization",
@@ -809,7 +809,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Test 2: Query with $parent.$current.@rid in subquery FROM clause
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection2.setRequestMethod("POST");
       connection2.setRequestProperty("Authorization",
@@ -850,7 +850,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Setup: Create test type with list property and insert document
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -859,7 +859,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       setupConnection.disconnect();
 
       setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -869,7 +869,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Test: SELECT @rid FROM doc UNWIND lst - should return 3 results
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -899,7 +899,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Also test SELECT @type FROM doc UNWIND lst for comparison
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
       connection2.setRequestMethod("POST");
       connection2.setRequestProperty("Authorization",
@@ -932,7 +932,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // Setup: Create test type with list property and insert document
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -941,7 +941,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
       setupConnection.disconnect();
 
       setupConnection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
       setupConnection.setRequestMethod("POST");
       setupConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -951,7 +951,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Test: SELECT @rid FROM doc UNWIND lst with "studio" serializer - should return 3 results
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -983,7 +983,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
       // Also test with lst unwound field included in projection
       final HttpURLConnection connection2 = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+          "http://localhost:" + getServerHttpPort(serverIndex) + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
       connection2.setRequestMethod("POST");
       connection2.setRequestProperty("Authorization",

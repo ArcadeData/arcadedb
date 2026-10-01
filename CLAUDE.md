@@ -1,11 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-ArcadeDB is a Multi-Model DBMS (Database Management System) built for extreme performance. It's a Java-based project that supports multiple data models (Graph, Document, Key/Value, Search Engine, Time Series, Vector Embedding) and query languages (SQL, Cypher, Gremlin, GraphQL, MongoDB Query Language).
-
 ## Response Formatting
 - Never use the em dash character (`—`) in responses. Use a normal dash (`-`), a comma, or rephrase instead.
 
@@ -72,6 +66,23 @@ General design principles:
     makes those more true
   - `@Timeout` is plain wall clock and cannot be discounted, so size it as a hang detector, not as a latency bound
 - don't add Claude as author of any source code
+- **Test server ports** - never address or bind a hand-picked port in a test. Parallel builds (other worktrees,
+  other agents, an IDE's server) share the machine, and a collision reads as `403` / "Too many failed authentication
+  attempts" or "Address already in use" in some other test, never as a port conflict:
+  - start servers through a fixture base (`BaseGraphServerTest`, `StaticBaseServerTest`, `BaseRaftHATest`) rather
+    than a bare `new ArcadeDBServer(...)`, and leave `SERVER_HTTP_INCOMING_PORT` on its default range
+  - derive every URL from the port the server actually bound: `getServerHttpUrl(serverIndex, path)` /
+    `getServerHttpPort(serverIndex)`, or `getServerHttpPort(server)` for a server you started yourself. Never
+    `"http://127.0.0.1:248" + serverIndex` or `localhost:2480`: one stranger on 2480 shifts every server up by one,
+    so each index talks to its neighbour
+  - a listener with no range to fall back on (Raft, gRPC, Bolt, a standalone Ratis cluster, a second HTTPS port)
+    takes its port from `StaticBaseServerTest.allocateFreePorts(n)`, or `allocateFixturePorts(n)` inside a
+    `BaseRaftHATest` so it cannot coincide with the cluster's Raft ports. Never a `BASE_PORT + i` constant, and never
+    `new ServerSocket(0)` (the ephemeral range, where any outgoing connection can take it first)
+  - the only legitimate `2480 + i` is a `getServerAddresses()` override: it runs before any server exists and the
+    base class patches it with the bound ports afterwards
+  - `HardcodedTestServerPortsTest` (server module) scans every module's test sources for these shapes; do not
+    allow-list a new offender, fix it
 
 ## Build and Development Commands
 
@@ -97,26 +108,17 @@ green or spuriously red* run rather than an error that tells you what you did wr
   `slow`, `vector`) exist for this, e.g. `-DexcludedGroups=benchmark,vector`. Passing `-Dtest` in any form *replaces*
   Surefire's default include patterns, which drags `*IT` classes into the `test` phase, where they run without the
   Failsafe setup their fixtures need and fail by the hundred
-- **Server tests bind fixed ports** (2480 and up). Anything already listening - a server left running by an IDE, a
-  previous run, another agent - takes the requests instead, and the failures read as authentication errors
+- **Server tests bind the default range 2480-2489** and read back the port they got (see "Test server ports"
+  above). The Gremlin fixtures draw their Gremlin port too (`gremlin.port`, advertised by the server and read by the
+  remote `ArcadeGraph`; a test that builds its own driver uses `getGremlinPort()`). A test that still reaches a fixed
+  port is answered by whatever already listens there, and the failures read as authentication errors
   (`403`, "Too many failed authentication attempts") rather than as a port conflict. Check with
-  `lsof -nP -iTCP:2480 -sTCP:LISTEN` before believing a wall of red in the `server` module
+  `lsof -nP -iTCP:2480-2489 -sTCP:LISTEN` before believing a wall of red in the `server` module
 
 ## Pull Request Reviews
 
-The automated reviewers on a PR write to three different places, and a poll that reads only one of them misses
-findings for hours (PR #7437):
-
-- `gh pr view <N> --json comments` shows the ISSUE comments only: the `claude-review` job, Codacy, Codecov.
-- CodeRabbit posts PR REVIEWS: `gh api repos/ArcadeData/arcadedb/pulls/<N>/reviews` carries their bodies (the
-  nitpicks and the "outside diff range" findings) and `gh api repos/ArcadeData/arcadedb/pulls/<N>/comments` the inline
-  threads, one per actionable finding. Reply to a thread with `POST pulls/<N>/comments/<id>/replies`: CodeRabbit
-  re-verifies the next push, answers in the thread and resolves it itself, and it re-reviews every push.
-- The `claude-review` job often finishes with `permission_denials_count > 0` in its result block and posts nothing.
-  `gh run rerun <runId>` gets a real review on the same commit without writing a comment; never use the `@claude`
-  trigger phrase in a comment.
-- A PR is ready when the latest substantive review says nothing blocks the merge, no major issue is open, every
-  CodeRabbit thread is resolved and the checks are green.
+- Before polling or answering PR reviews, load the `pr-review-surfaces` skill: the bots write to three different places.
+- Never use the `@claude` trigger phrase in a PR comment.
 
 ## Development Guidelines
 

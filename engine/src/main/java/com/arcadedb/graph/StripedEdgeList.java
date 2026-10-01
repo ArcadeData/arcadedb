@@ -337,6 +337,11 @@ public class StripedEdgeList extends EdgeLinkedList {
     return interleaved(chain -> chain.edgeIterator(edgeTypes));
   }
 
+  @Override
+  public Iterator<Edge> edgeIteratorKnowingEndpoints(final String... edgeTypes) {
+    return interleaved(chain -> chain.edgeIteratorKnowingEndpoints(edgeTypes));
+  }
+
   /**
    * #5680: unlike {@link #edgeIterator}, a stripe chain whose head cannot be read is NOT skipped here. The caller
    * removes every edge this yields and then deletes the vertex record, so a skipped chain would leave a whole
@@ -450,7 +455,7 @@ public class StripedEdgeList extends EdgeLinkedList {
     for (final EdgeLinkedList chain : allChains(false)) {
       final JSONArray chainArray = chain.toJSON();
       for (int i = 0; i < chainArray.length(); ++i)
-        array.put(chainArray.getString(i));
+        array.put(chainArray.getJSONObject(i));
     }
     return array;
   }

@@ -40,6 +40,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 
+import java.lang.reflect.Array;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.Temporal;
 import java.util.ArrayList;
@@ -61,7 +62,6 @@ import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
-import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
 public class JsonSerializer {
   // Types JSON round-trips to the same Java type (decimals -> Double, 32-bit-signed-range integers -> Integer), so
@@ -113,18 +113,8 @@ public class JsonSerializer {
     final Map<String, Object> documentAsMap = document.toMap();
     for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
       final String p = documentEntry.getKey();
-      Object value = documentEntry.getValue();
-
-      switch (value) {
-        case null -> value = JSONObject.NULL;
-        case Document document1 -> value = serializeDocument(document1);
-        case Collection<?> collection -> serializeCollection(database, collection, null);
-        case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
-        default -> {
-        }
-      }
-
-      value = convertNonNumbers(value);
+      // Issue #7778: same dispatch as serializeResult(), so both paths render a property identically
+      Object value = serializeObject(database, documentEntry.getValue());
 
       // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
       // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string. Called for an
@@ -550,18 +540,88 @@ public class JsonSerializer {
     return value;
   }
 
-  private Object convertNonNumbers(Object value) {
-    if (value != null)
-      if (value.equals(Double.NaN) || value.equals(Float.NaN))
-        // JSON DOES NOT SUPPORT NaN
-        value = "NaN";
-      else if (value.equals(Double.POSITIVE_INFINITY) || value.equals(Float.POSITIVE_INFINITY))
-        // JSON DOES NOT SUPPORT INFINITY
-        value = "PosInfinity";
-      else if (value.equals(Double.NEGATIVE_INFINITY) || value.equals(Float.NEGATIVE_INFINITY))
-        // JSON DOES NOT SUPPORT INFINITY
-        value = "NegInfinity";
+  /**
+   * JSON has no NaN and no infinity: a non-finite {@link Double} or {@link Float} is rendered as its name. Tested by type
+   * rather than through {@code value.equals(Double.NaN)} and its five siblings, which boxed a fresh {@code Double} or
+   * {@code Float} for each of the six comparisons on every value serialized (issue #8624).
+   */
+  private static Object convertNonNumbers(final Object value) {
+    if (value instanceof Double d) {
+      final double v = d;
+      if (!Double.isFinite(v))
+        return nonFiniteName(v);
+    } else if (value instanceof Float f) {
+      final float v = f;
+      if (!Float.isFinite(v))
+        return nonFiniteName(v);
+    }
     return value;
+  }
+
+  private static String nonFiniteName(final double value) {
+    return Double.isNaN(value) ? "NaN" : value > 0 ? "PosInfinity" : "NegInfinity";
+  }
+
+  /**
+   * Issue #8624: a primitive array is written straight into the JSON array. A vector embedding is a {@code float[]} of a
+   * thousand elements or more, serialized once per search hit, and it used to be boxed into an intermediate list first,
+   * each element then going back through the whole {@link #serializeObject} dispatch and {@link #convertNonNumbers}.
+   * <p>
+   * The output is byte-identical to that path, which is what a {@link Collection} of the same values still takes: every
+   * element becomes the same boxed type ({@code Float} stays {@code Float}, so {@code 0.1F} does not widen into
+   * {@code 0.10000000149011612}), a non-finite float or double the same name, and {@code useCollectionSize} the length.
+   * An array of objects has no primitive to take a shortcut on and keeps the collection path.
+   */
+  private Object serializeArray(final Database database, final Object array) {
+    if (!array.getClass().getComponentType().isPrimitive())
+      return serializeCollection(database, Arrays.asList((Object[]) array), null);
+
+    if (useCollectionSize)
+      return Array.getLength(array);
+
+    final JSONArray json = new JSONArray(Array.getLength(array));
+    switch (array) {
+    case float[] floats -> {
+      for (final float v : floats)
+        if (Float.isFinite(v))
+          json.put(v);
+        else
+          json.put(nonFiniteName(v));
+    }
+    case double[] doubles -> {
+      for (final double v : doubles)
+        if (Double.isFinite(v))
+          json.put(v);
+        else
+          json.put(nonFiniteName(v));
+    }
+    case int[] ints -> {
+      for (final int v : ints)
+        json.put(v);
+    }
+    case long[] longs -> {
+      for (final long v : longs)
+        json.put(v);
+    }
+    case short[] shorts -> {
+      for (final short v : shorts)
+        json.put(v);
+    }
+    case byte[] bytes -> {
+      for (final byte v : bytes)
+        json.put(v);
+    }
+    case boolean[] booleans -> {
+      for (final boolean v : booleans)
+        json.put(v);
+    }
+    case char[] chars -> {
+      for (final char v : chars)
+        json.put(v);
+    }
+    default -> throw new IllegalArgumentException("Unsupported primitive array " + array.getClass().getName());
+    }
+    return json;
   }
 
   private Object serializeObject(final Database database, Object value) {
@@ -584,7 +644,7 @@ public class JsonSerializer {
     else if (value instanceof Map)
       value = serializeMap(database, (Map<Object, Object>) value);
     else if (value.getClass().isArray())
-      value = serializeCollection(database, arrayToList(value), null);
+      value = serializeArray(database, value);
 
     value = convertNonNumbers(value);
 

@@ -521,17 +521,19 @@ public class PluginApiSpec implements OpenApiContributor {
     peer.addProperty("replicationRttP99Ms", SpecBuilders.integer(
         "99th percentile replication round-trip time. Absent when no sample exists."));
     peer.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
-        "Optional wire-format sections this peer can decode, as last observed by the leader (issue #7219). "
-            + "Absent on a follower, which does not poll, and on the leader for a peer it has not reached: an "
-            + "absent array means 'not known', which the leader treats exactly like 'cannot decode'."));
+        "Optional wire-format sections this peer can decode, as last observed by the answering node (issue "
+            + "#7219). Every node polls its peers since issue #7549, so a follower answers for every peer too. Absent "
+            + "for a peer the answering node has no fresh answer from: an absent array means 'not known', which the "
+            + "leader treats exactly like 'cannot decode'."));
     peer.addProperty("version", SpecBuilders.string(
-        "Server version this peer reported alongside its capabilities. Absent when the leader has no fresh "
-            + "answer from it."));
+        "Server version this peer reported alongside its capabilities. Absent when the answering node has no "
+            + "fresh answer from it."));
     peer.addProperty("capabilitiesUnknownReason", SpecBuilders.string("""
-        Why 'capabilities' is absent for this peer, when the leader knows why. An absent capabilities array \
-        otherwise reads the same whether the peer runs a build that predates the capability route or was never \
-        asked because its address identifies no single peer, and the two have nothing alike as remedies \
-        (issue #7256). Written by the leader only."""));
+        Why 'capabilities' is absent for this peer, when the answering node knows why. An absent capabilities \
+        array otherwise reads the same whether the peer runs a build that predates the capability route or was \
+        never asked because its address identifies no single peer, and the two have nothing alike as remedies \
+        (issue #7256). Written by any node since issue #7549; absent while the answering node has not finished \
+        its first probe round."""));
     // Only these three are written for every peer; every other member above is conditional on a health sample,
     // on a resolvable endpoint, or on this node being the leader (issue #7578).
     peer.setRequired(List.of("id", "address", "role"));
@@ -635,6 +637,10 @@ public class PluginApiSpec implements OpenApiContributor {
         process is restarted a single time; an inherited one does not (issue #7736)."""));
     // The #7519 bootstrap install window, the readiness input #7872 still left unpublished (issue #8044).
     schema.addProperty("bootstrapInstalls", bootstrapInstallsSchema());
+    // The two readiness inputs still unpublished after #8044: the third arm of the same bootstrap window (issue
+    // #8408) and the security-convergence gate (issue #8555). With these, every source of a 503 is in this document.
+    schema.addProperty("bootstrapDeciding", bootstrapDecidingSchema());
+    schema.addProperty("securityConvergence", securityConvergenceSchema());
     // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
     // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
     // explicit null rather than going absent (issues #7578, #7872).
@@ -643,7 +649,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "localStuckAtStaleTerm",
         "leaderCommitIndex", "localStalledBehindLeader", "peers",
         "databases", "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "bootstrapInstalls",
-        "alerts"));
+        "bootstrapDeciding", "securityConvergence", "alerts"));
     return schema;
   }
 
@@ -665,6 +671,63 @@ public class PluginApiSpec implements OpenApiContributor {
         "The databases being installed, reduced to the ones the caller is authorized on"));
     // Built as one chained expression by GetClusterHandler.buildBootstrapInstalls, so it is present whole.
     schema.setRequired(List.of("inProgress", "count", "databases"));
+    return schema;
+  }
+
+  /**
+   * The databases a first-formation bootstrap pass is still deciding on here (issue #8408): the start of the window
+   * {@link #bootstrapInstallsSchema()} covers the middle of.
+   */
+  private Schema<?> bootstrapDecidingSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        The databases a first-formation bootstrap pass is still deciding on for this node. Present on every answer. \
+        The pass reaches a node with its probe long before the committed baseline reaches it, and until then the copy on \
+        disk may be the one the pass decides against, so '/api/v1/ready' answers 503. Normally well under a second. \
+        Not a resync, so 'localResync' does not reflect it; the 'bootstrap-deciding-databases' alert does.""");
+    schema.addProperty("inProgress", SpecBuilders.bool("True while at least one database is being decided on"));
+    schema.addProperty("count", SpecBuilders.integer(
+        "How many databases are being decided on, before the authorization filter below"));
+    schema.addProperty("databases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
+        "The databases being decided on, reduced to the ones the caller is authorized on"));
+    // Built as one chained expression by GetClusterHandler.buildBootstrapDeciding, so it is present whole.
+    schema.setRequired(List.of("inProgress", "count", "databases"));
+    return schema;
+  }
+
+  /**
+   * The security-convergence readiness gate of this node (issue #8555): the fifth source of a 503 from
+   * '/api/v1/ready', published like the four before it.
+   */
+  private Schema<?> securityConvergenceSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        What the security-convergence readiness gate sees on this node. Present on every answer. The three security \
+        documents (users, groups, API tokens) do not travel in the Raft snapshot and reach a new peer only through the \
+        admission seed, so a member that is caught up can still hold none of the cluster's copies. While 'held', \
+        '/api/v1/ready' answers 503 until the leader confirms them. The wait is bounded by \
+        arcadedb.ha.securityConvergenceReadinessTimeout: past it the node reports READY while enforcing its own copies \
+        ('gaveUp'). Not a resync, so 'localResync' does not reflect it; the 'security-documents-unconverged' alert does. \
+        Reading this document counts as observing the node: it evaluates the same shared window as the readiness probe, \
+        so the first read that finds the node otherwise ready opens the window, exactly as a probe would.""");
+    schema.addProperty("held", SpecBuilders.bool("True while '/api/v1/ready' is answering 503 because of this gate"));
+    schema.addProperty("unconvergedDocuments", SpecBuilders.arrayOf(SpecBuilders.string("Security document"),
+        "The documents the cluster has not confirmed on this node, in the order users, groups, API tokens. Empty when "
+            + "converged or when the gate does not apply (no HA layer, or readiness that does not require HA)"));
+    schema.addProperty("armed", SpecBuilders.bool("""
+        True for a runtime joiner (a node added to a running cluster), false for a statically configured member held \
+        after a snapshot install"""));
+    schema.addProperty("sinceIndex", SpecBuilders.integer(
+        "The Raft log index of the join or of the snapshot install the window is keyed by, 0 when there is none"));
+    schema.addProperty("windowOpenedAt", SpecBuilders.integer(
+        "When the current window opened, as epoch milliseconds, 0 while none is open"));
+    schema.addProperty("gaveUp", SpecBuilders.bool("""
+        True once the window expired unconverged: the node is READY and serving traffic while enforcing its own copies \
+        of the documents, which may hold a user dropped, a group narrowed or a token revoked while it was away"""));
+    schema.addProperty("skippedBecauseLeading", SpecBuilders.bool("""
+        True while this node leads: nobody can confirm a leader's documents, so it is not held for them. It is held again \
+        with a full window if it steps down while still unconfirmed"""));
+    // Built as one chained expression by GetClusterHandler.buildSecurityConvergence, so it is present whole.
+    schema.setRequired(List.of("held", "unconvergedDocuments", "armed", "sinceIndex", "windowOpenedAt", "gaveUp",
+        "skippedBecauseLeading"));
     return schema;
   }
 

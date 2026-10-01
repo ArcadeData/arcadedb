@@ -1331,6 +1331,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         // Get mutable view for updates (works for docs, vertices, edges)
         MutableVertex mvertex = elAsVertex.modify();
+        // The values come from the request, not from the record read: no stale-read refusal (#8610)
+        mvertex.clearBasedOnStaleRead();
 
         var dtype = db.getSchema().getType(mvertex.getTypeName());
 
@@ -1367,6 +1369,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.FINE, "updateRecord(): Processing Document ...");
 
         MutableDocument mdoc = elAsDocument.modify();
+        // The values come from the request, not from the record read: no stale-read refusal (#8610)
+        mdoc.clearBasedOnStaleRead();
 
         var dtype = db.getSchema().getType(mdoc.getTypeName());
 
@@ -2082,6 +2086,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
+    // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
+    boolean terminated = false;
 
     ProtocolContext.set("grpc");
     try {
@@ -2107,10 +2113,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       try {
         txCtx = resolveAuthorizedTransaction(incomingTxId, request.getCredentials());
       } catch (final StatusRuntimeException e) {
+        terminated = true;
         responseObserver.onError(e);
         return;
       }
       if (isUnknownSuppliedTransaction(incomingTxId, txCtx)) {
+        terminated = true;
         responseObserver.onError(unknownTransactionStatus(incomingTxId).asException());
         return;
       }
@@ -2130,6 +2138,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Restore the interrupt status and surface an explicit CANCELLED terminal rather than letting the
           // outer catch mask it as a generic INTERNAL error with the interrupt flag swallowed.
           Thread.currentThread().interrupt();
+          terminated = true;
           responseObserver.onError(
               Status.CANCELLED.withDescription("Stream query execution was interrupted").asRuntimeException());
           return;
@@ -2144,18 +2153,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (cancelled.get()) {
           if (serverTimedOut.get()) {
-            final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
-            try {
-              scso.onError(Status.DEADLINE_EXCEEDED
-                  .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
-                      + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
-                  .asRuntimeException());
-            } catch (final StatusRuntimeException ignore) {
-              // transport may have closed concurrently; the terminal is already moot
-            }
+            terminated = true;
+            sendStreamWriteTimeout(scso);
           }
           return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
         }
+        terminated = true;
         scso.onCompleted();
         return;
       }
@@ -2180,15 +2183,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // always signaled even if rollback fails) so it fails fast instead of blocking on its own deadline. A
         // genuine client cancel needs no terminal - its transport is already tearing down.
         if (serverTimedOut.get()) {
-          final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
-          try {
-            scso.onError(Status.DEADLINE_EXCEEDED
-                .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
-                    + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
-                .asRuntimeException());
-          } catch (final StatusRuntimeException ignore) {
-            // transport may have closed concurrently; the terminal is already moot
-          }
+          terminated = true;
+          // Never throws, so the transaction outcome below is still applied.
+          sendStreamWriteTimeout(scso);
         }
         if (hasTx) {
           if (tx.getRollback()) {
@@ -2214,6 +2211,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
+      terminated = true;
       scso.onCompleted();
 
     } catch (Exception e) {
@@ -2233,11 +2231,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         /* no-op */
       }
 
-      if (!cancelled.get())
+      if (terminated)
+        // A terminal was already sent (or attempted): never send a second one on a closed call.
+        logFailureAfterTerminal("Stream query", e);
+      else if (!cancelled.get())
         // GrpcErrorMapper both classifies the failure (a SQL syntax error, a missing type, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of masking it as INTERNAL.
-        responseObserver.onError(mapError(e, "Stream query failed"));
+        sendFinalError(responseObserver, mapError(e, "Stream query failed"), "Stream query");
     } finally {
       // Stream endpoints mix engine iteration and row serialization throughout; expose the
       // total cost as engineNanos so the Server Profiler still captures query-level metrics.
@@ -3520,6 +3521,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
     call.setOnCancelHandler(() -> cancelled.set(true));
+    // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
+    boolean terminated = false;
 
     ProtocolContext.set("grpc");
     try {
@@ -3544,6 +3547,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           throw rethrowCauseOf(e);
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
+          terminated = true;
           if (!cancelled.get())
             resp.onError(Status.CANCELLED
                 .withDescription("TimeSeriesQuery was interrupted while streaming inside the transaction")
@@ -3554,19 +3558,57 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (serverTimedOut.get()) {
         // The consumer stopped reading and the bounded wait elapsed. Say so explicitly rather than letting the
         // stream end as if it were complete, which would look like an empty tail to the client.
+        terminated = true;
         resp.onError(Status.DEADLINE_EXCEEDED
             .withDescription("TimeSeriesQuery aborted: the client transport was not ready in time")
             .asRuntimeException());
         return;
       }
+      terminated = true;
       if (!cancelled.get())
         resp.onCompleted();
     } catch (final Exception e) {
-      if (!cancelled.get())
-        resp.onError(mapError(e, "TimeSeriesQuery"));
+      if (terminated)
+        logFailureAfterTerminal("TimeSeriesQuery", e);
+      else if (!cancelled.get())
+        sendFinalError(resp, mapError(e, "TimeSeriesQuery"), "TimeSeriesQuery");
     } finally {
       ProtocolContext.clear();
     }
+  }
+
+  /**
+   * The catch-block terminal of a server-streaming handler. A client cancel can close the call between the
+   * asynchronous {@code cancelled} check and this send, so a failing {@code onError} is logged, never let escape.
+   */
+  private void sendFinalError(final StreamObserver<?> observer, final Throwable error, final String rpc) {
+    try {
+      observer.onError(error);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE, "%s: error terminal failed (client cancelled?): %s", e, rpc, e.getMessage());
+    }
+  }
+
+  /**
+   * Logs a failure raised after a streaming handler already sent (or attempted) its terminal. The terminal itself
+   * failing on a closed call is expected and stays at FINE; anything else - a requested commit failing after the
+   * DEADLINE_EXCEEDED terminal, say - is a real failure the client can no longer be told about.
+   */
+  private void logFailureAfterTerminal(final String rpc, final Exception e) {
+    if (e instanceof IllegalStateException || e instanceof StatusRuntimeException)
+      LogManager.instance().log(this, Level.FINE, "%s: terminal failed on a closed call (client cancelled?): %s", e, rpc,
+          e.getMessage());
+    else
+      LogManager.instance().log(this, Level.WARNING, "%s failed after its terminal was sent: %s", e, rpc, e.getMessage());
+  }
+
+  /** Ends a stream whose consumer stopped reading with DEADLINE_EXCEEDED. Never throws: the call may already be closed. */
+  private void sendStreamWriteTimeout(final ServerCallStreamObserver<?> scso) {
+    final long timeoutMs = serverConfiguration().getValueAsLong(GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS);
+    sendFinalError(scso, Status.DEADLINE_EXCEEDED
+        .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
+            + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
+        .asRuntimeException(), "Stream query");
   }
 
   /**
@@ -4472,6 +4514,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return false;
 
       final MutableDocument existing = res.getElement().get().asDocument().modify();
+      // The upsert writes the request's values, not values computed from the record read: no stale-read refusal (#8610)
+      existing.clearBasedOnStaleRead();
       applyConflictUpdates(ctx, r, isEdge, existing);
       existing.save();
       return true;

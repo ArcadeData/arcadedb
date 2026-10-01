@@ -30,6 +30,9 @@ import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionException;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.handler.batch.BatchRecord;
 import com.arcadedb.server.http.handler.batch.BatchRecordStream;
 import com.arcadedb.server.http.handler.batch.CsvBatchRecordStream;
@@ -45,7 +48,6 @@ import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
-import org.xnio.IoUtils;
 import org.xnio.Options;
 import org.xnio.XnioExecutor;
 import org.xnio.XnioIoThread;
@@ -177,6 +179,12 @@ import java.util.logging.Level;
  * reading a multi-gigabyte remainder to keep the socket well-mannered - is the bug this replaced, and it pinned a
  * worker thread for the duration.
  * <p>
+ * Sessions: a request carrying {@code arcadedb-session-id} runs under that HTTP session - its lock, its principal and
+ * its idle clock - and a session id this server cannot resolve is refused with 404 rather than loaded outside it
+ * (issue #7682). The load does NOT join the session's transaction: it commits as it goes, whatever the caller has
+ * open, and rolling that transaction back does not remove it. See {@link #runInSession} for why that is the only
+ * answer this endpoint can give.
+ * <p>
  * Atomicity: a batch is NOT atomic. GraphBatch commits every {@code commitEvery} records, so a
  * failure mid-stream leaves earlier chunks durably committed. On a client-input error the response
  * carries {@code verticesCreated} / {@code edgesCreated} and a {@code partialCommit} flag; because
@@ -230,6 +238,7 @@ import java.util.logging.Level;
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
   private static final int        VERTEX_BATCH_SIZE     = 10_000;
+  private static final HttpString SESSION_ID_HEADER     = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
   /** Value of the {@code phase} field of a progress line while vertices are being committed. */
   private static final String     VERTEX_PHASE          = "vertices";
   /** Value of the {@code phase} field of a progress line while edges are being accepted. */
@@ -269,6 +278,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
     this.httpClient = LeaderDial.newConnectTimeoutBoundedClient(httpServer.getServer().getConfiguration());
+  }
+
+  /** Whether the one-shot "the leader address names the wrong node" warning has been logged. For tests. */
+  boolean misconfigurationWarned() {
+    return forwardedAgainWarned.get();
   }
 
   @Override
@@ -356,6 +370,124 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final CountingInputStream inputStream = new CountingInputStream(exchange, exchange.getInputStream(),
         httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
 
+    // A session id is resolved here, after the body stream exists and before a byte of it is read, so a refusal
+    // declines the upload the same way every other early verdict does (issue #7682). See runInSession.
+    final HttpSession session;
+    try {
+      session = resolveSession(exchange, user, databaseName);
+    } catch (final HttpSessionException e) {
+      inputStream.close();
+      throw e;
+    }
+
+    if (session == null)
+      return load(exchange, user, databaseName, contentType, streaming, inputStream);
+
+    return runInSession(exchange, user, session, databaseName, contentType, streaming, inputStream);
+  }
+
+  /**
+   * Resolves the {@code arcadedb-session-id} the request names, or answers {@code null} when it names none
+   * (issue #7682).
+   * <p>
+   * An id this server cannot resolve - committed, rolled back, reaped by the idle sweep, or owned by another
+   * principal ({@link HttpSessionManager#getSessionById} checks ownership) - is REFUSED with
+   * {@link HttpSessionException}, which every handler answers 404. A bulk load is a write, and a write must not run
+   * outside the transaction its caller believes it is inside: the same answer {@code POST /ts/{database}/write}
+   * gives since issue #7402, rather than the degrade a read gets.
+   * <p>
+   * A session opened on ANOTHER database is refused the same way. An HTTP session is one transaction on one
+   * database, and nothing in the id says which, so without this check a load into {@code B} naming a session of
+   * {@code A} would run under {@code A}'s lock and answer with {@code A}'s id - harmless, since the principal is
+   * checked and the load never touches the session's transaction, but it echoes a session the request has nothing
+   * to do with (code review on PR #8729). Names are compared case-sensitively, as the server looks databases up.
+   * <p>
+   * The presence test is deliberately the one {@code DatabaseAbstractHandler.setTransactionInThreadLocal} makes on
+   * the same header, so the two paths cannot disagree about whether a request named a session at all.
+   */
+  private HttpSession resolveSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String databaseName) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
+    if (sessionId == null || sessionId.isEmpty())
+      return null;
+
+    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+    if (session == null)
+      throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+
+    final DatabaseInternal sessionDatabase = session.transaction.getDatabase();
+    if (sessionDatabase == null || !databaseName.equals(sessionDatabase.getName()))
+      throw new HttpSessionException(
+          "Remote transaction '" + sessionId.getFirst() + "' does not belong to database '" + databaseName + "'");
+    return session;
+  }
+
+  /**
+   * Runs the load under the session the request named (issue #7682): its lock, so it is serialized against every
+   * other request of that session exactly like a command is; its principal; and its idle clock, which is refreshed
+   * when the load ends and cannot fire while it runs, because the idle sweep only reaps a session whose lock it can
+   * take. The session id is echoed on the response the way every session-bound route echoes it, set before the
+   * load starts so it also reaches a streamed answer, whose headers leave with the first progress line.
+   * <p>
+   * What it deliberately does NOT do is bind the session's transaction onto this thread, which is what
+   * {@code DatabaseAbstractHandler} does for a command. {@code GraphBatch.beginTx()} begins a transaction only when
+   * none is active and otherwise JOINS the active one, and it commits every {@code commitEvery} records: bound
+   * there, the first chunk would commit the caller's pending work behind its back, and every chunk after it would
+   * run in a transaction the caller no longer owns - a later {@code /rollback} would find nothing to take back and a
+   * {@code /commit} nothing to commit. Left unbound, the load opens and commits its own transactions, which is
+   * what it has always done and what the endpoint documents: a batch is not atomic, and it is not atomic with
+   * respect to the caller's transaction either. Records the session has written but not committed are therefore not
+   * visible to the load, and a session that later commits pages the load also wrote can be refused with a
+   * concurrent-modification error, as for any two independent transactions.
+   * <p>
+   * For the same reason a failed load does not roll the session's transaction back: nothing the load did was part
+   * of it, so the failure says nothing about the state of the caller's work. That is the
+   * {@code rollbackOnFailure = false} half of {@code HttpSession.execute(user, callback, rollbackOnFailure)}, the
+   * answer the {@code /ts} routes give for the same reason (issue #7734).
+   * <p>
+   * The lock is held for the WHOLE load, which for a large upload is minutes rather than milliseconds. Every other
+   * request of the session - a command, a second load, its own {@code /commit} or {@code /rollback} - waits for it
+   * and gives up with 503 once the session's lock wait runs out, exactly as it would behind a long command. A client
+   * that loads inside a session must therefore not overlap other requests of that session with the load.
+   * <p>
+   * On a follower the forward to the leader runs under the local session's lock too, and the relayed request
+   * carries no session id: sessions are node-local, the leader has never heard of this one, and the load does not
+   * join it there either.
+   */
+  private ExecutionResponse runInSession(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final HttpSession session, final String databaseName, final String contentType, final boolean streaming,
+      final CountingInputStream inputStream) throws Exception {
+    // Set before the lock is taken, not inside the callback: the streaming encoding sends its headers with the first
+    // progress line, from inside load(). The cost is that a refusal raised by execute() itself - a 503 lock timeout,
+    // a 404 because the session ended while this request waited for it - also carries the id; the status says what
+    // happened to it, and the id is the one the client sent.
+    exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
+
+    final ExecutionResponse[] response = new ExecutionResponse[1];
+    final boolean[] started = new boolean[1];
+    try {
+      session.execute(user, () -> {
+        started[0] = true;
+        response[0] = load(exchange, user, databaseName, contentType, streaming, inputStream);
+        return null;
+      }, false);
+    } catch (final Exception e) {
+      // Refused before the load began - the session lock timed out, or the session was committed, rolled back or
+      // reaped between the lookup above and taking its lock: decline the upload as resolveSession's refusal does.
+      if (!started[0])
+        inputStream.close();
+      throw e;
+    }
+    return response[0];
+  }
+
+  /**
+   * The load itself, identical with or without a session: see {@link #runInSession} for why a session changes what
+   * surrounds this call and nothing inside it.
+   */
+  private ExecutionResponse load(final HttpServerExchange exchange, final ServerSecurityUser user,
+      final String databaseName, final String contentType, final boolean streaming,
+      final CountingInputStream inputStream) throws Exception {
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
     final Integer previousReadTimeout = relaxConnectionReadTimeout(exchange);
@@ -722,7 +854,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final HAReplicatedDatabase haDb) throws Exception {
 
     final NdJsonBatchResponse response = new NdJsonBatchResponse(exchange,
-        connectionWriteWatchdog(exchange, streamingWriteTimeout(), databaseName));
+        WriteBoundedOutputStream.connectionWatchdog(exchange, streamingWriteTimeout(),
+            () -> "the streamed answer of a batch load on database '" + databaseName + "'"));
     // Counters as of the last acknowledgement, so a failure that cannot reach streamRecords' own counters -
     // an engine exception raised after the stream started - still has something honest to report.
     final long[] lastProgress = new long[2];
@@ -858,161 +991,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
     }
     return null;
-  }
-
-  /**
-   * The write-side budget of issue #7381 as configured on this server, in milliseconds.
-   */
-  private int streamingWriteTimeout() {
-    return httpServer.getServer().getConfiguration()
-        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT);
-  }
-
-  /**
-   * The watchdog that bounds one blocking write of a streamed response on this exchange: it closes the
-   * connection when the write has made no progress for the configured budget, which is what turns an indefinite
-   * block into an I/O failure the caller can report (issue #7381).
-   * <p>
-   * Scheduled on the connection's own XNIO thread, which is where Undertow schedules its own read and write
-   * timeouts, so this adds no pool and no thread; arming is an insertion into that thread's delay queue and
-   * disarming is its removal. It is deliberately NOT Undertow's {@code Options.WRITE_TIMEOUT}: that conduit is
-   * installed only at connection open - setting the option later does nothing at all - and it measures the
-   * interval BETWEEN two successful writes, so on this endpoint a long commit between two progress lines (the
-   * 195-second index compaction of issue #5470) would kill the connection on the next write that SUCCEEDED.
-   * This timer exists only while a write is actually in progress.
-   * <p>
-   * Arming and firing are settled by one compare-and-set, so a write that returns just as its timer fires can
-   * never have the connection closed under the request that follows it on the same keep-alive connection:
-   * whichever of the two wins the flag, the other does nothing.
-   * <p>
-   * Closing the CONNECTION is the only lever a streamed response has - a body already on the wire cannot be
-   * retracted - and it is the same lever Undertow's own write-timeout conduit pulls. On an HTTP/2 connection
-   * that also ends the sibling streams multiplexed on it; the alternative is holding a worker thread for a peer
-   * that has stopped reading, which is the defect being fixed.
-   *
-   * @return {@link WriteBoundedOutputStream.WriteWatchdog#NONE} when the budget is not positive, which is how
-   *         the setting switches the bound off
-   */
-  private WriteBoundedOutputStream.WriteWatchdog connectionWriteWatchdog(final HttpServerExchange exchange,
-      final int timeoutMs, final String databaseName) {
-    if (timeoutMs <= 0)
-      return WriteBoundedOutputStream.WriteWatchdog.NONE;
-
-    final ServerConnection connection = exchange.getConnection();
-    final XnioIoThread ioThread = exchange.getIoThread();
-    return () -> {
-      final AtomicBoolean armed = new AtomicBoolean(true);
-      final XnioExecutor.Key key = ioThread.executeAfter(() -> {
-        if (!armed.compareAndSet(true, false))
-          // The write returned between this task being dequeued and this line. Closing now would take down a
-          // connection that is already serving something else.
-          return;
-        LogManager.instance().log(this, Level.WARNING,
-            "The streamed answer of a batch load on database '%s' could not be written for %,d ms - the client "
-                + "is not reading it - so the connection is closed and the load is failed rather than holding a "
-                + "worker thread indefinitely. Raise '%s' to allow a longer block, or read the response while "
-                + "uploading",
-            null, databaseName, timeoutMs, GlobalConfiguration.SERVER_HTTP_STREAMING_WRITE_TIMEOUT.getKey());
-        IoUtils.safeClose(connection);
-      }, timeoutMs, TimeUnit.MILLISECONDS);
-      return () -> {
-        if (armed.compareAndSet(true, false))
-          key.remove();
-      };
-    };
-  }
-
-  /**
-   * An {@link OutputStream} on which no single call can block forever: a watchdog is armed before each one and
-   * disarmed as soon as it returns (issue #7381).
-   * <p>
-   * The streamed answer of {@code POST /api/v1/batch} is written while the request body is still being read,
-   * and its size grows with the size of the LOAD - roughly one line per {@code vertexBatchSize} records - while
-   * nothing bounds it. A client that uploads everything before reading anything, which is what a plain
-   * {@code HttpURLConnection} that writes its body and then calls {@code getResponseCode()} does, stops
-   * draining the response; once the socket buffers between the two fill, the server blocks inside a response
-   * {@code write()}, and a server blocked there is not reading the request either. Nothing then ever completes,
-   * and the worker thread is held for as long as the client keeps the connection open. The read side of this
-   * same exchange has been watched since issue #5470; this is the write side.
-   * <p>
-   * The bound does NOT prevent the stall - no cap on the number or rate of progress lines can, since neither
-   * knows how large the buffers are - it converts it into a failure with a diagnosis: the connection is closed,
-   * the blocked call fails, and {@code streamRecordsAsNdJson} reports it as what it is, a response that could
-   * not be written, rather than as the truncated REQUEST body an {@link IOException} from the read side means.
-   * <p>
-   * A client that reads while it writes never arms anything that fires, so nothing about the cadence or the
-   * content of the stream changes for it.
-   * <p>
-   * Package-private, and watchdog-injected, so the bound can be tested without a socket whose buffer sizes the
-   * test does not control.
-   */
-  static final class WriteBoundedOutputStream extends OutputStream {
-    /**
-     * Arms the bound for one blocking call. The returned {@link Runnable} disarms it and is always run, so an
-     * implementation must tolerate being disarmed after it has already fired.
-     */
-    @FunctionalInterface
-    interface WriteWatchdog {
-      /** No bound at all: what a non-positive budget configures, and what every non-streamed response has. */
-      WriteWatchdog NONE = () -> () -> {
-      };
-
-      Runnable arm();
-    }
-
-    private final OutputStream  out;
-    private final WriteWatchdog watchdog;
-
-    WriteBoundedOutputStream(final OutputStream out, final WriteWatchdog watchdog) {
-      this.out = out;
-      this.watchdog = watchdog;
-    }
-
-    @Override
-    public void write(final int b) throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.write(b);
-      } finally {
-        disarm.run();
-      }
-    }
-
-    @Override
-    public void write(final byte[] b, final int off, final int len) throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.write(b, off, len);
-      } finally {
-        disarm.run();
-      }
-    }
-
-    /**
-     * The call that actually reaches the socket: {@code UndertowOutputStream} accumulates into a pooled buffer
-     * and only writes through when it fills, so on a response of ~200-byte lines this is where a client that
-     * stopped reading blocks the worker thread.
-     */
-    @Override
-    public void flush() throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.flush();
-      } finally {
-        disarm.run();
-      }
-    }
-
-    /** Bounded as well: closing the response flushes whatever is still pending, which blocks for the same reason. */
-    @Override
-    public void close() throws IOException {
-      final Runnable disarm = watchdog.arm();
-      try {
-        out.close();
-      } finally {
-        disarm.run();
-      }
-    }
   }
 
   /**
@@ -1405,8 +1383,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     private final long              maxBodySize;
     private       long              bytesRead;
     private       boolean           endOfBody;
-    /** The failure that ended this body, or {@code null} while it is still readable. */
-    private       IOException       bodyFailure;
+    /**
+     * The failure that ended this body, or {@code null} while it is still readable. Volatile: a forwarded body is
+     * read on the JDK client's publisher thread and asked about on the handler thread (issue #8161).
+     */
+    private volatile IOException    bodyFailure;
 
     /**
      * An UNCAPPED counter, for the callers that wrap a stream whose size is already bounded by something else -
@@ -1466,10 +1447,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     private void refuseIfOverCap() throws IOException {
       if (maxBodySize > 0 && bytesRead > maxBodySize) {
-        bodyFailure = new RequestTooBigException(
+        final RequestTooBigException tooBig = new RequestTooBigException(
             "Request body size exceeds the maximum allowed size of " + maxBodySize + " bytes. Configure '"
                 + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + "' to increase the limit");
-        throw bodyFailure;
+        bodyFailure = tooBig;
+        throw tooBig;
       }
     }
 
@@ -1479,6 +1461,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      */
     boolean hasBodyFailed() {
       return bodyFailure != null;
+    }
+
+    /**
+     * The refusal this body ended with when it was cut off at {@code arcadedb.server.httpBodyContentMaxSize}, or
+     * {@code null} when it was not. Read by the leader-forwarding relay (issue #8161), where the refusal is raised on
+     * the JDK client's publishing thread and reaches the caller of {@code HttpClient.send} only as the cause of a
+     * plain {@link IOException} that says nothing about which side failed; the stream itself is the one witness that
+     * cannot be mistaken about it.
+     */
+    RequestTooBigException refusedOverCap() {
+      return bodyFailure instanceof RequestTooBigException tooBig ? tooBig : null;
     }
 
     /**
@@ -1605,6 +1598,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     long getBytesRead() {
       return bytesRead;
+    }
+
+    /** The cap this body enforces, {@code <= 0} when uncapped. */
+    long getMaxBodySize() {
+      return maxBodySize;
     }
 
     /** Whether the parser reached the end of the request body. */
@@ -1860,42 +1858,52 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       // Two causes, two answers (issue #7603). The peer meant to reach THIS node: the address was right and
       // leadership moved while the load travelled, which the same request retried gets past - 503, and the warning
       // latch below is left for the misconfiguration it exists to report.
+      //
+      // A refusal nobody can classify - the peer named no leader, because leadership changed while it resolved the
+      // address or because it predates the header during a rolling upgrade - is answered the same way (issue #8393):
+      // it is an election far more often than a configuration fault, and only the refusal that proves the address
+      // named the wrong node keeps the 400 and the notice.
       final LeaderForwardContext.Refusal refusal = LeaderForwardContext.classifyRefusal(ha.getLocalPeerId());
-      if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED) {
+      if (refusal != LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER) {
         final String currentLeader = ha.getLeaderName();
+        final String nowLeads = currentLeader != null ? " (the leader is now " + currentLeader + ")" : "";
+        final String error;
+        if (refusal == LeaderForwardContext.Refusal.LEADERSHIP_MOVED)
+          error = "A cluster peer forwarded this batch here as the leader, and leadership moved away from this node "
+              + "while the request was in flight" + nowLeads + ". Nothing was loaded: retry it";
+        else {
+          LogManager.instance().log(this, Level.FINE,
+              "A cluster peer forwarded a batch to this node as the leader without saying which node it meant to "
+                  + "reach, and this node is not the leader (db=%s): refused as retryable", databaseName);
+          error = "A cluster peer already forwarded this batch to the leader and it arrived on this node, which is not "
+              + "the leader" + nowLeads + ". Leadership most likely moved while the request was in flight: nothing was "
+              + "loaded, retry it. If this persists, the HTTP address that peer resolved for the leader may not "
+              + "identify it, which declaring every node's HTTP port ('host:raftPort:httpPort') in "
+              + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents";
+        }
         // Typed as the unnamed ServerIsNotTheLeaderException the server-command route and the SQL forward answer in
         // the same situation, so the follower that relayed this batch recognizes the refusal and holds it until its
         // own view stops naming this node, instead of routing the client's retry straight back here (issue #8486).
         return new ExecutionResponse(503, new JSONObject()
-            .put("error", "A cluster peer forwarded this batch here as the leader, and leadership moved away from this "
-                + "node while the request was in flight" + (currentLeader != null ? " (the leader is now " + currentLeader
-                + ")" : "") + ". Nothing was loaded: retry it")
+            .put("error", error)
             .put("exception", ServerIsNotTheLeaderException.class.getName())
             .toString());
       }
 
-      final boolean misidentified = refusal == LeaderForwardContext.Refusal.ADDRESS_DOES_NOT_IDENTIFY_LEADER;
       // Also said once in this node's log: the refusal is relayed back to the peer and from there to the
       // client, so otherwise the only node that can name the misconfiguration never mentions it.
       if (forwardedAgainWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "A cluster peer forwarded a batch to this node as the leader, but this node is not the leader (db=%s). "
-                + (misidentified ? "That peer meant to reach another node, so " : "Unless leadership just moved, ")
-                + "the HTTP address that peer resolved for the leader does not identify "
-                + "it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax in %s. The "
-                + "load is refused rather than relayed on. This notice is logged only once.",
+                + "That peer meant to reach another node, so the HTTP address that peer resolved for the leader does "
+                + "not identify it: declare every node's HTTP port explicitly with the 'host:raftPort:httpPort' syntax "
+                + "in %s. The load is refused rather than relayed on. This notice is logged only once.",
             databaseName, GlobalConfiguration.HA_SERVER_LIST.getKey());
       return new ExecutionResponse(400, new JSONObject()
-          .put("error", misidentified ?
-              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived on this "
-                  + "node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
-                  + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
-                  + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this" :
-              "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived "
-                  + "on this node, which is not the leader. Either leadership moved while the request was in flight - "
-                  + "retry - or the HTTP address that peer resolved for the leader does not identify it, which is what "
-                  + "declaring every node's HTTP port ('host:raftPort:httpPort') in "
-                  + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents")
+          .put("error", "Refusing to forward a batch that a cluster peer already forwarded to the leader: it arrived on "
+              + "this node, which is neither the leader nor the node that peer meant to reach, so the HTTP address that "
+              + "peer resolved for the leader does not identify it. Declaring every node's HTTP port "
+              + "('host:raftPort:httpPort') in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " prevents this")
           .toString());
     }
 
@@ -1980,12 +1988,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // streaming encoding is at the leader's first progress line - while the JDK client's own executor thread is
         // still publishing the relayed upload. That is what keeps the acknowledgements incremental across the hop,
         // and why the deadline here bounds the headers only.
+        // NOT what the JDK does on HTTP/1.1 (21, 25, 27): the response is handed back only once the upload has been
+        // published whole, so this deadline currently bounds the upload too (issue #8719).
         //
         // A leader that refused instead of streaming is relayed as a buffered answer, and an unnamed "not the leader"
         // among those is held until this node's view moves, as on the buffered encoding below (issue #8486).
         return LeaderCommandForwarder.holdUnnamedNotTheLeaderRefusal(relayNdJsonFromLeader(exchange, databaseName, url,
                 LeaderDial.sendBounded(dial.client(), request, HttpResponse.BodyHandlers.ofInputStream(), deadlineMs),
-                deadlineMs), ha, intendedLeaderId, httpServer.getServer().getConfiguration());
+                deadlineMs, body), ha, intendedLeaderId, httpServer.getServer().getConfiguration());
 
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
@@ -2034,16 +2044,42 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           .toString());
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within deadlineMs - the failure #7526/#7542 were
-      // filed about: previously nothing bounded this wait at all.
+      // filed about: previously nothing bounded this wait at all. The body may have been cut by our own cap first.
+      // Not unit-tested: a cap trip aborts send() with an IOException at once, so reaching this arm needs a race.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
           .toString());
     } catch (final Exception e) {
+      // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
+      rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
-      return new ExecutionResponse(503,
-          "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Error forwarding batch to leader: " + e.getMessage())
+          .toString());
     }
+  }
+
+  /**
+   * Rethrows the refusal of a forwarded body that this node's own cap cut off mid-relay (issue #8161), so
+   * sendMappedErrorResponse answers the same 413 the leader would rather than a leader-blaming 503/504. The stream
+   * is asked, not the exception, because the JDK client reports the refusal only as the cause of a plain
+   * IOException. Connect failures need no check: the body is not read before the connection is up.
+   */
+  private void rethrowIfRefusedOverCap(final CountingInputStream body, final String databaseName)
+      throws RequestTooBigException {
+    final RequestTooBigException tooBig = body.refusedOverCap();
+    if (tooBig == null)
+      return;
+    // GraphBatch commits incrementally: what the leader loaded before the cut stays loaded, and its log has the counts.
+    // A client-caused refusal: logged at the level the leader's own 413 uses, not as a warning per request.
+    LogManager.instance().log(this, getUserSevereErrorLogLevel(),
+        "Batch load on database '%s' was refused after relaying %,d bytes to the leader because the request body "
+            + "exceeded '%s' (%,d bytes) on this node. Raise that setting or split the payload; the leader's log "
+            + "reports what it loaded before the relay was cut", null, databaseName, body.getBytesRead(),
+        GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(), body.getMaxBodySize());
+    throw tooBig;
   }
 
   /**
@@ -2161,10 +2197,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * connection to it is closed, and the client's stream ends without a terminal line. It is the ONLY bound on the
    * body, on every JDK (issue #8325): the request carries no timeout that could cap the stream's total length.
    *
+   * <p>
+   * A relay cut by this node's own body cap (issue #8674) ends with the in-band 413 the leader writes for the same
+   * refusal, unless the leader's answer already carries a terminal line.
+   *
    * @param readTimeoutMs the longest the leader may stay silent, {@code arcadedb.ha.proxyBatchReadTimeout}
+   * @param body          the relayed upload, asked whether this node's cap cut it
    */
-  private ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
-      final String url, final HttpResponse<InputStream> response, final long readTimeoutMs) throws IOException {
+  ExecutionResponse relayNdJsonFromLeader(final HttpServerExchange exchange, final String databaseName,
+      final String url, final HttpResponse<InputStream> response, final long readTimeoutMs,
+      final CountingInputStream body) throws IOException {
 
     final ReadBoundedInputStream leaderBody = new ReadBoundedInputStream(response.body(), readTimeoutMs,
         ioThreadTimer(exchange));
@@ -2193,30 +2235,141 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Bounded exactly like the leader's own answer (issue #7381): a follower relaying a stream to a client that
     // stopped reading blocks in the same write, and holds one of ITS worker threads while it does.
     try (final BufferedReader in = new BufferedReader(new InputStreamReader(leaderBody, StandardCharsets.UTF_8));
-        final OutputStream out = new WriteBoundedOutputStream(exchange.getOutputStream(),
-            connectionWriteWatchdog(exchange, streamingWriteTimeout(), databaseName))) {
-      for (String line = in.readLine(); line != null; line = in.readLine()) {
-        out.write(line.getBytes(StandardCharsets.UTF_8));
-        out.write('\n');
-        out.flush();
+        final OutputStream out = WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(),
+            () -> "the relayed streamed answer of a batch load on database '" + databaseName + "'")) {
+      // What issue #8674 needs to know once the relay ends: whether the leader's answer already has its ending, the
+      // counters of the last progress line (tracked as they pass: a leader cut mid-line leaves a fragment carrying
+      // none), and whether it was the CLIENT that went away, which no further line can reach.
+      boolean ended = false;
+      boolean clientGone = false;
+      final long[] lastProgress = new long[2];
+      IOException relayFailure = null;
+      try {
+        for (String line = in.readLine(); line != null; line = in.readLine()) {
+          try {
+            out.write(line.getBytes(StandardCharsets.UTF_8));
+            out.write('\n');
+            out.flush();
+          } catch (final IOException e) {
+            clientGone = true;
+            throw e;
+          }
+          // Sticky: once the leader has written its ending, nothing after it can take that ending back.
+          if (!line.isBlank() && trackRelayedEvent(line, lastProgress))
+            ended = true;
+        }
+      } catch (final IOException e) {
+        relayFailure = e;
       }
+
+      // This node's own body cap cut the relayed upload after the leader had started answering (issue #8674): the 200
+      // is on the wire, so the 413 #8161 answers with can only travel in band, as the line the leader writes for the
+      // same body. Asked of the stream, not of the failure: the JDK reports the cut as a plain IOException, or not at
+      // all when the leader's answer then simply ends. Unreachable on JDK 21/25/27, which hand back the response only
+      // once the upload is published whole (#8719); kept for a client that does not.
+      final RequestTooBigException tooBig = body.refusedOverCap();
+      if (tooBig != null && !ended) {
+        LogManager.instance().log(this, getUserSevereErrorLogLevel(),
+            "Batch load on database '%s' was refused after relaying %,d bytes to the leader, which had already "
+                + "started answering, because the request body exceeded '%s' (%,d bytes) on this node. %s Raise that "
+                + "setting or split the payload; the leader's log reports what it loaded before the relay was cut", null,
+            databaseName, body.getBytesRead(), GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
+            body.getMaxBodySize(), (clientGone
+                ? "The client had already gone (" + relayFailure.getMessage() + "), so it is not told."
+                : "The client's stream ends with an in-band 413.")
+                + (leaderBody.hasExpired() ? " The leader had also sent nothing for " + readTimeoutMs + " ms." : ""));
+        if (!clientGone)
+          writeRelayedCapRefusal(exchange, databaseName, out, tooBig, lastProgress);
+      } else if (relayFailure != null)
+        logRelayFailure(relayFailure, leaderBody, url, readTimeoutMs, databaseName);
     } catch (final IOException e) {
-      if (leaderBody.hasExpired())
-        LogManager.instance().log(this, Level.WARNING,
-            "The leader at %s sent nothing for %,d ms while streaming the answer of a batch load on database '%s', "
-                + "so the relay is abandoned and the connection to the leader closed rather than holding a worker "
-                + "thread indefinitely. The client's stream ends without a terminal line. Raise '%s' if the leader "
-                + "legitimately stays silent that long", null, url, readTimeoutMs, databaseName,
-            GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey());
-      else
-        LogManager.instance().log(this, Level.WARNING,
-            "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
-            e.getMessage());
-      // The 200 and part of the stream are already on the wire, so there is no status left to change and no
-      // terminal line to trust: a consumer that saw neither 'summary' nor 'error' knows it did not get
-      // everything, which is the contract the encoding is built on. The relay only ever writes whole lines,
-      // so the stream the client got ends on a line boundary even when the leader stalled mid-line.
+      logRelayFailure(e, leaderBody, url, readTimeoutMs, databaseName);
     }
     return null;
+  }
+
+  /**
+   * Logs a relay that ended on a failure this node's cap did not cause. The 200 and part of the stream are already on
+   * the wire, so there is no status left to change and no terminal line to trust: a consumer that saw neither
+   * 'summary' nor 'error' knows it did not get everything, which is the contract the encoding is built on. The relay
+   * only ever writes whole lines on this path, so the client's stream ends on a line boundary even when the leader
+   * stalled mid-line.
+   */
+  private void logRelayFailure(final IOException e, final ReadBoundedInputStream leaderBody, final String url,
+      final long readTimeoutMs, final String databaseName) {
+    if (leaderBody.hasExpired())
+      LogManager.instance().log(this, Level.WARNING,
+          "The leader at %s sent nothing for %,d ms while streaming the answer of a batch load on database '%s', "
+              + "so the relay is abandoned and the connection to the leader closed rather than holding a worker "
+              + "thread indefinitely. The client's stream ends without a terminal line. Raise '%s' if the leader "
+              + "legitimately stays silent that long", null, url, readTimeoutMs, databaseName,
+          GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey());
+    else
+      LogManager.instance().log(this, Level.WARNING,
+          "Error relaying the streamed batch answer of database '%s' from the leader: %s", null, databaseName,
+          e.getMessage());
+  }
+
+  /**
+   * Writes the in-band 413 of a relay cut by this node's body cap (issue #8674): the line the leader's
+   * {@link #streamRecordsAsNdJson} writes for the same refusal, built by the same classifier, in the same
+   * {@link NdJsonResultStream} envelope. The counters are those of the last progress line relayed, the same
+   * "as of the last acknowledgement" bound the leader's own line carries; {@code commitIndex} is the leader's to
+   * state and is left out.
+   */
+  private void writeRelayedCapRefusal(final HttpServerExchange exchange, final String databaseName,
+      final OutputStream out, final RequestTooBigException tooBig, final long[] lastProgress) {
+    final ErrorClassification classification = classifyError(tooBig);
+    final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
+        classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
+        .put("status", classification.status());
+    final long vertices = lastProgress[0];
+    final long edges = lastProgress[1];
+    error.put("verticesCreated", vertices);
+    error.put("edgesCreated", edges);
+    error.put("partialCommit", vertices > 0 || edges > 0);
+    try {
+      out.write(new JSONObject().put("error", error).toString().getBytes(StandardCharsets.UTF_8));
+      out.write('\n');
+      out.flush();
+    } catch (final IOException e) {
+      // The connection that could not carry the load cannot carry the explanation either: the stream ends without
+      // a terminal line, which is how a consumer recognises an answer that did not arrive whole.
+      LogManager.instance().log(this, Level.FINE,
+          "Could not write the in-band refusal of a relayed streaming batch load on database '%s': %s", null,
+          databaseName, e.getMessage());
+    }
+  }
+
+  /**
+   * Reads one relayed line: a progress event updates {@code counters}, and the answer is whether the line is one of
+   * the batch encoding's terminal events, {@code summary} or {@code error}. A line that does not parse is neither.
+   */
+  private static boolean trackRelayedEvent(final String line, final long[] counters) {
+    final JSONObject event = parseNdJsonLine(line);
+    if (event == null)
+      return false;
+    if (event.has("progress")) {
+      try {
+        final JSONObject progress = event.getJSONObject("progress");
+        counters[0] = progress.getLong("verticesCreated", counters[0]);
+        counters[1] = progress.getLong("edgesCreated", counters[1]);
+      } catch (final RuntimeException e) {
+        // Not the shape this node writes: the counters stay those of the last progress line that had it.
+      }
+      return false;
+    }
+    return event.has("summary") || event.has("error");
+  }
+
+  /** The event a relayed line carries, or {@code null} for no line or one that is not a JSON object. */
+  private static JSONObject parseNdJsonLine(final String line) {
+    if (line == null || line.isBlank())
+      return null;
+    try {
+      return new JSONObject(line);
+    } catch (final RuntimeException e) {
+      return null;
+    }
   }
 }

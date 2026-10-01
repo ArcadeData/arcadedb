@@ -18,8 +18,10 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
+import static com.arcadedb.server.ha.raft.RaftHAServer.effectiveDivergedFollowerRecoveryDurationMs;
 import static com.arcadedb.server.ha.raft.RaftHAServer.isStuckDivergedState;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +42,34 @@ class RaftHAServerStuckDivergenceTest {
     // Leader present, not catching up / installing, applied everything it could commit (commit==applied)
     // but at a stale term (currentTerm 5 > appliedTerm 4): this is the stuck-diverged follower.
     assertThat(isStuckDivergedState(true, false, false, 5, 4, 10, 10)).isTrue();
+  }
+
+  // --- Effective reformat window (issue #8375) ---
+
+  @Test
+  void divergedRecoveryDurationDefaultsBelowTheLagRecoveryOne() {
+    assertThat(GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS.getDefValue()).isEqualTo(20_000L);
+    assertThat((Long) GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS.getDefValue())
+        .isLessThan((Long) GlobalConfiguration.HA_STALE_FOLLOWER_RECOVERY_DURATION_MS.getDefValue());
+  }
+
+  @Test
+  void divergedRecoveryDurationDefaultSurvivesTheDefaultFloor() {
+    // With every default the configured window is exactly the floor: nothing is silently raised.
+    final long configured = (Long) GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS.getDefValue();
+    final long electionMax = (Integer) GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX.getDefValue();
+    assertThat(effectiveDivergedFollowerRecoveryDurationMs(configured, electionMax)).isEqualTo(configured);
+  }
+
+  @Test
+  void divergedRecoveryDurationIsFlooredAtTwiceTheElectionTimeout() {
+    // A follower that stops hearing its leader clears the signature within one election timeout; a window shorter
+    // than twice that could reformat a node that was only waiting for the election.
+    assertThat(effectiveDivergedFollowerRecoveryDurationMs(5_000, 10_000)).isEqualTo(20_000);
+    assertThat(effectiveDivergedFollowerRecoveryDurationMs(20_000, 30_000)).as("scales with a WAN-tuned timeout")
+        .isEqualTo(60_000);
+    assertThat(effectiveDivergedFollowerRecoveryDurationMs(90_000, 10_000)).as("a larger value is kept")
+        .isEqualTo(90_000);
   }
 
   @Test

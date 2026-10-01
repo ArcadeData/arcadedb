@@ -42,4 +42,18 @@ class StatementCacheTest {
     assertThat(cache.contains("select from foo")).isTrue();
     assertThat(cache.contains("select from baz")).isFalse();
   }
+
+  /** Issue #8286: statements that embed their values must not push out the statement that binds a parameter. */
+  @Test
+  void oneOffStatementsDoNotEvictAHotStatement() {
+    final StatementCache cache = new StatementCache(null, 50);
+    final String hot = "select from foo where id = :id";
+    cache.get(hot);
+    cache.get(hot);
+
+    for (int i = 0; i < 1000; i++)
+      cache.get("select from foo where id = " + i);
+
+    assertThat(cache.contains(hot)).isTrue();
+  }
 }

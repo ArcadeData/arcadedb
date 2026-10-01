@@ -249,7 +249,7 @@ jobs:
           # to sit at the very end of the allowed prefix, because Claude routinely appends
           # flags of its own (`--repo <owner/name>`, `--json ...`) and any pattern that pins
           # something *after* the issue number stops matching when it does.
-          claude_args: '--model claude-sonnet-5 --allowed-tools "Bash(gh issue view ${{ env.ISSUE_NUMBER }}:*),Bash(gh label list:*)"'
+          claude_args: '--model claude-sonnet-5-5 --allowed-tools "Bash(gh issue view ${{ env.ISSUE_NUMBER }}:*),Bash(gh label list:*)"'
 
       - name: Apply the labels and severity Claude chose
         if: steps.classify.outputs.execution_file != ''

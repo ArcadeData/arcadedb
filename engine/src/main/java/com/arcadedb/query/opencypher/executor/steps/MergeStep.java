@@ -30,8 +30,10 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.MergeClause;
@@ -79,9 +81,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * stand-alone SET step uses.
  */
 public class MergeStep extends AbstractExecutionStep {
+  // Internal row flags, removed before a row leaves the step
+  private static final String WAS_CREATED        = "  wasCreated";
+  private static final String CREATE_SET_FOLDED  = "  createSetFolded";
+
   private final MergeClause        mergeClause;
   private final ExpressionEvaluator evaluator;
   private final SetClauseApplier    setApplier;
+  // The SET clause that follows this MERGE and that this step applies itself (issue #8735), and what that takes
+  private       SetClause           absorbedSet;
+  private       SetClauseApplier    absorbedSetApplier;
+  // The ON CREATE SET (and absorbed SET) items written with a created node, resolved once, on the first creation
+  private       boolean             createItemsResolved;
+  private       List<SetClause.SetItem> createItems;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -252,14 +264,23 @@ public class MergeStep extends AbstractExecutionStep {
 
       // Apply ON CREATE SET or ON MATCH SET to each result
       for (final Result r : results) {
-        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty("  wasCreated"));
-        // Remove internal flag
-        if (r instanceof ResultInternal)
-          ((ResultInternal) r).removeProperty("  wasCreated");
-        if (wasCreated && mergeClause.hasOnCreateSet())
+        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
+        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
+        // Remove internal flags
+        if (r instanceof ResultInternal) {
+          ((ResultInternal) r).removeProperty(WAS_CREATED);
+          ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
+        }
+        // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+        if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
           applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
           applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
+        // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
+        if (absorbedSet != null && !createSetFolded)
+          // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
+          // back through an earlier write, and a step-wide map would retain a document per matched node
+          absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
       }
 
       resultsRef.set(results);
@@ -284,7 +305,7 @@ public class MergeStep extends AbstractExecutionStep {
         // No query reaches this today - the semantic validator refuses a single-node MERGE naming a variable an
         // earlier clause bound - but the row still describes a path if one ever does, so bind it here rather
         // than leave the variable unset behind a check that only holds as long as the validator does.
-        baseResult.setProperty("  wasCreated", false);
+        baseResult.setProperty(WAS_CREATED, false);
         bindSingleNodePath(baseResult, pathPattern, bound);
         return List.of(baseResult);
       }
@@ -302,10 +323,15 @@ public class MergeStep extends AbstractExecutionStep {
     // keeps its atomic match-or-create semantics instead of surfacing the raw
     // DuplicatedKeyException.
     try {
-      final Vertex vertex = createVertex(nodePattern, baseResult);
+      // Issue #8735: an ON CREATE SET that only assigns properties of the node is written with the node, in its
+      // first save, instead of growing the saved record in its page with a second write.
+      final List<SetClause.SetItem> folded = foldableCreateItems(nodePattern);
+      final Vertex vertex = createVertex(nodePattern, baseResult, folded);
       if (variable != null)
         baseResult.setProperty(variable, vertex);
-      baseResult.setProperty("  wasCreated", true);
+      baseResult.setProperty(WAS_CREATED, true);
+      if (folded != null)
+        baseResult.setProperty(CREATE_SET_FOLDED, true);
       bindSingleNodePath(baseResult, pathPattern, vertex);
       return List.of(baseResult);
     } catch (final DuplicatedKeyException e) {
@@ -331,7 +357,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal r = copyResult(baseResult);
       if (variable != null)
         r.setProperty(variable, v);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       bindSingleNodePath(r, pathPattern, v);
       results.add(r);
     }
@@ -496,7 +522,7 @@ public class MergeStep extends AbstractExecutionStep {
         r.setProperty(unboundPattern.getVariable(), candidate);
       if (relPattern.getVariable() != null)
         r.setProperty(relPattern.getVariable(), matchingEdge);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
 
       final Object[] trace = newPathTrace(pathPattern);
       tracePathElement(trace, 2 * anchorIdx, anchorVertex);
@@ -539,10 +565,25 @@ public class MergeStep extends AbstractExecutionStep {
     return null;
   }
 
+  /**
+   * The edges of {@code vertex} in {@code direction}, the incoming side of a unidirectional edge type included, which
+   * no vertex stores and the query's lookup answers (issue #8625): a MERGE that did not see it would create the edge
+   * again.
+   */
+  private Iterable<Edge> edgesOf(final Vertex vertex, final Vertex.DIRECTION direction, final String relType) {
+    return () -> IncomingEdgeLookup.getEdges(context, vertex, direction, relType);
+  }
+
   private Edge findFirstEdgeTo(final Vertex from, final Vertex target,
       final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
       final String relType, final Map<String, Object> relProps) {
-    for (final Edge edge : from.getEdges(fromDir, relType)) {
+    // An edge type declared unidirectional stores no incoming side: with both ends bound, the edge is looked for from
+    // the end that stores it, or MERGE would not find it and create a second one (issue #8625)
+    final Iterable<Edge> candidates = fromDir == Vertex.DIRECTION.IN && from instanceof VertexInternal internal
+        && IncomingEdgeLookup.isIncomingSideMissing(from.getDatabase().getSchema(), fromDir, relType) ?
+        () -> IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, target.getIdentity(), relType) :
+        from.getEdges(fromDir, relType);
+    for (final Edge edge : candidates) {
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
           continue;
@@ -673,7 +714,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
-    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex nextV = edge.getVertex(otherEnd);
@@ -705,7 +746,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal current, final Object[] trace, final List<Result> results) {
     if (nodeIdx == 0) {
       final ResultInternal r = copyResult(current);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       addPathBinding(r, pathPattern, trace);
       results.add(r);
       return;
@@ -738,7 +779,7 @@ public class MergeStep extends AbstractExecutionStep {
       final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final ResultInternal current, final Object[] trace, final List<Result> results) {
-    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(currentVertex, edgeDir, relType)) {
       if (relProps != null && !matchesProperties(edge, relProps))
         continue;
       final Vertex prevV = edge.getVertex(otherEnd);
@@ -811,7 +852,7 @@ public class MergeStep extends AbstractExecutionStep {
       final ResultInternal r = copyResult(currentResult);
       if (nodePattern.getVariable() != null)
         r.setProperty(nodePattern.getVariable(), vertex);
-      r.setProperty("  wasCreated", false);
+      r.setProperty(WAS_CREATED, false);
       tracePathElement(trace, 2 * nodeIndex, vertex);
       addPathBinding(r, pathPattern, trace);
       results.add(r);
@@ -914,7 +955,7 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex.DIRECTION edgeDir = inbound ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
     final Vertex.DIRECTION otherEnd = inbound ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
 
-    for (final Edge edge : vertex.getEdges(edgeDir, relType)) {
+    for (final Edge edge : edgesOf(vertex, edgeDir, relType)) {
       try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
@@ -937,7 +978,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     // For undirected patterns also traverse the reverse direction
     if (relPattern.getDirection() == Direction.BOTH) {
-      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN, relType)) {
+      for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType)) {
         try {
           if (relProps != null && !matchesProperties(edge, relProps))
             continue;
@@ -978,7 +1019,7 @@ public class MergeStep extends AbstractExecutionStep {
       }
 
       if (vertex == null) {
-        vertex = createVertex(nodePattern, baseResult);
+        vertex = createVertex(nodePattern, baseResult, null);
         if (nodePattern.getVariable() != null)
           baseResult.setProperty(nodePattern.getVariable(), vertex);
       }
@@ -1004,7 +1045,7 @@ public class MergeStep extends AbstractExecutionStep {
     }
 
     addPathBinding(baseResult, pathPattern, trace);
-    baseResult.setProperty("  wasCreated", true);
+    baseResult.setProperty(WAS_CREATED, true);
     return List.of(baseResult);
   }
 
@@ -1277,18 +1318,74 @@ public class MergeStep extends AbstractExecutionStep {
    *
    * @param nodePattern node pattern to create
    * @param result current result context for evaluating property expressions
+   * @param foldedSet the SET items {@link #foldableCreateItems} accepted, applied to the vertex before its first
+   *                  save, or null
    * @return created vertex
    */
-  private Vertex createVertex(final NodePattern nodePattern, final Result result) {
+  private Vertex createVertex(final NodePattern nodePattern, final Result result, final List<SetClause.SetItem> foldedSet) {
     // A pattern element: an existence constraint it does not satisfy yet belongs to the end of the statement, since
     // the SET of a MERGE ... SET upsert is what supplies the property (issue #7945).
     try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
         (DatabaseInternal) context.getDatabase())) {
-      return createPatternVertex(nodePattern, result);
+      return createPatternVertex(nodePattern, result, foldedSet);
     }
   }
 
-  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result) {
+  /**
+   * The {@code SET} items to write together with the node this MERGE creates (issue #8735), or null when the node is
+   * saved first and the clauses are applied to the saved record. A node is then written once instead of saved with
+   * the pattern's properties and written again by the SET, which grows the record inside its page.
+   * <p>
+   * The items are the {@code ON CREATE SET} ones followed by those of a {@code SET} this step absorbed, in the
+   * order the two clauses would have run. See {@link NewNodeSetFolding} for the shape that can be folded.
+   */
+  private List<SetClause.SetItem> foldableCreateItems(final NodePattern nodePattern) {
+    if (!createItemsResolved) {
+      createItemsResolved = true;
+      final String variable = nodePattern.getVariable();
+      if (variable != null && (absorbedSet != null || isOnCreateSetFoldable(variable))) {
+        // absorbSet() accepted the clause only when ON CREATE SET is empty or foldable, so the two are one decision
+        final List<SetClause.SetItem> items = new ArrayList<>();
+        if (mergeClause.hasOnCreateSet())
+          items.addAll(mergeClause.getOnCreateSet().getItems());
+        if (absorbedSet != null)
+          items.addAll(absorbedSet.getItems());
+        if (!items.isEmpty())
+          createItems = items;
+      }
+    }
+    return createItems;
+  }
+
+  private boolean isOnCreateSetFoldable(final String variable) {
+    return mergeClause.hasOnCreateSet()
+        && NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable));
+  }
+
+  /**
+   * Takes over the {@code SET} clause that directly follows this MERGE, when it can be written together with a
+   * created node (issue #8735): a created node gets it in its first save, and a matched one gets it applied here,
+   * as the {@code SET} step would have. A SET that cannot be folded stays a step of its own.
+   *
+   * @return true when this step now applies the clause, and the caller must not add a step for it
+   */
+  public boolean absorbSet(final SetClause setClause) {
+    // Single-node only: the other MERGE paths never set CREATE_SET_FOLDED, so their rows must keep the applier path
+    if (absorbedSet != null || createItemsResolved || !mergeClause.getPathPattern().isSingleNode())
+      return false;
+    final String variable = mergeClause.getPathPattern().getFirstNode().getVariable();
+    if (variable == null || !NewNodeSetFolding.isFoldable(setClause, variable::equals, List.of(variable)))
+      return false;
+    // Folded after ON CREATE SET, so that one has to fold as well: a created node takes both in one write or neither
+    if (mergeClause.hasOnCreateSet() && !isOnCreateSetFoldable(variable))
+      return false;
+    absorbedSet = setClause;
+    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator);
+    return true;
+  }
+
+  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result,
+      final List<SetClause.SetItem> foldedSet) {
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
     // CreateStep.createVertex for why (issue #6395 review).
     final String typeName;
@@ -1308,6 +1405,9 @@ public class MergeStep extends AbstractExecutionStep {
       setProperties(vertex, evaluatedProperties, nodePattern.getProperties());
     }
 
+    final int patternProperties = vertex.getPropertyNames().size();
+    final int assignedBySet = foldedSet != null ? NewNodeSetFolding.apply(foldedSet, vertex, result, evaluator, context) : 0;
+
     vertex.save();
 
     final QueryStatistics stats = context.getStatistics();
@@ -1316,7 +1416,7 @@ public class MergeStep extends AbstractExecutionStep {
       // ArcadeDB dedups labels (Labels.ensureCompositeType), so count distinct labels only,
       // matching the actual number of labels added to the vertex.
       stats.addLabelsAdded((int) nodePattern.getLabels().stream().distinct().count());
-    stats.addPropertiesSet(vertex.getPropertyNames().size());
+    stats.addPropertiesSet(patternProperties + assignedBySet);
 
     return vertex;
   }

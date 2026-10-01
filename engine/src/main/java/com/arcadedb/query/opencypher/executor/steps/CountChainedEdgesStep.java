@@ -22,9 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -60,6 +62,10 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   private final String countOutputAlias;
   private final Map<String, String> passThroughAliases;
 
+  // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON THE
+  // STEP: THE CLOSE() OF A QUERY REACHES THE STEPS
+  private OperationHeapLimit heapLimit;
+
   public CountChainedEdgesStep(final String boundVertexVariable,
       final Vertex.DIRECTION firstHopDirection,
       final String[] firstHopTypes,
@@ -94,6 +100,8 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     // One accumulated count per distinct grouping-key combination (LinkedHashMap to keep the
     // first-seen group order, matching GroupByAggregationStep).
     final Map<GroupKeyValues, long[]> groups = new LinkedHashMap<>();
+    heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
+    final int groupOverhead = CountEdgesStep.groupOverheadBytes(aliasOutputNames.length + 1);
 
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -126,14 +134,19 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
                 count += provider.countEdges(intermediateId, secondHopDirection, secondHopTypes);
               totalCount = count;
             } else
-              totalCount = countOLTP(boundVertex);
+              totalCount = countOLTP(boundVertex, context);
           } else
-            totalCount = countOLTP(boundVertex);
+            totalCount = countOLTP(boundVertex, context);
         } else {
           totalCount = 0L; // NULL vertex = LEFT OUTER JOIN semantics
         }
 
-        final long[] accumulator = groups.computeIfAbsent(groupKey, k -> new long[1]);
+        long[] accumulator = groups.get(groupKey);
+        if (accumulator == null) {
+          accumulator = new long[1];
+          groups.put(groupKey, accumulator);
+          heapLimit.add(groups.size(), keyValues, groupOverhead);
+        }
         accumulator[0] += totalCount;
       } finally {
         if (context.isProfiling())
@@ -157,15 +170,15 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
   /**
    * OLTP fallback for vertices not in the GAV mapping.
    */
-  private long countOLTP(final Vertex boundVertex) {
-    final Iterator<Vertex> intermediates = firstHopTypes == null || firstHopTypes.length == 0 ?
-        boundVertex.getVertices(firstHopDirection).iterator() :
-        boundVertex.getVertices(firstHopDirection, firstHopTypes).iterator();
+  private long countOLTP(final Vertex boundVertex, final CommandContext context) {
+    // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+    final Iterator<Vertex> intermediates = IncomingEdgeLookup.getVertices(context, boundVertex, firstHopDirection,
+        firstHopTypes == null || firstHopTypes.length == 0 ? null : firstHopTypes);
 
     long count = 0;
     while (intermediates.hasNext()) {
       final Vertex intermediate = intermediates.next();
-      count += intermediate.countEdges(secondHopDirection, secondHopTypes);
+      count += IncomingEdgeLookup.countEdges(context, intermediate, secondHopDirection, secondHopTypes);
     }
     return count;
   }
@@ -181,6 +194,13 @@ public final class CountChainedEdgesStep extends AbstractExecutionStep {
     if (lenB > 0)
       System.arraycopy(b, 0, merged, lenA, lenB);
     return merged;
+  }
+
+  @Override
+  public void close() {
+    if (heapLimit != null)
+      heapLimit.release();
+    super.close();
   }
 
   @Override

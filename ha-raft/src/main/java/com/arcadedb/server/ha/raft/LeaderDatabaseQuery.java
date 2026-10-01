@@ -72,6 +72,18 @@ public final class LeaderDatabaseQuery {
   public record BootstrapState(List<DatabaseInfo> databases, TermIndex snapshotTermIndex) {
   }
 
+  /**
+   * The address a query dialled was answered by a node other than the peer it was meant for (issue #8658), or by one
+   * that names no peer. Its own type so a caller that would otherwise degrade to a lesser read on a failure (the
+   * reconciler falling back from the full listing to the marker alone) can tell that the next read would be
+   * answered by the same stranger.
+   */
+  public static final class WrongPeerAnsweredException extends IOException {
+    public WrongPeerAnsweredException(final String message) {
+      super(message);
+    }
+  }
+
   /** The chosen endpoint and scheme for a query; package-private so scheme selection is unit-testable. */
   record Endpoint(String url, boolean https) {
   }
@@ -86,6 +98,10 @@ public final class LeaderDatabaseQuery {
   /**
    * Synchronously queries a peer for the list of databases it holds.
    *
+   * @param expectedPeerId the id of the peer the address is meant to reach. The answer names the node that wrote it,
+   *                     and one written by any other node is refused with {@link WrongPeerAnsweredException} (issue
+   *                     #8658): an address that resolves to another node would otherwise hand that node's databases
+   *                     or snapshot marker back as this peer's. {@code null} accepts any answer.
    * @param httpAddr     the peer plain-HTTP address ({@code host:port}).
    * @param httpsAddr    the peer HTTPS address ({@code host:port}), or {@code null} when none is known. Preferred
    *                     when SSL is enabled.
@@ -96,9 +112,9 @@ public final class LeaderDatabaseQuery {
    * @throws IOException          on transport error or a non-200 response.
    * @throws InterruptedException if the calling thread is interrupted while waiting.
    */
-  public static BootstrapState fetch(final String httpAddr, final String httpsAddr, final String clusterToken,
+  public static BootstrapState fetch(final String expectedPeerId, final String httpAddr, final String httpsAddr, final String clusterToken,
       final long timeoutMs, final ArcadeDBServer server) throws IOException, InterruptedException {
-    return send(httpAddr, httpsAddr, clusterToken, timeoutMs, server, "{}");
+    return send(expectedPeerId, httpAddr, httpsAddr, clusterToken, timeoutMs, server, "{}");
   }
 
   /**
@@ -106,14 +122,15 @@ public final class LeaderDatabaseQuery {
    * peer skips fingerprinting every database. The returned {@link BootstrapState#databases()} is empty from a peer
    * that honours the flag; a peer that predates it ignores the flag and answers in full, which is still correct.
    */
-  public static BootstrapState fetchSnapshotMarker(final String httpAddr, final String httpsAddr,
-      final String clusterToken, final long timeoutMs, final ArcadeDBServer server) throws IOException, InterruptedException {
-    return send(httpAddr, httpsAddr, clusterToken, timeoutMs, server,
+  public static BootstrapState fetchSnapshotMarker(final String expectedPeerId, final String httpAddr,
+      final String httpsAddr, final String clusterToken, final long timeoutMs, final ArcadeDBServer server)
+      throws IOException, InterruptedException {
+    return send(expectedPeerId, httpAddr, httpsAddr, clusterToken, timeoutMs, server,
         new JSONObject().put(PostBootstrapStateHandler.MARKER_ONLY, true).toString());
   }
 
-  private static BootstrapState send(final String httpAddr, final String httpsAddr, final String clusterToken,
-      final long timeoutMs, final ArcadeDBServer server, final String body) throws IOException, InterruptedException {
+  private static BootstrapState send(final String expectedPeerId, final String httpAddr, final String httpsAddr,
+      final String clusterToken, final long timeoutMs, final ArcadeDBServer server, final String body) throws IOException, InterruptedException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Endpoint endpoint = chooseEndpoint(httpAddr, httpsAddr, useSSL);
@@ -144,13 +161,14 @@ public final class LeaderDatabaseQuery {
           .sslContext(SnapshotInstaller.buildSSLContext(server))
           .build()) {
         return parse(LeaderDial.sendBounded(client, request, HttpResponse.BodyHandlers.ofString(), timeoutMs),
-            endpoint.url());
+            endpoint.url(), expectedPeerId);
       }
     }
     // Bounded over the whole exchange, body included (issue #8325): on JDK 21-25 the request timeout stops at the
     // response headers, so a peer that stalled inside its body parked the caller unbounded. The request timeout stays:
     // on JDK 26+ it covers the same span with the same value, and either one firing is the same HttpTimeoutException.
-    return parse(LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs), endpoint.url());
+    return parse(LeaderDial.sendBounded(HTTP, request, HttpResponse.BodyHandlers.ofString(), timeoutMs), endpoint.url(),
+        expectedPeerId);
   }
 
   /**
@@ -166,15 +184,35 @@ public final class LeaderDatabaseQuery {
     return null;
   }
 
-  private static BootstrapState parse(final HttpResponse<String> resp, final String url) throws IOException {
+  private static BootstrapState parse(final HttpResponse<String> resp, final String url, final String expectedPeerId)
+      throws IOException {
     if (resp.statusCode() != 200)
       throw new IOException("bootstrap-state query to " + url + " returned HTTP " + resp.statusCode());
-    return parseBody(resp.body());
+    return parseBody(resp.body(), expectedPeerId, url);
+  }
+
+  /**
+   * Refuses an answer that was not written by {@code expectedPeerId} (issue #8658), the check
+   * {@link PeerCapabilityQuery#parse} makes for capabilities. Every build that serves the endpoint names itself in
+   * {@code peerId}, so an answer that names nobody is refused too. A {@code null} {@code expectedPeerId} accepts any.
+   * Also used by {@link BootstrapElection#fetchBootstrapState}, which reads the same endpoint.
+   */
+  static void requireAnsweredBy(final JSONObject json, final String expectedPeerId, final String url)
+      throws WrongPeerAnsweredException {
+    if (expectedPeerId == null)
+      return;
+    final String answeredBy = json.getString("peerId", "");
+    if (!answeredBy.equals(expectedPeerId))
+      throw new WrongPeerAnsweredException("bootstrap-state query to " + url + " for peer '" + expectedPeerId + "' was answered by "
+          + (answeredBy.isEmpty() ? "a node that names no peer" : "peer '" + answeredBy + "'")
+          + "; the address does not identify the peer it was meant for (declare each node's 'http' port explicitly in "
+          + GlobalConfiguration.HA_SERVER_LIST.getKey() + ")");
   }
 
   /** The JSON-decoding half of {@link #parse}, split out so the wire format is unit-testable without HTTP. */
-  static BootstrapState parseBody(final String body) {
+  static BootstrapState parseBody(final String body, final String expectedPeerId, final String url) throws IOException {
     final JSONObject json = new JSONObject(body);
+    requireAnsweredBy(json, expectedPeerId, url);
     final JSONArray dbs = json.getJSONArray("databases");
     final List<DatabaseInfo> out = new ArrayList<>(dbs.length());
     for (int i = 0; i < dbs.length(); i++) {

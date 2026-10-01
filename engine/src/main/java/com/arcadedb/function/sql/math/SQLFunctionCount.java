@@ -70,6 +70,16 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
     return true;
   }
 
+  @Override
+  public boolean canMergePartials() {
+    return true;
+  }
+
+  @Override
+  public void mergePartial(final SQLAggregatedFunction other) {
+    total += ((SQLFunctionCount) other).total;
+  }
+
   public String getSyntax() {
     return "count(<field>|*)";
   }

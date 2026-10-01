@@ -18,10 +18,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
@@ -31,6 +33,7 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.WhereClause;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -55,10 +58,16 @@ import java.util.stream.Collectors;
  * The decision is taken per execution, with the parameters bound, so a plan cached for {@code WHERE x > ?} serves a
  * selective value with the index and a non-selective one with the scan. The planner only builds the fallback when the
  * index order is not what the statement relies on and the scan is guaranteed to answer the same rows.
+ * <p>
+ * Both branches run in parallel where a scan would (issue #8333 on top of #8523): the scan is the parallel scan of the
+ * type, and the physical-order load is cut in slices of the sorted record addresses that the workers of a parallel scan
+ * load each, through their bucket, every page read once. An aggregation downstream runs in those workers too, with
+ * the conditions the index does not answer, see {@link ParallelAggregationSource}. The threshold falls with the
+ * workers the scan would run on, since the index entries are read by one thread whatever the parallelism.
  *
  * Created by luigidellaquila on 16/03/17.
  */
-public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
+public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements ParallelAggregationSource {
   /**
    * What the step needs to replace the index search with a scan of the type.
    *
@@ -85,6 +94,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   private FetchFromTypeWithFilterStep scanStep;
   private long                        scanThreshold;
   private long                        matchedEntries;
+  // A physical-order load shared by the workers of a parallel scan, one round per chunk of the range: decided once
+  // per execution, like the strategy
+  private boolean                     parallelDecided;
+  private ParallelTypeScan            parallelRound;
+  private int                         parallelRounds;
 
   /**
    * @param context         the execution context
@@ -134,8 +148,125 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
     return switch (strategy) {
       case SCAN -> scanStep.syncPull(context, nRecords);
-      case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> physicalOrderResultSet(context, nRecords);
+      case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> {
+        if (!parallelDecided) {
+          parallelDecided = true;
+          parallelRound = planRound(context, true);
+        }
+        // Once parallel, always: after the last round the fetcher still holds the last chunk, which a sequential
+        // page would serve a second time
+        yield parallelRounds > 0 ? parallelPhysicalOrderResultSet(context, nRecords) : physicalOrderResultSet(context, nRecords);
+      }
       case INDEX_ORDER -> indexOrderResultSet(context, prevStep, nRecords);
+    };
+  }
+
+  /**
+   * Plans the parallel aggregation of this execution's rows (issue #8333 on top of #8523): the index entries are read
+   * first, as for a sequential execution, then a range served by a scan hands the aggregation to the parallel scan of
+   * the type, and one served in physical order has its records loaded by the workers of a parallel scan, a slice of
+   * the sorted addresses each, chunk after chunk when the range is too large to hold at once.
+   */
+  @Override
+  public ParallelTypeScan planParallelAggregation(final CommandContext context) {
+    if (strategy != null || scanFallback == null || !ParallelTypeScan.isAllowed(context.getDatabase()))
+      return null;
+
+    chooseStrategy(context, checkForPrevious());
+    parallelDecided = true;
+    return switch (strategy) {
+      case SCAN -> scanStep.planParallelAggregation(context);
+      case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> planRound(context, true);
+      case INDEX_ORDER -> null;
+    };
+  }
+
+  @Override
+  public ParallelTypeScan nextParallelAggregationRound(final CommandContext context) {
+    return strategy == Strategy.PHYSICAL_ORDER_CHUNKED && fetcher.nextChunk() ? planRound(context, false) : null;
+  }
+
+  /**
+   * Whether an execution starting now would run in parallel: never known before the index entries are read, so an
+   * EXPLAIN does not claim it; a PROFILE shows how the execution went.
+   */
+  @Override
+  public boolean wouldRunInParallel(final CommandContext context) {
+    return false;
+  }
+
+  /**
+   * Plans the parallel load of the records of the fetcher's current chunk, in physical order: the sorted addresses of
+   * every bucket are cut in slices a worker loads each.
+   *
+   * @param first whether this is the first chunk, which decides for the whole execution: it goes parallel only where
+   *              parallel scans are allowed and when it is large enough to share. A later chunk always does, the
+   *              execution being parallel already: its entries are loaded, and answering null would drop them
+   *
+   * @return the scan, or null when the load stays sequential: parallel scans are not allowed here, or the first chunk
+   * is too small to share
+   */
+  private ParallelTypeScan planRound(final CommandContext context, final boolean first) {
+    final DatabaseInternal database = context.getDatabase();
+    final int entriesPerUnit = ParallelTypeScan.entriesPerUnit(database, fetcher.getBufferedRids());
+    // Counted before the units are built: building them hands the entries that are not record addresses over, which
+    // a sequential load then would not serve
+    if (first && (!ParallelTypeScan.isAllowed(database)
+        || fetcher.slices(entriesPerUnit, null) + (fetcher.hasPassThrough() ? 1 : 0) < 2))
+      return null;
+
+    final ParallelTypeScan round = ParallelTypeScan.ofUnits(context, scanFallback.typeName(),
+        unitsOfCurrentChunk(context, entriesPerUnit));
+    if (round != null)
+      ++parallelRounds;
+    return round;
+  }
+
+  /**
+   * The units the fetcher's current chunk is loaded in by a parallel scan: a slice of at most {@code entriesPerUnit}
+   * sorted positions of one bucket each, in physical order, then the entries that are not record addresses.
+   */
+  private List<PhysicalOrderSliceStep> unitsOfCurrentChunk(final CommandContext context, final int entriesPerUnit) {
+    final List<PhysicalOrderSliceStep> units = new ArrayList<>();
+    fetcher.slices(entriesPerUnit,
+        (bucketId, positions, from, to) -> units.add(PhysicalOrderSliceStep.ofPositions(context, bucketId, positions, from, to)));
+    final List<Object> passThrough = fetcher.takePassThrough();
+    if (passThrough != null)
+      units.add(PhysicalOrderSliceStep.ofEntries(context, passThrough, GetValueFromIndexEntryStep::toResult));
+    return units;
+  }
+
+  /**
+   * The rows of a physical-order load shared by the workers of a parallel scan, in the order the sequential load serves
+   * them: round after round, each one the parallel scan of a chunk of the range.
+   */
+  private ResultSet parallelPhysicalOrderResultSet(final CommandContext context, final int nRecords) {
+    return new ResultSet() {
+      ResultSet page    = parallelRound != null ? parallelRound.pull(context, nRecords) : null;
+      int       fetched = 0;
+
+      @Override
+      public boolean hasNext() {
+        while (fetched < nRecords && parallelRound != null) {
+          if (page.hasNext())
+            return true;
+          // The page stopped short of what was asked: this round has no row left. Every unit of it has ended, so the
+          // next chunk can take over the arrays its slices read
+          parallelRound.close();
+          parallelRound = fetcher.nextChunk() ? planRound(context, false) : null;
+          if (parallelRound != null)
+            page = parallelRound.pull(context, nRecords - fetched);
+        }
+        return false;
+      }
+
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        fetched++;
+        return page.next();
+      }
     };
   }
 
@@ -247,9 +378,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       Object entry;
-      while ((entry = fetcher.next()) != null) {
+      while ((entry = fetcher.nextRecord(context.getDatabase())) != null) {
         guard.checkPeriodically((int) ++rowCount);
-        final Result result = entry instanceof RID rid ? load(rid, context) : toResult(entry, context);
+        final Result result = entry instanceof Record record ? new ResultInternal(record) : toResult(entry, context);
         if (result != null)
           return result;
       }
@@ -257,16 +388,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
-    }
-  }
-
-  /** Loads a RID the fetcher serves in physical order, through the query's database. */
-  private Result load(final RID rid, final CommandContext context) {
-    try {
-      return new ResultInternal((Document) context.getDatabase().lookupByRID(rid, true));
-    } catch (final RecordNotFoundException e) {
-      LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
-      return null;
     }
   }
 
@@ -282,7 +403,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
       return;
     }
 
-    final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), filterBucketIds);
+    // The threshold falls with the workers the scan would run on: the index entries are read by one thread whatever
+    // the parallelism, so the more the scan is split the sooner it wins
+    final long scanThreshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), filterBucketIds,
+        ParallelTypeScan.plannedWorkers(context.getDatabase(), filterBucketIds));
     if (scanThreshold < 0 || !keysAreScalars(context)) {
       strategy = Strategy.INDEX_ORDER;
       return;
@@ -383,7 +507,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     return false;
   }
 
-  private Result toResult(final Object value, final CommandContext context) {
+  /**
+   * The row of an index entry, loaded through the context's database, or null when there is none. Static: the workers
+   * of a parallel load call it too.
+   */
+  private static Result toResult(final Object value, final CommandContext context) {
     if (value instanceof RID rid) {
       try {
         // A DatabaseRID carries its origin database, so asDocument() resolves directly. For bare RIDs, route through the query's command-context
@@ -392,7 +520,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         return new ResultInternal(
             rid instanceof DatabaseRID ? rid.asDocument() : (Document) context.getDatabase().lookupByRID(rid, true));
       } catch (final RecordNotFoundException e) {
-        LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, value);
+        LogManager.instance()
+            .log(GetValueFromIndexEntryStep.class, Level.WARNING, "Record %s not found. Skip it from the result set", null, value);
         return null;
       }
     } else if (value instanceof Document document)
@@ -407,6 +536,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     prevResult = null;
     strategy = null;
     matchedEntries = 0;
+    parallelDecided = false;
+    parallelRounds = 0;
     releaseRuntimeSteps();
   }
 
@@ -417,6 +548,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   }
 
   private void releaseRuntimeSteps() {
+    if (parallelRound != null) {
+      parallelRound.close();
+      parallelRound = null;
+    }
     if (fetcher != null) {
       fetcher.close();
       fetcher = null;
@@ -448,8 +583,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         result.append("\n").append(spaces).append("  served by ");
         switch (strategy) {
         case INDEX_ORDER -> result.append("index order (the share could not be estimated)");
-        case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> result.append("physical order (").append(matchedEntries)
-            .append(" entries matched)");
+        case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> {
+          result.append("physical order (").append(matchedEntries).append(" entries matched)");
+          if (parallelRounds > 0)
+            result.append(", loaded in parallel");
+        }
         case SCAN -> result.append("full scan (more than ").append(scanThreshold).append(" entries matched)");
         }
         if (strategy == Strategy.SCAN && scanStep != null)

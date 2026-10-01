@@ -307,6 +307,25 @@ public class SuffixIdentifier extends SimpleNode {
     };
   }
 
+  /**
+   * Whether this suffix reads one member of the value it is applied to - a property ({@code .office}) or a record
+   * attribute ({@code .@rid}) - and nothing else: not a context variable, not {@code $parent}, not {@code *}. Such a
+   * read is a function of that value alone, which is what lets a correlated subquery cache key on the member instead
+   * of on the whole value (issue #8441).
+   */
+  public boolean isMemberAccess() {
+    if (star)
+      return false;
+    if (identifier != null)
+      return !isContextVariable(identifier.getStringValue());
+    return recordAttribute != null;
+  }
+
+  /** The text of a {@link #isMemberAccess() member access}: the property name, or the record attribute with its {@code @}. */
+  public String getMemberName() {
+    return identifier != null ? identifier.getStringValue() : recordAttribute.getName();
+  }
+
   public boolean isBaseIdentifier() {
     return identifier != null;
   }
@@ -423,6 +442,8 @@ public class SuffixIdentifier extends SimpleNode {
         internal.removeProperty(identifier.getStringValue());
       } else if (currentValue instanceof Document document) {
         final MutableDocument doc = document.modify();
+        // A REMOVE writes no value computed from the read: no stale-read refusal (#8610)
+        doc.clearBasedOnStaleRead();
         doc.remove(identifier.getStringValue());
       } else if (currentValue instanceof Map map) {
         map.remove(identifier.getStringValue());

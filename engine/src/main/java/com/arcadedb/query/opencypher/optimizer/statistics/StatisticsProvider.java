@@ -132,7 +132,8 @@ public class StatisticsProvider {
           typeName,
           propertyNames,
           isUnique,
-          indexName
+          indexName,
+          index.getMetadata() != null && index.getMetadata().hasAnyCaseInsensitive()
       );
       indexStatsList.add(indexStats);
     }

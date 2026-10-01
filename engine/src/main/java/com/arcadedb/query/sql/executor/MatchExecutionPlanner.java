@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.Bucket;
@@ -296,7 +297,8 @@ public class MatchExecutionPlanner {
   private InternalExecutionPlan createPlanForPattern(final Pattern pattern, final CommandContext context,
       final Map<String, Long> estimatedRootEntries, final Set<String> prefetchedAliases, final boolean correlated) {
     final SelectExecutionPlan plan = new SelectExecutionPlan(context,  limit != null ? limit.getValue(context):0);
-    final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern);
+    final List<EdgeTraversal> sortedEdges = getTopologicalSortedSchedule(estimatedRootEntries, pattern,
+        context.getDatabase().getSchema());
 
     boolean first = true;
     if (!sortedEdges.isEmpty()) {
@@ -463,7 +465,8 @@ public class MatchExecutionPlanner {
   /**
    * sort edges in the order they will be matched
    */
-  private List<EdgeTraversal> getTopologicalSortedSchedule(final Map<String, Long> estimatedRootEntries, final Pattern pattern) {
+  private List<EdgeTraversal> getTopologicalSortedSchedule(final Map<String, Long> estimatedRootEntries, final Pattern pattern,
+      final Schema schema) {
     final List<EdgeTraversal> resultingSchedule = new ArrayList<>();
     final Map<String, Set<String>> remainingDependencies = getDependencies(pattern);
     final Set<PatternNode> visitedNodes = new HashSet<>();
@@ -475,6 +478,7 @@ public class MatchExecutionPlanner {
       rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
     rootWeights.sort(Comparator.comparing(Pair::getFirst));
+    preferRootsWalkingFromStoringSides(rootWeights, pattern, schema);
 
     // Add the starting vertices, in the correct order, to an ordered set.
     final Set<String> remainingStarts = new LinkedHashSet<>();
@@ -526,6 +530,87 @@ public class MatchExecutionPlanner {
     }
 
     return resultingSchedule;
+  }
+
+  /**
+   * Moves ahead, keeping their order by size, the roots from which every hop over an edge type declared unidirectional
+   * is walked from the vertex that stores it (issue #8625). Such a type writes no incoming side, so a hop walked from
+   * its target is answered by the query's {@link IncomingEdgeLookup}, which scans the whole type once; a root that
+   * reaches the whole pattern without it reads the adjacency lists the edges are stored in. Nothing moves when the
+   * pattern has no such hop, or when no root avoids it.
+   */
+  private static void preferRootsWalkingFromStoringSides(final List<Pair<Long, String>> rootWeights, final Pattern pattern,
+      final Schema schema) {
+    final Map<PatternEdge, PatternNode> storingSides = new HashMap<>();
+    for (final PatternNode node : pattern.aliasToNode.values())
+      for (final PatternEdge edge : node.out) {
+        final PatternNode storingSide = storingSide(edge, schema);
+        if (storingSide != null)
+          storingSides.put(edge, storingSide);
+      }
+    if (storingSides.isEmpty())
+      return;
+
+    final List<Pair<Long, String>> reaching = new ArrayList<>(rootWeights.size());
+    final List<Pair<Long, String>> others = new ArrayList<>(rootWeights.size());
+    for (final Pair<Long, String> root : rootWeights) {
+      final PatternNode node = pattern.aliasToNode.get(root.getSecond());
+      if (node != null && reachesAllFromStoringSides(node, pattern, storingSides))
+        reaching.add(root);
+      else
+        others.add(root);
+    }
+    if (reaching.isEmpty() || others.isEmpty())
+      return;
+    rootWeights.clear();
+    rootWeights.addAll(reaching);
+    rootWeights.addAll(others);
+  }
+
+  /**
+   * The pattern node a hop over an edge type declared unidirectional stores its edges on: the out-side of an
+   * {@code out()}/{@code outE()} hop, the in-side of an {@code in()}/{@code inE()} one. Null for a hop that is walked
+   * as cheaply from either end, or whose direction this cannot tell.
+   */
+  private static PatternNode storingSide(final PatternEdge edge, final Schema schema) {
+    if (edge.item instanceof MultiMatchPathItem || edge.item instanceof FieldMatchPathItem || edge.item.getMethod() == null)
+      return null;
+    final String methodName = edge.item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    final boolean outward = "out".equals(methodName) || "oute".equals(methodName);
+    if (!outward && !"in".equals(methodName) && !"ine".equals(methodName))
+      return null;
+
+    // A label written as a parameter or an expression is not resolved here: its text names no type, so the hop is not
+    // seen as unidirectional and the roots keep their size order. Only the preference is lost, never an edge
+    final List<Expression> params = edge.item.getMethod().params;
+    final String[] labels = new String[params == null ? 0 : params.size()];
+    for (int i = 0; i < labels.length; i++)
+      labels[i] = params.get(i).toString().replace("'", "").replace("\"", "").trim();
+    if (!IncomingEdgeLookup.isAnyUnidirectional(schema, labels))
+      return null;
+    return outward ? edge.out : edge.in;
+  }
+
+  private static boolean reachesAllFromStoringSides(final PatternNode root, final Pattern pattern,
+      final Map<PatternEdge, PatternNode> storingSides) {
+    final Set<PatternNode> visited = new HashSet<>();
+    final ArrayDeque<PatternNode> queue = new ArrayDeque<>();
+    visited.add(root);
+    queue.add(root);
+    while (!queue.isEmpty()) {
+      final PatternNode current = queue.poll();
+      for (final PatternEdge edge : current.out) {
+        final PatternNode storingSide = storingSides.get(edge);
+        if ((storingSide == null || storingSide == current) && visited.add(edge.in))
+          queue.add(edge.in);
+      }
+      for (final PatternEdge edge : current.in) {
+        final PatternNode storingSide = storingSides.get(edge);
+        if ((storingSide == null || storingSide == current) && visited.add(edge.out))
+          queue.add(edge.out);
+      }
+    }
+    return visited.size() == pattern.aliasToNode.size();
   }
 
   /**

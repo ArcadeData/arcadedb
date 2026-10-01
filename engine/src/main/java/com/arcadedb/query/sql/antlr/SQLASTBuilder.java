@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.parser.CaseExpression;
 import com.arcadedb.query.sql.parser.CheckDatabaseStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.CompactIndexStatement;
+import com.arcadedb.query.sql.parser.CompactTimeSeriesTypeStatement;
 import com.arcadedb.query.sql.parser.ConsoleStatement;
 import com.arcadedb.query.sql.parser.ContainsAllCondition;
 import com.arcadedb.query.sql.parser.ContainsAnyCondition;
@@ -6349,6 +6350,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Visit COMPACT TIMESERIES TYPE statement (issue #8574).
+   * Grammar: COMPACT TIMESERIES TYPE identifier
+   */
+  @Override
+  public CompactTimeSeriesTypeStatement visitCompactTimeSeriesTypeStmt(final SQLParser.CompactTimeSeriesTypeStmtContext ctx) {
+    final CompactTimeSeriesTypeStatement stmt = new CompactTimeSeriesTypeStatement();
+    stmt.name = (Identifier) visit(ctx.identifier());
+    return stmt;
+  }
+
+  /**
    * Visit REBUILD TYPE statement.
    * Grammar: REBUILD TYPE typeName [POLYMORPHIC] [WITH key = expression (, key = expression)*]
    */
@@ -6768,8 +6780,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
-    if (bodyCtx.BUCKETS() != null)
-      stmt.buckets = Integer.parseInt(bodyCtx.INTEGER_LITERAL().getText());
+    if (bodyCtx.bucketCount != null)
+      stmt.buckets = Integer.parseInt(bodyCtx.bucketCount.getText());
+
+    if (bodyCtx.pageSize != null)
+      stmt.pageSize = Integer.parseInt(bodyCtx.pageSize.getText());
 
     return stmt;
   }

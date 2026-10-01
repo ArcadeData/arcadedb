@@ -545,6 +545,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return raftHAServer != null && raftHAServer.isLeader();
   }
 
+  /** Asks every peer about its copy first (issue #8605); see {@link UnverifiedClosedCopyCheck}. */
+  @Override
+  public String refuseToReopenUnverifiedClosedCopy(final String databaseName) {
+    final RaftHAServer s = raftHAServer;
+    if (s == null)
+      return "the HA layer of this server has not started yet";
+    return s.getUnverifiedClosedCopyCheck().check(databaseName);
+  }
+
   @Override
   public HAReplicationStats getHAReplicationStats() {
     final RaftHAServer s = raftHAServer;
@@ -999,7 +1008,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * The whole of it is {@code RaftClusterManager.addPeer} with the peer derived from one
    * {@code arcadedb.ha.serverList} entry, which is what makes the verb a thin alias for
    * {@code POST /api/v1/cluster/peer} rather than a second way to grow a cluster: the membership change
-   * is the same atomic {@code Mode.ADD}, issued by the same {@code RaftClusterManager}, with the same
+   * is the same atomic compare-and-set change, issued by the same {@code RaftClusterManager}, with the same
    * retry and the same idempotence when the peer is already a member.
    * <p>
    * It carries one thing that route cannot: the leader-election <b>priority</b>, which the object form
@@ -1025,14 +1034,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     // The peer goes in whole, not as an id and an address: it also carries the leader-election
     // priority the entry may have declared, and rebuilding it from parts is how that gets lost.
-    final RaftPeerId peerId = target.peer().getId();
-    raft.addPeer(target.peer(), target.name());
-
-    // After addPeer, not before: RaftClusterManager.addPeer derives an HTTP address from the Raft port
-    // plus THIS node's HTTP offset, which is right only for a homogeneous cluster. An entry that
-    // declared its own HTTP port said so, and that answer wins over the derived one.
-    if (target.httpAddress() != null)
-      raft.getHttpAddresses().put(peerId, target.httpAddress());
+    // A declared HTTP port goes in with it, so it is in place before the commit starts the security seed whose
+    // capability probe dials it (issue #8330).
+    raft.addPeer(target.peer(), target.name(), target.httpAddress());
   }
 
   @Override

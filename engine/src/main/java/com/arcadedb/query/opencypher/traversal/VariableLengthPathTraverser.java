@@ -96,7 +96,7 @@ public class VariableLengthPathTraverser extends GraphTraverser {
   }
 
   /**
-   * Builds the strategy this traverser delegates to. The inline {@code WHERE} predicate is forwarded
+   * Builds the strategy this traverser delegates to. The inline {@code WHERE} predicate, and whether the edges are read, are forwarded
    * to it: the delegate does the per-edge walking, so a predicate left behind here would be silently
    * dropped for every variable-length pattern.
    */
@@ -104,7 +104,7 @@ public class VariableLengthPathTraverser extends GraphTraverser {
     final GraphTraverser strategy = useBFS ?
         new BreadthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode) :
         new DepthFirstTraverser(direction, relationshipTypes, edgePropertyFilters, minHops, maxHops, trackPaths, pathMode);
-    return strategy.withEdgePredicate(edgePredicate);
+    return strategy.withEdgePredicate(edgePredicate).withEdgesUnread(edgesUnread).withContext(context);
   }
 
   /**

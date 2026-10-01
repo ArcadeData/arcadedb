@@ -61,6 +61,7 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.server.protocol.TermIndex;
+import org.apache.ratis.server.raftlog.RaftLogBase;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.thirdparty.com.codahale.metrics.MetricRegistry;
 import org.apache.ratis.thirdparty.com.codahale.metrics.Timer;
@@ -87,6 +88,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -154,10 +156,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static final String FORWARDED_ROOT_USER = "root";
 
   /**
-   * Name of the file, directly under this peer's Raft storage directory, that records a crash-loop escalation
-   * across process restarts (issue #7736). Ratis ignores plain files there - it only scans sub-directories for
-   * Raft groups - and a Raft-storage reformat, by this node or by an operator, deletes it with the storage it
-   * describes. Deleting it by hand re-arms the automatic crash-loop recovery.
+   * Suffix of the file that records a crash-loop escalation across process restarts (issue #7736). It is a sibling
+   * of this peer's Raft storage directory, named after it ({@code <raft-storage-dir>.crash-loop-escalated}), never a
+   * file inside it: the divergence reformat of {@link #restartRatis(boolean)} deletes that directory wholesale, and
+   * reaches it automatically from the health monitor while an escalation record exists, so a record inside it was
+   * silently lost with the storage and the next process start walked the whole restart/reformat ladder again
+   * (issue #8380). The record describes this node's crash-loop history, not its log, so it has exactly three
+   * deleters: {@link #clearPersistedCrashLoopEscalation()}; {@link #discardNonPersistentRaftStorage(File)}, which
+   * wipes it together with a storage that is not kept across starts ({@code arcadedb.ha.raftPersistStorage=false});
+   * and an operator, by hand, to re-arm the automatic crash-loop recovery. See
+   * {@link #crashLoopEscalationMarkerFile(File)}.
    */
   static final String CRASH_LOOP_ESCALATION_MARKER = "crash-loop-escalated";
 
@@ -190,6 +198,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   private final    LocalDropVerbs          localDropVerbs          = new LocalDropVerbs();
   private final    ClusterMonitor          clusterMonitor;
+  /**
+   * How recently a follower must have answered this leader to be handed leadership (issue #8556); see
+   * {@link #handoffReachablePeers()}.
+   */
+  private final    long                    handoffContactWindowMs;
   private final    Quorum                  quorum;
   /**
    * The RPC timeout of this node's own Raft client: a request unanswered for this long is retried with the same call
@@ -329,8 +342,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // Runs replication-channel resets and their leadership-transfer escalation off the lag-monitor thread
   // (issue #5346). Deliberately NOT the resync executor: a resync task blocks on HTTP to an unhealthy
   // follower for as long as the connect timeout, and channel recovery queued behind it would be delayed by
-  // exactly the outage it exists to repair. Its rejection policy discards instead of running on the caller,
-  // so a saturated queue can never stall replica classification - the invariant the off-thread move buys.
+  // exactly the outage it exists to repair. A saturated queue rejects (the default AbortPolicy: each submitter
+  // catches the RejectedExecutionException and decides what a drop means for it) instead of running on the caller,
+  // so it can never stall replica classification - the invariant the off-thread move buys.
   private final    ThreadPoolExecutor        channelRecoveryExecutor = createChannelRecoveryExecutor();
   // Timeout for the leadership transfer that escalates an unrecoverable replication channel (issue #5346).
   // Matches the manual step-down timeout: the transfer either lands within a couple of election rounds or
@@ -352,6 +366,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // leadership around the cluster on every health tick. Node-local and kept across leadership changes for the same
   // reason as the channel-escalation cooldown above: it bounds that to one handoff per node per window.
   private static final long                  QUARANTINE_HANDOFF_COOLDOWN_MS = 10 * 60_000L;
+  // Whether a #8491 hand-off (a leader replacing a database) is queued or running on channelRecoveryExecutor, so a
+  // health tick does not queue a second one behind it (issue #8557).
+  private final    AtomicBoolean             replacingHandOffQueued = new AtomicBoolean();
   // Wall-clock of the last admitted quarantine handoff, for the cooldown above; 0 = none yet.
   private final    AtomicLong                lastQuarantineHandoffAtMs = new AtomicLong();
   // Wall-clock of the last "no other peer to hand leadership to" report, throttled to the same window; 0 = none yet.
@@ -372,7 +389,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // concurrent reader (refreshRaftClient() from a leader-change callback) never sees a half-built transport
   // configuration.
   private volatile Parameters                 raftParameters        = new Parameters();
-  private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   // Upper bound on a single applyNotifier.wait(...) call before the loop re-checks the apply-index
   // condition on its own, even without an intervening notifyApplied() call. notifyApplied() has a
@@ -414,6 +430,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
+  private final    UnverifiedClosedCopyCheck unverifiedClosedCopyCheck;
   /**
    * Outcome of the most recent {@link #runBootstrapIfEligible()} pass on this node, or {@code null} while no
    * pass has finished yet.
@@ -431,6 +448,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
+    this.unverifiedClosedCopyCheck = new UnverifiedClosedCopyCheck(this, arcadeServer);
     this.configuration = configuration;
     this.forwardHttpClient = LeaderDial.newConnectTimeoutBoundedClient(configuration);
 
@@ -548,6 +566,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
         this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
         this::resetPeerReplicationChannel, peerChannelResetEscalation ? this::escalateWedgedPeerChannel : null);
+    this.handoffContactWindowMs = handoffContactWindowMs(
+        configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN), peerUnreachableThresholdMs);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -904,7 +924,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (shutdownRequested || !isLeader())
           return;
 
-        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor);
+        final RaftPeer target = selectChannelEscalationTarget(getLivePeers(), localPeerId, peerId, clusterMonitor,
+            handoffReachablePeers());
         if (target == null) {
           LogManager.instance().log(this, Level.SEVERE,
               "Follower '%s' has a permanently dead replication channel and no healthy peer is eligible to take over "
@@ -1018,11 +1039,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // Leadership may have moved while this sat in the queue, and a transfer sent through a follower's client is
         // routed to the real leader, which would then step down for a reason that is not its own (issue #7134).
         final boolean leader = !shutdownRequested && isLeader();
-        switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor),
+        switch (decideQuarantineHandoff(leader, leader && hasHandoffTarget(getLivePeers(), localPeerId, clusterMonitor,
+            handoffReachablePeers()),
             lastQuarantineHandoffAtMs, lastQuarantineNoPeerLogAtMs, now)) {
         case NO_PEER_REPORT -> LogManager.instance().log(this, Level.SEVERE,
             "This leader holds %s, which it cannot resync from itself, and no peer is eligible to take over leadership "
-                + "(none other is configured, or every other one is lagging or a priority-0 replica) (issue #8483). The "
+                + "(none other is configured, or every other one is lagging, unreachable or a priority-0 replica) (issue #8483). The "
                 + "handoff is retried as soon as a peer is eligible. With no other peer, restore the database from a "
                 + "backup or add a peer so that leadership can move and this node can resync from it.", reason);
         case TRANSFER -> transferLeadershipToResync(reason);
@@ -1107,7 +1129,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Whether a peer is eligible to take leadership over, by the rules a manual step-down uses
-   * ({@link #selectStepDownTargets}: not this node, not lagging, not a priority-0 replica while real voters exist).
+   * ({@link #selectStepDownTargets}: not this node, not lagging, not a priority-0 replica while real voters exist) and,
+   * through the four-argument form production uses, proven reachable (issue #8556).
    * Asked before the handoff rather than left to {@link #transferLeadership(long)}, whose no-target fallback would
    * otherwise put a cluster with no eligible peer through a step-down that re-elects this node (code review on PR
    * #8531), exactly what {@link #escalateWedgedPeerChannel} refuses to do for the same reason. Package-private for
@@ -1115,7 +1138,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean hasHandoffTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final ClusterMonitor clusterMonitor) {
-    return !selectStepDownTargets(livePeers, localPeerId, clusterMonitor).isEmpty();
+    return hasHandoffTarget(livePeers, localPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #hasHandoffTarget(Collection, RaftPeerId, ClusterMonitor)} restricted to the peers in {@code reachable}
+   * ({@link #handoffReachablePeers()}), so a peer that is down does not count as eligible and suppress the report
+   * that no peer can take over (issue #8556).
+   */
+  static boolean hasHandoffTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor, final Set<String> reachable) {
+    return !selectStepDownTargets(livePeers, localPeerId, clusterMonitor, reachable).isEmpty();
   }
 
   /**
@@ -1133,7 +1166,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final String wedgedPeerId, final ClusterMonitor clusterMonitor) {
-    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor))
+    return selectChannelEscalationTarget(livePeers, localPeerId, wedgedPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #selectChannelEscalationTarget(Collection, RaftPeerId, String, ClusterMonitor)} restricted to the peers in
+   * {@code reachable} ({@link #handoffReachablePeers()}, issue #8556).
+   */
+  static RaftPeer selectChannelEscalationTarget(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final String wedgedPeerId, final ClusterMonitor clusterMonitor, final Set<String> reachable) {
+    for (final RaftPeer candidate : selectStepDownTargets(livePeers, localPeerId, clusterMonitor, reachable))
       if (!candidate.getId().toString().equals(wedgedPeerId))
         return candidate;
     return null;
@@ -1352,8 +1394,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
     // within a single test run, so the Raft log survives across stop/start calls.
     final boolean persistStorage = resolvePersistStorage(configuration);
-    if (storageDir.exists() && !persistStorage)
-      deleteRecursive(storageDir);
+    if (!persistStorage)
+      discardNonPersistentRaftStorage(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
     this.tokenProvider = new ClusterTokenProvider(configuration);
@@ -1439,8 +1481,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // non-sticking restart streak here and escalates (reformat once, then give up loudly).
     final int crashLoopRestartThreshold = configuration.getValueAsInteger(
         GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES);
+    final long divergedFollowerRecoveryDurationMs = effectiveDivergedFollowerRecoveryDurationMs(
+        configuration.getValueAsLong(GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS),
+        RaftPropertiesBuilder.electionTimeoutMaxFor(configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN),
+            configuration.getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX)));
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
-        divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
+        divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold, divergedFollowerRecoveryDurationMs);
     this.healthMonitor.start();
 
     // Peer capabilities are refreshed on EVERY node, not only the leader (issue #7549). #7219 introduced the
@@ -1567,7 +1613,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final RaftServer.Division division = raftServer.getDivision(raftGroup.getGroupId());
       final LifeCycle.State divisionState = division.getInfo().getLifeCycleState();
-      if (divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION)
+      if (isDivisionStateReported(divisionState))
         return divisionState;
     } catch (final Exception e) {
       // The division cannot be read - typically a transient window while the server is starting or an
@@ -1578,6 +1624,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       LogManager.instance().log(this, Level.FINE, "Cannot read Raft division state: %s", e.getMessage());
     }
     return proxyState;
+  }
+
+  /**
+   * Whether a division state overrides the RUNNING proxy state in {@link #getRaftLifeCycleState()}: the terminal ones,
+   * and CLOSING too (issue #8651) - Ratis closes the division from the dying StateMachineUpdater thread, and that close
+   * can stay in CLOSING while the proxy reports RUNNING, a zombie that answered raftState=RUNNING.
+   */
+  static boolean isDivisionStateReported(final LifeCycle.State divisionState) {
+    return divisionState == LifeCycle.State.CLOSED || divisionState == LifeCycle.State.EXCEPTION
+        || divisionState == LifeCycle.State.CLOSING;
   }
 
   /**
@@ -1731,7 +1787,54 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return;
     final ArcadeStateMachine sm = stateMachine;
     if (sm != null)
-      sm.handOffLeadershipWhileReplacingDatabase();
+      queueReplacingDatabaseHandOff(sm);
+  }
+
+  /**
+   * Runs the #8491/#8529 hand-off ({@link ArcadeStateMachine#handOffLeadershipWhileReplacingDatabase()}) on
+   * {@link #channelRecoveryExecutor}, the single worker the #8483 and #5346 hand-offs already run on, rather than inline
+   * on the health-monitor thread (issue #8557).
+   * <p>
+   * Inline, it raced them: a leader that quarantines a database arms #8483 and, once the resync install it triggers
+   * is running, #8491 too, both in the same health tick. Ratis keeps one pending transfer per leader and refuses a
+   * second one naming another peer. On one worker the automatic hand-offs cannot overlap, and the health tick no longer
+   * blocks for the length of a transfer. The state machine's own throttle still decides whether a queued run
+   * transfers; this only keeps a tick from queueing a second run while one is waiting or running.
+   * <p>
+   * Package-private for unit tests.
+   */
+  void queueReplacingDatabaseHandOff(final ArcadeStateMachine sm) {
+    // The common case, every tick on a healthy node: no leader service gap (issue #8529; a database being replaced,
+    // issue #8491, is one kind), so nothing is queued. The episode is over, though, so its failures in a row are
+    // forgotten here, where the state machine's own reset is never reached (issue #8556): one volatile read when there
+    // is nothing to forget. Leadership is tested first: hasLeaderServiceGap() can stat a directory per marked
+    // database. A follower's tick still pays it on EVERY tick after a hand-off that moved leadership, until the gap
+    // closes: the reset re-checks the gap to decide whether to forget that hand-off. One stat per marked database.
+    if (!isLeader() || !sm.hasLeaderServiceGap()) {
+      sm.resetReplacingLeaderHandOffBackOff();
+      return;
+    }
+    if (!replacingHandOffQueued.compareAndSet(false, true))
+      return;
+    try {
+      channelRecoveryExecutor.execute(() -> {
+        try {
+          // The state machine re-checks leadership and the replacement itself: either may have ended in the queue.
+          // restartRatis() may also have replaced the state machine meanwhile; a stale one no longer speaks for this
+          // node, and the current one is asked on the next tick.
+          if (!shutdownRequested && stateMachine == sm)
+            sm.handOffLeadershipWhileReplacingDatabase();
+        } finally {
+          replacingHandOffQueued.set(false);
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      replacingHandOffQueued.set(false);
+      // Nothing was attempted, so the next health tick simply asks again.
+      LogManager.instance().log(this, Level.WARNING,
+          "Recovery queue is saturated; the leadership hand-off of a leader replacing a database is retried on the "
+              + "next health tick (issue #8491)");
+    }
   }
 
   @Override
@@ -1763,7 +1866,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * AppendEntries (term conflict), so it has applied everything it could locally commit
    * ({@code commitIndex == appliedIndex}) yet its last-applied entry is from an older term
    * ({@code currentTerm > appliedTerm}). The {@link HealthMonitor} requires this to persist for
-   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
+   * {@code HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
    * around an election before the no-op commits. Returns false for the leader, when no leader is
    * known, while actively catching up (a catch-up that has applied everything it committed no longer counts, issue
    * #8341) or installing a snapshot, and whenever the state cannot be read.
@@ -1780,7 +1883,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return false;
     // The values below are read as separate Ratis getDivision(...) calls, so they can observe slightly
     // different moments during an election. We deliberately do not take an atomic snapshot: the
-    // HealthMonitor requires the stuck condition to persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS
+    // HealthMonitor requires the stuck condition to persist for HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS
     // before acting, which absorbs any one-tick inconsistency here.
     // The catch-up flag counts only while there is something left to apply (issue #8341): a stale flag with
     // commitIndex == appliedIndex hid exactly the signature below.
@@ -1796,7 +1899,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * momentarily {@code true} for any follower around a normal election - before it applies the new leader's
    * current-term no-op - so publishing it as-is would report a routine leader change as an incident on every
    * status poll. This is the same filter the health monitor already applies before it starts counting toward
-   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS}, at a fraction of that duration, so an operator sees the risk
+   * {@code HA_DIVERGED_FOLLOWER_RECOVERY_DURATION_MS}, at a fraction of that duration, so an operator sees the risk
    * long before the automatic reformat (if enabled) fires - not only in the leader's replication log, which
    * before this was the only place the "advancing at 0 entries/tick" symptom showed up at all.
    * <p>
@@ -1839,6 +1942,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // We have applied everything we could locally commit, but at a stale term: we are rejecting the
     // leader's current-term entries and cannot move forward.
     return currentTerm > appliedTerm && commitIndex == appliedIndex;
+  }
+
+  /**
+   * Effective persistence window of the stuck-at-stale-term reformat (issue #8375): the configured
+   * {@code arcadedb.ha.divergedFollowerRecoveryDurationMs}, floored at twice {@code arcadedb.ha.electionTimeoutMax}.
+   * A follower that stops hearing its leader starts an election within one election timeout, which clears the
+   * leader-present half of the signature; a window at or below that could reformat a node that was only waiting for
+   * the election. The floor scales with a WAN-tuned cluster rather than being a fixed number.
+   */
+  static long effectiveDivergedFollowerRecoveryDurationMs(final long configuredMs, final long electionTimeoutMaxMs) {
+    final long floorMs = 2L * Math.max(0L, electionTimeoutMaxMs);
+    if (configuredMs >= floorMs)
+      return configuredMs;
+    LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+        "arcadedb.ha.divergedFollowerRecoveryDurationMs=%d is below 2x arcadedb.ha.electionTimeoutMax, using %dms",
+        configuredMs, floorMs);
+    return floorMs;
   }
 
   @Override
@@ -1888,7 +2008,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (sm == null)
       return null;
     final ArcadeStateMachine.RaftLogFailure failure = sm.getRaftLogFailure();
-    return failure != null ? failure.describe() : null;
+    if (failure != null)
+      return failure.describe();
+    return null;
+  }
+
+  @Override
+  public String getDeadStateMachineUpdater() {
+    final ArcadeStateMachine sm = stateMachine;
+    return sm != null ? sm.describeDeadApplyThread() : null;
+  }
+
+  /**
+   * Whether the division's Raft log has been closed. Ratis marks a log failed ({@code notifyLogFailed}) only for an I/O
+   * error on its writer thread; a log CLOSED under a live division - what a dying {@code StateMachineUpdater} leaves
+   * behind when the close it starts from its own thread never finishes - rejects every append with
+   * {@code SegmentedRaftLog: Failed to append} and never reaches that callback, so the #7037 mark stayed empty on the
+   * zombie of issue #8652. False when the log cannot be read: a transient window while the server starts or restarts.
+   */
+  @Override
+  public boolean isRaftLogClosed() {
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
+      return false;
+    try {
+      return server.getDivision(raftGroup.getGroupId()).getRaftLog() instanceof RaftLogBase base && !base.isOpened();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the Raft log state: %s", e.getMessage());
+      return false;
+    }
   }
 
   /**
@@ -2032,6 +2180,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static File snapshotInstallHoldMarkerFile(final File raftStorageDir) {
     return new File(raftStorageDir.getAbsoluteFile().getParentFile(),
         raftStorageDir.getName() + ".snapshot-install-hold");
+  }
+
+  /**
+   * Where the crash-loop escalation record of the peer whose Raft storage is {@code raftStorageDir} lives (issues
+   * #7736, #8380): a sibling file of that directory, never inside it, for the same reason as
+   * {@link #runtimeJoinMarkerFile}: the divergence reformat of {@link #restartRatis(boolean)} deletes the directory,
+   * and the health monitor's in-memory view of the record ({@code crashLoopEscalationPersisted}) cannot see that.
+   */
+  static File crashLoopEscalationMarkerFile(final File raftStorageDir) {
+    return new File(raftStorageDir.getAbsoluteFile().getParentFile(),
+        raftStorageDir.getName() + "." + CRASH_LOOP_ESCALATION_MARKER);
+  }
+
+  /**
+   * Wipes the Raft storage of a node that does not persist it across starts ({@code arcadedb.ha.raftPersistStorage}
+   * false), together with the crash-loop escalation record kept beside it: that record describes a crash loop on the
+   * storage being discarded, and the fresh log this start formats has not crash-looped yet. Before issue #8380 the
+   * record lived inside the directory and went with it; moving it out must not make it outlive the storage here.
+   */
+  static void discardNonPersistentRaftStorage(final File raftStorageDir) {
+    if (raftStorageDir.exists())
+      deleteRecursive(raftStorageDir);
+    final File record = crashLoopEscalationMarkerFile(raftStorageDir);
+    if (record.exists() && !record.delete() && record.exists())
+      LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+          "Cannot delete the crash-loop escalation record '%s' of the discarded Raft storage: delete it by hand, or "
+              + "this server will not re-arm the automatic crash-loop recovery (issue #8380)", record.getAbsolutePath());
   }
 
   /**
@@ -2395,6 +2570,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * {@link #transferLeadership(long)} with the no-target step-down made optional (issue #8665): with
+   * {@code bareStepDownFallback} false, a leader with no eligible peer returns false instead of stepping down with no
+   * target, which Ratis answers with an election that frequently re-elects this node, or elects a peer no screen
+   * here vetted.
+   */
+  public boolean transferLeadership(final long timeoutMs, final boolean bareStepDownFallback) {
+    return clusterManager.transferLeadership(timeoutMs, bareStepDownFallback);
+  }
+
+  /**
    * Returns the HTTP address (host:port) of the current Raft leader, or {@code null} if the leader
    * is unknown. When the leader's HTTP port was not declared in the server list, the address is
    * derived as a best effort from the leader's Raft host plus this node's HTTP port (see
@@ -2572,6 +2757,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /** The bootstrap election, or {@code null} before the Raft server has started. */
+  BootstrapElection getBootstrapElection() {
+    return bootstrapElection;
+  }
+
+  /** What the leader asks its peers before it reopens a closed copy a resync could not verify (issue #8605). */
+  UnverifiedClosedCopyCheck getUnverifiedClosedCopyCheck() {
+    return unverifiedClosedCopyCheck;
   }
 
   /** The drops this node's own {@code drop database} verb is waiting on; see {@link LocalDropVerbs}. */
@@ -3483,7 +3678,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   private File crashLoopEscalationMarker() {
-    return new File(cachedRaftStorageDir(), CRASH_LOOP_ESCALATION_MARKER);
+    return crashLoopEscalationMarkerFile(cachedRaftStorageDir());
   }
 
   @Override
@@ -4100,10 +4295,6 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return false;
   }
 
-  Object getLeaderChangeNotifier() {
-    return leaderChangeNotifier;
-  }
-
   public void addPeer(final String peerId, final String address) {
     addPeer(peerId, address, null);
   }
@@ -4129,10 +4320,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * object is also the one holding the {@link ContextConfiguration} the probe's budget comes from.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
+    addPeer(newPeer, name, null);
+  }
+
+  /**
+   * {@link #addPeer(RaftPeer, String)} with the HTTP address the caller declared for the peer, which
+   * {@link RaftClusterManager#addPeer(RaftPeer, String, String)} puts in place before the membership change commits
+   * so the security seed that commit triggers probes the right listener (issue #8330).
+   */
+  void addPeer(final RaftPeer newPeer, final String name, final String declaredHttpAddress) {
     ensureNotSelf(localPeerId, getLocalRaftAddress(), newPeer);
     ensureNoDuplicateAddress(getLivePeers(), newPeer);
     ensurePeerReachable(newPeer);
-    clusterManager.addPeer(newPeer, name);
+    clusterManager.addPeer(newPeer, name, declaredHttpAddress);
   }
 
   /**
@@ -4151,16 +4351,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * being refused here - {@code ensureNotSelf}'s sibling property, and what keeps a repeated
    * {@code connect cluster} working.
    * <p>
-   * <b>Advisory under concurrent adds, and cannot be more than that.</b> The configuration is read here and the
-   * {@code Mode.ADD} is issued afterwards, so two admin requests naming one address under two different ids can
-   * both pass - neither sees the other's uncommitted add - and both commit, which is the duplicate this method
-   * exists to refuse, reached by a race instead of by a single request. Serialising it here would not close the
-   * window either: neither add-peer route is leader-routed, so the two requests need not even be on the same
-   * node, and Ratis applies {@code Mode.ADD} with no address-uniqueness predicate of its own. Closing it properly
-   * means a uniqueness check on the leader at apply time, plus a decision about what a node does when it finds a
-   * configuration already in that state - tracked as issue #7802. What this catches is the reachable mistake -
-   * one operator, one request - and an operator running two adds of one address at once still has to reconcile
-   * the configuration afterwards.
+   * <b>An early refusal, not the guarantee.</b> The configuration is read here on the serving node, which may be a
+   * follower and may lag, so this call alone could not stop two concurrent adds of one address under two ids. The
+   * guarantee is the same check inside {@code RaftClusterManager.buildAddArgs}, rebuilt on every attempt of a
+   * compare-and-set membership change: the leader applies the change only if its configuration is still the one that
+   * check read, so of two racing adds one commits and the other is refused against the configuration holding the
+   * winner (issue #7802). This copy just answers the common single-request mistake before the reachability probe.
+   * A configuration that ALREADY holds a shared address, built before either check existed, is reported by the
+   * {@code peers-share-address} alert instead of being refused.
    */
   static void ensureNoDuplicateAddress(final Collection<RaftPeer> livePeers, final RaftPeer newPeer) {
     // Two passes, not one: a single loop that returns on the id match and throws on an address match answers
@@ -4391,6 +4589,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Whether the transfer another caller has pending on this leader moved leadership to another peer within a
+   * step-down's budget (issue #8557); a seam for {@link #stepDown()}.
+   */
+  boolean concurrentHandOffLanded() {
+    return clusterManager.leadershipMovedAway(STEP_DOWN_TRANSFER_TIMEOUT_MS);
+  }
+
+  /** Budget of one targeted transfer of {@link #stepDown()}, and of its bare step-down fallback. */
+  private static final long STEP_DOWN_TRANSFER_TIMEOUT_MS = 10_000L;
+
+  /**
    * Steps this leader down by transferring leadership to the best eligible peer.
    * <p>
    * Refuses when this node is not the leader (issue #7134). A follower has nothing to step down FROM, but the
@@ -4407,13 +4616,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (!isLeader())
       throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
 
-    final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
+    final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor,
+        handoffReachablePeers());
 
     boolean attempted = false;
     for (final RaftPeer peer : candidates) {
       try {
-        transferLeadership(peer.getId().toString(), 10_000);
+        transferLeadership(peer.getId().toString(), STEP_DOWN_TRANSFER_TIMEOUT_MS);
         return;
+      } catch (final LeadershipTransferInProgressException inProgress) {
+        // Another caller is handing this leadership over right now (issue #8557). Every other candidate would be
+        // refused the same way, and the bare step-down below would pull the leadership out from under that transfer,
+        // leaving the cluster leaderless for an election timeout. Its outcome is this step-down's outcome.
+        if (concurrentHandOffLanded())
+          return;
+        if (!isLeader())
+          throw new NotTheLeaderRefusalException("Refusing to step down", getLeaderId());
+        throw new ReplicationException(
+            "Cannot step down: another leadership transfer is in progress on this node and did not complete ("
+                + inProgress.getMessage() + ")");
       } catch (final NotTheLeaderRefusalException notLeader) {
         // Leadership moved between the guard above and this attempt. When an earlier candidate's transfer was
         // already sent, that transfer may be what moved it - its call failed, yet the target won (#8487) - so a
@@ -4444,7 +4665,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // budget, the very candidates the loop above just tried (issue #8480).
     LogManager.instance().log(this, Level.INFO,
         "No explicit step-down target eligible; delegating leadership-transfer target selection to Ratis");
-    if (stepDownWithoutTarget(10_000L))
+    if (stepDownWithoutTarget(STEP_DOWN_TRANSFER_TIMEOUT_MS))
       return;
 
     // The no-target API also returns false if leadership was lost before the transfer (issue #4809).
@@ -4469,6 +4690,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static List<RaftPeer> selectStepDownTargets(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
       final ClusterMonitor clusterMonitor) {
+    return selectStepDownTargets(livePeers, localPeerId, clusterMonitor, null);
+  }
+
+  /**
+   * {@link #selectStepDownTargets(Collection, RaftPeerId, ClusterMonitor)} that also drops every peer not in
+   * {@code reachable}: the ids {@link #handoffReachablePeers()} proved answered this leader recently (issue #8556).
+   * {@code null} applies no reachability screen, which only unit tests of the other rules pass. Every production
+   * caller passes {@link #handoffReachablePeers()}.
+   * <p>
+   * The screen is not optional. Lag alone cannot tell a peer that is down from a healthy one: a follower that died at a
+   * high water mark keeps a small lag on an idle cluster, and {@link ClusterMonitor#isReplicaLagging} answers false for
+   * a peer it has no tick for, which is every peer right after {@link ClusterMonitor#reset()} - that is, right after
+   * the election a hand-off typically reacts to. And a targeted Ratis transfer to a dead peer is not a harmless
+   * no-op: Ratis holds it pending for the caller's whole timeout, and refuses every write on this leader, on every
+   * database, while it does.
+   */
+  static List<RaftPeer> selectStepDownTargets(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor, final Set<String> reachable) {
     final String localId = localPeerId.toString();
 
     // Highest priority among the other peers. When it is 0 the cluster runs with the default,
@@ -4490,12 +4729,95 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       // Lagging follower: promoting it would prolong write unavailability while it catches up.
       if (clusterMonitor != null && clusterMonitor.isReplicaLagging(peerId))
         continue;
+      // STALLED follower (issue #8556): unreachable while caught up (#5291), never appended (#5295) or stuck behind an
+      // install-snapshot loop (#8457). Each of those can carry a lag under the threshold, which the test above passes.
+      if (clusterMonitor != null && clusterMonitor.getReplicaStatus(peerId) == ClusterMonitor.ReplicaStatus.STALLED)
+        continue;
+      // Not proven reachable (issue #8556): a targeted transfer to it would hold every write on this leader refused
+      // for the whole transfer budget.
+      if (reachable != null && !reachable.contains(peerId))
+        continue;
       candidates.add(peer);
     }
 
     // Strongest (highest priority) first; List.sort is stable so equal priorities keep iteration order.
     candidates.sort((a, b) -> Integer.compare(b.getPriority(), a.getPriority()));
     return candidates;
+  }
+
+  /**
+   * The followers that answered this leader recently enough to be handed leadership (issue #8556): the reachability
+   * screen of {@link #selectStepDownTargets(Collection, RaftPeerId, ClusterMonitor, Set)}. Read live from Ratis rather
+   * than from the {@link ClusterMonitor} tick, which lags by up to one tick and holds nothing at all for the first
+   * tick after an election. Empty on a follower. Package-private and overridable so the step-down loop can be
+   * unit-tested without a running division.
+   */
+  Set<String> handoffReachablePeers() {
+    final Set<String> reachable = handoffReachablePeerIds(getFollowerStates(), handoffContactWindowMs);
+    return withoutServiceGapPeers(reachable, peerCapabilities.peersWithServiceGap());
+  }
+
+  /**
+   * {@code reachable} minus the peers that reported a leader service gap of their own (issue #8665). Lag is judged from
+   * the log index, and a gap does not show in it, so a peer that shares this leader's gap - a database missing on every
+   * node, or a node-global stale-snapshot gap after a cluster-wide crash - passed every other screen, took leadership
+   * and handed it on in turn. Such a peer could not serve what a leader must, and would be handed leadership only to
+   * hold the same gap. With no eligible peer left the hand-off backs off instead of rotating.
+   * <p>
+   * The answer is as fresh as the capability poll ({@link PeerCapabilityRegistry#REFRESH_PERIOD_MS}, believed for
+   * {@link PeerCapabilityRegistry#ADVERTISEMENT_TTL_MS}); a peer that developed a gap since its last answer is still
+   * eligible, and the per-node back-off of {@code ArcadeStateMachine} bounds that residual case as before. Returns
+   * {@code reachable} itself when nothing is excluded, which is every call on a healthy cluster.
+   */
+  static Set<String> withoutServiceGapPeers(final Set<String> reachable, final Set<String> gapped) {
+    if (gapped.isEmpty() || reachable.isEmpty())
+      return reachable;
+    final Set<String> eligible = new HashSet<>(reachable);
+    eligible.removeAll(gapped);
+    return eligible;
+  }
+
+  /**
+   * The peers of {@code followerStates} that are proven reachable from this leader (issue #8556). A peer qualifies
+   * only when:
+   * <ul>
+   *   <li>its match index is known and not negative. Ratis creates each follower's record afresh, at match index -1,
+   *   when this node becomes leader, and moves it only when the follower acknowledges an append. So -1 means the
+   *   follower has not answered this leader once - a peer that is down right after the election is exactly this, and
+   *   so is one still waiting for a snapshot, which a targeted transfer would also leave pending. A degraded entry
+   *   with no match index (membership changing under the read, issue #4842) proves nothing and does not qualify
+   *   either;</li>
+   *   <li>its last RPC response is younger than {@code contactWindowMs}. The leader heartbeats every follower well
+   *   inside an election timeout, so a live follower answers far more often than that.</li>
+   * </ul>
+   * Package-private and static so the rule can be unit-tested without a cluster.
+   */
+  static Set<String> handoffReachablePeerIds(final List<Map<String, Object>> followerStates, final long contactWindowMs) {
+    final Set<String> reachable = new HashSet<>(followerStates.size() * 2);
+    for (final Map<String, Object> entry : followerStates) {
+      final Object peerId = entry.get("peerId");
+      if (peerId == null)
+        continue;
+      final RaftClusterStatusExporter.FollowerReplicationState state = RaftClusterStatusExporter.FollowerReplicationState.of(
+          entry);
+      if (!state.matchIndexKnown || state.matchIndex < 0)
+        continue;
+      // An absent last-RPC time reads as -1 (followerStateIndex), so it fails the first test.
+      if (state.lastRpcMs < 0 || state.lastRpcMs >= contactWindowMs)
+        continue;
+      reachable.add(peerId.toString());
+    }
+    return reachable;
+  }
+
+  /**
+   * The window of {@link #handoffReachablePeerIds}: the minimum election timeout, the interval within which a follower
+   * that stopped hearing from this leader would already have started an election, capped at the peer-unreachable
+   * threshold when that is enabled and shorter.
+   */
+  static long handoffContactWindowMs(final long electionTimeoutMinMs, final long peerUnreachableThresholdMs) {
+    final long window = electionTimeoutMinMs > 0 ? electionTimeoutMinMs : 5_000L;
+    return peerUnreachableThresholdMs > 0 ? Math.min(window, peerUnreachableThresholdMs) : window;
   }
 
   public void leaveCluster() {
@@ -4691,6 +5013,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  @Override
   public long getLastAppliedIndex() {
     if (raftServer == null)
       return -1;
@@ -5826,7 +6149,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
-    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version()))
+    if (peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
+        advertisement.serviceGap()))
       LogManager.instance().log(this, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
@@ -5929,6 +6253,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         "Asked every peer about the '%s' capability before replicating an entry that needs it (%d ms); still "
             + "missing: %s", capability, System.currentTimeMillis() - startedAt, missing);
     return missing;
+  }
+
+  private final TxPreparedAtCapabilityCache txPreparedAtCapability = new TxPreparedAtCapabilityCache(
+      () -> allPeersSupport(PeerCapabilities.TX_PREPARED_AT_INDEX), System::currentTimeMillis, 1_000L);
+
+  /**
+   * Whether every peer can read the {@code tx-prepared-at-index} section, so a transaction may state it (issue #8686). Cached for a
+   * second, since it is asked on every commit; a membership change drops the answer at once, see {@link TxPreparedAtCapabilityCache}.
+   */
+  public boolean canStateTxPreparedAt() {
+    return txPreparedAtCapability.isCapable();
+  }
+
+  /** Drops the cached {@link #canStateTxPreparedAt} answer, so the next commit asks again; called when the membership changes. */
+  void invalidateTxPreparedAtCapability() {
+    txPreparedAtCapability.invalidate();
+  }
+
+  /** Whether this node states the index a transaction was prepared at on the entries it replicates (issue #8686). */
+  public boolean isTxSchemaCheckEnabled() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_TX_SCHEMA_CHECK);
   }
 
   /** What this node tells its peers it can decode. */

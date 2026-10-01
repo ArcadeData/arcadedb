@@ -94,6 +94,20 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   private static final HttpString SESSION_PARTIAL_COMMIT_HEADER = new HttpString(SESSION_PARTIAL_COMMIT);
 
+  /**
+   * Response header saying that this request ended the session it named, so a client has nothing left to release on
+   * it (issue #8618). Sent by {@code /commit}, which ends its session whether the commit succeeded or failed: a client
+   * that reads it on a failed commit skips the {@code /rollback} it would otherwise send to release a session the
+   * server may still hold. It is additive: an older server never sends it, and a refusal issued before the handler ran
+   * (the 503 of a node installing a snapshot) cannot, and the client releases the session as before.
+   * <p>
+   * Only ever emitted with the value {@code "true"}; its ABSENCE is the negative. Deliberately duplicated as
+   * {@code RemoteDatabase.ARCADEDB_SESSION_CLOSED} in the {@code network} module.
+   */
+  public static final String SESSION_CLOSED = "arcadedb-session-closed";
+
+  protected static final HttpString SESSION_CLOSED_HEADER = new HttpString(SESSION_CLOSED);
+
   /** A session id is a UUID, 36 characters. See {@link #sanitizedSessionId}. */
   private static final int MAX_ECHOED_SESSION_ID_LENGTH = 64;
 
@@ -530,14 +544,17 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * session id is no longer resolvable. The ownership gate (via {@link HttpSessionManager#getSessionById})
    * ensures a request carrying another principal's session id cannot evict (and orphan) that session; it is
    * also a no-op when the id is already gone (e.g. an idempotent retry).
+   *
+   * @return true when this call removed the session
    */
-  protected void removeSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
+  protected boolean removeSession(final HttpServerExchange exchange, final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId != null && !sessionId.isEmpty()) {
       final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
       if (session != null)
-        httpServer.getSessionManager().removeSession(session.id);
+        return httpServer.getSessionManager().removeSession(session.id) != null;
     }
+    return false;
   }
 
   /**

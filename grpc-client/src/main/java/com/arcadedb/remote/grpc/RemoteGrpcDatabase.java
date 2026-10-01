@@ -43,6 +43,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
@@ -389,6 +390,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         // Store transaction ID in parent class session management
         setSessionId(transactionId);
       } catch (StatusRuntimeException | StatusException e) {
+        // No transaction exists yet: a retryable status keeps its type for transaction()'s retry loop
+        final RuntimeException mapped = GrpcClientErrorMapper.toException(e);
+        if (mapped instanceof NeedRetryException)
+          throw mapped;
         throw new TransactionException("Error on transaction begin", e);
       }
 
@@ -451,7 +456,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
             throw new TransactionException("Transaction was not committed on the server: " + response.getMessage());
           }
         } catch (StatusRuntimeException | StatusException e) {
-          handleGrpcException(e);
+          // UNAVAILABLE ON COMMIT IS AN UNKNOWN OUTCOME, NOT A RETRYABLE REFUSAL (#8711)
+          throw GrpcClientErrorMapper.toCommitException(e);
         } finally {
           transactionId = null;
           setSessionId(null);

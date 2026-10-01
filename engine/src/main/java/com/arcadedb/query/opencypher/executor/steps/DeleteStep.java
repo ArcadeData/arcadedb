@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -31,6 +33,7 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -94,6 +97,10 @@ public class DeleteStep extends AbstractExecutionStep {
    * {@code -[*]->} over a dense graph, would still pay that memory cost in full.
    */
   private final boolean eagerMaterialize;
+
+  // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
+  // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit heapLimit;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -162,8 +169,18 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            while (prevResults.hasNext())
-              materializedInput.add(prevResults.next());
+            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            try {
+              while (prevResults.hasNext()) {
+                final Result row = prevResults.next();
+                materializedInput.add(row);
+                heapLimit.add(materializedInput.size(), row);
+              }
+            } catch (final RuntimeException e) {
+              materializedInput = null;
+              releaseHeap();
+              throw e;
+            }
             if (context.isProfiling())
               cost += System.nanoTime() - eagerBegin;
           }
@@ -209,6 +226,11 @@ public class DeleteStep extends AbstractExecutionStep {
 
         if (!hasMoreInput()) {
           finished = true;
+          // EVERY INPUT ROW WAS PROCESSED: THE MATERIALIZED INPUT IS NOT NEEDED ANYMORE (THE UPSTREAM IS DRAINED)
+          if (materializedInput != null) {
+            materializedInput = null;
+            releaseHeap();
+          }
         }
       }
 
@@ -344,11 +366,16 @@ public class DeleteStep extends AbstractExecutionStep {
 
   private static boolean hasNoEdges(final Vertex v) {
     try {
-      return v.countEdges(Vertex.DIRECTION.BOTH) == 0L;
+      // THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE IS NOT STORED ON THE VERTEX: ASKED THROUGH THE SAME LOOKUP THE VERTEX DELETE USES
+      return v.countEdges(Vertex.DIRECTION.BOTH) == 0L && incomingUnidirectionalEdges(v).isEmpty();
     } catch (final RecordNotFoundException ignored) {
       // vertex was already removed by the batch flush - treat as isolated
       return true;
     }
+  }
+
+  private static List<Edge> incomingUnidirectionalEdges(final Vertex v) {
+    return IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) v.getDatabase(), v.getIdentity());
   }
 
   private static List<Edge> collectConnectedEdges(final Vertex v) {
@@ -358,6 +385,7 @@ public class DeleteStep extends AbstractExecutionStep {
         edges.add(e);
       for (final Edge e : v.getEdges(Vertex.DIRECTION.IN))
         edges.add(e);
+      edges.addAll(incomingUnidirectionalEdges(v));
     } catch (final RecordNotFoundException ignored) {
       // vertex was already removed by the batch flush - return what was collected so far
     }
@@ -557,7 +585,7 @@ public class DeleteStep extends AbstractExecutionStep {
     } else {
       // Non-DETACH DELETE: check for connected edges
       if (vertex.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext() ||
-          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext())
+          vertex.getEdges(Vertex.DIRECTION.IN).iterator().hasNext() || !incomingUnidirectionalEdges(vertex).isEmpty())
         throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
@@ -583,6 +611,9 @@ public class DeleteStep extends AbstractExecutionStep {
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      if (seen.add(edge.getIdentity()))
+        edgesToDelete.add(edge);
+    for (final Edge edge : incomingUnidirectionalEdges(vertex))
       if (seen.add(edge.getIdentity()))
         edgesToDelete.add(edge);
 
@@ -613,6 +644,17 @@ public class DeleteStep extends AbstractExecutionStep {
     edge.delete();
     context.getStatistics().incRelationshipsDeleted();
     deleted.add(edge);
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null)
+      heapLimit.release();
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

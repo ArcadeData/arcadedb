@@ -88,6 +88,28 @@ final class PostgresWireMessages {
   }
 
   /**
+   * Bind ('B') with text-format parameter values, declared for a statement Parse left with untyped placeholders.
+   */
+  static void sendBind(final DataOutputStream out, final String portalName, final String statementName, final String... values)
+      throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, portalName);
+    writeCString(body, statementName);
+    body.write(0);
+    body.write(0); // int16 numParamFormatCodes = 0: all text
+    body.write(values.length >>> 8);
+    body.write(values.length); // int16 numParamValues
+    for (final String value : values) {
+      final byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+      body.write(new byte[] { (byte) (bytes.length >>> 24), (byte) (bytes.length >>> 16), (byte) (bytes.length >>> 8), (byte) bytes.length });
+      body.write(bytes);
+    }
+    body.write(0);
+    body.write(0); // int16 numResultFormatCodes = 0
+    sendMessage(out, 'B', body);
+  }
+
+  /**
    * Describe ('D') of a bound portal ({@code 'P'}) or of a prepared statement ({@code 'S'}).
    */
   static void sendDescribe(final DataOutputStream out, final char describeType, final String name) throws Exception {
@@ -108,12 +130,19 @@ final class PostgresWireMessages {
   }
 
   static void sendExecute(final DataOutputStream out, final String portalName) throws Exception {
+    sendExecute(out, portalName, 0);
+  }
+
+  /**
+   * @param maxRows the Execute message's int32 row limit, 0 meaning no limit
+   */
+  static void sendExecute(final DataOutputStream out, final String portalName, final int maxRows) throws Exception {
     final ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeCString(body, portalName);
-    body.write(0);
-    body.write(0);
-    body.write(0);
-    body.write(0); // int32 row limit = 0 (no limit)
+    body.write(maxRows >>> 24);
+    body.write(maxRows >>> 16);
+    body.write(maxRows >>> 8);
+    body.write(maxRows);
     sendMessage(out, 'E', body);
   }
 
@@ -207,6 +236,21 @@ final class PostgresWireMessages {
         return new String(value, StandardCharsets.UTF_8);
       }
     throw new AssertionError("no DataRow among " + messageTypesOf(messages));
+  }
+
+  /**
+   * The name of the first column the first RowDescription among {@code messages} describes.
+   */
+  static String firstColumnName(final List<WireMessage> messages) {
+    for (final WireMessage message : messages)
+      if (message.type() == 'T') {
+        final byte[] body = message.body();
+        int end = 2; // after the column count
+        while (body[end] != 0)
+          ++end;
+        return new String(body, 2, end - 2, StandardCharsets.UTF_8);
+      }
+    throw new AssertionError("no RowDescription among " + messageTypesOf(messages));
   }
 
   private static void sendMessage(final DataOutputStream out, final char type, final ByteArrayOutputStream body) throws Exception {

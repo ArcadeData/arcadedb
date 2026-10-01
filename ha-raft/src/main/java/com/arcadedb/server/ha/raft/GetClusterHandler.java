@@ -24,6 +24,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.SecurityConvergenceStatus;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ha.raft.ArcadeStateMachine.LocalResyncState;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
@@ -364,7 +366,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // halted-after-critical-error alert, or the reverse.
     final ClusterAlerts.NodeStatus nodeStatus = new ClusterAlerts.NodeStatus(stateMachine.getCriticalHalt(),
         stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user),
-        stateMachine.getBootstrapInstallsInFlight());
+        stateMachine.getBootstrapInstallsInFlight(), stateMachine.getBootstrapPassesDeciding(),
+        new ServerControlPlane(httpServer.getServer()).getSecurityConvergenceStatus());
     response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
     response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
     // The liveness counterpart (issue #7622): an escalation is what fails /api/v1/health (once, issue #7736), and
@@ -374,6 +377,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // install never touches localResync, so for a whole database download /api/v1/ready answered 503 and pointed
     // here while everything here read healthy. From the same NodeStatus sample the alert scan below reads.
     response.put("bootstrapInstalls", buildBootstrapInstalls(nodeStatus.bootstrapInstalls(), authorizedDatabases));
+    // The two readiness inputs still missing after that one, from the same NodeStatus sample the alert scan reads: the
+    // third arm of the same bootstrap window (issue #8408), and the security-convergence gate (issue #8555), which is
+    // the only source of a 503 from /api/v1/ready that the document did not carry.
+    response.put("bootstrapDeciding", buildBootstrapDeciding(nodeStatus.bootstrapDeciding(), authorizedDatabases));
+    response.put("securityConvergence", buildSecurityConvergence(nodeStatus.securityConvergence()));
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
@@ -395,6 +403,34 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("inProgress", !installs.isEmpty())
         .put("count", installs.size())
         .put("databases", ClusterAlerts.namesArray(ClusterAlerts.visible(installs, visibleDatabases)));
+  }
+
+  /**
+   * Renders the databases a first-formation bootstrap pass is still deciding on for the status document (issue #8408).
+   * Same shape and scoping as {@link #buildBootstrapInstalls}: the counts are node-level, the names are reduced to
+   * {@code visibleDatabases}, and it is written on every answer with {@code inProgress: false} rather than absent.
+   */
+  static JSONObject buildBootstrapDeciding(final List<String> deciding, final Set<String> visibleDatabases) {
+    return new JSONObject()
+        .put("inProgress", !deciding.isEmpty())
+        .put("count", deciding.size())
+        .put("databases", ClusterAlerts.namesArray(ClusterAlerts.visible(deciding, visibleDatabases)));
+  }
+
+  /**
+   * Renders the security-convergence readiness gate for the status document (issue #8555). The document names are the
+   * three fixed, non-tenant ones, so nothing here is scoped to the caller. Written on every answer, {@code held: false}
+   * rather than absent, so a client can tell "healthy" from "this build does not report it".
+   */
+  static JSONObject buildSecurityConvergence(final SecurityConvergenceStatus status) {
+    return new JSONObject()
+        .put("held", status.held())
+        .put("unconvergedDocuments", ClusterAlerts.namesArray(status.unconvergedDocuments()))
+        .put("armed", status.armed())
+        .put("sinceIndex", status.sinceIndex())
+        .put("windowOpenedAt", status.windowOpenedAt())
+        .put("gaveUp", status.gaveUp())
+        .put("skippedBecauseLeading", status.skippedBecauseLeading());
   }
 
   /**
@@ -479,13 +515,13 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
   /**
    * Writes {@code peer}'s capabilities into its row, and says whether anything was written (issue #7301).
    * <p>
-   * There are exactly two sources of a TRUE answer, and no third. The registry, which only a leader fills because
-   * it is the only node that probes; and this node's own advertised set, which is true for this node's own row
-   * whatever role it holds. The first version of this guard tested "the peer being rendered is the leader" and
-   * published the LOCAL set under the leader's id, which on a follower - where the registry is empty by design -
-   * is the local node's answer wearing another node's id. That defeats the field's whole documented purpose: an
-   * operator diffing the rows during a rolling upgrade is told the wrong node is holding the cluster back, and
-   * there is no {@code version} field on such a row to contradict it.
+   * There are exactly two sources of a TRUE answer, and no third. The registry, which this node fills by probing
+   * its peers (every node probes since issue #7549, whatever its role); and this node's own advertised set, which
+   * is true for this node's own row whatever role it holds. The first version of this guard tested "the peer being
+   * rendered is the leader" and published the LOCAL set under the leader's id, which on a follower - whose
+   * registry was empty by design at the time - is the local node's answer wearing another node's id. That defeats
+   * the field's whole documented purpose: an operator diffing the rows during a rolling upgrade is told the wrong
+   * node is holding the cluster back, and there is no {@code version} field on such a row to contradict it.
    * <p>
    * The local row is published whether or not this node leads, since it is a true statement either way and the
    * one row every node can answer for. It carries {@code version} for the same reason the registry-backed rows
@@ -590,7 +626,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         }
         try {
           final List<LeaderDatabaseQuery.DatabaseInfo> infos =
-              LeaderDatabaseQuery.fetch(dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
+              LeaderDatabaseQuery.fetch(peerIdStr, dial.httpAddress(), dial.httpsAddress(), clusterToken, timeoutMs, server)
                   .databases();
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());

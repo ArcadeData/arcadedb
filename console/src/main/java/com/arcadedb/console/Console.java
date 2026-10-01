@@ -92,6 +92,8 @@ public class Console {
   private              int                  verboseLevel             = 3;
   private              String               language                 = SQL_LANGUAGE;
   private              boolean              asyncMode                = false;
+  // THE DATABASE WHOSE (PER-INSTANCE) ASYNC EXECUTOR CARRIES THE CONSOLE'S EXECUTOR-WIDE onError HANDLER
+  private              Database             asyncErrorHandlerDatabase;
   private              long                 transactionBatchSize     = 0L;
   protected            long                 currentOperationsInBatch = 0L;
   private              RemoteServer         remoteServer;
@@ -240,10 +242,8 @@ public class Console {
                 final String propertyValue = pair == null ? "" : pair[1];
                 if (key.isEmpty())
                     System.err.println("Ignoring malformed system property argument '" + value + "': missing key");
-                else {
-                    System.setProperty(key, propertyValue);
-                    setGlobalConfiguration(key, propertyValue, true);
-                }
+                else
+                    applyCommandLineSetting(key, propertyValue);
             } else if ("-b".equalsIgnoreCase(value)) {
                 batchMode = true;
             } else if ("-fae".equalsIgnoreCase(value)) {
@@ -318,6 +318,7 @@ public class Console {
                 // IGNORE ANY EXCEPTION AT CLOSING
             } finally {
                 databaseProxy = null;
+                asyncErrorHandlerDatabase = null;
             }
         }
 
@@ -435,20 +436,8 @@ public class Console {
                     GlobalConfiguration.ASYNC_WORKER_THREADS.reset();
                     // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
                     GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
-                    if (!isRemoteDatabase())
-                        // THE EXECUTOR-WIDE ERROR CHANNEL, WHICH IS NOT THE SAME AS THE PER-STATEMENT CALLBACK IN executeSQL():
-                        // THE LINE ABOVE FORCES ASYNC_TX_BATCH_SIZE=1, SO THE WORKER COMMITS OUTSIDE DatabaseAsyncCommand.execute()
-                        // AND A FAILURE RAISED BY THAT COMMIT - A UNIQUE-INDEX VIOLATION SURFACED AT COMMIT, A FULL VOLUME, A WAL
-                        // WRITE FAILURE - ARRIVES HERE INSTEAD. IT MUST MARK THE RUN AS ERRORED FOR THE SAME REASON THE CALLBACK
-                        // DOES: OTHERWISE main() EXITS 0 FOR A SCRIPT WHOSE WRITES NEVER LANDED, WHICH IN A CI PIPELINE IS
-                        // INDISTINGUISHABLE FROM SUCCESS (ISSUE #7300, FOLLOW-UP TO #7115).
-                        // THE REMOTE CONSOLE NEEDS NO EQUIVALENT: executeSQL() TAKES THE async PATH ONLY WHEN
-                        // !isRemoteDatabase(), SO A REMOTE SESSION IN asyncMode RUNS EVERY STATEMENT SYNCHRONOUSLY AND ITS
-                        // FAILURES ARE ALREADY CAUGHT - AND FLAGGED - THERE.
-                        ((Database) databaseProxy).async().onError(e -> {
-                            errored = true;
-                            outputError(e);
-                        });
+                    // WITH NO DATABASE OPEN YET THE REGISTRATION IS DEFERRED TO THE FIRST ASYNC STATEMENT
+                    registerAsyncErrorHandler();
                 }
                 outputLine(3, "Set asyncMode to %s", asyncMode);
             }
@@ -479,7 +468,7 @@ public class Console {
                 outputLine(3, "Set maximum width to %d", maxWidth);
             }
             default -> {
-                if (!setGlobalConfiguration(key, value, false))
+                if (!setGlobalConfiguration(key, value))
                     outputLine(3, "Setting '%s' is not supported by the console", key);
             }
         }
@@ -578,6 +567,7 @@ public class Console {
                 databaseProxy.commit();
             databaseProxy.close();
             databaseProxy = null;
+            asyncErrorHandlerDatabase = null;
         }
         currentOperationsInBatch = 0;
     }
@@ -736,6 +726,7 @@ public class Console {
         databaseName = databaseProxy.getName();
         databaseProxy.drop();
         databaseProxy = null;
+        asyncErrorHandlerDatabase = null;
 
         outputLine(3, "Database '%s' dropped", databaseName);
         flushOutput();
@@ -792,6 +783,25 @@ public class Console {
         formatter.writeRows(resultSet, -1);
     }
 
+    /**
+     * Registers the executor-wide async error handler on the CURRENT database, once per database instance. It is not the
+     * per-statement callback in {@link #executeSQL(String)}: with {@code ASYNC_TX_BATCH_SIZE=1} the worker commits outside
+     * {@code DatabaseAsyncCommand.execute()}, and a failure raised there must still mark the run as errored or main() exits 0
+     * for a script whose writes never landed. The executor belongs to one database instance, so this runs before every async
+     * statement, not only when the setting is turned on. Remote sessions never take the async path, so they need nothing.
+     */
+    private void registerAsyncErrorHandler() {
+        if (!asyncMode || databaseProxy == null || isRemoteDatabase() || databaseProxy == asyncErrorHandlerDatabase)
+            return;
+
+        final Database database = (Database) databaseProxy;
+        database.async().onError(e -> {
+            errored = true;
+            outputError(e);
+        });
+        asyncErrorHandlerDatabase = database;
+    }
+
     private void executeSQL(final String line) {
         checkDatabaseIsOpen();
 
@@ -803,6 +813,7 @@ public class Console {
             databaseProxy.begin();
 
         if (asyncMode && !isRemoteDatabase()) {
+            registerAsyncErrorHandler();
             ((DatabaseInternal) databaseProxy).async().command(language, line, new AsyncResultsetCallback() {
                 @Override
                 public void onComplete(final ResultSet resultset) {
@@ -1450,6 +1461,7 @@ public class Console {
         }
 
         databaseProxy = new RemoteDatabase(remoteServer, remotePort, needsDatabase ? serverParts[1] : "", userName, password);
+        asyncErrorHandlerDatabase = null;
         this.remoteServer = new RemoteServer(remoteServer, remotePort, userName, password);
     }
 
@@ -1521,22 +1533,59 @@ public class Console {
         return StringUtils.splitKeyValue(pair);
     }
 
-    private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
+    /**
+     * The {@code SET} command's writer. A value the strict parse refuses ({@code yes} for a Boolean, issue #7870) is thrown,
+     * so it fails the command; {@code false} means the key is unknown or not available to the console.
+     */
+    private static boolean setGlobalConfiguration(final String key, final String value) {
         final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
-        if (cfg != null) {
-            if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
-                if (printError)
-                    System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
-            } else {
-                cfg.setValue(value);
-                return true;
-            }
-        } else {
-            if (printError)
-                System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+        if (cfg == null || cfg.getScope() == GlobalConfiguration.SCOPE.SERVER)
+            return false;
+
+        final Object coerced;
+        try {
+            coerced = cfg.coerceFromAdminCommand(value);
+        } catch (final IllegalArgumentException e) {
+            throw new ConsoleException(refusalMessage(e));
+        }
+        cfg.setValue(coerced);
+        return true;
+    }
+
+    /**
+     * The {@code -D<key>=<value>} writer. It never aborts the console: every refusal is printed and the setting ignored. A value
+     * the strict parse refuses is not published as a system property either, so no later reader can pick it up (issue #7870).
+     */
+    private static void applyCommandLineSetting(final String key, final String value) {
+        final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+        if (cfg == null) {
+            System.setProperty(key, value);
+            System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+            return;
+        }
+        if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
+            System.setProperty(key, value);
+            System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
+            return;
         }
 
-        return false;
+        try {
+            cfg.setValue(cfg.coerceFromAdminCommand(value));
+        } catch (final RuntimeException e) {
+            System.err.println(refusalMessage(e) + ". The setting will be ignored");
+            return;
+        }
+        // PUBLISHED ONLY ONCE STORED: A REFUSED VALUE NEVER REACHES THE SYSTEM PROPERTIES
+        System.setProperty(key, value);
+    }
+
+    /**
+     * The strict parse puts what it accepts ("only 'true' and 'false' are accepted") in the CAUSE: print both, so an operator
+     * who typed {@code yes} learns what to type instead.
+     */
+    private static String refusalMessage(final RuntimeException e) {
+        final Throwable cause = e.getCause();
+        return cause != null && cause.getMessage() != null ? e.getMessage() + " (" + cause.getMessage() + ")" : e.getMessage();
     }
 
     private boolean isRemoteDatabase() {

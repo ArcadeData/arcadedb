@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
@@ -80,7 +81,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             if (nextItem.isElement()) {
               final Record element = nextItem.getElement().get();
               if (element != null) {
-                nextItem = new UpdatableResult(((Document) element.getRecord()).modify());
+                nextItem = new UpdatableResult(forUpdate(((Document) element.getRecord()).modify()));
               }
               break;
             }
@@ -90,7 +91,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             if (ridValue instanceof Identifiable identifiable) {
               final Record record = identifiable.getRecord();
               if (record instanceof Document doc) {
-                nextItem = new UpdatableResult(doc.modify());
+                nextItem = new UpdatableResult(forUpdate(doc.modify()));
                 break;
               }
             }
@@ -147,5 +148,15 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
+  }
+
+  /**
+   * #8610: the UPDATE evaluates its assignments against the record returned here, i.e. against the content modify()
+   * reloaded, never against the read that went stale, so the record it writes is not the stale read-modify-write the
+   * save refuses.
+   */
+  private static MutableDocument forUpdate(final MutableDocument mutable) {
+    mutable.clearBasedOnStaleRead();
+    return mutable;
   }
 }

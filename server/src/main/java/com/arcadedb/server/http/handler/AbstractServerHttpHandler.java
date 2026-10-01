@@ -69,6 +69,7 @@ import io.undertow.util.StatusCodes;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -85,6 +86,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
@@ -106,6 +108,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
   public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
+  /**
+   * Key under which the HTTP request's {@link Observation.Context} carries the raw request path (issue #7295), so an
+   * attached tracer can decide - before any span exists - to leave a request untraced, e.g. the readiness and health
+   * probes. It is a plain context entry, never a key value: key values become span attributes and meter tags, and the
+   * raw path is client-controlled.
+   */
+  public static final String OBSERVATION_REQUEST_PATH = "arcadedb.http.request.path";
   // Request body parsed as a top-level JSON array (issue #5415). A JSON array is a legitimate request body,
   // but it is not a JSONObject, so it cannot travel in the `payload` argument of execute(). It is parsed
   // once by the shared request pipeline and attached here, where a handler reads it back with
@@ -444,6 +453,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               final RequestReplyReceiverContext<HttpServerExchange, Object> ctx = new RequestReplyReceiverContext<>(
                   (carrier, key) -> carrier.getRequestHeaders().getFirst(key));
               ctx.setCarrier(exchange);
+              ctx.put(OBSERVATION_REQUEST_PATH, exchange.getRequestPath());
               return ctx;
             }, httpServer.getServer().getObservationRegistry())
         .lowCardinalityKeyValue("method", exchange.getRequestMethod().toString())
@@ -631,14 +641,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 return;
               }
 
-              final String[] authPair = authPairClear.split(":");
-
-              if (authPair.length != 2) {
+              // RFC 7617: the credential is user-id ":" password, and only the user-id is forbidden a colon, so the
+              // pair splits on the FIRST colon. Splitting on every colon refused any password containing one, and
+              // String.split's dropped trailing empty string refused an empty password, both before the credential
+              // check (issue #7783).
+              final int colonPos = authPairClear.indexOf(':');
+              if (colonPos < 0) {
                 sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
                 return;
               }
 
-              user = authenticate(authPair[0], authPair[1]);
+              user = authenticate(authPairClear.substring(0, colonPos), authPairClear.substring(colonPos + 1));
 
             } else {
               sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
@@ -985,8 +998,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TransactionCommittedRemotelyException committedRemotely = firstOf(e, cause,
             TransactionCommittedRemotelyException.class);
     if (committedRemotely != null) {
-      return new ErrorClassification(409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-              committedRemotely, null, ErrorLogKind.USER);
+      // A subtype is a committed outcome whose local apply did NOT fail - the HA leader's "ALL quorum missed after the
+      // MAJORITY committed", which it completes locally before reporting (issue #8481) - so it gets a label that does
+      // not claim otherwise. The exception field names the exact type either way.
+      final String label = committedRemotely.getClass() == TransactionCommittedRemotelyException.class ?
+              "Transaction committed cluster-wide but the local apply failed - do not retry" :
+              "Transaction committed cluster-wide - do not retry";
+      return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
 
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
@@ -1032,7 +1050,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
-              dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
+              dup.getIndexName() + "|" + (isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()) + "|"
+                      + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
     }
 
     // 503 + Retry-After, before the NeedRetryException arm below, which it extends: a node refused the request before
@@ -1064,6 +1083,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TimeSeriesWalkCoarsenedException coarsened = firstOf(e, cause, TimeSeriesWalkCoarsenedException.class);
     if (coarsened != null) {
       return retryable(coarsened);
+    }
+
+    // 503: the queries running at the same time hold the heap budget all the queries share, and this one was refused
+    // its share (issue #8591). Transient in the same sense as the arms above: the query fits the budget on its own, so
+    // the identical request re-issued once the others complete can succeed. Decided here, ahead of the generic
+    // CommandExecutionException arm below, which it extends and which would answer 500 - a server fault a client's
+    // retry policy cannot tell from a real one. A query that alone needs more than the whole budget is refused with a
+    // plain CommandExecutionException instead, since no retry can help it.
+    final QueryHeapBudgetExceededException heapBudget = firstOf(e, cause, QueryHeapBudgetExceededException.class);
+    if (heapBudget != null) {
+      return retryable(heapBudget);
     }
 
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
@@ -1449,6 +1479,36 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static boolean isEventStreamRequested(final HttpServerExchange exchange) {
     final String accept = exchange.getRequestHeaders().getFirst(Headers.ACCEPT);
     return accept != null && accept.contains(EVENT_STREAM_CONTENT_TYPE);
+  }
+
+  /**
+   * The write-side budget of every streamed response, in milliseconds: how long one blocking write may make no
+   * progress before the connection is closed (issues #7381 and #7806). Re-read for every new stream, so SET SERVER
+   * SETTING applies to the next streamed response without a restart; a response already in flight keeps the budget
+   * it started with.
+   */
+  protected int streamingWriteTimeout() {
+    return WriteBoundedOutputStream.budgetMs(httpServer);
+  }
+
+  /**
+   * The silence, in milliseconds, after which a streamed query answer writes a keep-alive newline; not positive means
+   * never (issue #8565). Read when a stream is created, like {@link #streamingWriteTimeout()}.
+   */
+  protected int streamingKeepAliveInterval() {
+    return httpServer.getServer().getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_STREAMING_KEEPALIVE_INTERVAL);
+  }
+
+  /**
+   * The output stream a streamed response - NDJSON or Server-Sent Events - is written to, every write of which is
+   * bounded by {@link #streamingWriteTimeout()} (issue #7806). Switches the exchange to blocking mode if it is not
+   * already. A client that stops reading gets its connection closed instead of holding this worker thread for as
+   * long as it keeps the socket open.
+   *
+   * @param what names the response in the warning logged when the bound fires
+   */
+  protected OutputStream streamedResponseOutput(final HttpServerExchange exchange, final Supplier<String> what) {
+    return WriteBoundedOutputStream.of(exchange, streamingWriteTimeout(), what);
   }
 
   /** The response headers of a Server-Sent Events stream. */
@@ -2115,7 +2175,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * Returns true when the server runs in {@code production} mode. In production the error responses conceal the
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
-   * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * and HA rely on them - except the duplicated-key VALUES inside {@code exceptionArgs}, which are stored data
+   * and are replaced by {@link ArcadeDBServer#CONCEALED_DUPLICATED_KEYS} (issue #7760).
+   * {@code development} and {@code test} keep the full verbose body to aid debugging.
    * <p>
    * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
    * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since
@@ -2159,7 +2221,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code exceptionArgs} are a wire contract consumed by the remote Java driver
    * ({@code RemoteHttpComponent.manageException}) and by HA leader-exception reconstruction
    * ({@code RaftReplicatedDatabase.reconstructLeaderException}) to rebuild typed exceptions, leader-redirect hints and
-   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. Only the
+   * duplicate-key details; they are bounded, non-sensitive values and are therefore emitted in every mode. The one
+   * exception is the duplicated-key VALUES, which {@code classifyError} replaces in production (issue #7760). Only the
    * free-form cause chain ({@code detail}), which can carry file paths and engine internals, is concealed in
    * production ({@code verbose == false}) so it is never leaked to a client probing endpoints. Package-private for
    * direct unit testing.

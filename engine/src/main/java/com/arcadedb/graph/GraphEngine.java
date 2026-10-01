@@ -102,6 +102,20 @@ public class GraphEngine {
     this.database = database;
   }
 
+  /**
+   * Records in the transaction an edge created over a unidirectional type, for the queries of that transaction that
+   * read its incoming side through a scan they took earlier (see {@link UnidirectionalEdgeChanges}).
+   */
+  private void recordCreated(final DocumentType type, final Edge edge, final RID source, final RID target) {
+    if (type instanceof EdgeType edgeType && !edgeType.isBidirectional()) {
+      // ONLY WHILE A QUERY OF THE TRANSACTION HOLDS A SCAN: A BULK LOAD THAT NEVER READS THE INCOMING SIDE KEEPS NOTHING
+      final TransactionContext tx = database.getTransactionIfExists();
+      final UnidirectionalEdgeChanges changes = tx != null ? tx.getUnidirectionalEdgeChangesIfAny() : null;
+      if (changes != null && changes.isRecording())
+        changes.edgeCreated(type.getName(), edge, source, target);
+    }
+  }
+
   public static class CreateEdgeOperation {
     final String       edgeTypeName;
     final Identifiable destinationVertex;
@@ -249,7 +263,7 @@ public class GraphEngine {
     if (type.isLightweight()) {
       // The storage shape is a property of the type, not of the call: on a LIGHTWEIGHT type every edge is stored
       // inside the two vertices, so there is no record to create, save or place in a bucket.
-      if (edgeProperties != null && edgeProperties.length > 0)
+      if (describesProperties(edgeProperties))
         throw new IllegalArgumentException("Edge type '" + type.getName()
             + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
             + "needs to carry data");
@@ -303,6 +317,7 @@ public class GraphEngine {
     // across the whole replication round. The rare paths that really rewrite the vertex record (first chunk,
     // head flip, super-node promotion) call modify() themselves, re-validating the head at that point.
     getOrCreateEdgeList(fromVertex, Vertex.DIRECTION.OUT).add(edge.getIdentity(), toVertex.getIdentity());
+    recordCreated(edge.getType(), edge, fromVertex.getIdentity(), toVertex.getIdentity());
   }
 
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
@@ -329,6 +344,7 @@ public class GraphEngine {
         setProperties(edge, connection.edgeProperties);
 
       edge.save();
+      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
       outEdgePairs.add(new Pair<>(edge, destinationVertex));
 
@@ -755,6 +771,10 @@ public class GraphEngine {
    */
   public void deleteEdge(final Edge edge, final RID skipEndpoint) {
     final Database database = edge.getDatabase();
+    if (edge.getType() instanceof EdgeType edgeType && !edgeType.isBidirectional()
+        && this.database.getTransactionIfExists() instanceof TransactionContext tx
+        && tx.getUnidirectionalEdgeChangesIfAny() instanceof UnidirectionalEdgeChanges changes && changes.isRecording())
+      changes.edgeDeleted(edge.getIdentity());
 
     disconnectEndpoint(edge, Vertex.DIRECTION.OUT, skipEndpoint);
     disconnectEndpoint(edge, Vertex.DIRECTION.IN, skipEndpoint);
@@ -1124,6 +1144,24 @@ public class GraphEngine {
     final RID vertexRID = mostUpdatedVertex.getIdentity();
     if (!vertexBucketOf(vertexRID).existsRecord(vertexRID))
       throw missingVertexOnDelete(vertexRID, notFoundOnProbe(vertexRID));
+
+    // #8676: an edge of a unidirectional type that ENDS in this vertex is stored on its source only, so the walks
+    // below never meet it. Deleted here, from the source's list, so it leaves neither a record nor a pointer to a
+    // vertex that is gone. A self-loop is in the vertex's own outgoing list, which the walk below deletes.
+    List<Edge> incomingEdges = Collections.emptyList();
+    try {
+      incomingEdges = IncomingEdgeLookup.getIncomingUnidirectionalEdges(database, vertexRID);
+    } catch (final RuntimeException e) {
+      // FORCE IS THE REPAIR PATH OF A DAMAGED VERTEX: A SCAN THAT CANNOT READ A RECORD MUST NOT STOP IT
+      if (!force)
+        throw e;
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot look for the unidirectional edges ending in vertex %s while force-deleting it: they survive, %s", e, vertexRID,
+          danglingRepairAdvice());
+    }
+    for (final Edge incoming : incomingEdges)
+      if (!vertexRID.equals(incoming.getOut()))
+        deleteEdgeOfDeletedVertex(incoming, mostUpdatedVertex, force);
 
     // The heads this delete is about to walk, kept for checkEdgeListHeadsUnchanged below.
     final RID[] headsAtWalkStart = readEdgeListHeads(mostUpdatedVertex);
@@ -2048,6 +2086,36 @@ public class GraphEngine {
   }
 
   /**
+   * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} for a caller that follows the edges without reading
+   * them: every edge returned answers its endpoints from the edge list it was read from, without loading its record
+   * (issue #8537). See {@link EdgeLinkedList#edgeIteratorKnowingEndpoints} for what that costs in ghost detection.
+   * <p>
+   * Under {@link Vertex.DIRECTION#BOTH} a self-loop is returned twice, once from each list, as
+   * {@link #getEdges(VertexInternal, Vertex.DIRECTION, String...)} does. The lists are read from the instance of the
+   * vertex the running transaction holds.
+   */
+  public Iterator<Edge> getEdgesKnowingEndpoints(final VertexInternal vertex, final Vertex.DIRECTION direction,
+                                                 final String... edgeTypes) {
+    if (direction == null)
+      throw new IllegalArgumentException("Direction is null");
+
+    final VertexInternal source = getMostUpdatedVertex(vertex);
+    if (direction == Vertex.DIRECTION.BOTH) {
+      final MultiIterator<Edge> result = new MultiIterator<>();
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.OUT);
+      if (outEdges != null)
+        result.addIterator(outEdges.edgeIteratorKnowingEndpoints(edgeTypes));
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(source, Vertex.DIRECTION.IN);
+      if (inEdges != null)
+        result.addIterator(inEdges.edgeIteratorKnowingEndpoints(edgeTypes));
+      return result;
+    }
+
+    final EdgeLinkedList edges = getEdgeHeadChunk(source, direction);
+    return edges != null ? edges.edgeIteratorKnowingEndpoints(edgeTypes) : Collections.emptyIterator();
+  }
+
+  /**
    * Returns connected vertex RIDs without loading vertex records from disk.
    * This is significantly faster than {@link #getVertices} when only RIDs are needed
    * (e.g., for hash-join neighbor maps, anti-join set construction, connectivity checks).
@@ -2229,6 +2297,24 @@ public class GraphEngine {
       return InternalBucketNaming.inEdgesBucketName(vertexBucket.getName());
 
     throw new IllegalArgumentException("Invalid direction");
+  }
+
+  /**
+   * The refusal of a unidirectional edge on an edge type declared bidirectional. The type is what the caller has to
+   * change or pick differently, so the message names what it is rather than what it is not (issue #8625).
+   */
+  public static String unidirectionalEdgeOnBidirectionalTypeMessage(final String edgeTypeName) {
+    return "Edge type '" + edgeTypeName + "' is bidirectional; it cannot hold a unidirectional edge";
+  }
+
+  /**
+   * Whether the varargs describe at least one property. A single {@link Map} argument is how a caller hands over a
+   * property map, so an EMPTY map means "no properties" exactly like no arguments at all (issue #8056).
+   */
+  private static boolean describesProperties(final Object[] properties) {
+    if (properties == null || properties.length == 0)
+      return false;
+    return !(properties.length == 1 && properties[0] instanceof Map<?, ?> map && map.isEmpty());
   }
 
   public static void setProperties(final MutableEdge edge, final Object[] properties) {
@@ -2523,6 +2609,11 @@ public class GraphEngine {
       final List<Edge> inEdges = new ArrayList<>();
       for (Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
         inEdges.add(edge.asEdge(true));
+      // THE EDGES OF A UNIDIRECTIONAL TYPE THAT END IN THE VERTEX ARE NOT IN ITS IN LIST, AND DELETING THE VERTEX DELETES THEM
+      // (ISSUE #8676): RECREATED TOWARDS THE NEW RECORD LIKE THE OTHERS. A SELF-LOOP IS IN outEdges ALREADY.
+      for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) db, oldIdentity))
+        if (!oldIdentity.equals(edge.getOut()))
+          inEdges.add(edge.asEdge(true));
 
       // DELETE THE OLD RECORD FIRST TO AVOID ISSUES WITH UNIQUE CONSTRAINTS
       vertex.delete();

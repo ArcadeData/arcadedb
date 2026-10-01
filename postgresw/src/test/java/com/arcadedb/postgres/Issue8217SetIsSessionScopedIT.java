@@ -221,7 +221,9 @@ class Issue8217SetIsSessionScopedIT extends PostgresWireProtocolTestBase {
         assertThat(show(out, in, "datestyle")).isEqualTo("ISO, DMY");
         assertThat(show(out, in, "timezone")).isEqualTo("Europe/Rome");
         assertThat(show(out, in, "application_name")).isEqualTo("issue8217");
-        assertThat(show(out, in, "user")).as("user is a startup field, not a run-time parameter").isEmpty();
+        // user is a startup field, not a run-time parameter: PostgreSQL does not know it as one (issue #8573)
+        sendSimpleQuery(out, "SHOW user");
+        assertThat(sqlStateOf(readUntilReadyForQuery(in))).isEqualTo("42704");
       });
     }
   }

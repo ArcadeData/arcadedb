@@ -51,6 +51,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesEngine implements AutoCloseable {
+  // HOW MANY TIMES THE CEILING A FLAT WINDOW MAY SPAN BEFORE THE MAP MODE TAKES OVER: UP TO TWICE, THE ARRAY COSTS ABOUT WHAT THE CEILING ALREADY ALLOWS
+  private static final long FLAT_WINDOW_PER_CEILING = 2L;
 
   private final DatabaseInternal       database;
   private final String                 typeName;
@@ -228,9 +230,8 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Appends a batch of samples read from a primitive row source, distributing them across shards
    * exactly as {@link #appendBatch(long[], Object[][])} does.
    * <p>
-   * Each shard receives a {@code SubsetRowSource} view over the rows routed to it, so the split costs
-   * one {@code int[]} of row numbers per shard instead of a full copy of the sample data - and, unlike
-   * the previous {@code List<Integer>} grouping, not one boxed index per sample (issue #5474).
+   * Each shard receives a {@code RangeRowSource} view over the contiguous run routed to it, so the split
+   * copies no sample data and allocates no per-sample index (issues #5474, #8574).
    */
   public void appendBatch(final TimeSeriesRowSource source) throws IOException {
     final int n = source.size();
@@ -243,9 +244,16 @@ public class TimeSeriesEngine implements AutoCloseable {
       return;
     }
 
-    // Reserve the whole round-robin range at once: sample i goes to shard (base + i) % shardCount,
-    // which is the same assignment the per-sample increment produced, computed without a second pass.
-    final long base = appendCounter.getAndAdd(n);
+    // The batch is cut into shardCount contiguous runs, run k going to shard (base + k) % shardCount (issue #8574).
+    // It used to be striped one row at a time, row i to shard (base + i) % shardCount, which put every row of a
+    // series on ONE shard whenever the batch was time-major (all series at t, then all at t + 1) and the series
+    // count a multiple of the shard count: reads for that series all landed on one shard, and a newest-first scan
+    // of every other shard found no row of it to stop on. A contiguous run keeps the arrival order the caller
+    // wrote, gives each shard a time slice of every series, and is what appendSamples already does per call.
+    // The counter advances by the runs actually handed out, so batches smaller than the shard count still rotate
+    // across every shard instead of landing on the same few each time.
+    final int runs = Math.min(shardCount, n);
+    final long base = appendCounter.getAndAdd(runs);
 
     // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread (see
     // the threading note in the javadoc); routing them to shardExecutor would let each shard's own
@@ -256,19 +264,12 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     final List<CompletableFuture<Void>> futures = inThread ? null : new ArrayList<>(shardCount);
 
-    for (int s = 0; s < shardCount; s++) {
-      // Rows routed to this shard form an arithmetic progression of stride shardCount.
-      final int first = (int) Math.floorMod(s - base, (long) shardCount);
-      if (first >= n)
-        continue;
+    for (int k = 0; k < runs; k++) {
+      final int from = (int) ((long) n * k / runs);
+      final int to = (int) ((long) n * (k + 1) / runs);
 
-      final int m = (n - first + shardCount - 1) / shardCount;
-      final int[] rows = new int[m];
-      for (int j = 0, row = first; j < m; j++, row += shardCount)
-        rows[j] = row;
-
-      final TimeSeriesRowSource shardSource = new SubsetRowSource(source, rows, m);
-      final int shardIdx = s;
+      final TimeSeriesRowSource shardSource = new RangeRowSource(source, from, to - from);
+      final int shardIdx = (int) Math.floorMod(base + k, (long) shardCount);
       if (inThread) {
         shards[shardIdx].appendSamples(shardSource);
         continue;
@@ -730,7 +731,9 @@ public class TimeSeriesEngine implements AutoCloseable {
     if (useFlatMode && actualMin <= actualMax) {
       firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
       final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
-      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS)
+      // #7476: a window far wider than the ceiling holds only a sparse answer, which the map mode keeps for what it has
+      if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS
+          || (bucketCeiling > 0 && computedBuckets > FLAT_WINDOW_PER_CEILING * bucketCeiling))
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
       else

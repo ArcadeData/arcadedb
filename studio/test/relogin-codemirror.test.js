@@ -81,6 +81,8 @@ test("re-login never stacks more than one CodeMirror editor wrapper", () => {
   // Other globals referenced by renderCodeEditor()/getEditorMode() at call time.
   const document = { getElementById: function () { return {}; } };
   const $ = function () { return { val: function () { return "sql"; } }; };
+  const vecModeForLanguage = function () { return null; }; // studio-vector.js, not under test here
+  const chartIsPromQL = function () { return false; }; // studio-chart.js, not under test here
   const setTimeout = function () {}; // avoid firing the deferred editor.refresh()
   var editor = null;
 

@@ -87,6 +87,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // Plain fields for the same reason the two above are: this image belongs to one transaction and one thread.
   private              int     freeSpaceClaim             = FREE_SPACE_CLAIM_UNKNOWN;
   private              boolean freeSpaceClaimIsExact      = false;
+  // #8492: set once the committing transaction has handed this image to the read cache and the flush queue, after
+  // which nothing may write to it again, so the read cache can share its array instead of copying the whole page.
+  // Written before the hand-off (a concurrent map/queue insertion) and read only after it, which orders the two.
+  private              boolean published                  = false;
   // AtomicReference so the WAL ack can be taken EXACTLY ONCE (#4928 review): the success path, the
   // file-dropped flush branch and the dropped-file batch purge can race on the same page (the flush loop
   // does not remove pages from the batch list), and a double notifyPageFlushed would steal another page's
@@ -183,7 +187,36 @@ public class MutablePage extends BasePage implements TrackableContent {
     content.clear();
   }
 
+  /**
+   * Declares this image final: the transaction that wrote it has committed and is handing it to the read cache and the
+   * flush queue, and drops every reference of its own. From here on the image is read-only for everybody - the flush
+   * thread only reads it - which is what lets {@link CachedPage} share its array rather than copy it (issue #8492).
+   * Writers that keep writing a page they published (index compaction, bloom filters) must NOT call this: their pages
+   * are still copied.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public void markPublished() {
+    this.published = true;
+  }
+
+  /**
+   * #8492: the read cache shares a published page's array, so a write past publication would change a page other
+   * transactions are already reading. Refused in every JVM, not only under assertions: the alternative is silent
+   * corruption, and the check is one branch on a path that already bounds-checks every write.
+   */
+  private void checkNotPublished() {
+    if (published)
+      throw new IllegalStateException("Page " + pageId + " was modified after it was published to the read cache");
+  }
+
+  /** Whether {@link #markPublished()} has been called, i.e. whether this image can be shared without a copy. */
+  public boolean isPublished() {
+    return published;
+  }
+
   public void updateMetadata() {
+    checkNotPublished();
     content.putInt(PAGE_VERSION_OFFSET, version);
     content.putInt(PAGE_CONTENTSIZE_OFFSET, content.size());
   }
@@ -367,6 +400,7 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   @Override
   public void updateModifiedRange(final int start, final int end) {
+    checkNotPublished();
     if (start < 0 || end >= getPhysicalSize())
       throw new IllegalArgumentException(
           "Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");

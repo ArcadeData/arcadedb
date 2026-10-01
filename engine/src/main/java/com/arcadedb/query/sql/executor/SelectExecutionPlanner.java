@@ -57,10 +57,12 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Node;
@@ -78,6 +80,7 @@ import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.SubQueryCollector;
+import com.arcadedb.query.sql.parser.ValueExpression;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -128,6 +131,11 @@ public class SelectExecutionPlanner {
   private static final String            LOCAL_NODE_NAME = "local";
   private final        SelectStatement   statement;
   private              QueryPlanningInfo info;
+  /**
+   * Whether the plan was shaped by the value of an input parameter (the bounds a {@code LIKE :p} contributes to an index
+   * search are computed from it), and so must not be reused for another set of parameters.
+   */
+  private              boolean           planDependsOnInputParameters;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
@@ -183,7 +191,7 @@ public class SelectExecutionPlanner {
         return (InternalExecutionPlan) plan;
     }
 
-    final long planningStart = System.currentTimeMillis();
+    final long planningEpoch = db.getExecutionPlanCache().getInvalidationEpoch();
 
     init(context);
 
@@ -246,10 +254,11 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && selectExecutionPlan.canBeCached())
-      // The planningStart < lastInvalidation re-check happens atomically inside put(), under the same lock as
-      // invalidate(), so a DDL racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningStart);
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
+        && selectExecutionPlan.canBeCached())
+      // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
+      // racing this call can never be missed the way two separately-locked calls could (#6671).
+      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
 
     return selectExecutionPlan;
   }
@@ -681,8 +690,9 @@ public class SelectExecutionPlanner {
       // Must be a single-property index on the exact property
       final List<String> propNames = index.getPropertyNames();
       if (propNames.size() == 1 && propNames.getFirst().equals(propertyName)) {
-        // Must support ordered iterations (RangeIndex like LSM_TREE)
-        if (index.supportsOrderedIterations())
+        // Must support ordered iterations (RangeIndex like LSM_TREE). A case-insensitive index holds its keys folded, so
+        // its ends are not the ends of the values and its key is not a value any record holds (issue #8698)
+        if (index.supportsOrderedIterations() && !holdsFoldedKeys(index))
           return index;
       }
     }
@@ -3639,6 +3649,9 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
 
     for (final Index idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).toList()) {
+      // A case-insensitive index iterates its folded keys, which is not the order of the values (issue #8700)
+      if (holdsFoldedKeys(idx))
+        continue;
       final List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -3669,9 +3682,10 @@ public class SelectExecutionPlanner {
           filterClusterIds = filterClusters.stream()
               .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).boxed().toList();
 
-        // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index
-        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX) {
-          // NULLs are indexed, just use the index directly
+        // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index. The same goes when no record
+        // can hold a null for the first indexed property: it is NOTNULL, or the WHERE clause filters nulls out (#8664)
+        if (idx.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX || cannotHoldNull(typez, indexFields.getFirst(), info)) {
+          // NULLs are indexed or there are none, just use the index directly
           plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, isAsc, context));
           plan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
         } else {
@@ -3714,6 +3728,53 @@ public class SelectExecutionPlanner {
       }
     }
     return false;
+  }
+
+  /**
+   * True when no record this query returns can have a null (or missing) value for {@code propertyName}: the property is
+   * declared NOTNULL and MANDATORY, or every branch of the WHERE clause has a conjunct that a null cannot satisfy. Lets an
+   * index-ordered read skip the full scan that would otherwise look for the records the index does not hold (#8664).
+   * Only the shape {@code property <op> expression} is recognised (not {@code 5 < x}), and only the first indexed property is
+   * considered: both fall back to the null sub-plan, which is always correct.
+   */
+  private static boolean cannotHoldNull(final DocumentType type, final String propertyName, final QueryPlanningInfo info) {
+    final Property property = type.getPropertyIfExists(propertyName);
+    // NOTNULL alone only rejects an explicit null: a record that never sets the property is legal and is not in the index
+    // either (#8701). Only NOTNULL together with MANDATORY rules out both cases the index does not hold.
+    if (property != null && property.isNotNull() && property.isMandatory())
+      return true;
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+      return false;
+
+    for (final AndBlock branch : info.flattenedWhereClause) {
+      boolean excludes = false;
+      for (final BooleanExpression conjunct : branch.getSubBlocks())
+        if (excludesNull(conjunct, propertyName)) {
+          excludes = true;
+          break;
+        }
+      if (!excludes)
+        return false;
+    }
+    return true;
+  }
+
+  private static boolean excludesNull(final BooleanExpression conjunct, final String propertyName) {
+    if (conjunct instanceof IsNotNullCondition notNull)
+      return isPropertyReference(notNull.expression, propertyName);
+
+    if (conjunct instanceof BinaryCondition binary) {
+      final BinaryCompareOperator operator = binary.getOperator();
+      // >= and <= are left out: they answer true for two nulls (WHERE x >= x), so a null row can satisfy them
+      return (operator instanceof EqualsCompareOperator || operator instanceof GtOperator || operator instanceof LtOperator)
+          && isPropertyReference(binary.getLeft(), propertyName);
+    }
+    return false;
+  }
+
+  private static boolean isPropertyReference(final Expression expression, final String propertyName) {
+    return expression != null && expression.isBaseIdentifier() && propertyName.equals(expression.getDefaultAlias().getStringValue());
   }
 
   private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
@@ -3931,7 +3992,7 @@ public class SelectExecutionPlanner {
   }
 
   private boolean fullySorted(final OrderBy orderBy, final AndBlock conditions, final Index idx) {
-    if (!idx.supportsOrderedIterations())
+    if (!idx.supportsOrderedIterations() || holdsFoldedKeys(idx))
       return false;
 
     final List<String> orderItems = new ArrayList<>();
@@ -4092,7 +4153,7 @@ public class SelectExecutionPlanner {
     final Index index = desc.getIndex();
     if (index.getType() != Schema.INDEX_TYPE.LSM_TREE)
       return null;
-    if (index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive())
+    if (holdsFoldedKeys(index))
       return null;
     final List<String> indexProperties = index.getPropertyNames();
     for (final String property : indexProperties)
@@ -4516,6 +4577,8 @@ public class SelectExecutionPlanner {
 
     AndBlock indexKeyValue = new AndBlock();
     BinaryCondition additionalRangeCondition = null;
+    // Conditions answered through the lower-casing of a CI index key, which must still be checked on what the index returns
+    List<BooleanExpression> lowerCaseRewrites = null;
 
     for (String indexField : indexFields) {
       final String baseFieldName = Index.basePropertyName(indexField);
@@ -4532,6 +4595,8 @@ public class SelectExecutionPlanner {
       final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
           isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
           ciCollation, context);
+      if (!ciCollation && info.allowsRange() && baseFieldName.equals(indexField))
+        addLikePrefixRange(blockCopy, info, clazz);
       blockIterator = blockCopy.getSubBlocks().iterator();
       boolean indexFieldFound = false;
       boolean rangeOp = false;
@@ -4541,6 +4606,11 @@ public class SelectExecutionPlanner {
           indexFieldFound = true;
           indexKeyValue.getSubBlocks().add(singleExp.copy());
           blockIterator.remove();
+          if (ciCollation && needsLowerCaseResidual(singleExp, info)) {
+            if (lowerCaseRewrites == null)
+              lowerCaseRewrites = new ArrayList<>(2);
+            lowerCaseRewrites.add(singleExp);
+          }
           if (singleExp instanceof BetweenCondition
               || (singleExp instanceof BinaryCondition condition && condition.getOperator().isRangeOperator())) {
             // a range-shaped condition (BETWEEN, or a single-sided comparison like >/</>=/<=) is terminal for
@@ -4553,7 +4623,8 @@ public class SelectExecutionPlanner {
             // side of the range)
             while (blockIterator.hasNext()) {
               BooleanExpression next = blockIterator.next();
-              if (next.createRangeWith(singleExp)) {
+              // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be
+              if (next.createRangeWith(singleExp) && rangePartnerAllowed(singleExp, next, ciCollation, info)) {
                 additionalRangeCondition = (BinaryCondition) next;
                 blockIterator.remove();
                 break;
@@ -4578,10 +4649,121 @@ public class SelectExecutionPlanner {
       }
     }
 
-    if (found)
+    if (found) {
+      // The user wrote field.toLowerCase() <op> X, but a CI index lower-cases X as well before probing, and its keys hold
+      // the lower-cased field. That answers the question only when X is already lower case (and a range over 'A'..'C'
+      // becomes one over 'a'..'c'), so the condition stays as a filter on what the index returns (issue #8560)
+      if (lowerCaseRewrites != null)
+        for (final BooleanExpression rewrite : lowerCaseRewrites)
+          blockCopy.getSubBlocks().add(rewrite.copy());
       return new IndexSearchDescriptor((RangeIndex) index, indexKeyValue, additionalRangeCondition, blockCopy);
+    }
 
     return null;
+  }
+
+  /**
+   * True when {@code next} may be the other side of the range {@code first} opens. Over {@code field.toLowerCase()} on a CI
+   * index its bound is probed lower-cased too, so it must already be a lower-case literal (issue #8560).
+   */
+  private static boolean rangePartnerAllowed(final BooleanExpression first, final BooleanExpression next, final boolean ciCollation,
+      final IndexSearchInfo info) {
+    if (!ciCollation || !isLowerCaseRewrite(first, info))
+      return true;
+    return next instanceof BinaryCondition other && BinaryCondition.isLowerCaseLiteral(other.getRight(), info.getContext());
+  }
+
+  /**
+   * True when a condition answered through {@code field.toLowerCase()} must still be checked on what the index returns:
+   * an equality or IN whose operand is not a lower-case literal (a parameter cannot be judged now). A range or BETWEEN is
+   * index-aware only with lower-case literal bounds, and an operand that is its own lower-case form is probed as written,
+   * so neither needs the check (issue #8560).
+   */
+  private static boolean needsLowerCaseResidual(final BooleanExpression expression, final IndexSearchInfo info) {
+    if (!isLowerCaseRewrite(expression, info))
+      return false;
+    final CommandContext context = info.getContext();
+    if (expression instanceof BinaryCondition condition)
+      return condition.getOperator() instanceof EqualsCompareOperator && !BinaryCondition.isLowerCaseLiteral(condition.getRight(), context);
+    if (expression instanceof InCondition in) {
+      final MathExpression right = in.getRightMathExpression();
+      if (right == null || !right.isLiteral() || !(right.execute((Result) null, context) instanceof Collection<?> values))
+        return true;
+      for (final Object value : values)
+        if (!(value instanceof String string) || !string.equals(string.toLowerCase(Locale.ROOT)))
+          return true;
+      return false;
+    }
+    return false;
+  }
+
+  /**
+   * True when {@code expression} reached a case-insensitive index through {@code field.toLowerCase()} rather than through
+   * the plain property.
+   */
+  private static boolean isLowerCaseRewrite(final BooleanExpression expression, final IndexSearchInfo info) {
+    final Expression subject = switch (expression) {
+      case BinaryCondition condition -> condition.getLeft();
+      case InCondition condition -> condition.getLeft();
+      case BetweenCondition condition -> condition.getFirst();
+      default -> null;
+    };
+    return BinaryCondition.isFieldWithLowerCaseMethod(subject, info.getField());
+  }
+
+  /**
+   * Adds, next to {@code field LIKE 'abc%'}, the range {@code field >= 'abc' AND field < 'abd'} that holds every value
+   * the pattern can match, so that an ordered index on the field answers it instead of a scan of the type (issue #8666).
+   * <p>
+   * The {@code LIKE} itself stays in the block, and is evaluated on what the range returns: the range is only a
+   * superset, and the answer never depends on how the index orders its keys. The pattern's literal prefix is what
+   * precedes its first wildcard, so {@code 'abc%def'} and {@code 'ab?d%'} are bounded too, by {@code abc} and {@code ab}.
+   * <p>
+   * Added only where it can be used and cannot be wrong:
+   * <ul>
+   *   <li>the caller has already ruled out a case-insensitive index, whose keys are lower-cased while the {@code LIKE}
+   *   is case sensitive, and a modified key ({@code by key}, {@code by value}, {@code by item});</li>
+   *   <li>the property is a declared STRING, so every key is one;</li>
+   *   <li>no condition of the block already bounds the field (an equality or a range of the user's own is tighter);</li>
+   *   <li>the pattern is known now: a literal, or an input parameter, whose value shapes this plan, which is then not
+   *   cached for other parameters.</li>
+   * </ul>
+   */
+  private void addLikePrefixRange(final AndBlock block, final IndexSearchInfo info, final DocumentType clazz) {
+    final Property property = clazz.getPropertyIfExists(info.getField());
+    if (property == null || property.getType() != Type.STRING)
+      return;
+
+    BinaryCondition like = null;
+    for (final BooleanExpression expression : block.getSubBlocks()) {
+      if (expression.isIndexAware(info))
+        return;
+      if (like == null && expression instanceof BinaryCondition condition && condition.getOperator() instanceof LikeOperator
+          && condition.getLeft().isBaseIdentifier() && info.getField().equals(condition.getLeft().getDefaultAlias().getStringValue())
+          && condition.getRight().isLiteral(true))
+        like = condition;
+    }
+    if (like == null || !(like.getRight().execute((Result) null, info.getContext()) instanceof String pattern))
+      return;
+
+    final String prefix = QueryHelper.likeLiteralPrefix(pattern);
+    if (prefix.isEmpty())
+      return;
+    if (!like.getRight().isLiteral())
+      planDependsOnInputParameters = true;
+
+    block.getSubBlocks().add(comparison(like.getLeft(), new GeOperator(), prefix));
+    final String successor = QueryHelper.prefixSuccessor(prefix);
+    if (successor != null)
+      block.getSubBlocks().add(comparison(like.getLeft(), new LtOperator(), successor));
+  }
+
+  private static BinaryCondition comparison(final Expression field, final BinaryCompareOperator operator, final String value) {
+    final BinaryCondition condition = new BinaryCondition();
+    condition.setLeft(field.copy());
+    condition.setOperator(operator);
+    condition.setRight(new ValueExpression(value));
+    return condition;
   }
 
   private boolean createsRangeWith(final BinaryCondition left, final BooleanExpression next) {
@@ -4634,6 +4816,15 @@ public class SelectExecutionPlanner {
         return true;
     }
     return false;
+  }
+
+  /**
+   * Whether any key of the index is stored case-folded: its iteration order is that of the folded keys, so it can neither
+   * stand in for a sort nor answer min() / max() with a key. Deliberately conservative for a composite index with one
+   * folded column: it is refused even when the ORDER BY only reads a column that is not folded.
+   */
+  private static boolean holdsFoldedKeys(final Index index) {
+    return index instanceof IndexInternal internal && internal.getMetadata() != null && internal.getMetadata().hasAnyCaseInsensitive();
   }
 
   private static boolean isIndexCaseInsensitive(final Index index, final int propertyIndex) {

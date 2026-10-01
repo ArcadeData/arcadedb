@@ -173,7 +173,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   @Test
   void aBootstrapStateProbeWhosePeerStallsInsideItsBodyAnswersNoResult() throws Exception {
     try (final StallingBodyPeer leader = new StallingBodyPeer()) {
-      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(null, leader.address(), null,
+      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(null, null, leader.address(), null,
           "test-token", Set.of("db"), TIMEOUT_MS));
     }
   }
@@ -183,7 +183,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
   void aBootstrapStateProbeWhosePeerStallsInsideItsBodyOverTlsAnswersNoResult() throws Exception {
     try (final StallingBodyPeer leader = new StallingBodyPeer(tls())) {
       final ArcadeDBServer server = tlsServer();
-      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(server, "127.0.0.1:1",
+      assertAnsweredNothing(leader, () -> BootstrapElection.fetchBootstrapState(server, null, "127.0.0.1:1",
           leader.address(), "test-token", Set.of("db"), TIMEOUT_MS));
     }
   }
@@ -202,7 +202,8 @@ class Issue8472PeerQueryBodyDeadlineTest {
       when(raft.getLocalPeerId()).thenReturn(RaftPeerId.valueOf("self"));
       when(raft.getLivePeers()).thenReturn(List.of(RaftPeer.newBuilder().setId(peerId).build()));
       when(raft.getHttpAddresses()).thenReturn(Map.of(peerId, "127.0.0.1:1"));
-      when(raft.getPeerHttpsAddress(peerId)).thenReturn(peer.address());
+      // The fan-out reads the guarded accessor, not the raw resolver (issue #8033).
+      when(raft.getUnambiguousPeerHttpsAddress(peerId)).thenReturn(peer.address());
       when(raft.getClusterToken()).thenReturn("test-token");
       final BootstrapElection election = new BootstrapElection(raft, tlsServer());
       election.probeAttemptTimeoutMs = TIMEOUT_MS;
@@ -225,7 +226,7 @@ class Issue8472PeerQueryBodyDeadlineTest {
     try (final StallingBodyPeer leader = new StallingBodyPeer(tls())) {
       final ArcadeDBServer server = tlsServer();
       assertGivenUpOn(leader,
-          () -> LeaderDatabaseQuery.fetch("127.0.0.1:1", leader.address(), "test-token", TIMEOUT_MS, server));
+          () -> LeaderDatabaseQuery.fetch(null, "127.0.0.1:1", leader.address(), "test-token", TIMEOUT_MS, server));
     }
   }
 

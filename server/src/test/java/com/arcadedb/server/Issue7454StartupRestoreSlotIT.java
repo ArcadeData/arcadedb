@@ -29,6 +29,7 @@ import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -127,6 +128,8 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
   void aStartupRestoreIsRefusedWhileAConflictingOperationHoldsTheSlot(final Operation holder) {
     final String target = "refused7454" + holder.name().toLowerCase();
     databasesToDrop.add(target);
+    // Issue #7652: 0 keeps the immediate refusal this test was written against reachable, and unchanged.
+    setStartupRestoreSlotWaitMs(0);
     final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
 
     assertThat(coordinator.begin(target, holder))
@@ -164,6 +167,7 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     final String target = "notdropped7454";
     databasesToDrop.add(target);
     createDatabaseWithMarker(target);
+    setStartupRestoreSlotWaitMs(0);
 
     final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
     assertThat(coordinator.begin(target, Operation.BACKUP)).isNull();
@@ -321,7 +325,166 @@ class Issue7454StartupRestoreSlotIT extends BaseGraphServerTest {
     assertReservable(target);
   }
 
+  /**
+   * Issue #7652: a conflicting holder is waited out rather than refused. A backup is the case that matters - a
+   * refusal fails the boot and the backup dies with the JVM half way into its archive - so the holder here is a
+   * backup that finishes while the startup restore waits, and the restore must then run to completion.
+   * <p>
+   * The release is gated on the restore being observably PARKED in the wait, not on a sleep: while it waits as a
+   * {@code RESTORE} waiter, an {@code EXPORT} - which the held {@code BACKUP} alone would admit - is refused by the
+   * waiter guard and named as a restore. A refused startup restore registers no waiter, so this cannot pass by the
+   * restore having failed fast and the release landing afterwards.
+   */
+  @Test
+  @Timeout(180)
+  void aStartupRestoreWaitsOutAConflictingBackupThatFinishesInTime() throws Exception {
+    final String target = "waited7652";
+    databasesToDrop.add(target);
+    setStartupRestoreSlotWaitMs(120_000);
+    final String url = localArchiveUrl();
+    final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
+
+    assertThat(coordinator.begin(target, Operation.BACKUP))
+        .as("the fixture must own the slot before the startup restore asks for it").isNull();
+
+    final AtomicReference<Throwable> restoreFailure = new AtomicReference<>();
+    final Thread restorer = new Thread(() -> {
+      try {
+        getServer(0).restoreDatabaseFromStartupCommand(target, url, databaseDirectory() + File.separator + target);
+      } catch (final Throwable t) {
+        restoreFailure.set(t);
+      }
+    }, "issue7652-restorer");
+    restorer.setDaemon(true);
+    restorer.start();
+
+    final boolean waited;
+    try {
+      waited = awaitRestoreWaiter(target, restorer);
+    } finally {
+      coordinator.end(target, Operation.BACKUP);
+    }
+    restorer.join(120_000);
+
+    assertThat(restorer.isAlive()).as("the startup restore did not return after the backup released").isFalse();
+    assertThat(restoreFailure.get()).as("the startup restore must succeed once the backup releases the slot").isNull();
+    assertThat(waited).as("the startup restore never waited for the backup holding the slot").isTrue();
+    assertThat(getServer(0).getDatabase(target).countType(RESTORED_TYPE, false)).isEqualTo(DOCUMENT_COUNT);
+    assertReservable(target);
+  }
+
+  /**
+   * Issue #7652: the wait is bounded, and the refusal #7454 introduced is its fallback - a holder that never lets go
+   * still fails the command with the same exception and the same message, and leaves the existing database alone.
+   * <p>
+   * The stopwatch is a hang tripwire, not a latency claim: it separates a wait that gave up from one that did not.
+   */
+  @Test
+  @Timeout(180)
+  void aStartupRestoreStillRefusesWhenTheHolderOutlastsTheWait() {
+    final String target = "timedout7652";
+    databasesToDrop.add(target);
+    createDatabaseWithMarker(target);
+    setStartupRestoreSlotWaitMs(300);
+    final String url = localArchiveUrl();
+    final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
+
+    assertThat(coordinator.begin(target, Operation.BACKUP)).isNull();
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    try {
+      assertThatThrownBy(() -> getServer(0).restoreDatabaseFromStartupCommand(target, url,
+          databaseDirectory() + File.separator + target))
+          .isInstanceOf(ServerControlPlane.OperationInProgressException.class)
+          .hasMessage(MaintenanceCoordinator.refusal(Operation.RESTORE, target, Operation.BACKUP));
+    } finally {
+      coordinator.end(target, Operation.BACKUP);
+    }
+    stopwatch.assertGaveUpWithin(60_000, "a bounded 300ms slot wait from one that never gives up");
+
+    assertThat(getServer(0).existsDatabase(target)).isTrue();
+    assertThat(getServer(0).getDatabase(target).getSchema().existsType("Marker7454"))
+        .as("a startup restore that timed out waiting must leave the original database untouched").isTrue();
+    assertThat(OperationProgressRegistry.instance().getOperations(target))
+        .as("a startup restore that timed out waiting must not publish an operation").isEmpty();
+    assertReservable(target);
+  }
+
+  /**
+   * Issue #7652: a boot thread interrupted while it waits takes nothing - it refuses exactly as a timeout does, keeps
+   * its interrupt flag, leaves the existing database alone and leaks neither the slot nor its waiter registration.
+   */
+  @Test
+  @Timeout(180)
+  void anInterruptedStartupRestoreWaitRefusesAndLeaksNothing() throws Exception {
+    final String target = "interrupted7652";
+    databasesToDrop.add(target);
+    createDatabaseWithMarker(target);
+    setStartupRestoreSlotWaitMs(120_000);
+    final String url = localArchiveUrl();
+    final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
+
+    assertThat(coordinator.begin(target, Operation.BACKUP)).isNull();
+
+    final AtomicReference<Throwable> restoreFailure = new AtomicReference<>();
+    final AtomicBoolean interruptFlagKept = new AtomicBoolean();
+    final Thread restorer = new Thread(() -> {
+      try {
+        getServer(0).restoreDatabaseFromStartupCommand(target, url, databaseDirectory() + File.separator + target);
+      } catch (final Throwable t) {
+        restoreFailure.set(t);
+        interruptFlagKept.set(Thread.currentThread().isInterrupted());
+      }
+    }, "issue7652-interrupted-restorer");
+    restorer.setDaemon(true);
+    restorer.start();
+
+    final boolean waited;
+    try {
+      waited = awaitRestoreWaiter(target, restorer);
+      restorer.interrupt();
+      restorer.join(120_000);
+    } finally {
+      coordinator.end(target, Operation.BACKUP);
+    }
+
+    assertThat(waited).as("the startup restore never waited for the backup holding the slot").isTrue();
+    assertThat(restorer.isAlive()).as("the interrupted startup restore did not return").isFalse();
+    assertThat(restoreFailure.get())
+        .isInstanceOf(ServerControlPlane.OperationInProgressException.class)
+        .hasMessage(MaintenanceCoordinator.refusal(Operation.RESTORE, target, Operation.BACKUP));
+    assertThat(interruptFlagKept.get()).as("the interrupt must not be swallowed").isTrue();
+    assertThat(getServer(0).getDatabase(target).getSchema().existsType("Marker7454"))
+        .as("an interrupted startup restore must leave the original database untouched").isTrue();
+    // The waiter registration must be gone too: with it leaked, the guard would still refuse this export.
+    assertThat(coordinator.begin(target, Operation.EXPORT))
+        .as("the interrupted startup restore leaked its waiter registration").isNull();
+    coordinator.end(target, Operation.EXPORT);
+    assertReservable(target);
+  }
+
   // ------------------------------------------------------------------------------------------------- HELPERS
+
+  private void setStartupRestoreSlotWaitMs(final long waitMs) {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_STARTUP_RESTORE_SLOT_WAIT_MS, waitMs);
+  }
+
+  /**
+   * Waits until the startup restore is registered as a waiter on {@code databaseName}, probing with an
+   * {@code EXPORT} the waiter guard refuses. Returns {@code false} if the restore thread ends first or the hang
+   * guard runs out - never a latency assertion about how fast the restore reaches its wait.
+   */
+  private boolean awaitRestoreWaiter(final String databaseName, final Thread restorer) throws InterruptedException {
+    final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
+    for (int i = 0; i < 4_000 && restorer.isAlive(); i++) {
+      final Operation refusedBy = coordinator.begin(databaseName, Operation.EXPORT);
+      if (refusedBy == Operation.RESTORE)
+        return true;
+      if (refusedBy == null)
+        coordinator.end(databaseName, Operation.EXPORT);
+      Thread.sleep(5);
+    }
+    return false;
+  }
 
   private void assertReservable(final String databaseName) {
     final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
