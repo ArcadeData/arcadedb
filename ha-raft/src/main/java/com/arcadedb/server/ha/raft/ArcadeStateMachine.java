@@ -377,6 +377,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * The seeder currently installed, read per scrape for the {@code pool=security_seed} executor row (issue #7856).
+   * Through this accessor rather than captured once, since a test may substitute it and an in-place Ratis restart
+   * replaces the state machine that holds it.
+   */
+  MembershipSecuritySeeder getMembershipSecuritySeeder() {
+    return membershipSecuritySeeder;
+  }
+
+  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.

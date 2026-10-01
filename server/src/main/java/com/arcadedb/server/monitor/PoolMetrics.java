@@ -20,6 +20,7 @@ package com.arcadedb.server.monitor;
 
 import com.arcadedb.database.async.AsyncCommandPool;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
@@ -27,9 +28,17 @@ import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 
+import java.io.Closeable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
@@ -46,6 +55,12 @@ import io.micrometer.core.instrument.binder.MeterBinder;
  * Lives in the server module because the engine's pom only pulls Micrometer at test scope; the
  * pools themselves expose framework-agnostic {@code PoolStats} records, and this binder
  * translates them into Micrometer gauges.
+ * <p>
+ * <b>Two registration paths.</b> {@link #bindTo} binds the JVM-wide singleton pools, reached through their
+ * {@code getInstance()} accessors, once per metrics install. {@link #bindInstancePool} is for a pool that belongs
+ * to a server or a state-machine instance instead - the security permission-refresh worker, the HA security seed
+ * and catch-up workers (issue #7856) - and hands back a handle the owner closes when the instance goes away, so a
+ * restart does not leave a row reading a pool that no longer exists.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -140,29 +155,97 @@ public final class PoolMetrics implements MeterBinder {
         .tags(tags).register(registry);
   }
 
-  private static void bindPool(final MeterRegistry registry, final String poolTag, final String description,
+  private static List<Meter> bindPool(final MeterRegistry registry, final String poolTag, final String description,
       final Supplier<PoolStats> stats) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
-    Gauge.builder("arcadedb.executor.pool.size", () -> stats.get().poolSize())
-        .description(description + ": currently allocated worker threads").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.pool.active", () -> stats.get().activeThreads())
-        .description(description + ": worker threads currently running a task").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.queue.depth", () -> stats.get().queueDepth())
-        .description(description + ": tasks waiting in the queue").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.queue.capacity_remaining", () -> stats.get().queueCapacityRemaining())
+    final List<Meter> meters = new ArrayList<>(8);
+    meters.add(Gauge.builder("arcadedb.executor.pool.size", () -> stats.get().poolSize())
+        .description(description + ": currently allocated worker threads").tags(tags).register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.pool.active", () -> stats.get().activeThreads())
+        .description(description + ": worker threads currently running a task").tags(tags).register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.queue.depth", () -> stats.get().queueDepth())
+        .description(description + ": tasks waiting in the queue").tags(tags).register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.queue.capacity_remaining", () -> stats.get().queueCapacityRemaining())
         .description(description + ": queue slots free before saturation triggers caller-runs fallback").tags(tags)
-        .register(registry);
-    Gauge.builder("arcadedb.executor.tasks.completed", () -> stats.get().completedTasks())
-        .description(description + ": cumulative tasks finished by pool threads").tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", () -> stats.get().callerRunFallbacks())
+        .register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.tasks.completed", () -> stats.get().completedTasks())
+        .description(description + ": cumulative tasks finished by pool threads").tags(tags).register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", () -> stats.get().callerRunFallbacks())
         .description(
             description + ": cumulative tasks that ran on the submitter's thread because the queue was full. Sustained growth means the pool is undersized for the workload.")
-        .tags(tags).register(registry);
-    Gauge.builder("arcadedb.executor.tasks.reclaimed", () -> stats.get().reclaimedTasks())
+        .tags(tags).register(registry));
+    meters.add(Gauge.builder("arcadedb.executor.tasks.reclaimed", () -> stats.get().reclaimedTasks())
         .description(description + ": cumulative queued tasks taken back out of the queue and run by the thread that "
             + "was about to wait for them (issue #6568). Unlike caller_run_fallbacks this is not a sizing signal - the "
             + "pool was busy, not full - but sustained growth alongside a high pool.active says the fan-out callers are "
             + "spending their time doing the pool's work, which is the shape that used to deadlock.")
-        .tags(tags).register(registry);
+        .tags(tags).register(registry));
+    return meters;
+  }
+
+  /** The gauge only {@link #bindInstancePool} publishes: work a pool did not take because it was already covered. */
+  public static final String COALESCED_GAUGE = "arcadedb.executor.tasks.coalesced";
+
+  /** What {@link #bindInstancePool} hands back when another binding already publishes the row: owns nothing. */
+  private static final Closeable NOTHING_OWNED = () -> {
+  };
+
+  /**
+   * Publishes a pool that belongs to a server or a state-machine instance rather than to the JVM (issue #7856),
+   * under the same {@code pool=<poolTag>} row shape as the singleton pools plus {@code tasks.coalesced}.
+   * <p>
+   * The pools this exists for are one-worker, one-slot executors that refuse a task when one is already queued,
+   * on the ground that the queued one reads its inputs when it RUNS and therefore covers the refused one. That
+   * makes a refusal coalescing rather than loss, which is why the count is published as {@code coalesced} and
+   * not as {@code caller_run_fallbacks} - those pools never run anything on the submitter - but it is still the
+   * number an operator wants during a burst: one climbing on a quiet node is a worker that is not draining.
+   * <p>
+   * <b>Both suppliers are read on every scrape</b>, so they should resolve the pool through the owner rather than
+   * capture an executor that the owner may replace. Neither may throw or block.
+   * <p>
+   * <b>A second binding of a tag already published owns nothing.</b> Two servers in one JVM (every in-process HA
+   * test) register identical meter ids, and Micrometer answers the second registration with the first one's
+   * meter. Owning it would let the second server's shutdown delete the row the first one is still publishing, so
+   * the row stays the first binder's, exactly as every other {@code arcadedb.*} meter on the shared registry does.
+   *
+   * @return a handle whose {@link Closeable#close()} removes the meters this call registered; idempotent
+   */
+  public static Closeable bindInstancePool(final MeterRegistry registry, final String poolTag, final String description,
+      final Supplier<PoolStats> stats, final LongSupplier coalesced) {
+    final Tags tags = Tags.of(Tag.of("pool", poolTag));
+    if (registry.find(COALESCED_GAUGE).tags(tags).gauge() != null) {
+      LogManager.instance().log(PoolMetrics.class, Level.FINE,
+          "Executor pool row '%s' is already published by another binding in this JVM; not registering it twice",
+          poolTag);
+      return NOTHING_OWNED;
+    }
+
+    final List<Meter> meters = bindPool(registry, poolTag, description, stats);
+    meters.add(Gauge.builder(COALESCED_GAUGE, coalesced::getAsLong)
+        .description(description + ": cumulative tasks the pool did not run because one already queued or running "
+            + "covers them, plus any refused while the owner was stopping. Harmless by itself - the covering task reads "
+            + "its inputs when it runs - but a count climbing while tasks.completed does not is a worker that is not "
+            + "draining.")
+        .tags(tags).register(registry));
+
+    final AtomicBoolean closed = new AtomicBoolean();
+    return () -> {
+      if (closed.compareAndSet(false, true))
+        for (final Meter meter : meters)
+          registry.remove(meter);
+    };
+  }
+
+  /**
+   * A {@link PoolStats} reading of a plain {@link ThreadPoolExecutor}, for the instance pools that are not
+   * {@code DedicatedThreadPool}s. They never run a task on the submitter and never reclaim one, so those two
+   * counters are {@code 0} - the true reading rather than "not applicable", which {@link #bindInstancePool}'s
+   * {@code tasks.coalesced} gauge covers instead. An unbounded queue reports {@code -1} slots remaining, as the
+   * singleton pools do.
+   */
+  public static PoolStats statsOf(final ThreadPoolExecutor executor) {
+    final int remaining = executor.getQueue().remainingCapacity();
+    return new PoolStats(executor.getPoolSize(), executor.getActiveCount(), executor.getQueue().size(),
+        remaining == Integer.MAX_VALUE ? -1 : remaining, executor.getCompletedTaskCount(), 0L, 0L);
   }
 }

@@ -56,6 +56,7 @@ import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.server.monitor.ServerMonitor;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -79,6 +80,7 @@ import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -99,6 +101,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 import static com.arcadedb.engine.ComponentFile.MODE.READ_ONLY;
@@ -304,6 +308,9 @@ public class ArcadeDBServer {
   // Holds the per-follower gauge refresh scheduler open; must be closed on stop or the daemon
   // thread it starts leaks one instance per restart (issue #5850).
   private              HAReplicationMetrics haReplicationMetrics;
+  // Executor-pool rows owned by THIS server rather than the JVM (issue #7856), closed in stopMetrics() so a restart
+  // re-registers them against the new instances instead of leaving rows that read the stopped ones. Guarded by itself.
+  private final        List<Closeable> instancePoolMetrics = new ArrayList<>();
   // The server-health monitor (low disk, heap pressure, JVM safepoint spikes). Issue #7124 fixed two defects in
   // it - the low-disk warning measured the JVM working directory rather than the configured database directory,
   // and the safepoint "spike" check compared two lifetime cumulative averages - on a class nothing constructed:
@@ -539,6 +546,10 @@ public class ArcadeDBServer {
 
     security = new ServerSecurity(this, configuration, serverConfigPath);
     security.startService();
+    final ServerSecurity installedSecurity = security;
+    registerExecutorPoolMetrics("security_refresh", "ServerSecurity cached-permission refresh worker",
+        installedSecurity::getPermissionsRefreshPoolStats,
+        () -> installedSecurity.getPermissionRefreshStats().refreshesCoalesced());
 
     createDirectories();
 
@@ -1047,11 +1058,43 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
   }
 
+  /**
+   * Publishes an executor pool that belongs to this server - or to something it runs, such as a plugin or the HA
+   * state machine - on the {@code arcadedb.executor.*} rows the JVM-wide pools use, so it reaches
+   * {@code /api/v1/metrics} and Studio's "Executor Pools" card (issue #7856). See
+   * {@link PoolMetrics#bindInstancePool} for the row it publishes and what the suppliers must honour.
+   * <p>
+   * The row lives until the returned handle is closed or this server stops, whichever comes first, so an owner
+   * that outlives neither need not close it; one that can stop on its own, a plugin, should.
+   *
+   * @return the handle that removes the row; a no-op one when metrics are disabled for this server
+   */
+  public Closeable registerExecutorPoolMetrics(final String poolTag, final String description,
+      final Supplier<PoolStats> stats, final LongSupplier coalesced) {
+    synchronized (instancePoolMetrics) {
+      if (!metricsInstalled)
+        return () -> {
+        };
+      final Closeable handle = PoolMetrics.bindInstancePool(Metrics.globalRegistry, poolTag, description, stats,
+          coalesced);
+      instancePoolMetrics.add(handle);
+      return handle;
+    }
+  }
+
   private void stopMetrics() {
     if (!metricsInstalled)
       // Metrics were disabled for this server, or already dismantled: nothing of ours to release.
       return;
-    metricsInstalled = false;
+
+    synchronized (instancePoolMetrics) {
+      metricsInstalled = false;
+      // Before the last-one-out teardown below, and regardless of it: with a sibling server still running that
+      // teardown is skipped, and these rows would otherwise keep reading this server's stopped pools.
+      for (final Closeable handle : instancePoolMetrics)
+        CodeUtils.executeIgnoringExceptions(handle::close, "Error on removing an executor pool's metrics", false);
+      instancePoolMetrics.clear();
+    }
 
     LogManager.instance().log(this, Level.INFO, "- Stop metrics collection");
 
