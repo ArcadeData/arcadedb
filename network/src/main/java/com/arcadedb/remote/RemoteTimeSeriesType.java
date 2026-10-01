@@ -94,7 +94,8 @@ public class RemoteTimeSeriesType extends RemoteDocumentType implements TimeSeri
     else {
       final List<DownsamplingTier> parsed = new ArrayList<>(tiers.size());
       for (final Map<String, Object> tier : tiers)
-        parsed.add(new DownsamplingTier(asLong(tier.get("afterMs"), 0L), asLong(tier.get("granularityMs"), 0L)));
+        parsed.add(new DownsamplingTier(asLong(tier.get("afterMs"), 0L), asLong(tier.get("granularityMs"), 0L),
+            asLong(tier.get("offsetMs"), 0L)));
       downsamplingTiers = Collections.unmodifiableList(parsed);
     }
   }

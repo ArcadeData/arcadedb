@@ -189,12 +189,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private          long             downsampleEpoch;
   /**
    * Counts the merges of small blocks that landed ({@link #commitMerge}, issue #8794). Same role as
-   * {@link #downsampleEpoch} for a walk in flight: a merge keeps every row but replaces the blocks they sat in, so a
+   * {@link #downsampleEpoch} for a walk in flight (kept apart from it because {@link #getDownsampleRewriteCount} counts
+   * downsamples only, and the idempotency tests read that): a merge keeps every row but replaces the blocks they sat in, so a
    * walk that has read some of the old blocks and meets one that is gone cannot tell "retired" from "merged", and
    * answering short would be silent. The snapshot stamps the SUM of the two counters.
    */
   private          long             mergeEpoch;
-  // (kept apart from downsampleEpoch because getDownsampleRewriteCount() counts downsamples only, and the idempotency tests read it)
   /**
    * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
    * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
@@ -2078,7 +2078,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * What {@link #prepareMerge} wrote to {@code .ts.sealed.tmp} and {@link #commitMerge} installs (issue #8794).
+   * What {@link #prepareMerge} wrote to {@code .ts.sealed.merge.tmp} and {@link #commitMerge} installs (issue #8794).
    *
    * @param newDirectory     the block directory of the temp file
    * @param directoryVersion the {@link #directoryVersion} the temp file was derived from: the commit installs it only
@@ -2793,18 +2793,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Deletes the temp compaction file ({@code .ts.sealed.tmp}) if it exists.
    * Called from error-recovery paths to leave a clean state.
    */
-  void deleteMergeTempFileIfExists() {
-    final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
-    if (tmp.exists() && !tmp.delete())
-      LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
-  }
-
   void deleteTempFileIfExists() {
     final File tmp = new File(basePath + ".ts.sealed.tmp");
     if (tmp.exists() && !tmp.delete())
       LogManager.instance().log(this, Level.WARNING,
           "Failed to delete stale compaction temp file '%s'; next compaction may fail or use stale data",
           null, tmp.getAbsolutePath());
+  }
+
+  /** Deletes the temp file of a merge of small blocks ({@code .ts.sealed.merge.tmp}) if it exists. */
+  void deleteMergeTempFileIfExists() {
+    final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
+    if (tmp.exists() && !tmp.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
   }
 
   static byte[] compressColumn(final ColumnDefinition col, final Object[] values) {

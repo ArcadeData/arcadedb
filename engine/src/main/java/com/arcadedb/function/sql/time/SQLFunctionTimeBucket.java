@@ -35,6 +35,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * SQL function: ts.timeBucket(interval_string, timestamp [, options])
@@ -52,7 +53,8 @@ import java.util.Map;
  *   {@code {offset: '-8h'}} makes '1d' buckets start at local midnight in UTC+8.</li>
  *   <li>{@code {timezone: '+08:00'}}: local midnight (and local Monday for weeks) of a zone with a fixed offset. A
  *   zone with daylight saving, or one whose standard time ever changed, has buckets of 23 or 25 hours, which a
- *   fixed-width grid cannot express: it is refused rather than approximated.</li>
+ *   fixed-width grid cannot express: it is refused rather than approximated. A '1w' (any interval written in weeks) is anchored to the local Monday;
+ *   the same width written as '7d' is not.</li>
  * </ul>
  * <p>
  * Example: SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) FROM SensorData GROUP BY hour
@@ -61,6 +63,12 @@ import java.util.Map;
  */
 public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
   public static final String NAME = "ts.timeBucket";
+
+  /** The last options resolved: the third parameter is almost always a constant, so it is parsed once, not per row. */
+  private record ResolvedOffset(Object options, String interval, long offsetMs) {
+  }
+
+  private volatile ResolvedOffset lastOffset;
 
   public SQLFunctionTimeBucket() {
     super(NAME);
@@ -86,7 +94,7 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
               + "ms");
 
     final long timestampMs = toEpochMs(params[1]);
-    final long offsetMs = params.length > 2 ? resolveOffset(params[2], interval, intervalMs) : 0L;
+    final long offsetMs = params.length > 2 ? cachedOffset(params[2], interval, intervalMs) : 0L;
 
     // Floor to the bucket boundary. Math.floorDiv, not '/': Java integer division truncates TOWARD ZERO, so for a
     // pre-epoch (negative) timestamp the plain division returned a boundary LATER than its own input - '1h' over
@@ -105,6 +113,15 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     // query results, because the JSON serializer cannot tell a computed instant from a genuine DATE
     // column by Java class alone.
     return LocalDateTime.ofInstant(Instant.ofEpochMilli(bucketStart), ZoneOffset.UTC);
+  }
+
+  private long cachedOffset(final Object options, final String interval, final long intervalMs) {
+    final ResolvedOffset last = lastOffset;
+    if (last != null && last.interval.equals(interval) && Objects.equals(last.options, options))
+      return last.offsetMs;
+    final long offsetMs = resolveOffset(options, interval, intervalMs);
+    lastOffset = new ResolvedOffset(options, interval, offsetMs);
+    return offsetMs;
   }
 
   /**

@@ -621,7 +621,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       final List<DownsamplingTier> parsed = new ArrayList<>(tiers.length());
       for (int i = 0; i < tiers.length(); i++) {
         final JSONObject tier = tiers.getJSONObject(i);
-        parsed.add(new DownsamplingTier(tier.getLong("afterMs"), tier.getLong("granularityMs")));
+        parsed.add(new DownsamplingTier(tier.getLong("afterMs"), tier.getLong("granularityMs"),
+            tier.getLong("offsetMs", 0L)));
       }
       builder.withDownsamplingTiers(parsed);
     }
