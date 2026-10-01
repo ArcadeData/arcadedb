@@ -533,7 +533,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // A comparison with null is never true (issue #8812): a null bound of a range matches no row, where the key it leaves
       // behind (a null slot) would read as "no bound" and return the whole index. Only the last key slot is a range bound: a
       // null in an earlier equality slot of a composite key is left as it was
-      if (isRangeCondition() && (endsWithNull(convertedFrom) || endsWithNull(convertedTo)))
+      // (the other endpoint of a prefix range is shorter than the range slot, and may end with such an equality null)
+      final int rangeKeySize = Math.max(fromKey.getExpressions().size(), toKey.getExpressions().size());
+      if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
         continue;
 
       if (!valuesConvertToIndexKeyTypes(convertedFrom) || !valuesConvertToIndexKeyTypes(convertedTo))
@@ -574,8 +576,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private static boolean endsWithNull(final Object[] key) {
-    return key != null && key.length > 0 && key[key.length - 1] == null;
+  private static boolean endsWithNull(final Object[] key, final int rangeKeySize) {
+    return key != null && key.length == rangeKeySize && key[key.length - 1] == null;
   }
 
   /**
