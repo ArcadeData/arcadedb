@@ -944,8 +944,17 @@ public enum GlobalConfiguration {
       """
       Enable parallel scanning of multiple buckets during full table scans. \
       When true, each bucket is scanned in a separate thread for improved throughput on multi-core systems. \
-      Not used inside a transaction that has written something or uses REPEATABLE_READ. A scan already started is not \
-      affected by what its transaction writes afterwards: it reads committed pages""",
+      Not used inside a transaction that has written something or uses REPEATABLE_READ""",
+      Boolean.class, true),
+
+  QUERY_PARALLEL_SCAN_IN_TRANSACTION("arcadedb.queryParallelScanInTransaction", SCOPE.DATABASE,
+      """
+      Let a scan, an aggregation or an index-range load that starts inside a READ_COMMITTED transaction which has written \
+      nothing yet run in parallel. The workers read committed pages, not through the transaction, so a scan already \
+      started does not see what its transaction writes afterwards: a row it updates later in the scan comes back with its \
+      committed content, one it deletes is skipped, one it inserts is not returned. Set to false to read through the \
+      transaction as before (one thread), for code that iterates a query and updates other rows of the same scan. A single \
+      transaction can override this with setParallelScanForThisTransaction(). Needs arcadedb.queryParallelScan""",
       Boolean.class, true),
 
   QUERY_PARALLEL_SCAN_MIN_BUCKETS("arcadedb.queryParallelScanMinBuckets", SCOPE.DATABASE,

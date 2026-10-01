@@ -247,7 +247,16 @@ final class ParallelTypeScan {
     return db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
         && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
         && !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
-        && (!db.isTransactionActive() || db.getTransaction().isReadOnlyView());
+        && (!db.isTransactionActive() || parallelInTransaction(db));
+  }
+
+  /** A transaction that has written nothing, and whose setting or own override lets its scans run in parallel (#8775). */
+  private static boolean parallelInTransaction(final DatabaseInternal db) {
+    final TransactionContext transaction = db.getTransaction();
+    final Boolean override = transaction.getParallelScanForThisTransaction();
+    final boolean allowed = override != null ? override
+        : db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION);
+    return allowed && transaction.isReadOnlyView();
   }
 
   /**

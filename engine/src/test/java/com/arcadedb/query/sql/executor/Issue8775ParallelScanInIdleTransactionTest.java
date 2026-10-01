@@ -385,6 +385,48 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void databaseSettingTurnsTheParallelScanOffInATransaction() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION, false);
+    database.begin();
+    try {
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+      assertThat(count()).isEqualTo(expected);
+    } finally {
+      database.rollback();
+    }
+    // outside a transaction the scan is still parallel
+    assertThat(sqlPlan()).contains("(parallel)");
+  }
+
+  @Test
+  void transactionOverrideWinsOverTheSetting() {
+    database.begin();
+    try {
+      ((DatabaseInternal) database).getTransaction().setParallelScanForThisTransaction(false);
+      assertThat(sqlPlan()).doesNotContain("(parallel)");
+      assertThat(cypherPlan()).doesNotContain("[parallel]");
+    } finally {
+      database.rollback();
+    }
+    // the override does not outlive its transaction
+    database.begin();
+    try {
+      assertThat(sqlPlan()).contains("(parallel)");
+    } finally {
+      database.rollback();
+    }
+
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION, false);
+    database.begin();
+    try {
+      ((DatabaseInternal) database).getTransaction().setParallelScanForThisTransaction(true);
+      assertThat(sqlPlan()).contains("(parallel)");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
   void selfFeedingUpdateInIdleTransactionMatchesTheSequentialAnswer() {
     final String update = "UPDATE E SET grp = 5 WHERE grp = 6";
     final long parallelUpdated = updatedIn(update, true);

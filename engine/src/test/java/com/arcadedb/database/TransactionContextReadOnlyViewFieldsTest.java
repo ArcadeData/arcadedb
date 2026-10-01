@@ -68,6 +68,7 @@ class TransactionContextReadOnlyViewFieldsTest {
       "insertReservationSlots",
       "lockedFiles",
       "offPageFingerprints",
+      "parallelScanOverride",
       "phase2WalAppended",
       "registeredCallbackKeys",
       "remotelyCommitted",

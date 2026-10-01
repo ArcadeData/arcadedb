@@ -224,6 +224,12 @@ public class TransactionContext implements Transaction {
    */
   private       Boolean                              useWALOverride;
   /**
+   * Whether a scan that starts in this transaction may run in parallel while it has written nothing (issue #8775),
+   * overriding {@link GlobalConfiguration#QUERY_PARALLEL_SCAN_IN_TRANSACTION}; {@code null} to use the configured value.
+   * The workers read committed pages, so a scan already started does not see what the transaction writes afterwards.
+   */
+  private       Boolean                              parallelScanOverride;
+  /**
    * Milliseconds this transaction's commit waits for its file locks, overriding
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
    * <p>
@@ -689,6 +695,22 @@ public class TransactionContext implements Transaction {
    */
   public Boolean getUseWALForThisTransaction() {
     return useWALOverride;
+  }
+
+  /**
+   * Overrides, for THIS transaction only, whether a scan that starts while it has written nothing may run in parallel,
+   * on committed pages. See the {@code parallelScanOverride} field.
+   *
+   * @param parallelScan {@code false} to always read through the transaction, {@code true} to allow the parallel scan,
+   *                     {@code null} to go back to {@link GlobalConfiguration#QUERY_PARALLEL_SCAN_IN_TRANSACTION}
+   */
+  public void setParallelScanForThisTransaction(final Boolean parallelScan) {
+    this.parallelScanOverride = parallelScan;
+  }
+
+  /** @return the per-transaction parallel scan override, or {@code null} when the configured value applies */
+  public Boolean getParallelScanForThisTransaction() {
+    return parallelScanOverride;
   }
 
   /**
@@ -1986,6 +2008,7 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
     commitLockTimeout = null;
     useWALOverride = null;
+    parallelScanOverride = null;
   }
 
   /**
@@ -2879,6 +2902,7 @@ public class TransactionContext implements Transaction {
     attachments = null;
     commitLockTimeout = null;
     useWALOverride = null;
+    parallelScanOverride = null;
     txId = -1;
   }
 
