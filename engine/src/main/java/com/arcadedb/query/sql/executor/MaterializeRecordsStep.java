@@ -51,7 +51,7 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
   }
 
   private final int         limit;
-  private       List<Slice> slices;
+  private       List<Slice> slices = List.of();
   private       int         nextSlice;
   private       int         nextInSlice;
   private       long        previousPosition = -1L;
@@ -103,6 +103,7 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
   }
 
   private void drain(final CommandContext context, final ExecutionStepInternal prevStep) {
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final PhysicalOrderRidBuffer buffer = new PhysicalOrderRidBuffer();
     // With a limit the count must be of distinct records, or a multi-value index returning one RID per key under-delivers
     final Set<RID> seen = limit > 0 ? new HashSet<>() : null;
@@ -113,6 +114,7 @@ public class MaterializeRecordsStep extends AbstractExecutionStep {
 
       while (upstream.hasNext() && (limit <= 0 || buffer.size() < limit)) {
         final Result item = upstream.next();
+        guard.checkPeriodically(buffer.size());
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           final RID rid = ridOf(item);
