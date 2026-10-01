@@ -20,10 +20,10 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -66,6 +66,8 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
   private static final String NDJSON    = "application/x-ndjson";
   private static final String FUNCTION  = "fail8235";
 
+  // Shared by every test of the class and reset in registerFunction(): sound only because the methods of one class run
+  // sequentially against one server. Enabling parallel execution for this class would need per-test state.
   private static volatile Supplier<RuntimeException> failure;
   private static final    AtomicInteger              calls = new AtomicInteger();
 
