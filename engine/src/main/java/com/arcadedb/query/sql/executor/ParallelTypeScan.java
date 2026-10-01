@@ -638,8 +638,8 @@ final class ParallelTypeScan {
    * nothing, so at once. Inside one it costs a reader thread, so it first gives the workers a moment to start: right
    * after the scan is submitted none has run yet, and that is not saturation.
    */
-  // RE-EVALUATED EACH TIME THE 10 ms POLL OF THE CHANNEL COMES BACK EMPTY: THE GRACE IS ROUNDED UP TO A MULTIPLE OF IT
   private boolean callerMayClaimNow() {
+    // RE-EVALUATED EACH TIME THE 10 ms POLL OF THE CHANNEL COMES BACK EMPTY: THE GRACE IS ROUNDED UP TO A MULTIPLE OF IT
     // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: THE CALLER WAITS NO MORE FOR THE UNITS AFTER THE FIRST. THE READER THEN
     // TAKES THEM ONE AFTER THE OTHER, EVEN IF THE POOL RECOVERS: A SIMPLE RULE OVER A FASTER SCAN IN A RARE CASE
     if (!database.isTransactionActive() || readerUnits != null)

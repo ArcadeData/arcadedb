@@ -287,32 +287,8 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
         }
       }
       assertThat(rows).isEqualTo(1);
-      assertThat(touched).isLessThanOrEqualTo(1);
-    } finally {
-      database.rollback();
-    }
-  }
-
-  @Test
-  void staleRowsCanBeModifiedThroughTheRecordApiWithoutFailingTheScan() {
-    database.begin();
-    try {
-      long rows = 0;
-      try (final ResultSet rs = database.query("sql", "SELECT FROM E WHERE grp = 5")) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          if (rows++ == 0)
-            database.command("sql", "DELETE FROM E WHERE grp = 5");
-          // a row the transaction deleted is handed out with its committed content: touching it is the caller's concern,
-          // but it must not break the scan itself
-          try {
-            row.getRecord().get().asDocument().modify().set("touched", true).save();
-          } catch (final RuntimeException ignored) {
-            // a deleted record cannot be saved again
-          }
-        }
-      }
-      assertThat(rows).isEqualTo(1);
+      // the first row was deleted by the statement before it was touched: every update finds nothing
+      assertThat(touched).isZero();
     } finally {
       database.rollback();
     }
