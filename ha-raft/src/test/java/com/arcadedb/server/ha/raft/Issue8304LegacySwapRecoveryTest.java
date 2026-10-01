@@ -1,0 +1,136 @@
+/*
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.database.DatabaseFactory;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * A snapshot swap interrupted by a binary that recorded no phase (issue #8304) used to be preserved and never
+ * recovered: the live directory was a partial mix that would not open, the pending marker kept the database from
+ * loading, and the retained backup and marker made every later install refuse to run.
+ * <p>
+ * The layouts are built from real databases, the way the old binary leaves them: phase 1 moves each original into
+ * {@code .snapshot-backup}, phase 2 moves each staged file over the live directory, and a kill between two moves
+ * leaves whatever had moved so far.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8304LegacySwapRecoveryTest {
+
+  /** Phase 2 killed part-way: every original is in the backup, some snapshot files are live, the rest still staged. */
+  @Test
+  void legacyKillBetweenTwoPhase2MovesRollsForwardToTheSnapshot(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(backup, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    final List<String> names = fileNames(staged);
+    assertThat(names).hasSizeGreaterThan(2);
+    // The first files move to the live directory, as in the report: the bucket, the configuration, the dictionary.
+    for (final String name : names)
+      if (!name.startsWith(".snapshot") && !name.startsWith("schema") && !name.startsWith("last-tx-id")
+          && !name.startsWith("statistics"))
+        Files.move(staged.resolve(name), db.resolve(name));
+    assertThat(fileNames(db)).as("the layout under test has live snapshot files").anyMatch(n -> !n.startsWith(".snapshot"));
+    assertThat(staged.resolve("schema.json")).exists();
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "new");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(staged).doesNotExist();
+    assertThat(backup).doesNotExist();
+    assertThat(db.resolve(".snapshot-swap-state")).doesNotExist();
+  }
+
+  /** Phase 1 killed part-way: the backup holds the originals that moved, the live directory those that did not. */
+  @Test
+  void legacyKillBetweenTwoPhase1MovesRestoresTheOriginalDatabase(@TempDir final Path root) throws Exception {
+    final Path databases = root.resolve("databases");
+    final Path db = databases.resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.createDirectories(backup);
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    final List<String> originals = fileNames(db);
+    int moved = 0;
+    for (final String name : originals) {
+      if (name.startsWith(".snapshot"))
+        continue;
+      if (moved++ % 2 == 0)
+        Files.move(db.resolve(name), backup.resolve(name), StandardCopyOption.REPLACE_EXISTING);
+    }
+    assertThat(fileNames(backup)).isNotEmpty();
+    assertThat(fileNames(db)).as("the layout under test keeps some originals live").anyMatch(n -> !n.startsWith(".snapshot"));
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databases);
+
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(staged).doesNotExist();
+    assertThat(backup).doesNotExist();
+  }
+
+  private static List<String> fileNames(final Path dir) throws IOException {
+    final List<String> names = new ArrayList<>();
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+      for (final Path entry : stream)
+        names.add(entry.getFileName().toString());
+    }
+    return names;
+  }
+
+  private static void createDatabase(final Path path, final String value) {
+    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final var db = factory.create()) {
+      db.transaction(() -> {
+        db.getSchema().createDocumentType("Item", 1);
+        db.newDocument("Item").set("value", value).save();
+      });
+    }
+  }
+
+  private static void assertDatabaseValue(final Path path, final String value) {
+    try (final DatabaseFactory factory = new DatabaseFactory(path.toString()); final var db = factory.open()) {
+      assertThat(db.countType("Item", false)).isEqualTo(1);
+      assertThat(db.iterateType("Item", false).next().asDocument().getString("value")).isEqualTo(value);
+    }
+  }
+}
