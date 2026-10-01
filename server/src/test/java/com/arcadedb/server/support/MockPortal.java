@@ -146,6 +146,10 @@ final class MockPortal implements AutoCloseable {
       return new Response(204, "");
     if (path.matches("/api/v1/support/issues/\\d+/comments") && r.method().equals("POST"))
       return new Response(201, "{\"side\":\"client\",\"authorLabel\":\"Studio: prod\",\"body\":\"thanks\"}");
+    if (path.matches("/api/v1/support/issues/\\d+/requests/rq_[0-9a-f]{8}/response") && r.method().equals("POST"))
+      return new Response(201, "{\"side\":\"client\",\"authorLabel\":\"Studio: prod\",\"body\":\"**Total rows**\"}");
+    if (path.matches("/api/v1/support/issues/\\d+/responses") && r.method().equals("POST"))
+      return new Response(201, "{\"side\":\"client\",\"authorLabel\":\"Studio: prod\",\"body\":\"2 requests answered.\"}");
     if (path.matches("/api/v1/support/issues/\\d+/attachments") && r.method().equals("POST"))
       return new Response(200, "{\"attachments\":[{\"name\":\"logs.zip\"}]}");
     return new Response(404, error("not_found", "No such route"));

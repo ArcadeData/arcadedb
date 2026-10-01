@@ -45,7 +45,7 @@ import java.util.logging.Level;
  */
 public class SupportHandler extends AbstractServerHttpHandler {
   public enum Action {
-    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, SET_OPEN, ATTACH, BUNDLE
+    STATUS, REGISTER, UNREGISTER, REGISTER_INSTALLATION, PREVIEW, CREATE_ISSUE, LIST_ISSUES, GET_ISSUE, COMMENT, ANSWER_REQUEST, ANSWER_REQUESTS, SET_OPEN, ATTACH, BUNDLE
   }
 
   private final Action action;
@@ -80,6 +80,9 @@ public class SupportHandler extends AbstractServerHttpHandler {
         case LIST_ISSUES -> new ExecutionResponse(200, service.listIssues(getQueryParameter(exchange, "status", "open")));
         case GET_ISSUE -> new ExecutionResponse(200, service.getIssue(number(exchange)));
         case COMMENT -> new ExecutionResponse(201, service.addComment(number(exchange), required(payload).getString("body", "")));
+        case ANSWER_REQUEST -> new ExecutionResponse(201,
+            service.answerRequest(number(exchange), getQueryParameter(exchange, "requestId", ""), required(payload)));
+        case ANSWER_REQUESTS -> new ExecutionResponse(201, service.answerRequests(number(exchange), required(payload)));
         case SET_OPEN -> {
           final JSONObject body = required(payload);
           if (!body.has("open"))

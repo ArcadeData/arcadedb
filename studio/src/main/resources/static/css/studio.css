@@ -4608,3 +4608,53 @@ body.col-resizing * {
 [data-theme="dark"] .support-modal .btn-close {
   filter: invert(1) grayscale(100%) brightness(200%);
 }
+
+/* ---- Support requests (staff asks for the result of a read-only query) ---- */
+
+.support-requests {
+  margin-top: 8px;
+}
+
+.support-request {
+  background: var(--bg-card);
+  border: 1px solid var(--border-ddd);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.support-request-statement {
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.support-rq-scroll {
+  max-height: 22rem;
+  overflow: auto;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+}
+
+.support-rq-table th.sp-rq-col,
+.support-rq-table td.sp-rq-row,
+.support-rq-table td.sp-rq-cell {
+  cursor: pointer;
+}
+
+.support-rq-table td.sp-rq-cell.masked,
+.support-rq-table th.sp-rq-col.masked {
+  color: var(--text-muted);
+  background: var(--bg-input);
+  outline: 1px dotted var(--border-ddd);
+}
+
+.support-rq-table td.sp-rq-cell:hover {
+  background-color: var(--table-hover);
+}
