@@ -2911,6 +2911,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return localCommits.claim(databaseName, walTxId, walData);
   }
 
+  /** Whether {@link #close()} ran: a closed state machine is never reused and applies nothing more (issue #8781). */
+  boolean isClosed() {
+    return closed;
+  }
+
   /** Transactions this node originated whose entry the apply thread has not reached yet. */
   int pendingLocalCommits() {
     return localCommits.size();
