@@ -19,17 +19,23 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8855: a query planned while another thread creates or drops an index on the same type must not fail, even when
@@ -43,7 +49,28 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   private static final int ROUNDS  = 120;
 
   @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsIndexes() throws Exception {
+    runRace("NOTUNIQUE");
+  }
+
+  @Test
+  @Timeout(value = 5, unit = TimeUnit.MINUTES)
+  void queriesDoNotFailWhileAnotherThreadCreatesAndDropsFullTextIndexes() throws Exception {
+    runRace("FULL_TEXT");
+  }
+
+  @Test
+  void typeIndexWithoutSubIndexesIsNeverPlannedOn() {
+    final DocumentType type = database.getSchema().createDocumentType("Empty");
+    final TypeIndex index = new TypeIndex("Empty[x]", type);
+
+    assertThat(index.getType()).isNull();
+    assertThatThrownBy(index::getNullStrategy).isInstanceOf(IndexException.class);
+    assertThatThrownBy(index::getPropertyNames).isInstanceOf(IndexException.class);
+  }
+
+  private void runRace(final String indexKind) throws Exception {
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
     database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
@@ -75,8 +102,8 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
 
     try {
       for (int i = 0; i < ROUNDS; i++) {
-        database.command("sql", "CREATE PROPERTY Person.p" + i + " LONG");
-        database.command("sql", "CREATE INDEX ON Person (p" + i + ") NOTUNIQUE");
+        database.command("sql", "CREATE PROPERTY Person.p" + i + (indexKind.equals("FULL_TEXT") ? " STRING" : " LONG"));
+        database.command("sql", "CREATE INDEX ON Person (p" + i + ") " + indexKind);
         database.command("sql", "DROP INDEX `Person[p" + i + "]`");
       }
     } finally {

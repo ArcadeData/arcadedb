@@ -39,6 +39,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * It represent an index on a type. It's backed by one or multiple underlying indexes, one per bucket. By using multiple buckets, the read/write operation can
@@ -48,9 +49,10 @@ import java.util.*;
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
   private       String              logicName;
-  private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
+  // Copy-on-write: a query plans and reads while DDL on the same type adds, removes or clears sub-indexes
+  private final List<IndexInternal> indexesOnBuckets = new CopyOnWriteArrayList<>();
   private final DocumentType        type;
-  private volatile boolean             valid            = true;
+  private volatile boolean          valid            = true;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
@@ -119,11 +121,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
 
     // Check if this is a full-text index to preserve scores
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, -1);
 
       // For full-text indexes, collect entries with scores
@@ -174,11 +176,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
 
     // Check if this is a full-text index to preserve scores
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (indexesOnBuckets.getFirst() instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
         return FullTextSearch.searchSimple(this, keys, limit);
 
       // For full-text indexes, collect entries with scores
@@ -246,13 +248,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    * every range cursor over it, so a {@link MultiIndexCursor} merging both kinds can compare them.
    */
   private IndexCursor keyedCursor(final Collection<Identifiable> result, final Object[] keys) {
-    if (indexesOnBuckets.isEmpty())
+    final IndexInternal first = firstOrNull();
+    if (first == null)
       return new IndexCursorCollection(result);
     BinaryComparator cmp = comparator;
     if (cmp == null)
       // RESOLVED ONCE: THE SERIALIZER, AND SO ITS COMPARATOR, LIVES AS LONG AS THE DATABASE. A RACE ONLY RESOLVES IT TWICE
       comparator = cmp = ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator();
-    return new IndexCursorCollection(result, keys, indexesOnBuckets.getFirst().getBinaryKeyTypes(), cmp);
+    return new IndexCursorCollection(result, keys, first.getBinaryKeyTypes(), cmp);
   }
 
   @Override
@@ -311,9 +314,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public Schema.INDEX_TYPE getType() {
     checkIsValid();
-    if (indexesOnBuckets.isEmpty())
-      return null;
-    return getFirstUnderlyingIndex().getType();
+    final IndexInternal first = firstOrNull();
+    return first == null ? null : first.getType();
   }
 
   @Override
@@ -363,7 +365,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isResultApproximate() {
     // Same definition across every bucket sub-index, so the first one answers for all of them.
-    return !indexesOnBuckets.isEmpty() && indexesOnBuckets.getFirst().isResultApproximate();
+    final IndexInternal first = firstOrNull();
+    return first != null && first.isResultApproximate();
   }
 
   @Override
@@ -391,7 +394,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
 
-    // Invalid first, then emptied: a concurrent reader that sees the list empty must also see the index invalid (issue #8855)
+    // Invalid first, then emptied: a concurrent reader that sees the list empty must also see the index invalid
     valid = false;
     indexesOnBuckets.clear();
   }
@@ -643,8 +646,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     // For full-text indexes, always search all buckets regardless of bucket selection strategy.
     // Full-text queries contain search terms/phrases, not document property values, so bucket
     // selection based on hashing those keys would incorrectly query only one bucket.
-    final boolean isFullText = !indexesOnBuckets.isEmpty() &&
-        indexesOnBuckets.getFirst().getType() == Schema.INDEX_TYPE.FULL_TEXT;
+    final IndexInternal first = firstOrNull();
+    final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
       // Full-text searches must scan all buckets to ensure complete results
@@ -719,10 +722,18 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
+    final IndexInternal first = firstOrNull();
+    if (first == null)
+      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+    return first;
+  }
+
+  /** The first sub-index, or null when none (yet, or any more): a single read, so it cannot race with a concurrent clear(). */
+  private IndexInternal firstOrNull() {
     try {
       return indexesOnBuckets.getFirst();
     } catch (final NoSuchElementException e) {
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      return null;
     }
   }
 
