@@ -54,8 +54,12 @@ class Issue8811OrderByAliasIndexTest extends TestHelper {
   private void assertIndexOrdered(final String sql, final String column, final List<Long> expected) {
     try (final ResultSet rs = database.query("sql", sql)) {
       final List<Long> got = new ArrayList<>();
-      while (rs.hasNext())
-        got.add(rs.next().<Number>getProperty(column).longValue());
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        // the alias generated for the sort key must not leak into the rows
+        assertThat(row.getPropertyNames()).as(sql).containsExactly(column);
+        got.add(row.<Number>getProperty(column).longValue());
+      }
       assertThat(plan(rs)).as(sql).contains("FETCH FROM INDEX VALUES").contains("V[a]").doesNotContain("FETCH FROM TYPE");
       assertThat(got).as(sql).isEqualTo(expected);
     }

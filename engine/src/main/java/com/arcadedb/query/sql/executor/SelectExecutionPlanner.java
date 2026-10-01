@@ -1828,12 +1828,14 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct)
       maxResults = null;
 
-    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty())
       plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
-      if (info.projectionAfterOrderBy != null) {
-        plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
-      }
-    }
+
+    // The projection that drops the aliases generated for the ORDER BY keys runs even when an index already ordered the rows
+    // (#8811): the generated columns are in the rows either way
+    if (info.projectionAfterOrderBy != null && info.orderBy != null && info.orderBy.getItems() != null
+        && !info.orderBy.getItems().isEmpty())
+      plan.chain(new ProjectionCalculationStep(info.projectionAfterOrderBy, context));
   }
 
   /**
