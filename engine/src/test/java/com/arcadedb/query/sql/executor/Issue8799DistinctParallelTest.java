@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
@@ -156,6 +157,18 @@ class Issue8799DistinctParallelTest extends TestHelper {
     });
     final String query = "SELECT DISTINCT v FROM Shapes";
     assertThat(rows(query)).hasSameSizeAs(rows(query + " LIMIT 1000000"));
+  }
+
+  /** Array and embedded values dedup exactly as the streaming DISTINCT (a LIMIT keeps the plan a DISTINCT) dedups them. */
+  @Test
+  void arrayValuesDedupByContent() {
+    database.getSchema().createVertexType("Arrays", 4);
+    database.transaction(() -> {
+      for (int i = 0; i < 4_000; i++)
+        database.newVertex("Arrays").set("e", new float[] { i % 5, 1f }, "b", new byte[] { (byte) (i % 3) }, "o", Map.of("k", i % 4)).save();
+    });
+    for (final String column : new String[] { "e", "b", "o" })
+      assertThat(rows("SELECT DISTINCT " + column + " FROM Arrays")).as(column).hasSameSizeAs(rows("SELECT DISTINCT " + column + " FROM Arrays LIMIT 1000000"));
   }
 
   /** GROUP BY keys that are not plain identifiers: record attributes, method calls, a key next to an aggregate and an ORDER BY. */

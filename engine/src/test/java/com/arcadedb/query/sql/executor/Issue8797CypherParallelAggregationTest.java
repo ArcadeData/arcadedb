@@ -75,7 +75,8 @@ class Issue8797CypherParallelAggregationTest extends TestHelper {
           "MATCH (n:%s) RETURN count(*) AS c, sum(n.n) AS s, min(n.n) AS lo, max(n.n) AS hi".formatted(type),
           "MATCH (n:%s) WHERE n.x > 500 RETURN count(*) AS c, sum(n.x) AS s".formatted(type),
           "MATCH (n:%s) WHERE n.grp = 7 AND n.flag <> 1 RETURN count(n) AS c, avg(n.n) AS a".formatted(type),
-          "MATCH (n:%s) WHERE n.grp IN [1, 2, 3] RETURN count(*) AS c".formatted(type) }) {
+          "MATCH (n:%s) WHERE n.grp IN [1, 2, 3] RETURN count(*) AS c".formatted(type),
+          "MATCH (n:%s {grp: 5}) RETURN count(*) AS c, sum(n.x) AS s".formatted(type) }) {
         final String plan = assertSameAsSequential(query);
         assertThat(plan).as(query).contains("(parallel:");
       }
