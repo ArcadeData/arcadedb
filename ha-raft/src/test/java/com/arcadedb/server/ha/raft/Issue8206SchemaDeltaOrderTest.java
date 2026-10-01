@@ -82,6 +82,20 @@ class Issue8206SchemaDeltaOrderTest {
   }
 
   @Test
+  void aReceiverMissingAListedTypeKeepsTheLeadersOrderForTheRest() {
+    final JSONObject base = schema(1, "A", "C", "D");
+    final JSONObject updated = schema(2, "A", "B", "C", "D");
+
+    // A receiver behind the leader's base: it never got C. The key set lists C, but there is nothing to backfill it
+    // from, so it is skipped and the rest still follows the leader's order.
+    final JSONObject receiver = schema(1, "D", "A");
+
+    final JSONObject merged = SchemaDelta.apply(receiver, SchemaDelta.compute(base, updated));
+
+    assertThat(merged.getJSONObject("types").keySet()).containsExactly("A", "B", "D");
+  }
+
+  @Test
   void aRootSectionAddedBeforeAnExistingOneKeepsTheLeadersPosition() {
     final JSONObject base = schema(1, "V1");
     final JSONObject updated = new JSONObject();

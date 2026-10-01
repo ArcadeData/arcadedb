@@ -64,7 +64,9 @@ import java.util.ArrayList;
  * added to or removed from, the result carries exactly the key set the leader had, with the UNCHANGED children
  * taken from the receiver's own copy. A removal therefore needs no separate drop list, and a receiver whose
  * document does not match the leader's base cannot come out of that section with a phantom type no entry ever
- * removes.
+ * removes. The key set is also ORDER-authoritative (issue #8206): {@link #apply} rebuilds such a section in the
+ * leader's key order. A section whose key set did not move carries no order, so a receiver whose file order
+ * already drifted keeps it until that section's key set next moves.
  * <p>
  * A key set is proportional to its SECTION, not to the change, so one is emitted only for a section whose key
  * set actually moved - a couple of hundred bytes of names on the DDL that added or dropped something, and

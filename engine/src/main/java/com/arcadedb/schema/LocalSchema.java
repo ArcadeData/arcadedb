@@ -4057,10 +4057,9 @@ public class LocalSchema implements Schema {
     settings.put("dateFormat", dateFormat);
     settings.put("dateTimeFormat", dateTimeFormat);
 
-    // Every name-keyed map below is written in NAME order, not in the map's iteration order (issue #8206). Those maps
-    // are hash maps, whose order depends on their table capacity - which a map grown by DDL keeps after a drop, and a
-    // map rebuilt from this file by a reload (a reopen, or a Raft follower applying a schema entry) sizes afresh. Two
-    // replicas holding the same schema would otherwise write different files.
+    // Every keyed map below is written in key order (issue #8206): hash-map order depends on table capacity, which
+    // differs between a map grown by DDL and one rebuilt by a reload, so replicas would write different files.
+    // Large maps (types, properties) sort a key array instead of copying into a TreeMap, to spare the garbage.
     final JSONObject types = new JSONObject();
     root.put("types", types);
 
@@ -4123,6 +4122,7 @@ public class LocalSchema implements Schema {
     final Map<Integer, Integer> migratedToWrite = members != null ? members.migratedFileIds : migratedFileIds;
     if (!migratedToWrite.isEmpty()) {
       final JSONObject migratedJSON = new JSONObject();
+      // Numeric file-id order, not lexicographic: deterministic either way, which is all the file needs.
       for (final Map.Entry<Integer, Integer> entry : new TreeMap<>(migratedToWrite).entrySet())
         migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
       root.put("migratedFileIds", migratedJSON);
