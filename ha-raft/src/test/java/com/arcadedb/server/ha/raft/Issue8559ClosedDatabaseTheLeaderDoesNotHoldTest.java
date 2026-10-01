@@ -356,6 +356,31 @@ class Issue8559ClosedDatabaseTheLeaderDoesNotHoldTest {
     assertThat(leaderMissing(DB_NAME)).isFalse();
   }
 
+  /**
+   * Issue #8067 made the targeted resync install a quarantined database with no copy on this node. When the leader does
+   * not hold it either, the quarantine is lifted and the database reported LEADER_MISSING, as for a copy that is
+   * present, but nothing is marked: there is no closed copy here to keep from being reopened.
+   */
+  @Test
+  void theTargetedResyncLiftsTheQuarantineOfAMissingDatabaseTheLeaderDoesNotHold() throws Exception {
+    sm.markStateDiverged(OTHER_DB);
+    assertThat(sm.isResyncInProgress()).as("the fixture starts quarantined").isTrue();
+
+    sm.retryUnfilledSnapshotGap();
+    sm.awaitLifecycleTasksForTesting(60_000);
+
+    assertThat(sm.isDatabaseDiverged(OTHER_DB)).isFalse();
+    assertThat(sm.isResyncInProgress()).as("the node is ready again").isFalse();
+    assertThat(leaderMissing(OTHER_DB)).isTrue();
+    assertThat(server.existsDatabase(OTHER_DB)).isFalse();
+    // The failed install may leave its empty staging directory behind, which is not a copy (issue #8045)
+    final Path dbDir = root.resolve("databases").resolve(OTHER_DB);
+    if (Files.isDirectory(dbDir))
+      try (final Stream<Path> files = Files.list(dbDir)) {
+        assertThat(files.toList()).as("no copy, and no unverified-closed-copy mark, is left behind").isEmpty();
+      }
+  }
+
   // ------------------------------------------------------------------------------------------------------------
   // The Ratis-initiated install, on the legacy refresh-existing path
   // ------------------------------------------------------------------------------------------------------------

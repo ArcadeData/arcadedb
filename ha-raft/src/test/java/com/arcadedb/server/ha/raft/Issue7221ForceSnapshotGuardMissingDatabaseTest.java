@@ -37,7 +37,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -124,14 +123,16 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
    * <p>
    * The guard's WARNING announces a reinstall "from the leader", and it was logged above the unconditional
    * leader skip - so on the one node whose log an operator reads to find out what the cluster did with the
-   * entry, the log recorded an action that never happened. The skip is now first, which is also why the arm
-   * below never asks whether the database is registered: on a leader that question decides nothing.
+   * entry, the log recorded an action that never happened. The skip is now first.
+   * <p>
+   * Issue #8067 narrowed what "the leader decides first" may decide: in this exact state - applied before, no copy
+   * now - the leader used to return silently, which left it permanently short of the database. It now refuses in
+   * its own words, which is still not the follower's "reinstalling it from the leader" path. The quarantine that
+   * refusal leads to is pinned by {@code Issue8067LeaderForceSnapshotReplayMissingDatabaseTest}.
    */
   @Test
   void aLeaderDecidesBeforeTheReplayGuardRunsOrSaysAnything() {
-    final ArcadeDBServer observedServer = spy(server);
-    final ArcadeStateMachine sm = new ArcadeStateMachine();
-    sm.setServer(observedServer);
+    final ArcadeStateMachine sm = newStateMachine();
     sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
 
     // The exact state that produced the false line: a replayed entry, an applied index past it, and no local
@@ -142,10 +143,28 @@ class Issue7221ForceSnapshotGuardMissingDatabaseTest {
     when(leader.isLeader()).thenReturn(true);
     sm.setRaftHAServer(leader);
 
+    assertThatThrownBy(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
+        .as("a leader with no copy cannot reinstall from itself, and must say so rather than skip silently")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("this node is the Raft leader")
+        .hasMessageNotContaining("Cannot reinstall database '" + DB + "' from the leader");
+    verify(leader, never()).getLeaderId();
+  }
+
+  /** A leader that still holds the database takes no action at all: its files are the authoritative ones. */
+  @Test
+  void aLeaderThatHoldsTheDatabaseNeitherReinstallsNorFails() {
+    final ArcadeStateMachine sm = newStateMachine();
+    sm.writePersistedAppliedIndex(ENTRY_INDEX + 8, DB);
+
+    final RaftHAServer leader = mock(RaftHAServer.class);
+    when(leader.isLeader()).thenReturn(true);
+    sm.setRaftHAServer(leader);
+
     assertThatCode(() -> sm.applyInstallDatabaseEntry(forceSnapshotEntry(), ENTRY_INDEX))
         .as("the leader's own files are authoritative: it neither reinstalls nor fails")
         .doesNotThrowAnyException();
-    verify(observedServer, never()).existsDatabase(DB);
+    verify(leader, never()).getLeaderId();
   }
 
   /**
