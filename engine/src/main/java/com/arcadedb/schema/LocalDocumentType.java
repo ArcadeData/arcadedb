@@ -2376,7 +2376,7 @@ public class LocalDocumentType implements DocumentType {
       // (a) re-key this map's primary entry, (b) rename the paired '<oldName>_ext' bucket file to
       // '<newName>_ext' to keep the naming convention consistent, and (c) re-save the schema so the JSON
       // mirrors the new state. A grep for "TODO(rename-bucket)" surfaces every site that needs updating.
-      // NAME ORDER, NOT HASH-MAP ORDER, SO REPLICAS WRITE THE SAME FILE (ISSUE #8206): SEE LocalSchema.toJSON()
+      // Name order, like every map in the schema file: see LocalSchema.toJSON().
       final Map<String, String> extBucketNames = new TreeMap<>();
       for (final Map.Entry<Integer, Integer> e : externalBucketIdByPrimaryBucketId.entrySet()) {
         final LocalBucket primary = schema.getBucketById(e.getKey(), false);
@@ -2389,13 +2389,17 @@ public class LocalDocumentType implements DocumentType {
 
     type.put("aliases", aliases);
 
-    final JSONObject properties = new JSONObject();
-    type.put("properties", properties);
+    final JSONObject propertiesJSON = new JSONObject();
+    type.put("properties", propertiesJSON);
 
-    // Properties, indexes and custom values are written in name order, not hash-map order (issue #8206): see
-    // LocalSchema.toJSON().
-    for (final Property property : new TreeMap<>(this.properties).values())
-      properties.put(property.getName(), property.toJSON());
+    // Properties, indexes and custom values in name order, like every map in the schema file: see LocalSchema.toJSON().
+    final String[] propertyNames = properties.keySet().toArray(new String[0]);
+    Arrays.sort(propertyNames);
+    for (final String propertyName : propertyNames) {
+      final Property property = properties.get(propertyName);
+      if (property != null)
+        propertiesJSON.put(propertyName, property.toJSON());
+    }
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);

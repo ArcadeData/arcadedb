@@ -4064,8 +4064,14 @@ public class LocalSchema implements Schema {
     final JSONObject types = new JSONObject();
     root.put("types", types);
 
-    for (final DocumentType t : new TreeMap<>(typeMap()).values())
-      types.put(t.getName(), t.toJSON());
+    final Map<String, LocalDocumentType> typesToWrite = typeMap();
+    final String[] typeNames = typesToWrite.keySet().toArray(new String[0]);
+    Arrays.sort(typeNames);
+    for (final String typeName : typeNames) {
+      final DocumentType t = typesToWrite.get(typeName);
+      if (t != null)
+        types.put(t.getName(), t.toJSON());
+    }
 
     final JSONObject triggersJson = new JSONObject();
     root.put("triggers", triggersJson);

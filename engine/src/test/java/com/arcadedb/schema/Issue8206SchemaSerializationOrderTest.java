@@ -66,8 +66,32 @@ class Issue8206SchemaSerializationOrderTest extends TestHelper {
     }
     type.createProperty("propAfterDrop", String.class);
 
+    final Property kept = type.getProperty("prop0");
+    for (int i = 0; i < CREATED; i++)
+      kept.setCustomValue("propertyCustom" + i, i);
+    for (int i = KEPT; i < CREATED; i++)
+      kept.setCustomValue("propertyCustom" + i, null);
+
     assertSameSchemaAfterReopen();
-    assertThat(keysOf(schemaJson().getJSONObject("types").getJSONObject("Wide").getJSONObject("properties"))).isSorted();
+    final JSONObject wide = schemaJson().getJSONObject("types").getJSONObject("Wide");
+    assertThat(keysOf(wide.getJSONObject("properties"))).isSorted();
+    assertThat(keysOf(wide.getJSONObject("custom"))).isSorted();
+    assertThat(keysOf(wide.getJSONObject("properties").getJSONObject("prop0").getJSONObject("custom"))).isSorted();
+  }
+
+  @Test
+  void indexesSerializeInTheSameOrderAfterDropAndReload() {
+    final DocumentType type = database.getSchema().createDocumentType("Indexed");
+    final String[] indexNames = new String[CREATED];
+    for (int i = 0; i < CREATED; i++) {
+      type.createProperty("prop" + i, Integer.class);
+      indexNames[i] = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "prop" + i).getName();
+    }
+    for (int i = KEPT; i < CREATED; i++)
+      database.getSchema().dropIndex(indexNames[i]);
+
+    assertSameSchemaAfterReopen();
+    assertThat(keysOf(schemaJson().getJSONObject("types").getJSONObject("Indexed").getJSONObject("indexes"))).isSorted();
   }
 
   @Test
