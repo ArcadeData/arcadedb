@@ -70,7 +70,7 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   }
 
   @Test
-  void typeIndexWithoutSubIndexesIsNeverPlannedOn() {
+  void typeIndexWithoutSubIndexesHasNoTypeAndThrows() {
     final DocumentType type = database.getSchema().createDocumentType("Empty");
     final TypeIndex index = new TypeIndex("Empty[x]", type);
 
@@ -97,9 +97,20 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
       final Random random = new Random(t);
       final Thread thread = new Thread(() -> {
         while (!stop.get()) {
-          try (final ResultSet rs = database.query("sql", QUERIES[random.nextInt(QUERIES.length)], (long) random.nextInt(2_000))) {
-            while (rs.hasNext())
-              rs.next();
+          final int q = random.nextInt(QUERIES.length);
+          final long bound = random.nextInt(2_000);
+          try (final ResultSet rs = database.query("sql", QUERIES[q], bound)) {
+            // ids 0..1999 are static: the count queries have a known answer, a plan on a half-built index must not change it
+            Long count = null;
+            while (rs.hasNext()) {
+              final Result row = rs.next();
+              if (q < 2)
+                count = row.getProperty("c");
+            }
+            if (q == 0 && (count == null || count != bound))
+              failures.computeIfAbsent("wrong count for id < " + bound, k -> new AtomicLong()).incrementAndGet();
+            else if (q == 1 && (count == null || count != 1))
+              failures.computeIfAbsent("wrong count for id = " + bound, k -> new AtomicLong()).incrementAndGet();
             answered.incrementAndGet();
           } catch (final Exception e) {
             failures.computeIfAbsent(e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()).split("\n")[0],
