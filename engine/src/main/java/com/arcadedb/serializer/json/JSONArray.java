@@ -24,6 +24,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 /**
@@ -323,6 +324,21 @@ public class JSONArray implements Iterable<Object> {
    */
   public Object get(final int i) {
     return JSONObject.elementToObject(getElement(i));
+  }
+
+  /**
+   * Returns the value at the given position as a {@link BigDecimal}, parsed from its JSON text so no precision is lost
+   * through a double.
+   *
+   * @throws JSONException if the position is out of range, the value is null or it is not a number.
+   */
+  public BigDecimal getBigDecimal(final int i) {
+    final JsonElement value = getNotNullElement(i);
+    try {
+      return value.getAsBigDecimal();
+    } catch (final RuntimeException e) {
+      throw typeError(i, "BigDecimal", value, e);
+    }
   }
 
   /**
