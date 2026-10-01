@@ -496,6 +496,29 @@ class Issue8775ParallelScanInIdleTransactionTest extends TestHelper {
   }
 
   @Test
+  void cypherStatementThatWritesInOneClauseAndScansInTheNextAnswersTheSameWithTheSettingOnAndOff() {
+    final String query = "MATCH (e:E) WHERE e.grp = 5 SET e.tag = 'x' WITH count(e) AS marked "
+        + "MATCH (f:E) WHERE f.grp = 5 AND f.tag = 'x' RETURN marked, count(f) AS tagged";
+    final long[] answers = new long[4];
+    int i = 0;
+    for (final boolean parallel : new boolean[] { true, false }) {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_IN_TRANSACTION, parallel);
+      database.begin();
+      try (final ResultSet rs = database.command("opencypher", query)) {
+        final Result row = rs.next();
+        answers[i++] = ((Number) row.getProperty("marked")).longValue();
+        answers[i++] = ((Number) row.getProperty("tagged")).longValue();
+      } finally {
+        database.rollback();
+      }
+    }
+    assertThat(answers[0]).isEqualTo(expected);
+    // the second clause scans after the first one wrote: it must see the tags, with the setting on or off
+    assertThat(answers[1]).isEqualTo(answers[3]).isEqualTo(expected);
+    assertThat(answers[2]).isEqualTo(expected);
+  }
+
+  @Test
   void aggregationInACleanTransactionRunsInParallelAndAnswersTheSame() {
     final String aggregate = "SELECT count(*) AS n, sum(id) AS total FROM E WHERE grp = 5";
     final long outsideTotal;
