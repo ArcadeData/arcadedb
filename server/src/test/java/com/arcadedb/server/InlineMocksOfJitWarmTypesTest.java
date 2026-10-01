@@ -61,6 +61,9 @@ class InlineMocksOfJitWarmTypesTest {
   /**
    * Concrete engine classes whose methods {@code RaftReplicatedDatabase}, {@code ServerDatabase} and the HTTP handlers
    * call on every request, so they are compiled - and inlined - by the time any real-server test in the fork is done.
+   * Extend it with any further non-final class that production code calls on a hot path and tests hand in as a mock,
+   * after converting that type's existing inline mocks (issue #8867 tracks the server/HA types still outside the list).
+   * A final class does not belong here: the subclass maker cannot mock it.
    */
   private static final String GUARDED_TYPES = "LocalDatabase|TransactionContext|TransactionManager|LocalSchema|FileManager|ComponentFile";
 
