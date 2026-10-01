@@ -156,7 +156,7 @@ class Issue8799DistinctParallelTest extends TestHelper {
       }
     });
     final String query = "SELECT DISTINCT v FROM Shapes";
-    assertThat(rows(query)).hasSameSizeAs(rows(query + " LIMIT 1000000"));
+    assertThat(rows(query)).containsExactlyElementsOf(rows(query + " LIMIT 1000000"));
   }
 
   /** Array and embedded values dedup exactly as the streaming DISTINCT (a LIMIT keeps the plan a DISTINCT) dedups them. */
