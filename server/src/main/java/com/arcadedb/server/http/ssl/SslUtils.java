@@ -18,8 +18,15 @@
  */
 package com.arcadedb.server.http.ssl;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.network.binary.SocketFactory;
 import com.arcadedb.server.security.ServerSecurityException;
 
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.KeyStore;
@@ -48,6 +55,56 @@ public class SslUtils {
       return keystore;
     }
 
+  }
+
+  /**
+   * Builds the server-side {@link SSLContext} of a wire protocol from the shared {@code arcadedb.ssl.*} key store and
+   * trust store settings, the same ones the HTTP server reads.
+   *
+   * @param protocolName the protocol the context is for, used in the error messages (e.g. "Postgres")
+   *
+   * @throws ConfigurationException when a store path or password is not configured, or a store cannot be loaded
+   */
+  public static SSLContext createServerSslContext(final ContextConfiguration configuration, final String protocolName) {
+    try {
+      final String keystorePath = getRequiredSetting(configuration, GlobalConfiguration.NETWORK_SSL_KEYSTORE, protocolName,
+          "key store path");
+      final String keystorePassword = getRequiredSetting(configuration, GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD,
+          protocolName, "key store password");
+      final String truststorePath = getRequiredSetting(configuration, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, protocolName,
+          "trust store path");
+      final String truststorePassword = getRequiredSetting(configuration, GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD,
+          protocolName, "trust store password");
+
+      final KeyStore keyStore = loadKeystoreFromStream(SocketFactory.getAsStream(keystorePath), keystorePassword,
+          getDefaultKeystoreTypeForKeystore(() -> KeystoreType.PKCS12));
+      final KeyStore trustStore = loadKeystoreFromStream(SocketFactory.getAsStream(truststorePath), truststorePassword,
+          getDefaultKeystoreTypeForTruststore(() -> KeystoreType.JKS));
+
+      final KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+      keyManagerFactory.init(keyStore, keystorePassword.toCharArray());
+
+      final TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      trustManagerFactory.init(trustStore);
+
+      final SSLContext sslContext = SSLContext.getInstance(TlsProtocol.getLatestTlsVersion().getTlsVersion());
+      sslContext.init(keyManagerFactory.getKeyManagers(), trustManagerFactory.getTrustManagers(), null);
+      return sslContext;
+
+    } catch (final ConfigurationException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new ConfigurationException("Failed to initialize SSL context for " + protocolName + " TLS", e);
+    }
+  }
+
+  private static String getRequiredSetting(final ContextConfiguration configuration, final GlobalConfiguration setting,
+      final String protocolName, final String what) {
+    final String value = configuration.getValueAsString(setting);
+    if (value == null || value.isEmpty())
+      throw new ConfigurationException(
+          protocolName + " TLS is enabled but the SSL " + what + " is not configured (" + setting.getKey() + ")");
+    return value;
   }
 
   public static String getDefaultKeystoreTypeForKeystore(Supplier<KeystoreType> defaultSupplier) {

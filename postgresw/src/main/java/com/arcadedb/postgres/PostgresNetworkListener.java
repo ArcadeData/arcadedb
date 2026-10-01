@@ -37,15 +37,18 @@ public class PostgresNetworkListener extends Thread {
   private volatile ServerSocket           serverSocket;
   private volatile boolean                active          = true;
   private final    int                    protocolVersion = -1;
+  private final    PostgresSslHelper      sslHelper;
 
   public PostgresNetworkListener(final ArcadeDBServer server,
                                  final ServerSocketFactory iSocketFactory,
+                                 final PostgresSslHelper sslHelper,
                                  final String hostName,
                                  final String hostPortRange) {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
     this.socketFactory = iSocketFactory;
+    this.sslHelper = sslHelper;
     // Built here rather than at field initialisation so the cap comes from THIS server's configuration; the
     // setting is SCOPE.SERVER and the GlobalConfiguration enum only ever carries a -D or an environment
     // variable (issue #7233).
@@ -82,7 +85,7 @@ public class PostgresNetworkListener extends Thread {
           try {
             // CREATE A NEW PROTOCOL INSTANCE
             // TODO: OPEN A DATABASE
-            final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null, ticket);
+            final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null, ticket, sslHelper);
             connection.start();
           } catch (final Exception e) {
             // The executor never started, so nothing will hand the permit back for it.
@@ -146,7 +149,7 @@ public class PostgresNetworkListener extends Thread {
           LogManager.instance().log(this, Level.INFO,
               "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":"
                   + inboundAddr.getPort() + "} (protocol v."
-                  + protocolVersion + ")");
+                  + protocolVersion + ", TLS: " + sslHelper.getTlsMode() + ")");
 
           return;
         }

@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
@@ -166,7 +167,10 @@ public class PostgresNetworkExecutor extends Thread {
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
-  private final ChannelBinaryServer         channel;
+  // Replaced once, by the TLS upgrade of the startup phase, hence volatile: close() can run on another thread.
+  private volatile ChannelBinaryServer      channel;
+  private final PostgresSslHelper           sslHelper;
+  private volatile boolean                  tlsActive;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
@@ -249,11 +253,17 @@ public class PostgresNetworkExecutor extends Thread {
 
   public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database,
       final PreAuthConnectionGate.Ticket preAuthTicket) throws IOException {
+    this(server, socket, database, preAuthTicket, PostgresSslHelper.disabled());
+  }
+
+  public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database,
+      final PreAuthConnectionGate.Ticket preAuthTicket, final PostgresSslHelper sslHelper) throws IOException {
     setName(Constants.PRODUCT + "-postgres/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
     this.database = database;
     this.preAuthTicket = preAuthTicket;
+    this.sslHelper = sslHelper;
     this.DEBUG = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_DEBUG);
     this.QUOTED_IDENTIFIERS = server.getConfiguration().getValueAsBoolean(GlobalConfiguration.POSTGRES_QUOTED_IDENTIFIERS);
 
@@ -3642,6 +3652,17 @@ public class PostgresNetworkExecutor extends Thread {
     return true;
   }
 
+  /**
+   * Layers TLS over the connection after the {@code S} answer to an SSLRequest, and carries on with a channel over the
+   * encrypted socket. The previous channel is dropped without being closed: closing it would close the socket the TLS
+   * socket is layered on.
+   */
+  private void upgradeToTls() throws IOException {
+    final ContextConfiguration configuration = server.getConfiguration();
+    channel = new ChannelBinaryServer(sslHelper.wrapWithTls(channel.socket), configuration);
+    tlsActive = true;
+  }
+
   private boolean readStartupMessage(final boolean no2ssl) {
     try {
       final long len = channel.readUnsignedInt();
@@ -3655,19 +3676,26 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long protocolVersion = channel.readUnsignedInt();
       if (protocolVersion == 80877103) {
-        // REQUEST FOR SSL, NOT SUPPORTED
-        if (no2ssl) {
+        // REQUEST FOR SSL. Only the first request of a connection is honored: a second one, or one inside TLS, is a
+        // protocol violation.
+        if (!no2ssl)
+          throw new PostgresProtocolException("Unexpected SSL request");
+
+        if (sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.DISABLED) {
           channel.writeByte((byte) 'N');
           channel.flush();
 
           LogManager.instance().log(this, Level.INFO,
-              "PSQL: received not supported SSL connection request. Sending back error message to the client");
-
-          // REPEAT
-          return readStartupMessage(false);
+              "PSQL: received an SSL connection request but TLS is not enabled (" + GlobalConfiguration.POSTGRES_SSL.getKey()
+                  + "). Telling the client to continue in plaintext");
+        } else {
+          channel.writeByte((byte) 'S');
+          channel.flush();
+          upgradeToTls();
         }
 
-        throw new PostgresProtocolException("SSL authentication is not supported");
+        // THE REAL STARTUP MESSAGE FOLLOWS
+        return readStartupMessage(false);
       } else if (protocolVersion == 80877102) {
         // CANCEL REQUEST, IGNORE IT
         final long pid = channel.readUnsignedInt();
@@ -3686,6 +3714,11 @@ public class PostgresNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO, "PSQL: Session " + pid + " not found");
 
         close();
+        return false;
+      }
+
+      if (!tlsActive && sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.REQUIRED) {
+        writeError(ERROR_SEVERITY.FATAL, "SSL connection is required", "28000");
         return false;
       }
 
