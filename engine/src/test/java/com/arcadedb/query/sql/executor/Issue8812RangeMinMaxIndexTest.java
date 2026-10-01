@@ -186,6 +186,27 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
   }
 
   @Test
+  void anEqualityNullPrefixOfACompositeIndexIsNotANullRangeBound() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE N");
+      database.command("sql", "CREATE PROPERTY N.x LONG");
+      database.command("sql", "CREATE PROPERTY N.y LONG");
+      database.command("sql", "CREATE INDEX ON N (x, y) NOTUNIQUE NULL_STRATEGY INDEX");
+      for (int y = 0; y < 10; y++) {
+        database.command("sql", "CREATE VERTEX N SET y = " + y);
+        database.command("sql", "CREATE VERTEX N SET x = 1, y = " + y);
+      }
+    });
+    for (final String where : new String[] { "x IS NULL AND y > 6", "x IS NULL AND y < 3", "x IS NULL AND y >= 6", "x IS NULL AND y BETWEEN 2 AND 4" })
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM N WHERE " + where);
+          final ResultSet scan = database.query("sql", "SELECT count(*) AS c FROM N WHERE " + where.replace("y", "y + 0"))) {
+        final long expected = scan.next().<Long>getProperty("c");
+        assertThat(expected).as(where).isGreaterThan(0L);
+        assertThat(rs.next().<Long>getProperty("c")).as(where).isEqualTo(expected);
+      }
+  }
+
+  @Test
   void changesOfTheOpenTransactionAreSeen() {
     database.begin();
     try {
