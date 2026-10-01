@@ -120,6 +120,7 @@ public class ArcadeDBServer {
    * must not be registered at startup, nor exposed through the server/cluster status APIs.
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
+  public static final String                                FILESYSTEM_RECOVERY_DIRECTORY        = "lost+found";
 
   /**
    * Marker file the HA snapshot installer writes into {@code databases/<name>/} before it touches a single file
@@ -1333,10 +1334,14 @@ public class ArcadeDBServer {
 
   /**
    * Returns {@code true} if the given name belongs to a reserved internal database (e.g. the Raft
-   * control directory {@code .raft}) that must not be exposed as a user database.
+   * control directory {@code .raft}) that must not be exposed as a user database. The ext4
+   * {@code lost+found} directory is reserved too: it sits at the root of every freshly formatted
+   * volume, so it appears in the database directory whenever a volume is mounted there directly
+   * (issue #8805).
    */
   public static boolean isReservedDatabaseName(final String databaseName) {
-    return databaseName != null && databaseName.startsWith(RESERVED_DATABASE_PREFIX);
+    return databaseName != null && (databaseName.startsWith(RESERVED_DATABASE_PREFIX) || databaseName.equals(
+        FILESYSTEM_RECOVERY_DIRECTORY));
   }
 
   /**

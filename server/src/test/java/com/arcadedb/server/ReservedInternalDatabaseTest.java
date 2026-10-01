@@ -79,4 +79,36 @@ class ReservedInternalDatabaseTest extends StaticBaseServerTest {
       server.stop();
     }
   }
+
+  /**
+   * Issue #8805: a volume mounted directly at the database directory brings the empty ext4 {@code lost+found}
+   * directory with it, which must not be registered as a database.
+   */
+  @Test
+  void lostAndFoundDirectoryIsNotLoadedAtStartup() {
+    final String databaseDirectory = "./target/databases";
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue(databaseDirectory);
+
+    final File lostAndFound = new File(databaseDirectory, "lost+found");
+    assertThat(lostAndFound.mkdirs()).as("created empty 'lost+found' directory").isTrue();
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_0");
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory);
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
+
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    server.start();
+    try {
+      assertThat(server.getDatabaseNames()).doesNotContain("lost+found");
+      assertThat(ArcadeDBServer.isReservedDatabaseName("lost+found")).isTrue();
+
+      // The filesystem owns the directory: it is skipped, not deleted.
+      assertThat(lostAndFound.isDirectory()).isTrue();
+    } finally {
+      server.stop();
+    }
+  }
 }
