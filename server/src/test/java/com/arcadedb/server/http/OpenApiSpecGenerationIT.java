@@ -451,6 +451,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "GET /api/v1/server/support/issues", "POST /api/v1/server/support/issues",
       "GET /api/v1/server/support/issues/{number}", "PUT /api/v1/server/support/issues/{number}",
       "POST /api/v1/server/support/issues/{number}/comments", "POST /api/v1/server/support/issues/{number}/attachments",
+      "POST /api/v1/server/support/issues/{number}/requests/{requestId}/response", "POST /api/v1/server/support/issues/{number}/responses",
       // Time-series
       "POST /api/v1/ts/{database}/write", "POST /api/v1/ts/{database}/query",
       "GET /api/v1/ts/{database}/latest",
@@ -516,14 +517,14 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void specDocumentsExactlyTheExpectedEightyThreeOperations() throws Exception {
+  void specDocumentsExactlyTheExpectedEightyFiveOperations() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
     final List<String> declared = declaredOperations(openAPI);
 
     assertThat(EXPECTED_OPERATIONS)
         .as("the inventory itself must hold no duplicate")
         .doesNotHaveDuplicates()
-        .hasSize(83);
+        .hasSize(85);
 
     assertThat(declared)
         .as("operations missing from the specification")
@@ -590,7 +591,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         .as("client generators derive a method name per operationId, so a collision breaks codegen")
         .doesNotHaveDuplicates()
         .doesNotContainNull()
-        .hasSize(83);
+        .hasSize(85);
   }
 
   @Test

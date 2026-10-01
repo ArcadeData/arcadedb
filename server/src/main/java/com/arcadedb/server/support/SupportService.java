@@ -39,6 +39,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import java.util.zip.ZipEntry;
@@ -585,6 +586,72 @@ public class SupportService implements AutoCloseable {
 
   public void setOpen(final long number, final boolean open) {
     requireClient().setOpen(number, open);
+  }
+
+  // ------------------------------------------------------------------------------------- support requests
+
+  private static final Pattern REQUEST_ID = Pattern.compile("^rq_[0-9a-f]{8}$");
+  private static final int    MAX_RESPONSES = 20;
+
+  /**
+   * Forwards the answer to ONE support request (the client ran what staff asked, declined, or it failed). Only what the portal
+   * reads is forwarded; the portal validates again and rebuilds the result, so this is the shape check, not the safety.
+   */
+  public String answerRequest(final long number, final String requestId, final JSONObject body) {
+    if (requestId == null || !REQUEST_ID.matcher(requestId).matches())
+      throw new SupportException("bad_request", "The request id is not valid");
+    return requireClient().answerRequest(number, requestId, answerOf(body, null).toString());
+  }
+
+  /** Forwards several answers ("Run all") as one call, so the portal writes one comment. */
+  public String answerRequests(final long number, final JSONObject body) {
+    final JSONArray list = body.has("responses") && body.get("responses") instanceof JSONArray array ? array : null;
+    if (list == null || list.isEmpty() || list.length() > MAX_RESPONSES)
+      throw new SupportException("bad_request", "responses must be a list of 1 to " + MAX_RESPONSES + " answers");
+    final JSONArray answers = new JSONArray();
+    for (int i = 0; i < list.length(); i++) {
+      final JSONObject one = list.get(i) instanceof JSONObject object ? object : null;
+      if (one == null)
+        throw new SupportException("bad_request", "Every answer must be an object");
+      final String id = one.getString("requestId", "");
+      if (!REQUEST_ID.matcher(id).matches())
+        throw new SupportException("bad_request", "The request id is not valid");
+      answers.put(answerOf(one, id));
+    }
+    return requireClient().answerRequests(number, new JSONObject().put("responses", answers).toString());
+  }
+
+  private static JSONObject answerOf(final JSONObject body, final String requestId) {
+    final String outcome = body.getString("outcome", "");
+    if (!outcome.equals("answered") && !outcome.equals("declined") && !outcome.equals("failed"))
+      throw new SupportException("bad_request", "outcome must be answered, declined or failed");
+    final JSONObject out = new JSONObject().put("outcome", outcome);
+    if (requestId != null)
+      out.put("requestId", requestId);
+    if (body.has("reason")) {
+      if (!(body.get("reason") instanceof String reason) || reason.length() > 500)
+        throw new SupportException("bad_request", "reason must be text of at most 500 characters");
+      out.put("reason", reason);
+    }
+    if (outcome.equals("answered")) {
+      final boolean hasResult = body.has("result");
+      final boolean hasText = body.has("text");
+      if (hasResult == hasText)
+        throw new SupportException("bad_request", "An answer carries either a result or text");
+      if (hasResult) {
+        final JSONObject result = body.get("result") instanceof JSONObject object ? object : null;
+        if (result == null)
+          throw new SupportException("bad_request", "result must be an object");
+        out.put("result", result);
+        if (body.has("durationMs") && body.get("durationMs") instanceof Number duration && duration.longValue() >= 0)
+          out.put("durationMs", duration.longValue());
+      } else {
+        if (!(body.get("text") instanceof String text) || text.isBlank() || text.length() > 20000)
+          throw new SupportException("bad_request", "text must be a non-empty string of at most 20000 characters");
+        out.put("text", text);
+      }
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------------------------------- download

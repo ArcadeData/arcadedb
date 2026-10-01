@@ -224,6 +224,8 @@ class SupportEndpointsTest extends BaseGraphServerTest {
         { "POST", "/api/v1/server/support/issues" }, { "GET", "/api/v1/server/support/issues" },
         { "GET", "/api/v1/server/support/issues/1" }, { "PUT", "/api/v1/server/support/issues/1" },
         { "POST", "/api/v1/server/support/issues/1/comments" }, { "POST", "/api/v1/server/support/issues/1/attachments" },
+        { "POST", "/api/v1/server/support/issues/1/requests/rq_0123abcd/response" },
+        { "POST", "/api/v1/server/support/issues/1/responses" },
         { "POST", "/api/v1/server/support/bundle" }, { "POST", "/api/v1/server/support/installation" } };
 
     // a user that is not root
@@ -607,6 +609,88 @@ class SupportEndpointsTest extends BaseGraphServerTest {
     assertThat(portal.last().path()).isEqualTo("/api/v1/support/issues/42/attachments");
 
     assertKeyNeverServed();
+  }
+
+  @Test
+  void supportRequestAnswersAreForwardedToThePortal() throws Exception {
+    register();
+    final JSONObject result = new JSONObject().put("columns", new JSONArray().put(new JSONObject().put("name", "count(*)").put("type", "LONG")))
+        .put("rows", new JSONArray().put(new JSONArray().put(112914))).put("truncated", false)
+        .put("masked", new JSONObject().put("cells", new JSONArray()).put("columns", new JSONArray()).put("mode", "redact"));
+
+    // One answer: the path carries the request id, the body only what the portal reads
+    final Resp one = call("POST", "/api/v1/server/support/issues/42/requests/rq_0123abcd/response",
+        new JSONObject().put("outcome", "answered").put("result", result).put("durationMs", 412).put("evil", "dropped").toString());
+    assertThat(one.status()).isEqualTo(201);
+    assertThat(portal.last().path()).isEqualTo("/api/v1/support/issues/42/requests/rq_0123abcd/response");
+    final JSONObject sent = new JSONObject(portal.last().bodyText());
+    assertThat(sent.getString("outcome")).isEqualTo("answered");
+    assertThat(sent.getJSONObject("result").getJSONArray("rows").getJSONArray(0).getInt(0)).isEqualTo(112914);
+    assertThat(sent.getInt("durationMs")).isEqualTo(412);
+    assertThat(sent.has("evil")).isFalse();
+
+    // Declined and failed carry a reason, not a result
+    assertThat(call("POST", "/api/v1/server/support/issues/42/requests/rq_0123abcd/response",
+        new JSONObject().put("outcome", "declined").put("reason", "production").toString()).status()).isEqualTo(201);
+    assertThat(new JSONObject(portal.last().bodyText()).getString("reason")).isEqualTo("production");
+
+    // Several at once: one comment
+    final Resp all = call("POST", "/api/v1/server/support/issues/42/responses", new JSONObject().put("responses", new JSONArray()
+        .put(new JSONObject().put("requestId", "rq_0123abcd").put("outcome", "answered").put("result", result))
+        .put(new JSONObject().put("requestId", "rq_89abcdef").put("outcome", "failed").put("reason", "timeout"))).toString());
+    assertThat(all.status()).isEqualTo(201);
+    assertThat(portal.last().path()).isEqualTo("/api/v1/support/issues/42/responses");
+    assertThat(new JSONObject(portal.last().bodyText()).getJSONArray("responses").length()).isEqualTo(2);
+
+    // Refused here, never sent: a request id that is not one, no outcome, an outcome that does not exist, a result and text
+    // together, text that is not text, more than 20, none, an issue number that is not one
+    final int before = portal.requests.size();
+    final String ok = "/api/v1/server/support/issues/42/requests/rq_0123abcd/response";
+    assertThat(call("POST", "/api/v1/server/support/issues/42/requests/..%2Fx/response", "{\"outcome\":\"declined\"}").status()).isEqualTo(400);
+    assertThat(call("POST", ok, "{}").status()).isEqualTo(400);
+    assertThat(call("POST", ok, "{\"outcome\":\"maybe\"}").status()).isEqualTo(400);
+    assertThat(call("POST", ok, new JSONObject().put("outcome", "answered").put("result", result).put("text", "x").toString()).status())
+        .isEqualTo(400);
+    assertThat(call("POST", ok, "{\"outcome\":\"answered\"}").status()).isEqualTo(400);
+    assertThat(call("POST", ok, "{\"outcome\":\"answered\",\"text\":5}").status()).isEqualTo(400);
+    final JSONArray many = new JSONArray();
+    for (int i = 0; i < 21; i++)
+      many.put(new JSONObject().put("requestId", "rq_0123abcd").put("outcome", "declined"));
+    assertThat(call("POST", "/api/v1/server/support/issues/42/responses", new JSONObject().put("responses", many).toString()).status()).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/issues/42/responses", "{\"responses\":[]}").status()).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/issues/42/responses", "{\"responses\":[{\"requestId\":\"x\",\"outcome\":\"declined\"}]}").status())
+        .isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/issues/abc/responses", "{\"responses\":[]}").status()).isEqualTo(400);
+    assertThat(portal.requests.size()).isEqualTo(before);
+
+    // The portal's own refusals: answered already (409, with its own code), unknown request or issue (404), too big (413)
+    portal.handler = r -> new MockPortal.Response(409, MockPortal.error("already_answered", "This request was already answered"));
+    final Resp resp = call("POST", ok, "{\"outcome\":\"declined\"}");
+    assertThat(resp.status()).isEqualTo(409);
+    assertThat(resp.json().getString("error")).isEqualTo("already_answered");
+    assertThat(resp.json().getString("message")).contains("already answered");
+    portal.handler = r -> new MockPortal.Response(404, MockPortal.error("not_found", "No such request"));
+    assertThat(call("POST", ok, "{\"outcome\":\"declined\"}").status()).isEqualTo(404);
+    portal.handler = r -> new MockPortal.Response(413, MockPortal.error("too_large", "a result is limited to 1 MB"));
+    assertThat(call("POST", ok, "{\"outcome\":\"declined\"}").status()).isEqualTo(413);
+
+    assertKeyNeverServed();
+  }
+
+  @Test
+  void aQueryThatWritesIsRefusedByTheQueryEndpointInBothLanguages() throws Exception {
+    // Support requests run in the browser through the ordinary query endpoint; this is the gate that does not depend on any
+    // check of the statement text: the engine refuses a statement that is not idempotent, whatever it says.
+    for (final String[] write : new String[][] { { "sql", "DELETE FROM V" }, { "sql", "CREATE VERTEX TYPE SupportRequestProbe" },
+        { "opencypher", "CREATE (n:SupportRequestProbe)" }, { "opencypher", "MATCH (n) DETACH DELETE n" } }) {
+      final Resp r = call("POST", "/api/v1/query/" + getDatabaseName(),
+          new JSONObject().put("language", write[0]).put("command", write[1]).toString());
+      assertThat(r.status()).as(write[1]).isGreaterThanOrEqualTo(400);
+    }
+    assertThat(getServer(0).getDatabase(getDatabaseName()).getSchema().existsType("SupportRequestProbe")).isFalse();
+    final Resp read = call("POST", "/api/v1/query/" + getDatabaseName(),
+        new JSONObject().put("language", "sql").put("command", "SELECT 1 AS n").toString());
+    assertThat(read.status()).isEqualTo(200);
   }
 
   @Test

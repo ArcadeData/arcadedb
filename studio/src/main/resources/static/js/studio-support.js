@@ -1098,10 +1098,13 @@ function renderSupportIssueDetail() {
       supportEsc(supportFormatDate(entry.createdOn || entry.createdAt || entry.at || entry.date)) +
       '</div><div class="support-body">' +
       supportEsc(text) +
-      "</div></div>";
+      "</div>" +
+      supportRequestsHtml(entry) +
+      "</div>";
   });
   html += "</div>";
 
+  html += supportRequestsBarHtml(issue);
   html += '<div class="support-card"><h6>Reply</h6>';
   html += '<div id="spReplyAlert"></div>';
   html += '<textarea class="form-control mb-2" id="spReplyBody" rows="4" maxlength="20000" placeholder="Write a reply to ArcadeData support..."></textarea>';
@@ -1116,6 +1119,7 @@ function renderSupportIssueDetail() {
 
   $("#spIssueDetail").show().html(html);
   $("#spIssuesList").hide();
+  supportRequestsInit(issue);
   supportWireCollect("spAttach");
   $("#spAttachSendBtn").on("click", supportSendAttachment);
   supportUpdateSendState("spAttach");

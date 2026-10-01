@@ -1,0 +1,86 @@
+{
+  "_doc": "Shared by the portal, the platform and Studio (docs/SUPPORT-REQUESTS.md section 2). accept: statement is valid, `normalized` is what is stored. reject: `code` is the refusal. Change the rules and these in every repo together.",
+  "accept": [
+    { "language": "sql", "statement": "SELECT count(*) FROM bucket:Entity_7" },
+    {
+      "language": "sql",
+      "statement": "select count(*) from bucket:Entity_7 where embedding is not null and embedding.size() <> 768"
+    },
+    {
+      "language": "sql",
+      "statement": "  SELECT count(*) FROM Entity_7;  ",
+      "normalized": "SELECT count(*) FROM Entity_7"
+    },
+    { "language": "sql", "statement": "SELECT FROM Person WHERE name = 'delete; drop -- /* x */'" },
+    { "language": "sql", "statement": "SELECT FROM Person WHERE note = 'it''s ok'" },
+    { "language": "sql", "statement": "SELECT `update`, created, updated, checked FROM Doc" },
+    { "language": "sql", "statement": "SELECT FROM Doc WHERE status = \"CREATE\"" },
+    { "language": "sql", "statement": "SELECT\n  name,\n  count(*)\nFROM Doc\nGROUP BY name" },
+    { "language": "sql", "statement": "MATCH {type: Person, as: p}-FriendOf->{as: f} RETURN p, f" },
+    { "language": "sql", "statement": "TRAVERSE out('FriendOf') FROM #12:0 MAXDEPTH 2" },
+    { "language": "opencypher", "statement": "MATCH (n:Entity_7) RETURN count(n)" },
+    {
+      "language": "opencypher",
+      "statement": "MATCH (n:Entity_7) WHERE n.name = 'MERGE SET' RETURN n.name LIMIT 10;",
+      "normalized": "MATCH (n:Entity_7) WHERE n.name = 'MERGE SET' RETURN n.name LIMIT 10"
+    },
+    { "language": "opencypher", "statement": "OPTIONAL MATCH (a)-[r]->(b) RETURN type(r), count(*)" },
+    { "language": "opencypher", "statement": "UNWIND [1,2,3] AS x RETURN x" }
+  ],
+  "reject": [
+    { "language": "sql", "statement": "", "code": "bad_statement" },
+    { "language": "sql", "statement": "   ", "code": "bad_statement" },
+    { "language": "sql", "statement": ";", "code": "bad_statement" },
+    { "language": "sql", "statement": "SELECT 'unclosed FROM Doc", "code": "bad_statement" },
+    { "language": "sql", "statement": "SELECT 1\u0000", "code": "bad_statement" },
+    { "language": "sql", "statement": "DELETE FROM Doc", "code": "not_read_only" },
+    { "language": "sql", "statement": "delete from Doc", "code": "not_read_only" },
+    { "language": "sql", "statement": "INSERT INTO Doc SET a = 1", "code": "not_read_only" },
+    { "language": "sql", "statement": "UPDATE Doc SET a = 1", "code": "not_read_only" },
+    { "language": "sql", "statement": "CREATE VERTEX TYPE X", "code": "not_read_only" },
+    { "language": "sql", "statement": "DROP TYPE Doc", "code": "not_read_only" },
+    { "language": "sql", "statement": "ALTER TYPE Doc NAME X", "code": "not_read_only" },
+    { "language": "sql", "statement": "TRUNCATE TYPE Doc", "code": "not_read_only" },
+    { "language": "sql", "statement": "REBUILD INDEX *", "code": "not_read_only" },
+    { "language": "sql", "statement": "CHECK DATABASE FIX", "code": "not_read_only" },
+    { "language": "sql", "statement": "BACKUP DATABASE", "code": "not_read_only" },
+    { "language": "sql", "statement": "EXPORT DATABASE file.json", "code": "not_read_only" },
+    { "language": "sql", "statement": "IMPORT DATABASE file.json", "code": "not_read_only" },
+    { "language": "sql", "statement": "SELECT sleep(10000)", "code": "not_read_only" },
+    { "language": "sql", "statement": "SELECT FROM Doc WHERE x = function.my.fn()", "code": "not_read_only" },
+    { "language": "sql", "statement": "SELECT js('1+1')", "code": "not_read_only" },
+    { "language": "sql", "statement": "SELECT FROM Doc; DELETE FROM Doc", "code": "multiple_statements" },
+    { "language": "sql", "statement": "SELECT 1; SELECT 2", "code": "multiple_statements" },
+    { "language": "sql", "statement": "SELECT 1 -- hidden", "code": "comments_not_allowed" },
+    { "language": "sql", "statement": "SELECT 1 /* hidden */", "code": "comments_not_allowed" },
+    {
+      "language": "sql",
+      "statement": "SELECT FROM Doc WHERE a = 1 /* ' */ OR b = '*/ DELETE FROM Doc",
+      "code": "comments_not_allowed"
+    },
+    { "language": "sql", "statement": "SELECT FROM Doc LET $a = (DELETE FROM Doc)", "code": "not_read_only" },
+    {
+      "language": "sql",
+      "statement": "SELECT FROM Doc WHERE a IN (SELECT FROM X); BEGIN",
+      "code": "multiple_statements"
+    },
+    { "language": "sql", "statement": "WITH x AS (SELECT 1) SELECT x", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "CREATE (n:X)", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "MATCH (n) SET n.a = 1 RETURN n", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "MATCH (n) DELETE n", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "MATCH (n) DETACH DELETE n", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "MATCH (n) REMOVE n.a RETURN n", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "MERGE (n:X) RETURN n", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "CALL db.labels()", "code": "not_read_only" },
+    {
+      "language": "opencypher",
+      "statement": "MATCH (n) RETURN n; MATCH (m) DELETE m",
+      "code": "multiple_statements"
+    },
+    { "language": "opencypher", "statement": "MATCH (n) RETURN n // hidden", "code": "comments_not_allowed" },
+    { "language": "opencypher", "statement": "MATCH (n)", "code": "not_read_only" },
+    { "language": "opencypher", "statement": "SELECT 1", "code": "not_read_only" },
+    { "language": "gremlin", "statement": "g.V().count()", "code": "bad_language" },
+    { "language": "sql", "statement": 42, "code": "bad_statement" }
+  ]
+}
