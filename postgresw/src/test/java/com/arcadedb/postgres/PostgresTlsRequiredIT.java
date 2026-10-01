@@ -54,7 +54,7 @@ class PostgresTlsRequiredIT extends PostgresTlsTestBase {
 
   @Test
   void plaintextStartupGetsAnErrorResponseAndNoPasswordRequest() throws Exception {
-    try (final Socket socket = new Socket("localhost", getServerPostgresPort())) {
+    try (final Socket socket = newSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       sendStartupMessage(out, "root", getDatabaseName());
@@ -65,6 +65,20 @@ class PostgresTlsRequiredIT extends PostgresTlsTestBase {
       in.readFully(body);
       assertThat(new String(body)).contains("SSL connection is required");
       assertThat(in.read()).isEqualTo(-1);
+    }
+  }
+
+  @Test
+  void plaintextCancelRequestIsStillAcceptedAndNeverGetsTheFatalError() throws Exception {
+    try (final Socket socket = newSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      out.writeInt(16);
+      out.writeInt(80877102); // CANCEL REQUEST
+      out.writeInt(123456);
+      out.writeInt(654321);
+      out.flush();
+      // THE SERVER CLOSES WITHOUT ANSWERING: NO ERRORRESPONSE
+      assertThat(readOrClosed(socket.getInputStream())).isEqualTo(-1);
     }
   }
 }

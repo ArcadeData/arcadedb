@@ -24,22 +24,23 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.InputStream;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.cert.X509Certificate;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Properties;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.security.cert.X509Certificate;
 
 /**
  * Shared scaffolding of the Postgres TLS integration tests (issue #8840): a self-signed key store and trust store
@@ -84,7 +85,7 @@ abstract class PostgresTlsTestBase extends PostgresWireProtocolTestBase {
 
   private static void keytool(final String... args) throws Exception {
     final String[] command = new String[args.length + 1];
-    command[0] = "keytool";
+    command[0] = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
     System.arraycopy(args, 0, command, 1, args.length);
     final Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
     process.getInputStream().readAllBytes();
@@ -133,6 +134,22 @@ abstract class PostgresTlsTestBase extends PostgresWireProtocolTestBase {
     try (final Statement st = connection.createStatement(); final ResultSet rs = st.executeQuery("SELECT 1 AS one")) {
       rs.next();
       return rs.getInt("one");
+    }
+  }
+
+  /** A raw client socket that fails the test, instead of hanging it, when the server stops answering. */
+  protected Socket newSocket() throws Exception {
+    final Socket socket = new Socket("localhost", getServerPostgresPort());
+    socket.setSoTimeout(15_000);
+    return socket;
+  }
+
+  /** The next byte the server sends, or -1 when it closed the connection (an abrupt reset counts as closed). */
+  protected int readOrClosed(final InputStream in) throws Exception {
+    try {
+      return in.read();
+    } catch (final SocketException e) {
+      return -1;
     }
   }
 
