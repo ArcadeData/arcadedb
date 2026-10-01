@@ -119,6 +119,22 @@ class OtlpMetricsPluginTest {
     assertThat(OtlpMetricsPlugin.normalizeEndpoint("https://ingest.example.com/custom")).isEqualTo("https://ingest.example.com/custom");
   }
 
+  @Test
+  void endpointNormalizationEdgeCases() {
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint(null)).isNull();
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("")).isEmpty();
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318?x=1")).isEqualTo("http://h:4318/v1/metrics?x=1");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318#x")).isEqualTo("http://h:4318/v1/metrics#x");
+    assertThat(OtlpMetricsPlugin.normalizeEndpoint("http://h:4318/?x=1")).isEqualTo("http://h:4318/v1/metrics?x=1");
+  }
+
+  @Test
+  void otlpConfigAppendsPathToUserConfiguredEndpointWithoutPath() {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT, "http://collector:4318");
+    assertThat(OtlpMetricsPlugin.otlpConfig(cfg, Map.of()).url()).isEqualTo("http://collector:4318/v1/metrics");
+  }
+
   /**
    * Issue #7294: the gRPC port 4317 is the classic misconfiguration; it is recognised so the plugin can warn about it.
    */

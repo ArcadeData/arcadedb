@@ -41,7 +41,7 @@ class Issue7281StartupConfigDumpOrderTest {
 
   /** A setting declared AFTER {@code DUMP_CONFIG_AT_STARTUP}, which is the whole point. */
   private static final GlobalConfiguration LATER_SETTING = GlobalConfiguration.SERVER_METRICS_TRACING_ENDPOINT;
-  private static final String              CONFIGURED    = "http://otel-agent.issue7281:4317";
+  private static final String              CONFIGURED    = "http://otel-agent.issue7281:4318/v1/metrics";
 
   @Test
   void theStartupDumpShowsTheValuesThatWereJustAppliedNotTheDefaults() {

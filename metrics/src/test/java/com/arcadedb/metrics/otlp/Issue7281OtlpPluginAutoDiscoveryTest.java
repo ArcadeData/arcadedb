@@ -130,9 +130,9 @@ class Issue7281OtlpPluginAutoDiscoveryTest {
   @Test
   void theEndpointIsStillReadFromItsOriginalKey() {
     final ContextConfiguration cfg = new ContextConfiguration();
-    cfg.setValue("arcadedb.serverMetrics.otlp.endpoint", "http://otel-agent.sf-infra:4317");
+    cfg.setValue("arcadedb.serverMetrics.otlp.endpoint", "http://otel-agent.sf-infra:4318/v1/metrics");
 
     assertThat(cfg.getValueAsString(GlobalConfiguration.SERVER_METRICS_OTLP_ENDPOINT))
-        .isEqualTo("http://otel-agent.sf-infra:4317");
+        .isEqualTo("http://otel-agent.sf-infra:4318/v1/metrics");
   }
 }
