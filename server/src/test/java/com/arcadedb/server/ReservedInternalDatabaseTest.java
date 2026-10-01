@@ -25,6 +25,8 @@ import com.arcadedb.database.DatabaseFactory;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -121,5 +123,42 @@ class ReservedInternalDatabaseTest extends StaticBaseServerTest {
     assertThat(ArcadeDBServer.isReservedDatabaseName("my-lost+found")).isFalse();
     assertThat(ArcadeDBServer.isReservedDatabaseName("Lost+Found")).isFalse();
     assertThat(ArcadeDBServer.isReservedDatabaseName(null)).isFalse();
+  }
+
+  /**
+   * Issue #8805: whatever the name, a directory holding no database (an OS or storage artifact) is skipped and left
+   * untouched, while a real database next to it still loads.
+   */
+  @Test
+  void directoryWithoutDatabaseIsNotLoadedAtStartup() throws IOException {
+    final String databaseDirectory = "./target/databases";
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue(databaseDirectory);
+
+    final File junk = new File(databaseDirectory, "System Volume Information");
+    assertThat(junk.mkdirs()).isTrue();
+    Files.writeString(new File(junk, "tracking.log").toPath(), "x");
+
+    try (final DatabaseFactory factory = new DatabaseFactory(databaseDirectory + "/realdb")) {
+      factory.create().close();
+    }
+
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_NAME, "ArcadeDB_0");
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, databaseDirectory);
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
+
+    final ArcadeDBServer server = new ArcadeDBServer(config);
+    server.start();
+    try {
+      assertThat(server.getDatabaseNames()).contains("realdb").doesNotContain("System Volume Information");
+      assertThat(new File(junk, "tracking.log")).exists();
+      assertThat(new File(junk, "database.lck")).doesNotExist();
+      assertThat(ArcadeDBServer.holdsDatabase(junk)).isFalse();
+      assertThat(ArcadeDBServer.holdsDatabase(new File(databaseDirectory, "realdb"))).isTrue();
+    } finally {
+      server.stop();
+    }
   }
 }
