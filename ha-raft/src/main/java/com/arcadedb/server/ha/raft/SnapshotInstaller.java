@@ -108,6 +108,8 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_NEW_DIR       = ".snapshot-new";
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
   static final String SNAPSHOT_ORPHANS_DIR   = ".snapshot-orphans";
+  /** Written before a legacy rollback consumes the backup, so a crash before the orphan quarantine is resumed. */
+  static final String SNAPSHOT_QUARANTINE_FILE = ".snapshot-quarantine";
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
@@ -1541,8 +1543,11 @@ public final class SnapshotInstaller {
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
             deleteDirectoryIfExists(snapshotNew);
+            writeMarkerDurable(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
             restoreBackup(dbDir, snapshotBackup);
+            snapshotSwapProgress("RESTORED");
             quarantineOrphanBucketFiles(dbDir);
+            Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1580,8 +1585,15 @@ public final class SnapshotInstaller {
         restoreBackup(dbDir, snapshotBackup);
         // Also where an interrupted legacy rollback (above) is finished by a later pass.
         quarantineOrphanBucketFiles(dbDir);
+        Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
 
       } else {
+        // A legacy rollback that consumed its backup but crashed before the orphan quarantine: finish it first.
+        if (Files.exists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE))) {
+          quarantineOrphanBucketFiles(dbDir);
+          Files.deleteIfExists(dbDir.resolve(SNAPSHOT_QUARANTINE_FILE));
+        }
+
         // No completion marker and no backup. "The download was interrupted before the backup was created" is
         // only ONE way to reach this state, and it leaves dbDir intact. The other is "a backup was created, used
         // for a failed rollback, and is now gone", which leaves dbDir TORN - and this branch used to bless both,
@@ -1677,7 +1689,10 @@ public final class SnapshotInstaller {
    * belongs to a type), so a doubtful schema never costs a file. Index files are not judged.
    */
   private static void quarantineOrphanBucketFiles(final Path dbDir) throws IOException {
-    final Path schemaFile = dbDir.resolve("schema.json");
+    // The engine's own choice: schema.json, or schema.prev.json when a rewrite was interrupted.
+    Path schemaFile = dbDir.resolve("schema.json");
+    if (!Files.isRegularFile(schemaFile))
+      schemaFile = dbDir.resolve("schema.prev.json");
     if (!Files.isRegularFile(schemaFile))
       return;
     final Set<String> known = new HashSet<>();
