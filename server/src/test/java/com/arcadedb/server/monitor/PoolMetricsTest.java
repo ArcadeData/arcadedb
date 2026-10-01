@@ -18,12 +18,21 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
+
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.Closeable;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.GetServerHandler;
@@ -158,6 +167,121 @@ class PoolMetricsTest {
           .as("split gauge '%s' must be a finite number", shortName).isFinite();
       assertThat(query.has(shortName))
           .as("pool=query must NOT expose split gauge '%s'", shortName).isFalse();
+    }
+  }
+
+  /**
+   * The instance-scoped registration path (issue #7856): a pool owned by a server or a state machine rather than
+   * the JVM gets the same row every singleton pool gets, plus {@code tasks.coalesced}, and each gauge reads its
+   * supplier on scrape rather than a value captured at registration.
+   */
+  @Test
+  void instancePoolPublishesTheSharedRowPlusCoalescedAndReadsLive() throws Exception {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    final AtomicReference<PoolStats> stats = new AtomicReference<>(new PoolStats(0, 0, 0, 1, 0, 0, 0));
+    final AtomicLong coalesced = new AtomicLong();
+
+    try (final Closeable ignored = PoolMetrics.bindInstancePool(registry, "test_instance", "Test instance pool",
+        stats::get, coalesced::get)) {
+      for (final String gaugeName : EXPECTED_GAUGE_NAMES)
+        assertThat(registry.find(gaugeName).tag("pool", "test_instance").gauge())
+            .as("instance pool must publish '%s'", gaugeName).isNotNull();
+      assertThat(registry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "test_instance").gauge()).isNotNull();
+
+      stats.set(new PoolStats(1, 1, 1, 0, 7, 0, 0));
+      coalesced.set(3);
+
+      assertThat(registry.find("arcadedb.executor.queue.depth").tag("pool", "test_instance").gauge().value())
+          .isEqualTo(1.0);
+      assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "test_instance").gauge().value())
+          .isEqualTo(7.0);
+      assertThat(registry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "test_instance").gauge().value())
+          .isEqualTo(3.0);
+
+      // Studio reads the coalesced count through the same per-pool grouping, and only where it is published.
+      final JSONObject executors = GetServerHandler.buildExecutorsJSON(registry);
+      assertThat(executors.getJSONObject("test_instance").getDouble("tasks.coalesced")).isEqualTo(3.0);
+      assertThat(executors.getJSONObject("test_instance").getDouble("queue.depth")).isEqualTo(1.0);
+    }
+  }
+
+  /** Closing the handle deregisters exactly its own meters, and a second close is harmless. */
+  @Test
+  void closingTheInstanceHandleRemovesItsMetersOnly() throws Exception {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    new PoolMetrics().bindTo(registry);
+    final int singletonMeters = registry.getMeters().size();
+
+    final Closeable handle = PoolMetrics.bindInstancePool(registry, "test_instance", "Test instance pool",
+        () -> new PoolStats(0, 0, 0, 1, 0, 0, 0), () -> 0L);
+    assertThat(registry.getMeters().size()).isEqualTo(singletonMeters + EXPECTED_GAUGE_NAMES.size() + 1);
+
+    handle.close();
+    assertThat(registry.find("arcadedb.executor.pool.size").tag("pool", "test_instance").gauge()).isNull();
+    assertThat(registry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "test_instance").gauge()).isNull();
+    assertThat(registry.getMeters().size()).as("the singleton pools' rows must survive").isEqualTo(singletonMeters);
+
+    handle.close();
+    assertThat(registry.getMeters().size()).isEqualTo(singletonMeters);
+  }
+
+  /**
+   * Two servers in one JVM publish the same meter ids, and Micrometer answers the second registration with the
+   * first one's meter. The second handle must therefore own nothing: closing it - the second server stopping -
+   * must not take the first server's row away with it.
+   */
+  @Test
+  void aSecondBindingOfTheSameTagOwnsNothing() throws Exception {
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+    try (final Closeable first = PoolMetrics.bindInstancePool(registry, "test_instance", "first",
+        () -> new PoolStats(0, 0, 0, 1, 11, 0, 0), () -> 0L)) {
+      final Closeable second = PoolMetrics.bindInstancePool(registry, "test_instance", "second",
+          () -> new PoolStats(0, 0, 0, 1, 22, 0, 0), () -> 0L);
+      second.close();
+
+      assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "test_instance").gauge())
+          .as("the first binding's row must survive the second one closing").isNotNull();
+      assertThat(registry.find("arcadedb.executor.tasks.completed").tag("pool", "test_instance").gauge().value())
+          .isEqualTo(11.0);
+    }
+  }
+
+  /**
+   * {@link PoolMetrics#statsOf} turns a plain {@link ThreadPoolExecutor} into the row's record: the two numbers the
+   * one-slot security pools exist to show are the queue depth and the slot left, and they are read live.
+   */
+  @Test
+  void statsOfReadsAPlainExecutor() throws Exception {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(1));
+    final CountDownLatch release = new CountDownLatch(1);
+    final CountDownLatch started = new CountDownLatch(1);
+    try {
+      assertThat(PoolMetrics.statsOf(executor)).isEqualTo(new PoolStats(0, 0, 0, 1, 0, 0, 0));
+
+      executor.execute(() -> {
+        started.countDown();
+        try {
+          release.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+      assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+      executor.execute(() -> {
+      });
+
+      final PoolStats busy = PoolMetrics.statsOf(executor);
+      assertThat(busy.poolSize()).isEqualTo(1);
+      assertThat(busy.activeThreads()).isEqualTo(1);
+      assertThat(busy.queueDepth()).isEqualTo(1);
+      assertThat(busy.queueCapacityRemaining()).isZero();
+      assertThat(busy.callerRunFallbacks()).as("a dropping pool never runs on the caller").isZero();
+    } finally {
+      release.countDown();
+      executor.shutdown();
+      executor.awaitTermination(10, TimeUnit.SECONDS);
     }
   }
 }

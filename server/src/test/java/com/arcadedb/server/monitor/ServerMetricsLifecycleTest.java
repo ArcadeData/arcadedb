@@ -21,8 +21,11 @@ package com.arcadedb.server.monitor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.StaticBaseServerTest;
+import com.arcadedb.server.http.handler.GetServerHandler;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
@@ -173,6 +176,53 @@ class ServerMetricsLifecycleTest extends StaticBaseServerTest {
 
     assertThat(queryTimer()).as("a failed start must not pin the metrics subsystem").isNull();
     assertThat(QueryMetricsRecorder.Holder.get()).isSameAs(QueryMetricsRecorder.NO_OP);
+  }
+
+  /**
+   * Issue #7856: the permission-refresh worker belongs to the server, not the JVM, so its executor row comes and
+   * goes with the server - published on start, reaching Studio's card through the same JSON as the singleton
+   * pools, and gone after the stop rather than left reading a stopped worker.
+   */
+  @Test
+  void securityRefreshPoolRowFollowsTheServerLifecycle() {
+    final ArcadeDBServer server = startServer(0);
+
+    final Gauge coalesced = securityRefreshCoalescedGauge();
+    assertThat(coalesced).as("start() must publish the pool=security_refresh row").isNotNull();
+    assertThat(coalesced.value()).isEqualTo(
+        (double) server.getSecurity().getPermissionRefreshStats().refreshesCoalesced());
+    assertThat(Metrics.globalRegistry.find("arcadedb.executor.queue.capacity_remaining")
+        .tag("pool", "security_refresh").gauge().value()).as("the worker's single free slot").isEqualTo(1.0);
+
+    final JSONObject executors = GetServerHandler.buildExecutorsJSON(Metrics.globalRegistry);
+    assertThat(executors.has("security_refresh")).isTrue();
+    assertThat(executors.getJSONObject("security_refresh").has("tasks.coalesced")).isTrue();
+
+    server.stop();
+
+    assertThat(securityRefreshCoalescedGauge()).as("stop() must remove the row").isNull();
+
+    startServer(0);
+    assertThat(securityRefreshCoalescedGauge()).as("a restart must publish the row again").isNotNull();
+  }
+
+  /**
+   * Two servers in one JVM share the meter ids, so the row is the first server's. The second one stopping must
+   * not take it away while the first is still running.
+   */
+  @Test
+  void securityRefreshPoolRowSurvivesASiblingStopping() {
+    startServer(0);
+    final ArcadeDBServer second = startServer(1);
+
+    second.stop();
+
+    assertThat(securityRefreshCoalescedGauge()).as("the running server's row must survive its sibling's stop")
+        .isNotNull();
+  }
+
+  private static Gauge securityRefreshCoalescedGauge() {
+    return Metrics.globalRegistry.find(PoolMetrics.COALESCED_GAUGE).tag("pool", "security_refresh").gauge();
   }
 
   private ArcadeDBServer startServer(final int index) {

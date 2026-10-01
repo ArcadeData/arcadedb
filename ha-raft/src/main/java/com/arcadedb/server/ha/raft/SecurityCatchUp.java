@@ -21,6 +21,8 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.monitor.PoolMetrics;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -136,6 +138,11 @@ final class SecurityCatchUp implements AutoCloseable {
   private final AtomicLong         tokenSequence       = new AtomicLong();
   private final ThreadPoolExecutor executor;
   /**
+   * Requests the executor refused - one already queued covers the work, or the node is stopping - published as the
+   * {@code tasks.coalesced} column of the {@code pool=security_catch_up} executor row (issue #7856).
+   */
+  private final AtomicLong         coalescedRequests   = new AtomicLong();
+  /**
    * The executor's current worker, recorded by its thread factory, so {@link #awaitTermination(long)} can tell by
    * identity that it is running on it (issue #8364). One worker at a time, and one running a task is never replaced.
    */
@@ -222,8 +229,19 @@ final class SecurityCatchUp implements AutoCloseable {
    * catch-up can happen on the next leader change. The request is idempotent, and the queued task covers the work.
    */
   void onRejected(final Runnable task) {
+    coalescedRequests.incrementAndGet();
     if (task instanceof Attempt attempt)
       rearm(attempt.token());
+  }
+
+  /** Load of the catch-up worker, for the {@code pool=security_catch_up} executor row (issue #7856). */
+  PoolStats getPoolStats() {
+    return PoolMetrics.statsOf(executor);
+  }
+
+  /** Cumulative requests the worker refused; see {@link #coalescedRequests}. */
+  long getCoalescedRequests() {
+    return coalescedRequests.get();
   }
 
   /** A queued request, carrying the token it took the latch with so a rejection can release exactly that hold. */

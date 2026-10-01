@@ -29,12 +29,14 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.LeaderDial;
+import com.arcadedb.utility.CodeUtils;
 
 import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import com.arcadedb.database.DatabaseInternal;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -92,6 +94,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // threads, not thread confinement. Safe only as long as that lock still wraps both paths.
   private SnapshotHttpHandler       snapshotHttpHandler;
   private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
+
+  // The executor-pool rows of the two security workers the state machine owns (issue #7856). Same lifecycle as the
+  // handlers above: set by startService(), closed and cleared by the first of stopService()'s two calls.
+  private Closeable securitySeedPoolMetrics;
+  private Closeable securityCatchUpPoolMetrics;
 
   /**
    * Test-only: runs at the start of {@link #startService()} on the server being started, before this plugin has
@@ -192,6 +199,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // Register this plugin as the HA implementation on the server
       server.setHA(this);
 
+      registerSecurityPoolMetrics();
+
       LogManager.instance().log(this, Level.INFO, "Raft HA plugin started successfully");
     } catch (final IOException e) {
       throw new RuntimeException("Failed to start Raft HA server", e);
@@ -220,6 +229,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // (RaftHAPlugin is itself a discovered ServerPlugin) and once via ArcadeDBServer.stopInternal()'s
     // direct haServer.stopService() call, since startService() above did server.setHA(this), making
     // ArcadeDBServer.haServer the very same instance. The second call must be a no-op (issue #5890).
+    if (securitySeedPoolMetrics != null) {
+      CodeUtils.executeIgnoringExceptions(securitySeedPoolMetrics::close, "Error on removing the security seed pool metrics",
+          false);
+      securitySeedPoolMetrics = null;
+    }
+    if (securityCatchUpPoolMetrics != null) {
+      CodeUtils.executeIgnoringExceptions(securityCatchUpPoolMetrics::close,
+          "Error on removing the security catch-up pool metrics", false);
+      securityCatchUpPoolMetrics = null;
+    }
     if (snapshotHttpHandler != null) {
       snapshotHttpHandler.close();
       snapshotHttpHandler = null;
@@ -561,6 +580,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final ArcadeStateMachine sm = s != null ? s.getStateMachine() : null;
     if (sm != null)
       sm.restartUnverifiedClosedCopyReverification();
+  }
+
+  /**
+   * Publishes the state machine's two one-slot security workers as executor rows (issue #7856): the leader-side
+   * membership seed ({@code pool=security_seed}) and the rejoining node's catch-up ({@code pool=security_catch_up}).
+   * <p>
+   * Both suppliers resolve the worker through {@link #raftHAServer} on every scrape rather than capturing it: an
+   * in-place Ratis restart builds a new state machine, and with it a new seeder and catch-up. Between a stop and the
+   * next start, or before Ratis is up, the row reads as an idle pool rather than throwing.
+   */
+  private void registerSecurityPoolMetrics() {
+    securitySeedPoolMetrics = server.registerExecutorPoolMetrics("security_seed",
+        "MembershipSecuritySeeder leader-side cluster security seed worker", () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getMembershipSecuritySeeder().getPoolStats() : MembershipSecuritySeeder.EMPTY_POOL_STATS;
+        }, () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getMembershipSecuritySeeder().getCoalescedSeeds() : 0L;
+        });
+    securityCatchUpPoolMetrics = server.registerExecutorPoolMetrics("security_catch_up",
+        "SecurityCatchUp rejoining-node security catch-up worker", () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getSecurityCatchUp().getPoolStats() : MembershipSecuritySeeder.EMPTY_POOL_STATS;
+        }, () -> {
+          final ArcadeStateMachine sm = liveStateMachine();
+          return sm != null ? sm.getSecurityCatchUp().getCoalescedRequests() : 0L;
+        });
+  }
+
+  private ArcadeStateMachine liveStateMachine() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getStateMachine() : null;
   }
 
   @Override
