@@ -35,7 +35,7 @@ class RWLockContextTest {
 
   @BeforeEach
   void setUp() {
-    lockContext = new RWLockContext();
+    lockContext = new RWLockContext(16);
   }
 
   @Test
@@ -128,8 +128,8 @@ class RWLockContextTest {
     final AtomicBoolean stop = new AtomicBoolean();
     final CountDownLatch done = new CountDownLatch(readers);
 
-    for (int i = 0; i < readers; i++)
-      new Thread(() -> {
+    for (int i = 0; i < readers; i++) {
+      final Thread reader = new Thread(() -> {
         while (!stop.get())
           lockContext.executeInReadLock(() -> {
             activeReaders.incrementAndGet();
@@ -137,17 +137,22 @@ class RWLockContextTest {
             return null;
           });
         done.countDown();
-      }).start();
-
-    for (int w = 0; w < 200; w++)
-      lockContext.executeInWriteLock(() -> {
-        if (activeReaders.get() != 0)
-          readersSeenInWrite.incrementAndGet();
-        writes.incrementAndGet();
-        return null;
       });
+      reader.setDaemon(true);
+      reader.start();
+    }
 
-    stop.set(true);
+    try {
+      for (int w = 0; w < 200; w++)
+        lockContext.executeInWriteLock(() -> {
+          if (activeReaders.get() != 0)
+            readersSeenInWrite.incrementAndGet();
+          writes.incrementAndGet();
+          return null;
+        });
+    } finally {
+      stop.set(true);
+    }
     assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
     assertThat(writes.get()).isEqualTo(200);
     assertThat(readersSeenInWrite.get()).isZero();
@@ -158,12 +163,15 @@ class RWLockContextTest {
     final int writers = 8;
     final int[] counter = new int[1];
     final CountDownLatch done = new CountDownLatch(writers);
-    for (int i = 0; i < writers; i++)
-      new Thread(() -> {
+    for (int i = 0; i < writers; i++) {
+      final Thread writer = new Thread(() -> {
         for (int k = 0; k < 500; k++)
           lockContext.executeInWriteLock(() -> counter[0]++);
         done.countDown();
-      }).start();
+      });
+      writer.setDaemon(true);
+      writer.start();
+    }
     assertThat(done.await(20, TimeUnit.SECONDS)).isTrue();
     assertThat(counter[0]).isEqualTo(writers * 500);
   }
@@ -182,7 +190,7 @@ class RWLockContextTest {
     final AtomicBoolean reentered = new AtomicBoolean();
     final CountDownLatch done = new CountDownLatch(1);
 
-    new Thread(() -> {
+    final Thread reader = new Thread(() -> {
       lockContext.executeInReadLock(() -> {
         readerInside.countDown();
         try {
@@ -199,15 +207,38 @@ class RWLockContextTest {
         return null;
       });
       done.countDown();
-    }).start();
+    });
+    reader.setDaemon(true);
+    reader.start();
 
-    readerInside.await(5, TimeUnit.SECONDS);
+    assertThat(readerInside.await(5, TimeUnit.SECONDS)).isTrue();
     final Thread writer = new Thread(() -> lockContext.executeInWriteLock(() -> null));
+    writer.setDaemon(true);
     writer.start();
+    // let the writer park behind the reader
+    while (writer.getState() != Thread.State.WAITING && writer.isAlive())
+      Thread.sleep(5);
     writerQueued.countDown();
     assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
     writer.join(10_000);
     assertThat(reentered.get()).isTrue();
+  }
+
+  @Test
+  void defaultContextIsASingleLock() {
+    final RWLockContext single = new RWLockContext();
+    assertThat(single.executeInWriteLock(() -> single.executeInReadLock(() -> "ok"))).isEqualTo("ok");
+  }
+
+  @Test
+  void lockingDisabledSkipsBothLocks() {
+    final RWLockContext ctx = new RWLockContext(8) {
+      {
+        setLockingEnabled(false);
+      }
+    };
+    assertThat(ctx.executeInReadLock(() -> "r")).isEqualTo("r");
+    assertThat(ctx.executeInWriteLock(() -> "w")).isEqualTo("w");
   }
 
   @Test
