@@ -211,6 +211,7 @@ import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
+import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -3161,6 +3162,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       negated = -f;
     else if (value instanceof final Double d)
       negated = -d;
+    else if (value instanceof final BigDecimal bd)
+      negated = bd.negate();
     else
       // A magnitude the visitors could not represent as one of the four above has no folded form that is certainly
       // equivalent, so leave it to the arithmetic.
@@ -3387,7 +3390,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         // silently dropped every record sitting exactly on the boundary of a comparison against a DOUBLE or DECIMAL
         // property, and turned any magnitude above Float.MAX_VALUE into infinity. The `F` suffix asks for single
         // precision (issue #7609).
-        number.value = Double.parseDouble(text);
+        number.value = parseSuffixlessDecimal(text);
       }
     } catch (final NumberFormatException e) {
       throw new CommandSQLParsingException("Invalid floating point: " + text);
@@ -3395,6 +3398,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     baseExpr.number = number;
     return baseExpr;
+  }
+
+  /**
+   * A literal a double represents exactly (at most 15 significant digits always round-trip) stays a {@link Double}. One
+   * with more digits than that is kept as a {@link BigDecimal} when the double would not print back as the same number,
+   * so a DECIMAL target or comparison sees what the user typed (issue #8872).
+   */
+  private static Number parseSuffixlessDecimal(final String text) {
+    final double d = Double.parseDouble(text);
+    if (text.length() > 15) {
+      final BigDecimal exact = new BigDecimal(text);
+      if (Double.isInfinite(d) || exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+        return exact;
+    }
+    return d;
   }
 
   /**
