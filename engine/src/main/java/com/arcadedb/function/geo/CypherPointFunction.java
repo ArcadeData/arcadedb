@@ -148,9 +148,19 @@ public class CypherPointFunction implements StatelessFunction {
         if (crsSrid != null && !crsSrid.equals(srid))
           throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
       }
+      // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
+      final boolean has3d = result.containsKey("z");
+      final Integer knownSrid = srid != null ? srid : crs != null ? sridOfCrs(crs) : null;
+      if (knownSrid != null && isKnownSrid(knownSrid) && is3dSrid(knownSrid) != has3d)
+        throw new CommandSemanticException(
+            "point() " + (has3d ? "3D coordinates" : "2D coordinates") + " do not match the dimension of srid " + knownSrid);
       // An unknown crs name is kept as given, without an srid, as before.
-      if (srid == null)
-        srid = crs != null ? sridOfCrs(crs) : result.containsKey("z") ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
+      if (srid == null) {
+        if (crs == null)
+          srid = has3d ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
+        else
+          srid = sridOfCrs(crs);
+      }
       if (crs == null)
         crs = crsOfSrid(srid, result.containsKey("z"));
       result.put("crs", crs);
@@ -173,6 +183,14 @@ public class CypherPointFunction implements StatelessFunction {
       case "wgs-84-3d" -> SRID_WGS84_3D;
       default -> null;
     };
+  }
+
+  private static boolean isKnownSrid(final int srid) {
+    return srid == SRID_CARTESIAN_2D || srid == SRID_CARTESIAN_3D || srid == SRID_WGS84_2D || srid == SRID_WGS84_3D;
+  }
+
+  private static boolean is3dSrid(final int srid) {
+    return srid == SRID_CARTESIAN_3D || srid == SRID_WGS84_3D;
   }
 
   /** CRS name of a well-known Neo4j SRID; an unknown SRID falls back to the cartesian name of the given dimension. */
