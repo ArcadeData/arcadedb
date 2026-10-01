@@ -109,6 +109,10 @@ class BootstrapElection {
    * Single attempt outcome. Used by tests; production code only inspects {@link #COMMITTED} vs
    * the rest to know whether the protocol can stop running on subsequent leader changes.
    */
+  /** How long the transfer to the elected source waits for it to be proven reachable (issue #8714). */
+  static final long REACHABILITY_WAIT_MS = 2_000L;
+  private static final long REACHABILITY_POLL_MS = 100L;
+
   enum Outcome {
     SKIPPED_DISABLED,           // bootstrapFromLocalDatabase=false
     SKIPPED_NOT_FIRST_FORMATION,// not first formation (application data already committed, or index unknown)
@@ -251,6 +255,32 @@ class BootstrapElection {
       if (outcome != Outcome.TRANSFERRED)
         concludePass(passId, committed);
     }
+  }
+
+  /**
+   * The targeted transfer to the elected source, screened and budgeted like the hand-off drivers (issue #8714). While a
+   * targeted transfer is pending Ratis refuses every write on this leader, so a source that died after answering the
+   * collection must not hold the whole bootstrap timeout: the budget is the slice a hand-off candidate gets
+   * ({@link RaftClusterManager#candidateTransferBudgetMs}), and the transfer is only issued once the source is proven
+   * reachable by {@link RaftHAServer#handoffReachablePeers()}, waiting at most {@link #REACHABILITY_WAIT_MS} for the
+   * first acknowledgement of this leader's term.
+   *
+   * @throws IllegalStateException if the source is not proven reachable, so the pass fails and is retried next term
+   */
+  void transferToElectedSource(final String sourceId, final long timeoutMs) {
+    final long budgetMs = RaftClusterManager.candidateTransferBudgetMs(timeoutMs, timeoutMs);
+    final long reachabilityDeadline = System.currentTimeMillis() + Math.min(budgetMs, REACHABILITY_WAIT_MS);
+    while (!haServer.handoffReachablePeers().contains(sourceId)) {
+      if (System.currentTimeMillis() >= reachabilityDeadline)
+        throw new IllegalStateException("elected source " + sourceId + " is not reachable from this leader");
+      try {
+        Thread.sleep(REACHABILITY_POLL_MS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("interrupted while waiting for elected source " + sourceId, e);
+      }
+    }
+    haServer.transferLeadership(sourceId, budgetMs);
   }
 
   /**
@@ -1005,7 +1035,7 @@ class BootstrapElection {
       if (stateMachine != null)
         stateMachine.announceBootstrapPass(passId, toHold, 2L * timeoutMs);
       try {
-        haServer.transferLeadership(source.toString(), timeoutMs);
+        transferToElectedSource(source.toString(), timeoutMs);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Bootstrap: leadership transfer to %s failed: %s; will retry next term", source, e.getMessage());

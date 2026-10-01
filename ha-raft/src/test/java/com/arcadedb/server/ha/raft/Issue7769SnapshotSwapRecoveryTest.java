@@ -342,6 +342,55 @@ class Issue7769SnapshotSwapRecoveryTest {
     assertThat(backup).doesNotExist();
   }
 
+  /** #8305: a crash after the validating reopen failed but before ROLLING_BACK was published must restore the backup. */
+  @ParameterizedTest
+  @ValueSource(strings = { "VALIDATION_FAILED", "ROLLING_BACK_UNPUBLISHED", "ROLLING_BACK", "RESTORING:" })
+  void failedValidationRollbackResumesAfterEachBoundary(final String crashPoint, @TempDir final Path root) throws Exception {
+    final Path db = root.resolve("database");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    swap(db, staged, backup);
+    assertThat(db.resolve(".snapshot-swap-state")).hasContent("INSTALLED");
+
+    final AtomicBoolean interrupted = new AtomicBoolean();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if ((crashPoint.endsWith(":") ? point.startsWith(crashPoint) : point.equals(crashPoint))
+          && interrupted.compareAndSet(false, true))
+        throw new SimulatedCrash();
+    };
+    try {
+      assertThatThrownBy(() -> SnapshotInstaller.rollbackAfterFailedValidation(db, backup)).isInstanceOf(SimulatedCrash.class);
+    } finally {
+      SnapshotInstaller.swapProgressForTesting = null;
+    }
+    assertThat(interrupted).isTrue();
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(db.resolve(".snapshot-swap-state")).doesNotExist();
+    assertThat(backup).doesNotExist();
+  }
+
+  @Test
+  void failedValidationWithoutABackupRollsForward(@TempDir final Path root) throws Exception {
+    final Path db = root.resolve("database");
+    createDatabase(db, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(db.resolve(".snapshot-swap-state"), "VALIDATION_FAILED");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    assertDatabaseValue(db, "new");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+  }
+
   @Test
   void unknownPhasePreservesAllFiles(@TempDir final Path root) throws Exception {
     final Path db = root.resolve("database");
