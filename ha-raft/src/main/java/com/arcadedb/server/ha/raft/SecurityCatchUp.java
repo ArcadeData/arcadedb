@@ -183,6 +183,8 @@ final class SecurityCatchUp implements AutoCloseable {
    * @return the new request's token, or {@link #FREE} when the latch is already held
    */
   long tryTakeRequest() {
+    if (requestOwner.get() != FREE)
+      return FREE;
     final long token = tokenSequence.incrementAndGet();
     return requestOwner.compareAndSet(FREE, token) ? token : FREE;
   }

@@ -55,6 +55,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1084,8 +1085,9 @@ public final class SnapshotInstaller {
           + "': a retained .snapshot-backup from a previous failed install could not be reconciled into "
           + dbPath + ". It is the only intact copy of this database on this node and will not be deleted; "
           + "resolve the underlying problem (typically a full or read-only volume) and retry. To recover by hand: "
-          + "stop the node, delete the entries in the database directory that do not start with '.snapshot', move "
-          + "the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
+          + "stop the node, and keep .snapshot-backup untouched until the move below has completed because it is "
+          + "the only intact copy; delete the entries in the database directory that do not start with '.snapshot', "
+          + "move the contents of .snapshot-backup into it, then delete .snapshot-new, .snapshot-backup and "
           + ".snapshot-pending");
 
     if (Files.exists(pendingMarker))
@@ -1543,7 +1545,13 @@ public final class SnapshotInstaller {
                 "Rolling back the legacy snapshot swap for %s, which was interrupted while backing up the original "
                     + "database, to the retained backup", null, dbDir);
             deleteDirectoryIfExists(snapshotNew);
+            final List<String> liveBeforeRestore = liveEntryNames(dbDir);
             restoreBackup(dbDir, snapshotBackup);
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Legacy snapshot swap for %s restored from the backup over these live entries, which are original "
+                    + "files if the crash was in the backup step and snapshot-only files otherwise: %s. If the "
+                    + "database does not open, delete the entries the restored schema does not reference",
+                null, dbDir, liveBeforeRestore);
           }
           requireRecoveredDatabase(dbDir);
           completeSwapRecovery(dbDir);
@@ -1659,6 +1667,16 @@ public final class SnapshotInstaller {
         entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
       return staged.iterator().hasNext();
     }
+  }
+
+  private static List<String> liveEntryNames(final Path dbDir) throws IOException {
+    final List<String> names = new ArrayList<>();
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
+        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+      for (final Path entry : live)
+        names.add(entry.getFileName().toString());
+    }
+    return names;
   }
 
   /** Whether any live database entry has the name of an entry in the backup. */
