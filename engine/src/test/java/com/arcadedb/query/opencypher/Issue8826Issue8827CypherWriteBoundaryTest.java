@@ -270,4 +270,18 @@ class Issue8826Issue8827CypherWriteBoundaryTest extends TestHelper {
     drain("UNWIND range(1, 500) AS i CREATE (:Sk {i: i}) WITH i SKIP 10 RETURN i");
     assertThat(count("MATCH (a:Sk) RETURN count(a) AS c")).isEqualTo(500L);
   }
+
+  @Test
+  void writeProcedureBeforeLimitRunsForEveryRow() {
+    drain("UNWIND range(1, 300) AS i CREATE (:Wp {i: i})");
+    drain("CREATE (:Hub)");
+    drain("MATCH (h:Hub), (w:Wp) CALL merge.relationship(h, 'LINKS', {}, {}, w) YIELD rel WITH rel LIMIT 1 RETURN rel");
+    assertThat(count("MATCH (:Hub)-[r:LINKS]->(:Wp) RETURN count(r) AS c")).isEqualTo(300L);
+  }
+
+  @Test
+  void limitZeroWithOrderByAfterWriteStillWrites() {
+    drain("UNWIND range(1, 500) AS i CREATE (:Ol {i: i}) WITH i ORDER BY i LIMIT 0 RETURN i");
+    assertThat(count("MATCH (a:Ol) RETURN count(a) AS c")).isEqualTo(500L);
+  }
 }
