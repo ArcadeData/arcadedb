@@ -148,7 +148,8 @@ class ServerTracingIT extends BaseGraphServerTest {
 
   /**
    * Issue #7295: a readiness or health probe produces no span through the production handler wiring, while a request
-   * sent after it does. The probe's span, were it created, would be exported before the later request's.
+   * sent after it does. The probe's span, were it created, would be exported before the handler records its RED timer, so
+   * the test waits for every probe's timer before asserting that no span carries a probe path (issue #8803).
    */
   @Test
   void healthProbesProduceNoSpan() throws Exception {
@@ -166,8 +167,8 @@ class ServerTracingIT extends BaseGraphServerTest {
           probeRequestsBefore[m][p] = probeRequestCount(methods[m], probes[p]);
 
       for (final String method : methods)
-        for (final String probe : new String[] { "/api/v1/ready", "/api/v1/health" }) {
-          final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl(probe)).openConnection();
+        for (final String probe : probes) {
+          final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1" + probe)).openConnection();
           c.setRequestMethod(method);
           c.connect();
           assertThat(c.getResponseCode()).as(method + " " + probe).isBetween(200, 299);
