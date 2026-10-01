@@ -178,7 +178,7 @@ public final class IndexMinMaxStep extends AbstractExecutionStep {
     final StringBuilder builder = new StringBuilder();
     builder.append("  ".repeat(Math.max(0, depth * indent)));
     builder.append(max ? "+ MAX" : "+ MIN").append(" FROM INDEX ").append(typeName).append('[').append(propertyName).append(']');
-    if (range != null)
+    if (filter != null)
       builder.append(" WHERE ").append(filter.getText());
     if (context.isProfiling()) {
       builder.append(" (").append(getCostFormatted());

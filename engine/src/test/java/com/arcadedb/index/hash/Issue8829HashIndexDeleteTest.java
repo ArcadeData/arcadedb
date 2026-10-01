@@ -101,6 +101,19 @@ class Issue8829HashIndexDeleteTest extends TestHelper {
       assertThat(count("SELECT count(*) AS c FROM H WHERE g + 0 = " + g)).as("scan count for g=" + g).isEqualTo(expected[g]);
     }
     assertThat(count("SELECT count(*) AS c FROM H")).isEqualTo(records - toDelete);
+
+    // the buckets now hold dead space: inserting into them again must reclaim it and stay consistent
+    database.transaction(() -> {
+      for (int i = 0; i < records / 2; i++)
+        database.newDocument("H").set("g", (long) (i % keys)).save();
+    });
+    for (int g = 0; g < Math.min(keys, 50); g++) {
+      final int extra = records / 2 / keys + (g < (records / 2) % keys ? 1 : 0);
+      assertThat(count("SELECT count(*) AS c FROM H WHERE g = " + g)).as("index count after reinsert for g=" + g)
+          .isEqualTo(expected[g] + extra);
+      assertThat(count("SELECT count(*) AS c FROM H WHERE g + 0 = " + g)).as("scan count after reinsert for g=" + g)
+          .isEqualTo(expected[g] + extra);
+    }
   }
 
   private long count(final String sql) {

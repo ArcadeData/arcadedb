@@ -125,6 +125,54 @@ class Issue8812RangeMinMaxIndexTest extends TestHelper {
     assertAnswer("SELECT min(b) AS c FROM V WHERE a > 100", "SELECT min(b + 0) AS c FROM V WHERE a + 0 > 100", null);
   }
 
+  @Test
+  void aliasEqualToTheSourceColumnAndANullParameter() {
+    try (final ResultSet rs = database.query("sql", "SELECT max(a) AS a FROM V WHERE a < 100")) {
+      assertThat(rs.next().<Long>getProperty("a")).isEqualTo(98L);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > :lo", Map.of("lo", Long.MIN_VALUE))) {
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(0L);
+    }
+    final java.util.HashMap<String, Object> nullParam = new java.util.HashMap<>();
+    nullParam.put("lo", null);
+    final Object viaIndex;
+    try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > :lo", nullParam)) {
+      viaIndex = rs.next().getProperty("c");
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > :lo", nullParam)) {
+      assertThat(viaIndex).isEqualTo(rs.next().getProperty("c"));
+    }
+  }
+
+  @Test
+  void aNullBoundOfARangeMatchesNothing() {
+    final java.util.HashMap<String, Object> nullParam = new java.util.HashMap<>();
+    nullParam.put("lo", null);
+    // a comparison with null is never true, through the index as through a scan: the null bound used to read as "no bound"
+    try (final ResultSet rs = database.query("sql", "SELECT a FROM V WHERE a > :lo ORDER BY a LIMIT 1", nullParam)) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT a FROM V WHERE a < :lo", nullParam)) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT a FROM V WHERE a BETWEEN :lo AND 10", nullParam)) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void changesOfTheOpenTransactionAreSeen() {
+    database.begin();
+    try {
+      database.command("sql", "CREATE VERTEX V SET a = 1003");
+      database.command("sql", "DELETE FROM V WHERE a = 1002");
+      assertAnswer("SELECT min(a) AS c FROM V WHERE a > 1001", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 1001", 1003L);
+    } finally {
+      database.rollback();
+    }
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a > 1001", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 1001", 1002L);
+  }
+
   private void assertAnswer(final String sql, final String checkSql, final Object expected) {
     final Object actual;
     final Object check;
