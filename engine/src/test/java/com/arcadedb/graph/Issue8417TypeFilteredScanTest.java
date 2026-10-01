@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -246,6 +247,61 @@ class Issue8417TypeFilteredScanTest {
     final EdgeBucketMask mixed = EdgeBucketMask.of(db, new String[] { "Unit", "Case_unit" });
     for (final Integer bucketId : database.getSchema().getType("Unit").getBucketIds(false))
       assertThat(mixed.matches(bucketId)).isFalse();
+  }
+
+  @Test
+  void wideBucketSpanSwitchesToTheSortedShapeAndStillMatchesExactly() {
+    // A NARROW SPAN IS THE ONE-ARRAY-READ SHAPE
+    final EdgeBucketMask narrow = EdgeBucketMask.ofBucketIds(new int[] { 12, 10, 14 });
+    assertThat(narrow.isDense()).isTrue();
+    assertThat(narrow.matches(10)).isTrue();
+    assertThat(narrow.matches(11)).isFalse();
+    assertThat(narrow.matches(14)).isTrue();
+    assertThat(narrow.matches(15)).isFalse();
+
+    // A TYPE WHOSE SUBTYPE WAS CREATED THOUSANDS OF BUCKETS LATER: A DENSE MASK WOULD ALLOCATE THE WHOLE GAP PER HOP
+    final int far = 10 + EdgeBucketMask.MAX_DENSE_SPAN * 20;
+    final EdgeBucketMask wide = EdgeBucketMask.ofBucketIds(new int[] { far, 10, 11, far + 1 });
+    assertThat(wide.isDense()).isFalse();
+    assertThat(wide.matches(10)).isTrue();
+    assertThat(wide.matches(11)).isTrue();
+    assertThat(wide.matches(12)).isFalse();
+    assertThat(wide.matches(far - 1)).isFalse();
+    assertThat(wide.matches(far)).isTrue();
+    assertThat(wide.matches(far + 1)).isTrue();
+    assertThat(wide.matches(far + 2)).isFalse();
+    assertThat(wide.matches(9)).isFalse();
+    // A CORRUPT NUMBER THAT WOULD WRAP INTO A VALID ID IF NARROWED FIRST
+    assertThat(wide.matches((1L << 32) + 10)).isFalse();
+
+    // THE BOUNDARY: THE WIDEST SPAN STILL SERVED DENSE, AND ONE MORE
+    assertThat(EdgeBucketMask.ofBucketIds(new int[] { 0, EdgeBucketMask.MAX_DENSE_SPAN - 1 }).isDense()).isTrue();
+    assertThat(EdgeBucketMask.ofBucketIds(new int[] { 0, EdgeBucketMask.MAX_DENSE_SPAN }).isDense()).isFalse();
+
+    assertThat(EdgeBucketMask.ofBucketIds(new int[0])).isNull();
+  }
+
+  @Test
+  void stripedSuperNodeFindsTheRareTypeInEveryStripe() {
+    final int savedThreshold = GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.getValueAsInteger();
+    GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
+    try {
+      final RID[] ids = buildHub(HUB, false);
+      database.transaction(() -> {
+        final Vertex unit = ids[0].asVertex();
+        assertThat(database.lookupByRID(((VertexInternal) unit).getInEdgesHeadChunk(), true)).isInstanceOf(StripeDirectory.class);
+
+        assertThat(ridsOf(unit.getVertices(Vertex.DIRECTION.IN, "Parent").iterator())).containsExactly(ids[1]);
+        assertThat(ridsOf(unit.getEdges(Vertex.DIRECTION.IN, "Parent").iterator())).containsExactly(ids[2]);
+        final List<RID> rids = new ArrayList<>();
+        ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunk((VertexInternal) unit, Vertex.DIRECTION.IN)
+            .ridIterator("Parent").forEachRemaining(rids::add);
+        assertThat(rids).containsExactly(ids[1]);
+        assertThat(ridsOf(unit.getVertices(Vertex.DIRECTION.IN, "Case_unit").iterator())).hasSize(HUB);
+      });
+    } finally {
+      GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(savedThreshold);
+    }
   }
 
   /**
