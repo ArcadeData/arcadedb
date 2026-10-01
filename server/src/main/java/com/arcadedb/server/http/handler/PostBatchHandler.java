@@ -280,6 +280,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     this.httpClient = LeaderDial.newConnectTimeoutBoundedClient(httpServer.getServer().getConfiguration());
   }
 
+  /**
+   * Releases the HTTP client this handler forwards a follower's batch to the leader on. Called when the
+   * {@link HttpServer} stops (issue #8024): a {@code java.net.http.HttpClient} built without a supplied executor owns a
+   * selector thread, an executor and a connection pool, and one handler is built per server start, so an unreleased
+   * client outlived every start/stop cycle of an in-process server. {@link LeaderDial#releaseBounded} for the same
+   * reason {@code LeaderCommandForwarder} uses it (issue #7985): prompt, and bounded rather than waiting out a
+   * forward whose answer this node will never read.
+   */
+  public void close() {
+    LeaderDial.releaseBounded(httpClient);
+  }
+
   /** Whether the one-shot "the leader address names the wrong node" warning has been logged. For tests. */
   boolean misconfigurationWarned() {
     return forwardedAgainWarned.get();
