@@ -14,6 +14,8 @@ repos:
         args:
           - --allow-missing-credentials
       - id: detect-private-key
+        # The support redactor's tests feed it PEM headers on purpose: they are the input it has to recognize, not keys
+        exclude: ^server/src/test/java/com/arcadedb/server/support/Support(LogCollector|Redactor)Test\.java$
       - id: check-case-conflict
       - id: check-yaml
         args:
