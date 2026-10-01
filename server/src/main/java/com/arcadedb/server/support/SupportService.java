@@ -62,6 +62,7 @@ public class SupportService implements AutoCloseable {
   private final ArcadeDBServer         server;
   private final SupportConfiguration   configuration;
   private final SupportBundleManager   bundles;
+  private final SupportScreenshots     screenshots = new SupportScreenshots();
   private final ZoneId                 zone;
   private volatile long                maxZipBytes;
   private volatile Supplier<List<Path>> logFiles;
@@ -110,6 +111,10 @@ public class SupportService implements AutoCloseable {
 
   public SupportBundleManager getBundles() {
     return bundles;
+  }
+
+  public SupportScreenshots getScreenshots() {
+    return screenshots;
   }
 
   @Override
@@ -527,15 +532,17 @@ public class SupportService implements AutoCloseable {
       metadata.put("kind", kind);
 
     final String previewId = request.getString("previewId", null);
+    final List<SupportScreenshots.Shot> shots = screenshots.peek(screenshotIds(request));
 
     // The preview is leased for the whole upload: a slow one may outlive the preview's 15 minutes
     try (final SupportBundleManager.Lease lease = previewId == null || previewId.isEmpty() ? null : bundles.lease(previewId)) {
       final SupportBundleManager.Bundle bundle = lease == null ? null : lease.bundle();
       final String response = client.createIssue(metadata, bundle == null ? null : bundle.getLogs(),
           bundle == null ? null : bundle.getDiagnostics(), bundle == null ? null : bundle.getSummary(),
-          bundle == null ? null : bundle.getThreads());
+          bundle == null ? null : bundle.getThreads(), shots);
       if (bundle != null)
         bundles.remove(bundle.getId());
+      screenshots.remove(shots);
       return response;
     } catch (final IOException e) {
       throw new SupportException("internal_error", "Cannot read the preview files: " + e.getClass().getSimpleName());
@@ -545,16 +552,23 @@ public class SupportService implements AutoCloseable {
     }
   }
 
-  /** Sends the files of a preview to an existing issue. */
-  public String addAttachments(final long number, final String previewId) {
+  /** Sends the files of a preview and/or the screenshots the user added to an existing issue. */
+  public String addAttachments(final long number, final String previewId, final List<String> screenshotIds) {
     final SupportPortalClient client = requireClient();
-    try (final SupportBundleManager.Lease lease = bundles.lease(previewId)) {
-      final SupportBundleManager.Bundle bundle = lease.bundle();
-      if (bundle.isEmpty())
+    final List<SupportScreenshots.Shot> shots = screenshots.peek(screenshotIds);
+    final boolean withPreview = previewId != null && !previewId.isEmpty();
+    if (!withPreview && shots.isEmpty())
+      throw new SupportException("bad_request", "There is nothing to send: prepare the files or add a screenshot");
+    try (final SupportBundleManager.Lease lease = withPreview ? bundles.lease(previewId) : null) {
+      final SupportBundleManager.Bundle bundle = lease == null ? null : lease.bundle();
+      if (bundle != null && bundle.isEmpty() && shots.isEmpty())
         throw new SupportException("bad_request", "The preview has no files to send");
-      final String response = client.addAttachments(number, bundle.getLogs(), bundle.getDiagnostics(), bundle.getSummary(),
-          bundle.getThreads());
-      bundles.remove(bundle.getId());
+      final String response = client.addAttachments(number, bundle == null ? null : bundle.getLogs(),
+          bundle == null ? null : bundle.getDiagnostics(), bundle == null ? null : bundle.getSummary(),
+          bundle == null ? null : bundle.getThreads(), shots);
+      if (bundle != null)
+        bundles.remove(bundle.getId());
+      screenshots.remove(shots);
       return response;
     } catch (final IOException e) {
       throw new SupportException("internal_error", "Cannot read the preview files: " + e.getClass().getSimpleName());
@@ -562,6 +576,59 @@ public class SupportService implements AutoCloseable {
       SupportPortalClient.logFailure(this, "add attachments", e);
       throw e;
     }
+  }
+
+  /** Sends the files of a preview to an existing issue. */
+  public String addAttachments(final long number, final String previewId) {
+    return addAttachments(number, previewId, List.of());
+  }
+
+  // ------------------------------------------------------------------------------------------------ screenshots
+
+  /**
+   * Holds a screenshot the user added until Send, and answers what the browser needs to show it back: {@code {id, type, size}}.
+   * The picture travels as base64 in {@code data} so it rides the JSON the rest of the API speaks.
+   */
+  public JSONObject stageScreenshot(final JSONObject request) {
+    final String data = request.getString("data", "");
+    if (data.isEmpty())
+      throw new SupportException("bad_request", "The screenshot is empty");
+    // Bound BEFORE decoding: a base64 string decodes to three quarters of its length
+    if (data.length() > SupportScreenshots.MAX_BYTES / 3 * 4 + 8)
+      throw new SupportException("too_large", "A screenshot is at most " + SupportScreenshots.MAX_BYTES / (1024 * 1024) + " MB");
+    final byte[] bytes;
+    try {
+      bytes = java.util.Base64.getDecoder().decode(data);
+    } catch (final IllegalArgumentException e) {
+      throw new SupportException("bad_request", "The screenshot is not valid base64");
+    }
+    final SupportScreenshots.Shot shot = screenshots.stage(bytes);
+    return new JSONObject().put("id", shot.id()).put("type", shot.mediaType()).put("size", shot.bytes().length);
+  }
+
+  public void discardScreenshot(final String id) {
+    screenshots.discard(id);
+  }
+
+  /** {@code screenshots} of a request: a list of ids, at most five. */
+  private static List<String> screenshotIds(final JSONObject request) {
+    if (!request.has("screenshots") || request.isNull("screenshots"))
+      return List.of();
+    if (!(request.get("screenshots") instanceof JSONArray array))
+      throw new SupportException("bad_request", "screenshots must be a list of screenshot ids");
+    if (array.length() > SupportScreenshots.MAX_PER_SEND)
+      throw new SupportException("bad_request", "At most " + SupportScreenshots.MAX_PER_SEND + " screenshots can be sent at a time");
+    final List<String> ids = new ArrayList<>();
+    for (int i = 0; i < array.length(); i++)
+      if (array.get(i) instanceof String id && !id.isBlank())
+        ids.add(id);
+      else
+        throw new SupportException("bad_request", "screenshots must be a list of screenshot ids");
+    return ids;
+  }
+
+  public static List<String> screenshotIdsOf(final JSONObject request) {
+    return screenshotIds(request);
   }
 
   public String listIssues(final String status) {
@@ -577,11 +644,39 @@ public class SupportService implements AutoCloseable {
   }
 
   public String addComment(final long number, final String body) {
+    return addComment(number, body, List.of());
+  }
+
+  /**
+   * A reply, optionally showing screenshots the user added: they are attached to the issue first, then the reply names them.
+   * If the reply itself fails afterwards the pictures stay attached to the issue (they were sent) and are not held here any more.
+   */
+  public String addComment(final long number, final String body, final List<String> screenshotIds) {
     if (body == null || body.isBlank())
       throw new SupportException("bad_request", "The comment is empty");
     if (body.length() > 20000)
       throw new SupportException("bad_request", "The comment is at most 20000 characters");
-    return requireClient().addComment(number, body);
+    final SupportPortalClient client = requireClient();
+    final List<SupportScreenshots.Shot> shots = screenshots.peek(screenshotIds);
+    if (shots.isEmpty())
+      return client.addComment(number, body);
+    try {
+      final JSONObject uploaded = new JSONObject(client.addScreenshots(number, shots));
+      screenshots.remove(shots);
+      final List<String> names = new ArrayList<>();
+      if (uploaded.has("added") && uploaded.get("added") instanceof JSONArray added)
+        for (int i = 0; i < added.length(); i++)
+          if (added.get(i) instanceof String name)
+            names.add(name);
+      if (names.size() != shots.size())
+        throw new SupportException("portal_error", "The portal did not confirm the screenshots; send the reply again without them");
+      return client.addComment(number, body, names);
+    } catch (final IOException e) {
+      throw new SupportException("internal_error", "Cannot send the screenshots: " + e.getClass().getSimpleName());
+    } catch (final SupportPortalException e) {
+      SupportPortalClient.logFailure(this, "reply with screenshots", e);
+      throw e;
+    }
   }
 
   public void setOpen(final long number, final boolean open) {

@@ -226,6 +226,7 @@ class SupportEndpointsTest extends BaseGraphServerTest {
         { "POST", "/api/v1/server/support/issues/1/comments" }, { "POST", "/api/v1/server/support/issues/1/attachments" },
         { "POST", "/api/v1/server/support/issues/1/requests/rq_0123abcd/response" },
         { "POST", "/api/v1/server/support/issues/1/responses" },
+        { "POST", "/api/v1/server/support/screenshots" }, { "DELETE", "/api/v1/server/support/screenshots/shot_x" },
         { "POST", "/api/v1/server/support/bundle" }, { "POST", "/api/v1/server/support/installation" } };
 
     // a user that is not root
@@ -691,6 +692,122 @@ class SupportEndpointsTest extends BaseGraphServerTest {
     final Resp read = call("POST", "/api/v1/query/" + getDatabaseName(),
         new JSONObject().put("language", "sql").put("command", "SELECT 1 AS n").toString());
     assertThat(read.status()).isEqualTo(200);
+  }
+
+  private static final byte[] PNG = { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 1 };
+
+  private static String b64(final byte[] bytes) {
+    return Base64.getEncoder().encodeToString(bytes);
+  }
+
+  private String stage(final byte[] bytes) throws Exception {
+    final Resp r = call("POST", "/api/v1/server/support/screenshots", new JSONObject().put("data", b64(bytes)).toString());
+    assertThat(r.status()).isEqualTo(201);
+    return r.json().getString("id");
+  }
+
+  @Test
+  void screenshotsAreStagedCheckedByTheirBytesAndSentOnlyWhenTheUserSends() throws Exception {
+    register();
+
+    // Staged: recognised by the bytes, not by what the browser says; answered with what the browser needs to show it back
+    final Resp staged = call("POST", "/api/v1/server/support/screenshots", new JSONObject().put("data", b64(PNG)).put("type", "text/plain").toString());
+    assertThat(staged.status()).isEqualTo(201);
+    assertThat(staged.json().getString("id")).startsWith("shot_");
+    assertThat(staged.json().getString("type")).isEqualTo("image/png");
+    assertThat(staged.json().getInt("size")).isEqualTo(PNG.length);
+    assertThat(service().getScreenshots().size()).isEqualTo(1);
+    // staging is local: nothing was sent to the portal (only the registration's own check was)
+    assertThat(portal.requests).allMatch(r -> r.path().equals("/api/v1/support/whoami"));
+
+    // Refused: not a picture (SVG, a script, text), empty, not base64, too large
+    for (final String bad : new String[] { "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>", "hello world, not an image",
+        "#!/bin/sh\nrm -rf /\n" })
+      assertThat(call("POST", "/api/v1/server/support/screenshots", new JSONObject().put("data", b64(bad.getBytes(StandardCharsets.UTF_8))).toString())
+          .status()).as(bad).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/screenshots", "{\"data\":\"\"}").status()).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/screenshots", "{\"data\":\"@@@ not base64 @@@\"}").status()).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/screenshots", "{}").status()).isEqualTo(400);
+    final byte[] huge = java.util.Arrays.copyOf(PNG, SupportScreenshots.MAX_BYTES + 1);
+    assertThat(call("POST", "/api/v1/server/support/screenshots", new JSONObject().put("data", b64(huge)).toString()).status()).isEqualTo(413);
+    assertThat(service().getScreenshots().size()).isEqualTo(1);
+
+    // Removed by the user: gone, and removing an unknown one is not an error
+    final String second = stage(PNG);
+    assertThat(call("DELETE", "/api/v1/server/support/screenshots/" + second, null).status()).isEqualTo(204);
+    assertThat(call("DELETE", "/api/v1/server/support/screenshots/" + second, null).status()).isEqualTo(204);
+    assertThat(service().getScreenshots().size()).isEqualTo(1);
+
+    // A new issue with the screenshot: the portal gets one `screenshot` part with the bytes, and it is no longer held
+    final String id = staged.json().getString("id");
+    final Resp created = call("POST", "/api/v1/server/support/issues",
+        new JSONObject().put("title", "Error with Query").put("body", "Why does it return this?").put("severity", "S3")
+            .put("screenshots", new JSONArray().put(id)).toString());
+    assertThat(created.status()).isEqualTo(201);
+    final String sent = new String(portal.last().body(), StandardCharsets.ISO_8859_1);
+    assertThat(portal.last().path()).isEqualTo("/api/v1/support/issues");
+    assertThat(sent).contains("name=\"screenshot\"").contains("Content-Type: image/png").contains("filename=\"screenshot.png\"");
+    assertThat(sent).contains(new String(PNG, StandardCharsets.ISO_8859_1));
+    assertThat(service().getScreenshots().size()).isZero();
+    // ... so the same id cannot be sent twice, and an id the server never held is a 404, both before anything is sent
+    final int before = portal.requests.size();
+    assertThat(call("POST", "/api/v1/server/support/issues", new JSONObject().put("title", "t").put("severity", "S3")
+        .put("screenshots", new JSONArray().put(id)).toString()).status()).isEqualTo(404);
+    assertThat(call("POST", "/api/v1/server/support/issues", new JSONObject().put("title", "t").put("severity", "S3")
+        .put("screenshots", new JSONArray().put("shot_nope")).toString()).json().getString("error")).isEqualTo("screenshot_not_found");
+    assertThat(portal.requests.size()).isEqualTo(before);
+
+    // A reply that shows two screenshots: they are attached first, then the reply NAMES what the portal stored
+    final String a = stage(PNG);
+    final String b = stage(PNG);
+    final Resp reply = call("POST", "/api/v1/server/support/issues/42/comments",
+        new JSONObject().put("body", "This is what I get").put("screenshots", new JSONArray().put(a).put(b)).toString());
+    assertThat(reply.status()).isEqualTo(201);
+    assertThat(portal.requests.get(portal.requests.size() - 2).path()).isEqualTo("/api/v1/support/issues/42/attachments");
+    assertThat(new String(portal.requests.get(portal.requests.size() - 2).body(), StandardCharsets.ISO_8859_1).split("name=\"screenshot\"", -1))
+        .hasSize(3);
+    assertThat(portal.last().path()).isEqualTo("/api/v1/support/issues/42/comments");
+    final JSONObject comment = new JSONObject(portal.last().bodyText());
+    assertThat(comment.getString("body")).isEqualTo("This is what I get");
+    assertThat(comment.getJSONArray("files").length()).isEqualTo(2);
+    assertThat(comment.getJSONArray("files").getString(0)).startsWith("screenshot-");
+    assertThat(service().getScreenshots().size()).isZero();
+
+    // More files to an existing issue: screenshots alone are enough, nothing at all is refused, more than five is refused
+    final String c = stage(PNG);
+    assertThat(call("POST", "/api/v1/server/support/issues/42/attachments", new JSONObject().put("screenshots", new JSONArray().put(c)).toString())
+        .status()).isEqualTo(200);
+    assertThat(call("POST", "/api/v1/server/support/issues/42/attachments", "{}").status()).isEqualTo(400);
+    final JSONArray six = new JSONArray();
+    for (int i = 0; i < 6; i++)
+      six.put(stage(PNG));
+    assertThat(call("POST", "/api/v1/server/support/issues/42/attachments", new JSONObject().put("screenshots", six).toString()).status()).isEqualTo(400);
+    assertThat(call("POST", "/api/v1/server/support/issues/42/comments", new JSONObject().put("body", "x").put("screenshots", "shot_x").toString()).status())
+        .isEqualTo(400);
+
+    // What the portal refuses is shown as it is, and the screenshots are still held for a retry
+    final String d = stage(PNG);
+    portal.handler = r -> new MockPortal.Response(413, MockPortal.error("too_large", "a screenshot is limited to 5 MB"));
+    assertThat(call("POST", "/api/v1/server/support/issues", new JSONObject().put("title", "t").put("severity", "S3")
+        .put("screenshots", new JSONArray().put(d)).toString()).status()).isEqualTo(413);
+    assertThat(service().getScreenshots().peek(java.util.List.of(d))).hasSize(1);
+
+    assertKeyNeverServed();
+  }
+
+  @Test
+  void theScreenshotStoreIsBounded() {
+    final SupportScreenshots store = new SupportScreenshots();
+    for (int i = 0; i < SupportScreenshots.MAX_HELD; i++)
+      store.stage(PNG);
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> store.stage(PNG)).isInstanceOf(SupportException.class).hasMessageContaining("Too many");
+    assertThat(SupportScreenshots.extensionOf(PNG)).isEqualTo("png");
+    assertThat(SupportScreenshots.extensionOf(new byte[] { (byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1 })).isEqualTo("jpg");
+    assertThat(SupportScreenshots.extensionOf("GIF89a\u0001\u0000\u0001\u0000\u0000\u0000".getBytes(StandardCharsets.ISO_8859_1))).isEqualTo("gif");
+    assertThat(SupportScreenshots.extensionOf(new byte[] { 'R', 'I', 'F', 'F', 1, 0, 0, 0, 'W', 'E', 'B', 'P' })).isEqualTo("webp");
+    assertThat(SupportScreenshots.extensionOf("<svg></svg>   ".getBytes(StandardCharsets.UTF_8))).isNull();
+    assertThat(SupportScreenshots.extensionOf(new byte[] { 1, 2, 3 })).isNull();
+    assertThat(SupportScreenshots.extensionOf(null)).isNull();
   }
 
   @Test

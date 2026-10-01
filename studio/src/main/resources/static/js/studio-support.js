@@ -837,6 +837,7 @@ function renderSupportIssueForm() {
   var s = supportStatus || {};
   var html = "";
   delete supportPreviews.spIssue;
+  supportShotsClear("spIssue");
 
   if (!s.registered || !supportIsEntitled()) {
     html +=
@@ -851,7 +852,7 @@ function renderSupportIssueForm() {
 
   html += '<p class="support-hint mb-3">Describe the problem and attach the logs and a diagnostics snapshot of this server. Secrets are masked before anything leaves the server, and you review exactly what is sent.</p>';
   html += '<div id="spIssueResult"></div>';
-  html += '<div id="spIssueCard">';
+  html += '<div id="spIssueCard" data-shots="spIssue">';
   html +=
     '<div class="mb-2"><label class="form-label mb-1" style="font-size: 0.82rem;" for="spIssueTitle">Title</label><input type="text" class="form-control" id="spIssueTitle" maxlength="200" autocomplete="off"></div>';
   html +=
@@ -866,6 +867,7 @@ function renderSupportIssueForm() {
   html +=
     '<div class="col-md-4"><label class="form-label mb-1" style="font-size: 0.82rem;" for="spIssueKind">Kind</label><select class="form-select" id="spIssueKind"><option value="">Not specified</option><option value="bug">Bug</option><option value="question">Question</option><option value="performance">Performance</option><option value="other">Other</option></select></div>';
   html += "</div>";
+  html += supportShotsHtml("spIssue");
   html += supportCollectFormHtml("spIssue");
   html += '<hr style="border-color: var(--border-light);">';
   html +=
@@ -894,12 +896,15 @@ function supportSendIssue() {
   };
   if ($("#spIssueKind").val()) body.kind = $("#spIssueKind").val();
   if (preview) body.previewId = preview.id;
+  var shots = supportShotsIds("spIssue");
+  if (shots.length) body.screenshots = shots;
 
   $("#spIssueSendBtn").prop("disabled", true).html(supportSpinner("Sending..."));
   supportClearAlert("#spIssueResult");
   supportApi("POST", "/issues", body)
     .done(function (text) {
       var r = supportParse(text) || {};
+      supportShotsClear("spIssue", true);
       supportHideModal("supportIssueModal");
       supportIssues = null;
       globalNotify("Support", "Issue #" + r.number + " was sent to ArcadeData support", "success");
@@ -1054,6 +1059,7 @@ function renderSupportIssueDetail() {
   var issue = supportCurrentIssue;
   var closed = supportIssueIsClosed(issue);
   delete supportPreviews.spAttach;
+  supportShotsClear("spReply");
 
   var html = '<div class="mb-2"><a href="#" id="spBackToIssues"><i class="fa fa-arrow-left"></i> All issues</a></div>';
   html += '<div class="support-card">';
@@ -1093,10 +1099,11 @@ function renderSupportIssueDetail() {
       '"><div class="support-meta"><b>' +
       supportEsc(who) +
       "</b>" +
-      supportEsc(kind) +
-      " " +
+      (entry.authorRole ? '<span class="support-role">' + supportEsc(entry.authorRole) + "</span>" : "") +
+      (kind ? "<span>" + supportEsc(kind) + "</span>" : "") +
+      "<span>" +
       supportEsc(supportFormatDate(entry.createdOn || entry.createdAt || entry.at || entry.date)) +
-      '</div><div class="support-body">' +
+      '</span></div><div class="support-body">' +
       supportEsc(text) +
       "</div>" +
       supportRequestsHtml(entry) +
@@ -1105,9 +1112,10 @@ function renderSupportIssueDetail() {
   html += "</div>";
 
   html += supportRequestsBarHtml(issue);
-  html += '<div class="support-card"><h6>Reply</h6>';
+  html += '<div class="support-card" data-shots="spReply"><h6>Reply</h6>';
   html += '<div id="spReplyAlert"></div>';
-  html += '<textarea class="form-control mb-2" id="spReplyBody" rows="4" maxlength="20000" placeholder="Write a reply to ArcadeData support..."></textarea>';
+  html += '<textarea class="form-control mb-2" id="spReplyBody" rows="4" maxlength="20000" placeholder="Write a reply to ArcadeData support... (you can paste a screenshot here)"></textarea>';
+  html += supportShotsHtml("spReply");
   html += '<button class="btn btn-sm btn-primary" id="spReplySend"><i class="fa fa-reply"></i> Send reply</button>';
   html += "</div>";
 
@@ -1144,8 +1152,12 @@ $(document).on("click", "#spReplySend", function () {
   }
   var btn = $(this);
   btn.prop("disabled", true).html(supportSpinner("Sending..."));
-  supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/comments", { body: text })
+  var reply = { body: text };
+  var replyShots = supportShotsIds("spReply");
+  if (replyShots.length) reply.screenshots = replyShots;
+  supportApi("POST", "/issues/" + encodeURIComponent(supportCurrentIssue.number) + "/comments", reply)
     .done(function () {
+      supportShotsClear("spReply", true);
       loadSupportIssue(supportCurrentIssue.number);
     })
     .fail(function (jqXHR) {

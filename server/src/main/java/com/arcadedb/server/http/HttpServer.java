@@ -315,6 +315,8 @@ public class HttpServer implements ServerPlugin {
         .get("/server/support/issues/{number}", new SupportHandler(this, SupportHandler.Action.GET_ISSUE))
         .put("/server/support/issues/{number}", new SupportHandler(this, SupportHandler.Action.SET_OPEN))
         .post("/server/support/issues/{number}/comments", new SupportHandler(this, SupportHandler.Action.COMMENT))
+        .post("/server/support/screenshots", new SupportHandler(this, SupportHandler.Action.STAGE_SCREENSHOT))
+        .delete("/server/support/screenshots/{id}", new SupportHandler(this, SupportHandler.Action.DISCARD_SCREENSHOT))
         .post("/server/support/issues/{number}/requests/{requestId}/response",
             new SupportHandler(this, SupportHandler.Action.ANSWER_REQUEST))
         .post("/server/support/issues/{number}/responses", new SupportHandler(this, SupportHandler.Action.ANSWER_REQUESTS))
