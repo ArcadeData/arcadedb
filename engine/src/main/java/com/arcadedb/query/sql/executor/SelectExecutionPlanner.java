@@ -394,12 +394,20 @@ public class SelectExecutionPlanner {
    * (subquery, index, RIDs), a transaction, or parallel scans disabled, so the streaming DISTINCT keeps its early exit and its
    * memory-lean RID dedup.
    */
+  /** Records of the target type below which a DISTINCT is not rewritten: the parallel scan would decline it anyway. */
+  private static final long MIN_DISTINCT_REWRITE_RECORDS = 10_000L;
+
   private void rewriteDistinctAsGroupBy(final CommandContext context) {
     if (!info.distinct || info.groupBy != null || info.orderBy != null || info.unwind != null || info.limit != null
         || info.projection.isExpand())
       return;
     if (info.target == null || info.target.getItem() == null || info.target.getItem().getIdentifier() == null
         || !ParallelTypeScan.isAllowed(context.getDatabase()))
+      return;
+    // A small type is not scanned in parallel at run time, so the GROUP BY would only block where the DISTINCT streams
+    final String typeName = info.target.getItem().getIdentifier().getStringValue();
+    final Database database = context.getDatabase();
+    if (!database.getSchema().existsType(typeName) || database.countType(typeName, true) < MIN_DISTINCT_REWRITE_RECORDS)
       return;
 
     final List<ProjectionItem> items = info.projection.getItems();
