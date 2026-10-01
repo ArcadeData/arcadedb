@@ -336,7 +336,7 @@ public class JSONArray implements Iterable<Object> {
     final JsonElement value = getNotNullElement(i);
     try {
       return value.getAsBigDecimal();
-    } catch (final RuntimeException e) {
+    } catch (final UnsupportedOperationException | IllegalStateException | NumberFormatException | ClassCastException e) {
       throw typeError(i, "BigDecimal", value, e);
     }
   }
