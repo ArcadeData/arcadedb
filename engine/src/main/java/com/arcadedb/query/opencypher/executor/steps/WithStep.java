@@ -156,7 +156,7 @@ public class WithStep extends AbstractExecutionStep {
 
         // Check if LIMIT has been reached
         if (limit != null && returned >= limit) {
-          // LIMIT 0 reads nothing, but like LimitStep it still drains the input so the writes behind it run (issue #8830 review)
+          // LIMIT 0 returns nothing, but like LimitStep it still drains the input so the writes behind it run
           if (limit == 0)
             while (prevResults.hasNext())
               prevResults.next();

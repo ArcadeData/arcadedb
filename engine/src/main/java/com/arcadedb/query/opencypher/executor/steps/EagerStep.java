@@ -130,6 +130,7 @@ public class EagerStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       materialized = new ArrayList<>();
+      long drained = 0;
       // The drain is one uninterrupted region, and the statement-level drain that tests the command
       // deadline per row only starts once this one has finished - so a TIMEOUT clause could not end a
       // long barrier before this guard. Same reason CypherExecutionPlan.execute() carries one (#6266).
@@ -142,8 +143,11 @@ public class EagerStep extends AbstractExecutionStep {
         while (prevResults.hasNext()) {
           guard.check();
           final Result row = prevResults.next();
-          materialized.add(row);
-          heapLimit.add(materialized.size(), row);
+          drained++;
+          if (keepFirst < 0 || materialized.size() < keepFirst) {
+            materialized.add(row);
+            heapLimit.add(materialized.size(), row);
+          }
         }
       } catch (final RuntimeException e) {
         materialized.clear();
@@ -151,7 +155,7 @@ public class EagerStep extends AbstractExecutionStep {
         throw e;
       }
       if (context.isProfiling())
-        rowCount += materialized.size();
+        rowCount += drained;
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
