@@ -71,8 +71,8 @@ class Issue8799DistinctParallelTest extends TestHelper {
       query = "SELECT DISTINCT grp, s FROM " + type;
       assertThat(rows(query)).as(query).hasSize(700).isEqualTo(firstOccurrences("SELECT grp + ',' + s AS v FROM " + type));
 
-      query = "SELECT DISTINCT grp % 10 AS mod10 FROM " + type;
-      assertThat(rows(query)).as(query).hasSize(10).isEqualTo(firstOccurrences("SELECT grp % 10 AS v FROM " + type));
+      query = "SELECT DISTINCT grp AS g FROM " + type;
+      assertThat(rows(query)).as(query).hasSize(100).isEqualTo(firstOccurrences("SELECT grp AS v FROM " + type));
 
       query = "SELECT count(*) AS c FROM (SELECT DISTINCT grp FROM " + type + ")";
       assertThat(rows(query)).containsExactly("100");
@@ -90,6 +90,8 @@ class Issue8799DistinctParallelTest extends TestHelper {
     final List<String> sorted = rows("SELECT DISTINCT grp FROM " + type + " ORDER BY grp");
     assertThat(sorted).hasSize(100).first().isEqualTo("0");
 
+    assertThat(plan("SELECT DISTINCT grp % 10 FROM " + type)).contains("+ DISTINCT");
+    assertThat(rows("SELECT DISTINCT grp % 10 FROM " + type)).hasSize(10);
     assertThat(plan("SELECT DISTINCT * FROM " + type)).contains("+ DISTINCT");
     assertThat(rows("SELECT DISTINCT * FROM " + type)).hasSize(ROWS);
 
@@ -118,7 +120,7 @@ class Issue8799DistinctParallelTest extends TestHelper {
   /** The rewrite keeps the column names the DISTINCT returned, aliased or not. */
   @Test
   void columnNamesAreKept() {
-    for (final String query : new String[] { "SELECT DISTINCT grp % 10 FROM OneBucket", "SELECT DISTINCT grp % 10 AS m FROM OneBucket",
+    for (final String query : new String[] { "SELECT DISTINCT grp AS m FROM OneBucket", "SELECT DISTINCT grp FROM OneBucket",
         "SELECT DISTINCT grp, s FROM OneBucket" }) {
       final List<String> names = new ArrayList<>();
       try (final ResultSet rs = database.query("sql", query)) {
