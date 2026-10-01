@@ -68,6 +68,13 @@ public class GraphQLSchema {
    */
   static final int MAX_INTROSPECTION_FIELDS_DEPTH = 2;
 
+  /**
+   * Scalars introspection publishes and resolves. {@code Long} is not a GraphQL built-in, but a LONG / ARRAY_OF_LONGS
+   * property is described with it, so it is declared here for {@code __type} and {@code __schema} to resolve (#7876).
+   */
+  private static final String[]    BUILT_IN_SCALARS    = { "String", "Int", "Float", "Boolean", "ID", "Long" };
+  private static final Set<String> BUILT_IN_SCALAR_SET = Set.of(BUILT_IN_SCALARS);
+
   private final Database                          database;
   private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
   private ObjectTypeDefinition              queryDefinition;
@@ -545,7 +552,7 @@ public class GraphQLSchema {
     }
 
     // Add GraphQL built-in scalar types
-    for (final String scalar : new String[] { "String", "Int", "Float", "Boolean", "ID" }) {
+    for (final String scalar : BUILT_IN_SCALARS) {
       if (!addedTypes.contains(scalar))
         types.add(buildIntrospectionLeafType(scalar, "SCALAR", selectionSet, fragments));
     }
@@ -564,7 +571,7 @@ public class GraphQLSchema {
       return buildDatabaseTypeResult(database.getSchema().getType(typeName), selectionSet, fragments, fieldsDepth);
 
     // Check scalars
-    if (Set.of("String", "Int", "Float", "Boolean", "ID").contains(typeName))
+    if (BUILT_IN_SCALAR_SET.contains(typeName))
       return buildIntrospectionLeafType(typeName, "SCALAR", selectionSet, fragments);
 
     return null;
@@ -589,10 +596,61 @@ public class GraphQLSchema {
       final List<ResultInternal> fields = new ArrayList<>();
       for (final Property prop : dbType.getProperties())
         fields.add(buildIntrospectionField(prop.getName(), fieldSelections,
-            typeSelectionSet -> buildIntrospectionLeafType(mapDatabaseTypeToGraphQL(prop.getType()), "SCALAR", typeSelectionSet,
-                fragments)));
+            typeSelectionSet -> buildDatabaseFieldTypeInfo(prop, typeSelectionSet, fragments, fieldsDepth + 1)));
       return fields;
     }, null);
+  }
+
+  /**
+   * Describes a database property with the same wrapper chain {@link #buildTypeInfo} produces for a schema-declared
+   * field (#7876, extending #7116 to types with no {@code .gql} declaration): a LIST or ARRAY_OF_* property is a
+   * {@code LIST} wrapper around its element type, and a property both MANDATORY and NOTNULL is wrapped in
+   * {@code NON_NULL}. Every hop is built from the selection set the client wrote for it (#7888).
+   * <p>
+   * NON_NULL is a promise that the field never resolves to {@code null}, which code generators turn into non-nullable
+   * client types. MANDATORY alone still allows an explicit {@code null}, and NOTNULL alone allows the property to be
+   * absent (which the resolver returns as {@code null}), so only the two together keep that promise. A LIST element is
+   * never wrapped: the schema has no flag constraining the elements of a collection.
+   */
+  private ResultInternal buildDatabaseFieldTypeInfo(final Property prop, final SelectionSet selectionSet,
+      final GraphQLFragments fragments, final int fieldsDepth) {
+    final Type type = prop.getType();
+    final Function<SelectionSet, ResultInternal> unwrapped;
+    if (type == Type.LIST) {
+      final String ofType = prop.getOfType();
+      unwrapped = listSelectionSet -> buildIntrospectionType(null, "LIST", listSelectionSet, fragments, null,
+          elementSelectionSet -> buildDatabaseListElementInfo(ofType, elementSelectionSet, fragments, fieldsDepth));
+    } else {
+      final String arrayElement = mapDatabaseArrayElementToGraphQL(type);
+      if (arrayElement != null)
+        unwrapped = listSelectionSet -> buildIntrospectionType(null, "LIST", listSelectionSet, fragments, null,
+            elementSelectionSet -> buildIntrospectionLeafType(arrayElement, "SCALAR", elementSelectionSet, fragments));
+      else
+        unwrapped = namedSelectionSet -> buildIntrospectionLeafType(mapDatabaseTypeToGraphQL(type), "SCALAR", namedSelectionSet,
+            fragments);
+    }
+    return prop.isMandatory() && prop.isNotNull() ?
+        buildIntrospectionType(null, "NON_NULL", selectionSet, fragments, null, unwrapped) :
+        unwrapped.apply(selectionSet);
+  }
+
+  /**
+   * The element of a LIST property: its declared {@code ofType} when that names a primitive type, or a database type
+   * (described as {@code __type(name:)} would, like a named type reached through {@link #buildTypeInfo}). With no
+   * {@code ofType}, or one naming neither, the element keeps the historic {@code String}.
+   */
+  private ResultInternal buildDatabaseListElementInfo(final String ofType, final SelectionSet selectionSet,
+      final GraphQLFragments fragments, final int fieldsDepth) {
+    if (ofType != null && !ofType.isEmpty()) {
+      // A primitive wins over a database type of the same name, the order LocalProperty.setOfType() resolves it in:
+      // "Date" is stored as the primitive DATE even when a document type called Date exists
+      final Type elementType = Type.getTypeByName(ofType);
+      if (elementType != null)
+        return buildIntrospectionLeafType(mapDatabaseTypeToGraphQL(elementType), "SCALAR", selectionSet, fragments);
+      if (database.getSchema().existsType(ofType))
+        return buildDatabaseTypeResult(database.getSchema().getType(ofType), selectionSet, fragments, fieldsDepth);
+    }
+    return buildIntrospectionLeafType("String", "SCALAR", selectionSet, fragments);
   }
 
   /**
@@ -727,6 +785,20 @@ public class GraphQLSchema {
       case DOUBLE -> "Float";
       case BOOLEAN -> "Boolean";
       default -> "String";
+    };
+  }
+
+  /**
+   * The GraphQL element scalar of an ARRAY_OF_* property, or {@code null} when the type is not a primitive array.
+   */
+  private static String mapDatabaseArrayElementToGraphQL(final Type type) {
+    if (type == null)
+      return null;
+    return switch (type) {
+      case ARRAY_OF_SHORTS, ARRAY_OF_INTEGERS -> "Int";
+      case ARRAY_OF_LONGS -> "Long";
+      case ARRAY_OF_FLOATS, ARRAY_OF_DOUBLES -> "Float";
+      default -> null;
     };
   }
 
