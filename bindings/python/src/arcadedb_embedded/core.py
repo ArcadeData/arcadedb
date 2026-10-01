@@ -268,9 +268,11 @@ class Database:
             # honoring commit_every batches like the fast path.
             n = 0
             was_active = self.is_transaction_active()
-            if not was_active:
-                self.begin()
             try:
+                # begin() inside the try: a ^C landing right after it must
+                # still reach the rollback below.
+                if not was_active:
+                    self.begin()
                 for row in rows:
                     doc = self.new_document(type_name)
                     for k, v in row.items():

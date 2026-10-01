@@ -122,8 +122,10 @@ class GraphBatch:
         started_transaction = False
         try:
             if not self._java_db.isTransactionActive():
-                self._java_db.begin()
+                # Flag first: an interrupt right after begin() must still roll
+                # back; the handler re-checks isTransactionActive() anyway.
                 started_transaction = True
+                self._java_db.begin()
 
             if properties:
                 java_vertex = self._java_graph_batch.createVertex(
