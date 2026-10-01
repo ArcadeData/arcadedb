@@ -390,11 +390,16 @@ public class SelectExecutionPlanner {
    * <p>
    * Left as a DISTINCT when it cannot be the same plan: an aggregate, a GROUP BY, an ORDER BY (the dedup sees the sorted rows), expand()
    * or UNWIND, a wildcard, excluded or nested items; and under a LIMIT, where DISTINCT stops reading as soon as it has enough rows while a
-   * GROUP BY has to read them all.
+   * GROUP BY has to read them all. Also left alone where the GROUP BY brings nothing but its blocking: a target that is not a type
+   * (subquery, index, RIDs), a transaction, or parallel scans disabled, so the streaming DISTINCT keeps its early exit and its
+   * memory-lean RID dedup.
    */
   private void rewriteDistinctAsGroupBy(final CommandContext context) {
     if (!info.distinct || info.groupBy != null || info.orderBy != null || info.unwind != null || info.limit != null
         || info.projection.isExpand())
+      return;
+    if (info.target == null || info.target.getItem() == null || info.target.getItem().getIdentifier() == null
+        || !ParallelTypeScan.isAllowed(context.getDatabase()))
       return;
 
     final List<ProjectionItem> items = info.projection.getItems();

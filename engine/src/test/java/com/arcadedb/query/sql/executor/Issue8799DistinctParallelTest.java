@@ -103,13 +103,68 @@ class Issue8799DistinctParallelTest extends TestHelper {
     assertThat(rows("SELECT grp % 10 FROM OneBucket GROUP BY grp % 10")).hasSize(10).doesNotContain("null");
   }
 
-  /** Inside a transaction the scan is sequential: the rewritten DISTINCT still answers, and sees the transaction's changes. */
+  /** Inside a transaction, and over a target that is not a type, the streaming DISTINCT stays: the GROUP BY would only block. */
   @Test
-  void insideATransaction() {
+  void insideATransactionAndOverNonTypeTargetsTheDistinctStays() {
+    assertThat(plan("SELECT DISTINCT grp FROM (SELECT grp FROM OneBucket)")).contains("+ DISTINCT");
+    assertThat(rows("SELECT DISTINCT grp FROM (SELECT grp FROM OneBucket)")).hasSize(100);
     database.transaction(() -> {
       database.newVertex("OneBucket").set("id", -1, "grp", 1_000).save();
+      assertThat(plan("SELECT DISTINCT grp FROM OneBucket")).contains("+ DISTINCT");
       assertThat(rows("SELECT DISTINCT grp FROM OneBucket")).hasSize(101).contains("1000");
     });
+  }
+
+  /** The rewrite keeps the column names the DISTINCT returned, aliased or not. */
+  @Test
+  void columnNamesAreKept() {
+    for (final String query : new String[] { "SELECT DISTINCT grp % 10 FROM OneBucket", "SELECT DISTINCT grp % 10 AS m FROM OneBucket",
+        "SELECT DISTINCT grp, s FROM OneBucket" }) {
+      final List<String> names = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", query)) {
+        names.addAll(rs.next().getPropertyNames());
+      }
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
+      try (final ResultSet rs = database.query("sql", query + " LIMIT 1000000")) {
+        // WITH A LIMIT THE PLAN STAYS A DISTINCT: THE REFERENCE COLUMN NAMES
+        assertThat(rs.next().getPropertyNames()).as(query).containsExactlyElementsOf(names);
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, true);
+      }
+    }
+  }
+
+  /** Nulls, mixed numeric types and lists dedup as the DISTINCT dedups them. */
+  @Test
+  void valueShapesDedupLikeTheDistinct() {
+    database.getSchema().createVertexType("Shapes", 4);
+    database.transaction(() -> {
+      for (int i = 0; i < 4_000; i++) {
+        final var v = database.newVertex("Shapes");
+        switch (i % 6) {
+        case 0 -> v.set("v", 1);
+        case 1 -> v.set("v", 1L);
+        case 2 -> v.set("v", 1.0);
+        case 3 -> { }
+        case 4 -> v.set("v", List.of(1, 2));
+        default -> v.set("v", List.of(1, 2, i % 12));
+        }
+        v.save();
+      }
+    });
+    final String query = "SELECT DISTINCT v FROM Shapes";
+    assertThat(rows(query)).hasSameSizeAs(rows(query + " LIMIT 1000000"));
+  }
+
+  /** GROUP BY keys that are not plain identifiers: record attributes, method calls, a key next to an aggregate and an ORDER BY. */
+  @Test
+  void groupByKeysThatAreNotPlainIdentifiers() {
+    assertThat(rows("SELECT @type AS t, count(*) AS c FROM FourBuckets GROUP BY @type")).containsExactly("FourBuckets,20000");
+    assertThat(rows("SELECT s.toUpperCase() AS u, count(*) AS c FROM FourBuckets GROUP BY s.toUpperCase() ORDER BY u")).hasSize(7).first()
+        .asString().startsWith("S0,");
+    assertThat(rows("SELECT grp % 10 AS m, count(*) AS c FROM FourBuckets GROUP BY grp % 10 ORDER BY m")).hasSize(10).first().asString()
+        .startsWith("0,");
+    assertThat(rows("SELECT @rid AS r FROM FourBuckets GROUP BY @rid")).hasSize(ROWS);
   }
 
   private String plan(final String query) {

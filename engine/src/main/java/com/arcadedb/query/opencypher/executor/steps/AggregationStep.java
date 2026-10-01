@@ -82,6 +82,7 @@ public class AggregationStep extends AbstractExecutionStep {
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("AggregationStep requires a previous step");
     heapLimit = OperationHeapLimit.of(context, "aggregation");
+    parallelWorkers = 0;
     try {
       return aggregate(context, nRecords);
     } catch (final RuntimeException e) {
