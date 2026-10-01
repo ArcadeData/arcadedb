@@ -28,6 +28,7 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -118,6 +119,8 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
   @AfterEach
   void unregisterFunction() {
     sqlEngine().getFunctionFactory().unregister(FUNCTION);
+    // A test that forgets to install its failure then fails loudly instead of reusing the previous one
+    failure = null;
   }
 
   private SQLQueryEngine sqlEngine() {
@@ -151,6 +154,25 @@ public class Issue8235QueryNdJsonErrorStatusIT extends BaseGraphServerTest {
     assertThat(error.getString("exception")).isEqualTo(DuplicatedKeyException.class.getName());
     assertThat(error.getString("exceptionArgs")).startsWith("Stream8235[idx]|");
     assertThat(error.getString("exceptionArgs")).endsWith("|#3:0");
+  }
+
+  /**
+   * {@code exceptionArgs} is decided by the classifier, so production mode conceals the duplicated key VALUES on this
+   * line exactly as it does on the buffered body (issue #7760), keeping the index name and the RID a driver needs.
+   */
+  @Test
+  void productionModeConcealsTheDuplicatedKeysOnTheStreamedLine() throws Exception {
+    failure = () -> new DuplicatedKeyException("Stream8235[idx]", "[secret-value]", new RID(3, 0));
+    final String previousMode = getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_MODE, "production");
+    try {
+      final JSONObject error = streamedError(postStream("command"));
+      assertThat(error.getInt("status")).as("error line: %s", error).isEqualTo(409);
+      assertThat(error.getString("exceptionArgs"))
+          .isEqualTo("Stream8235[idx]|" + ArcadeDBServer.CONCEALED_DUPLICATED_KEYS + "|#3:0");
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_MODE, previousMode);
+    }
   }
 
   @Test

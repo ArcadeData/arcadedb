@@ -133,7 +133,8 @@ public final class NdJsonResultStream implements AutoCloseable {
    * <p>
    * The line carries what the buffered encoding would have answered with (issue #8235): the status, the reported
    * exception class and its structured arguments, so a client can tell a retryable conflict from a security refusal
-   * or a server fault without parsing {@code message}.
+   * or a server fault without parsing {@code message}. {@code status} and {@code exception} are the members to key on:
+   * {@code message} is the raw failure text, not concealed in production mode (issue #8875).
    *
    * @param status        the HTTP status the buffered encoding would have sent for the same failure
    * @param exception     the class name of the reported exception, or null to leave the member out

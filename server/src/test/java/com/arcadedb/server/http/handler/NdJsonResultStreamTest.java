@@ -152,6 +152,19 @@ class NdJsonResultStreamTest {
     assertThat(conflict.has("exceptionArgs")).isFalse();
   }
 
+  @Test
+  void anErrorLineWithNoExceptionLeavesTheMemberOut() throws IOException {
+    final FlushRecordingStream out = new FlushRecordingStream();
+    try (final NdJsonResultStream stream = new NdJsonResultStream(out)) {
+      stream.writeError("failed", 500, null, null);
+    }
+
+    final JSONObject error = new JSONObject(out.lines().getFirst()).getJSONObject("error");
+    assertThat(error.getInt("status")).isEqualTo(500);
+    assertThat(error.has("exception")).isFalse();
+    assertThat(error.has("exceptionArgs")).isFalse();
+  }
+
   /**
    * The first line always flushes. Without it a consumer would not see the stream open until the size or time
    * threshold was crossed, which for a slow query is exactly the latency the encoding exists to remove.
