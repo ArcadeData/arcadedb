@@ -18,7 +18,9 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Regression tests for issue #7031: a failed {@link RemoteGraphBatch#flush()} must not leave its payload buffered
  * for {@link RemoteGraphBatch#close()} to send a second time, and {@link RemoteSchema#existsBucket(String)} must
- * answer from the bucket list rather than from the buckets attached to the types.
+ * answer from the bucket list rather than from the buckets attached to the types - and so must the cached bucket
+ * readers (issue #7885).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -158,6 +161,87 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
       database.getSchema().dropBucket("standalone");
       assertThat(database.getSchema().existsBucket("standalone")).isFalse();
     }
+  }
+
+  /**
+   * Issue #7885: the three cached bucket readers - {@code getBucketByName()}, {@code getBucketByNameIfExists()} and
+   * {@code getBuckets()} - answered from a cache that {@code reload()} built only from the buckets attached to the
+   * types, so a bucket attached to no type was invisible to all three while {@code existsBucket()} answered
+   * {@code true} for it. The issue's own repro, through the API that created the bucket.
+   */
+  @Test
+  void bucketReadersSeeABucketCreatedThroughTheApi() {
+    try (final RemoteDatabase database = newDatabase()) {
+      final Schema schema = database.getSchema();
+      schema.createBucket("standalone");
+
+      assertThat(schema.existsBucket("standalone")).isTrue();
+      // getBuckets() first: createBucket() invalidated the cache and nothing else has rebuilt it, so the listing
+      // alone has to come from a reload that sees the standalone bucket.
+      assertThat(schema.getBuckets().stream().map(Bucket::getName)).contains("standalone");
+      assertThat(schema.getBucketByNameIfExists("standalone")).isNotNull();
+      assertThat(schema.getBucketByName("standalone").getName()).isEqualTo("standalone");
+    }
+
+    assertStandaloneBucketVisible("standalone");
+  }
+
+  /**
+   * Issue #7885: a standalone bucket created by SQL, outside the schema API, read through a connection whose cache
+   * is built after the bucket exists. The only source a cold {@code reload()} can learn it from is
+   * {@code schema:buckets}.
+   */
+  @Test
+  void bucketReadersSeeABucketCreatedBySqlOnAColdCache() {
+    try (final RemoteDatabase database = newDatabase()) {
+      database.command("sql", "CREATE BUCKET sqlStandalone");
+    }
+
+    assertStandaloneBucketVisible("sqlStandalone");
+  }
+
+  /**
+   * Issue #7885: a bucket detached from its last type keeps existing on the server, so it must stay visible to the
+   * cached readers after the detach, even though no type lists it any more.
+   */
+  @Test
+  void bucketReadersSeeABucketDetachedFromItsLastType() {
+    try (final RemoteDatabase database = newDatabase()) {
+      database.command("sql", "CREATE DOCUMENT TYPE Holder BUCKETS 1");
+      database.command("sql", "CREATE BUCKET detached");
+      database.command("sql", "ALTER TYPE Holder BUCKET +detached");
+      database.command("sql", "ALTER TYPE Holder BUCKET -detached");
+    }
+
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().existsBucket("detached")).isTrue();
+    }
+    assertStandaloneBucketVisible("detached");
+
+    // The type's own bucket keeps coming from the same cache.
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByName("Holder_0").getName()).isEqualTo("Holder_0");
+    }
+  }
+
+  /**
+   * Checks each cached reader on its own fresh connection, so each one answers from a cold {@code reload()} rather
+   * than from a cache another reader's reload-on-miss already rebuilt.
+   */
+  private void assertStandaloneBucketVisible(final String bucketName) {
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBuckets().stream().map(Bucket::getName)).contains(bucketName);
+    }
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByNameIfExists(bucketName)).isNotNull();
+    }
+    try (final RemoteDatabase database = newDatabase()) {
+      assertThat(database.getSchema().getBucketByName(bucketName).getName()).isEqualTo(bucketName);
+    }
+  }
+
+  private RemoteDatabase newDatabase() {
+    return new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   private RecordingBatchDatabase newRecordingDatabase() {
