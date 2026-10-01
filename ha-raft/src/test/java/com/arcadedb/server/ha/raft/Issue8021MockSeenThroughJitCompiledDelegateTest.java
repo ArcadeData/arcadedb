@@ -23,23 +23,17 @@ import com.arcadedb.database.LocalDatabase;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.http.HttpClient;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 /**
- * Issue #8021: {@code Issue6965LocalCommitHandshakeTest} failed with an NPE in {@code LocalCommitRegistry.register}
- * whenever a real-server test ran before it in the same fork, because {@code RaftReplicatedDatabase.getName()} - JIT
- * compiled by then, with {@code LocalDatabase.getName()} inlined - kept reading the mocked database's null
- * {@code name} field after Mockito's inline mock maker had retransformed {@code LocalDatabase}. See
- * {@link SubclassMocks} for the mechanism.
- * <p>
- * This reproduces the shape in one class: warm the delegate up on a real database until the JIT has compiled it, then
- * hand it a mock and read the name back through it. With an inline mock it answers null on the Graal JIT; with a
- * subclass mock it answers the stub on every JIT. The test can only fail on a JIT that keeps stale code, and only
- * while {@code LocalDatabase} has not yet been retransformed by an inline mock earlier in the fork - on any other run
- * it passes, it cannot fail falsely.
+ * Issue #8021: a mock handed to {@code RaftReplicatedDatabase} after the JIT compiled its delegation against the real
+ * {@code LocalDatabase} (see {@link SubclassMocks} for the mechanism). Warms the delegate up on a real database, then
+ * reads a mock's name back through it. It can only fail on a JIT that keeps stale code (Graal), and only while no
+ * inline mock has retransformed {@code LocalDatabase} earlier in the fork; it cannot fail falsely.
  */
 class Issue8021MockSeenThroughJitCompiledDelegateTest {
   private static final String MOCKED_NAME = "issue8021-mocked";
@@ -49,27 +43,31 @@ class Issue8021MockSeenThroughJitCompiledDelegateTest {
 
   @Test
   void aSubclassMockIsAnsweredThroughADelegateTheJitCompiledAgainstTheRealClass() throws InterruptedException {
-    final LocalDatabase real = (LocalDatabase) new DatabaseFactory(tempDir.resolve("db").toString()).create();
-    try {
-      final RaftReplicatedDatabase warm = new RaftReplicatedDatabase(null, real, null);
-      long chars = 0;
-      // Enough calls for every tier to compile the delegate, with pauses that let the background compiler finish.
-      for (int round = 0; round < 20; round++) {
-        for (int i = 0; i < 200_000; i++)
-          chars += nameThrough(warm).length();
-        Thread.sleep(20);
+    try (final HttpClient httpClient = HttpClient.newHttpClient();
+        final DatabaseFactory factory = new DatabaseFactory(tempDir.resolve("db").toString())) {
+      final LocalDatabase real = (LocalDatabase) factory.create();
+      try {
+        final RaftReplicatedDatabase warm = new RaftReplicatedDatabase(null, real, null, httpClient);
+        long chars = 0;
+        // Enough calls for every tier to compile the delegate, with pauses that let the background compiler finish.
+        for (int round = 0; round < 20; round++) {
+          for (int i = 0; i < 200_000; i++)
+            chars += nameThrough(warm).length();
+          Thread.sleep(20);
+        }
+        // Consuming the result keeps the warm-up loop from being eliminated as dead code.
+        assertThat(chars).isPositive();
+      } finally {
+        real.drop();
       }
-      assertThat(chars).isPositive();
-    } finally {
-      real.drop();
+
+      final LocalDatabase proxied = SubclassMocks.mock(LocalDatabase.class);
+      when(proxied.getName()).thenReturn(MOCKED_NAME);
+      final RaftReplicatedDatabase database = new RaftReplicatedDatabase(null, proxied, null, httpClient);
+
+      assertThat(proxied.getName()).isEqualTo(MOCKED_NAME);
+      assertThat(nameThrough(database)).as("the compiled delegate must reach the stub, not the mock's null field").isEqualTo(MOCKED_NAME);
     }
-
-    final LocalDatabase proxied = SubclassMocks.mock(LocalDatabase.class);
-    when(proxied.getName()).thenReturn(MOCKED_NAME);
-    final RaftReplicatedDatabase database = new RaftReplicatedDatabase(null, proxied, null);
-
-    assertThat(proxied.getName()).isEqualTo(MOCKED_NAME);
-    assertThat(nameThrough(database)).as("the compiled delegate must reach the stub, not the mock's null field").isEqualTo(MOCKED_NAME);
   }
 
   /** The call site the JIT compiles: the same delegation the commit path makes when it builds a LocalCommit. */

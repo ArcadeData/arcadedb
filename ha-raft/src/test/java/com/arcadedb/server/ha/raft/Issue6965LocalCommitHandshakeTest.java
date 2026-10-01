@@ -73,8 +73,7 @@ class Issue6965LocalCommitHandshakeTest {
 
   @BeforeEach
   void setUp() {
-    // Subclass mocks for every class the commit path is handed (issue #8021): an inline mock is read through code a
-    // real-server test may already have JIT-compiled in this fork, which the Graal JIT does not throw away.
+    // Subclass mocks for every class the commit path is handed: see SubclassMocks (issue #8021).
     proxied = SubclassMocks.mock(LocalDatabase.class);
     when(proxied.getDatabasePath()).thenReturn(dbPath);
     when(proxied.getName()).thenReturn(DB_NAME);
@@ -99,6 +98,19 @@ class Issue6965LocalCommitHandshakeTest {
   @AfterEach
   void tearDown() {
     DatabaseContext.INSTANCE.removeContext(dbPath);
+  }
+
+  /**
+   * Issue #8021: an inline mock IS an instance of the mocked class, and the Graal JIT can keep code compiled against
+   * its unmocked methods; a subclass mock is a generated class. Fails on every JVM if an inline mock creeps back in.
+   */
+  @Test
+  void theCommitPathIsHandedSubclassMocks() {
+    assertThat(proxied.getClass()).isNotEqualTo(LocalDatabase.class);
+    assertThat(tx.getClass()).isNotEqualTo(TransactionContext.class);
+    assertThat(proxied.getTransactionManager().getClass()).isNotEqualTo(TransactionManager.class);
+    assertThat(broker.getClass()).isNotEqualTo(RaftTransactionBroker.class);
+    assertThat(raftServer.getClass()).isNotEqualTo(RaftHAServer.class);
   }
 
   /** The common case: the entry is acknowledged after the apply thread published its pages. */
