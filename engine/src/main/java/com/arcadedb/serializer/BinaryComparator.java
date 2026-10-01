@@ -575,6 +575,9 @@ public class BinaryComparator {
   }
 
   public static boolean equalsBytes(final byte[] buffer1, final byte[] buffer2, final int length) {
+    if (length == 0)
+      // NOTHING TO COMPARE, SO EQUAL, WHICHEVER COMPARATOR IMPLEMENTATION IS SELECTED (ISSUE #7890)
+      return true;
     return UnsignedBytesComparator.BEST_COMPARATOR.equals(buffer1, buffer2, length);
   }
 
