@@ -249,10 +249,10 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
     assertThat(LeaderForwardContext.holdLeaderId("stable", "before")).isEqualTo("stable");
     assertThat(LeaderForwardContext.holdLeaderId(null, "before")).isEqualTo("before");
     assertThat(LeaderForwardContext.holdLeaderId(null, null)).isNull();
+    assertThat(LeaderForwardContext.holdLeaderId(null, " ")).isNull();
     // A to B during the dial: keyed on A, so a view that already names B is not waited on
     assertThat(LeaderForwardContext.awaitLeaderViewMovedFrom(() -> NEW_LEADER, LeaderForwardContext.holdLeaderId(null, EX_LEADER),
         20_000L, 1L)).isTrue();
-    assertThat(LeaderForwardContext.holdLeaderId(null, " ")).isNull();
   }
 
   // ---------------------------------------------------------------------------------------------------------------

@@ -1055,7 +1055,7 @@ class BootstrapElection {
         transferToElectedSource(source.toString(), timeoutMs, REACHABILITY_WAIT_MS, announce);
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Bootstrap: leadership transfer to %s failed: %s; will retry next term", source, e.getMessage());
+            "Bootstrap: leadership transfer to %s failed or was not issued (a slow source may exceed its budget slice): %s; will retry next term", source, e.getMessage());
         throw new RuntimeException(e);
       }
       return Outcome.TRANSFERRED;
