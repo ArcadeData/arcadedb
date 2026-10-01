@@ -174,8 +174,12 @@ public class OrderByStep extends AbstractExecutionStep {
    * several times the scan itself once SKIP made the bound large.
    */
   private void initTopK(final ExecutionStepInternal p, final CommandContext context) {
+    parallelWorkers = 0;
+    if (maxResults == 0)
+      // nothing can be kept: no need to pull the input
+      return;
     final long timeoutBegin = System.currentTimeMillis();
-    if (maxResults > 0 && topKInParallel(context, timeoutBegin))
+    if (topKInParallel(context, timeoutBegin))
       return;
     final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
     final PriorityQueue<Kept> heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
@@ -195,8 +199,6 @@ public class OrderByStep extends AbstractExecutionStep {
         final Result item = lastBatch.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          if (maxResults == 0)
-            continue;
           if (heap.size() < maxResults) {
             heap.add(new Kept(item, arrival++));
             limit.add(heap.size(), item);
