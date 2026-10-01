@@ -233,6 +233,12 @@ public class ComparisonExpression implements BooleanExpression {
       // A Float reaches the comparison through its decimal form, as the SQL comparator does: the primitive widening
       // reproduces the single precision rounding error, so a FLOAT property holding 0.05 did not equal the literal
       // 0.05 - which Cypher reads as a 64-bit float. Neo4j has no 32-bit float to disagree with (issue #7609).
+      if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
+        // a FLOAT also equals the double that narrows to it, as the index key does (issue #8882)
+        // (Cypher reads 0 and -0 as equal, which numbersEqual does not)
+        final boolean equal = toComparableDouble((Number) left) == toComparableDouble((Number) right) || Type.numbersEqual((Number) left, (Number) right);
+        return operator == Operator.EQUALS == equal;
+      }
       final double leftNum = toComparableDouble((Number) left);
       final double rightNum = toComparableDouble((Number) right);
       return switch (operator) {

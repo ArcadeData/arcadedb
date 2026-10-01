@@ -1567,6 +1567,42 @@ public enum Type {
     return true;
   }
 
+  /**
+   * Equality between two numbers of possibly different types. Besides what {@link #castComparableNumber} answers it
+   * accepts a narrower floating type as equal when the other operand converts to it exactly: a FLOAT holding 0.1f
+   * equals the double 0.10000000149011612 ({@code (double) f}, what a client reading the FLOAT back hands in) and a
+   * DOUBLE holding 0.1 equals the BigDecimal 0.10000000000000001. That is the rule an index applies to its key
+   * ({@code Type.convert} to the key type), so a lookup answers the same with and without the index (issue #8882).
+   * Ordering is untouched: it keeps the decimal reading of {@link #widenFloat}.
+   *
+   * @param left  the first operand
+   * @param right the second operand
+   *
+   * @return {@code true} when the two numbers are equal
+   */
+  public static boolean numbersEqual(final Number left, final Number right) {
+    final Number[] pair = castComparableNumber(left, right);
+    if (pair[0].equals(pair[1]))
+      return true;
+
+    if (left instanceof Float f)
+      return narrowsTo(f, right);
+    if (right instanceof Float f)
+      return narrowsTo(f, left);
+    if (left instanceof Double d && right instanceof BigDecimal bd)
+      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+    if (left instanceof BigDecimal bd && right instanceof Double d)
+      return Double.isFinite(d) && Double.compare(d, bd.doubleValue()) == 0;
+    return false;
+  }
+
+  private static boolean narrowsTo(final float f, final Number other) {
+    if (other instanceof Double || other instanceof BigDecimal)
+      // Float.compare, not ==: negative zero is not zero, as Double.equals reads it
+      return Float.isFinite(f) && Float.compare(f, other.floatValue()) == 0;
+    return false;
+  }
+
   public static Number[] castComparableNumber(Number left, Number right) {
     // CHECK FOR CONVERSION
     if (left instanceof Short) {
