@@ -38,7 +38,7 @@ import java.util.Objects;
  * <p>
  * Seals the mutable tail of every shard of a TimeSeries type now, instead of at the next pass of the maintenance
  * scheduler, so a client-server user who has just loaded data can ask for the settled layout the same way
- * {@code COMPACT INDEX} asks it of an index. Runs the same {@link TimeSeriesEngine#compactAll()} the scheduler runs,
+ * {@code COMPACT INDEX} asks it of an index. Runs the same {@link TimeSeriesEngine#compactAll()} and {@link TimeSeriesEngine#mergeSmallBlocks()} the scheduler runs,
  * so it takes the same locks and, under HA, the same leader-only replicated path.
  * <p>
  * The result reports the mutable samples left behind: compaction can legitimately leave some (rows appended while it
@@ -72,6 +72,7 @@ public class CompactTimeSeriesTypeStatement extends DDLStatement {
     try {
       before = mutableSamples(engine);
       engine.compactAll();
+      engine.mergeSmallBlocks();
       after = mutableSamples(engine);
     } catch (final IOException e) {
       throw new CommandExecutionException("Error on compacting TimeSeries type '" + name.getStringValue() + "'", e);

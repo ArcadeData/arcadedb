@@ -88,6 +88,16 @@ public class Statement extends SimpleNode {
    * constructors are the parser's no-arg ones and each statement's {@code copy()}, and the grammar's smallest
    * unit is SECONDS.
    */
+  /**
+   * A downsampling tier's trailing {@code OFFSET} clause, or nothing for the epoch-aligned grid (issue #8798). Signed,
+   * because the grammar allows a minus in front of the amount and a grid shifted the other way is the common case.
+   */
+  protected static String renderTierOffset(final long offsetMs) {
+    if (offsetMs == 0)
+      return "";
+    return " OFFSET " + (offsetMs < 0 ? "-" : "") + renderDuration(Math.abs(offsetMs));
+  }
+
   protected static String renderDuration(final long millis) {
     final String rendered = TimeSeriesTypeBuilder.renderSQLDuration(millis);
     return rendered != null ? rendered : String.valueOf(millis);

@@ -135,6 +135,15 @@ public class TimeSeriesMaintenanceScheduler {
       // all samples are in the sealed store and subject to truncation.
       engine.compactAll();
 
+      // A feed slower than a block per pass seals a small block per pass; fold them into full ones (issue #8794).
+      // Its own guard: a store that cannot be merged must not take retention and downsampling down with it.
+      try {
+        engine.mergeSmallBlocks();
+      } catch (final Exception e) {
+        LogManager.instance().log(TimeSeriesMaintenanceScheduler.class, Level.WARNING,
+            "Error merging small sealed blocks of TimeSeries type '%s'", e, typeName);
+      }
+
       // Each setting is read ONCE: the type can be altered concurrently, and a retention checked as positive but
       // re-read as 0 would compute a cutoff of "now" and drop every sample (issue #7866).
       final long retentionMs = type.getRetentionMs();

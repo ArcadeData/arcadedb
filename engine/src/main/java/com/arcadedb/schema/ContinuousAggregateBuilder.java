@@ -43,7 +43,8 @@ import java.util.regex.Pattern;
  */
 public class ContinuousAggregateBuilder {
   private static final Pattern TIME_BUCKET_PATTERN = Pattern.compile(
-      "ts\\.timeBucket\\s*\\(\\s*'([^']+)'\\s*,\\s*(\\w+)\\s*\\)",
+      // the optional third parameter (origin, offset, timezone) moves the bucket grid (issue #8798); it never holds a closing parenthesis
+      "ts\\.timeBucket\\s*\\(\\s*'([^']+)'\\s*,\\s*(\\w+)\\s*(?:,[^)]*)?\\)",
       Pattern.CASE_INSENSITIVE);
 
   private static final Pattern ALIAS_PATTERN = Pattern.compile(

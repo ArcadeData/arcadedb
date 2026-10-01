@@ -3409,6 +3409,7 @@ public class SelectExecutionPlanner {
     // Find the timeBucket item and aggregate items
     String timeBucketAlias = null;
     String intervalStr = null;
+    Object bucketOptions = null;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final Map<String, String> requestAliasToOutputAlias = new HashMap<>();
     final List<ColumnDefinition> columns = tsType.getTsColumns();
@@ -3432,6 +3433,18 @@ public class SelectExecutionPlanner {
         if (!(intervalVal instanceof String))
           return false;
         intervalStr = (String) intervalVal;
+        // The optional options parameter (origin, offset, timezone) moves the bucket grid and the push-down has to
+        // bucket on the same one as the function does (issue #8798). Resolved here, once, so it must be a constant:
+        // anything that needs the current record is left to the generic path, which evaluates it per row.
+        if (funcCall.getParams().size() > 3)
+          return false;
+        if (funcCall.getParams().size() == 3) {
+          try {
+            bucketOptions = funcCall.getParams().get(2).execute((Identifiable) null, context);
+          } catch (final RuntimeException e) {
+            return false;
+          }
+        }
       } else {
         // Must be an aggregate function
         final String aggFuncName = funcName.toLowerCase(Locale.ROOT);
@@ -3500,6 +3513,14 @@ public class SelectExecutionPlanner {
     if (bucketIntervalMs <= 0)
       return false;
 
+    // Same for the grid options: a malformed one is the generic path's to refuse, with the message the function gives
+    final long bucketOffsetMs;
+    try {
+      bucketOffsetMs = SQLFunctionTimeBucket.resolveOffset(bucketOptions, intervalStr, bucketIntervalMs);
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
+
     // Extract tag filter from WHERE clause for push-down
     final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
 
@@ -3510,7 +3531,7 @@ public class SelectExecutionPlanner {
       return false;
 
     // Chain the push-down step
-    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs,
+    plan.chain(new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
         timeBucketAlias, requestAliasToOutputAlias, tagFilter, context));
 
     // Null out the aggregate projections so handleProjections doesn't add duplicate steps

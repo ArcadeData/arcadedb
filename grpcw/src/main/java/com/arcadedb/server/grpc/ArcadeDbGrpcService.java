@@ -44,6 +44,7 @@ import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
+import com.arcadedb.engine.timeseries.TimeBucketGrid;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
@@ -3837,7 +3838,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // unchanged and only its price differs.
     final MultiColumnAggregationResult result;
     try {
-      result = engine.aggregateMulti(fromTs, toTs, requests, aggregation.getBucketIntervalMs(), tagFilter,
+      result = engine.aggregateMulti(fromTs, toTs, requests, aggregation.getBucketIntervalMs(),
+          TimeBucketGrid.normalizeOffset(aggregation.getBucketOriginMs(), aggregation.getBucketIntervalMs()), tagFilter,
           readMetrics, configuredMax);
     } finally {
       TimeSeriesReadMetrics.publish(readMetrics, req.getDatabase(), req.getType(), TimeSeriesReadMetrics.SURFACE_GRPC);

@@ -180,6 +180,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private          long             downsampleEpoch;
   /**
+   * Counts the merges of small blocks that landed ({@link #commitMerge}, issue #8794). Same role as
+   * {@link #downsampleEpoch} for a walk in flight: a merge keeps every row but replaces the blocks they sat in, so a
+   * walk that has read some of the old blocks and meets one that is gone cannot tell "retired" from "merged", and
+   * answering short would be silent. The snapshot stamps the SUM of the two counters.
+   */
+  private          long             mergeEpoch;
+  /**
    * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
    * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
    * <p>
@@ -743,7 +750,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (first >= end)
         return BlockDirectorySnapshot.EMPTY;
 
-      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch);
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch + mergeEpoch);
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -906,7 +913,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           // boundary it moved, so a block inside that range is gone whatever else ran in the meantime. Only a
           // block retention cannot account for is attributed to a REPLACEMENT, which is what keeps a walk that
           // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
-          coarsened = !removedByRetention(entry) && downsampleEpoch != directorySnapshot.downsampleEpoch();
+          coarsened = !removedByRetention(entry) && downsampleEpoch + mergeEpoch != directorySnapshot.downsampleEpoch();
         } else {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
           if (combinationsOnly)
@@ -943,9 +950,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (coarsened)
         throw new TimeSeriesWalkCoarsenedException(
             "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
-                + "' was replaced by a downsample while this read was in flight, so no answer it can still produce"
-                + " mixes one resolution: the rows already returned are the fine ones and the rows remaining are"
-                + " their coarser replacements. Run the read again to get a whole answer at one resolution");
+                + "' was replaced by a downsample (or a merge of small blocks) while this read was in flight, so no"
+                + " answer it can still produce is a consistent one: the rows already returned came from the old blocks and"
+                + " the rows remaining sit in their replacements. Run the read again to get a whole answer");
 
       // Counted, not merely skipped (issue #8043): a walk whose answer is SHORT because the store moved under it
       // is otherwise indistinguishable from one that simply matched no row, and a silently short answer to an
@@ -1512,6 +1519,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final MultiColumnAggregationResult result, final AggregationMetrics metrics,
       final TagFilter tagFilter) throws IOException {
+    aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, 0L, result, metrics, tagFilter);
+  }
+
+  /**
+   * Same as above on a bucket grid that starts at {@code bucketOffsetMs} instead of the epoch (issue #8798); see
+   * {@link TimeBucketGrid}.
+   */
+  public void aggregateMultiBlocks(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final MultiColumnAggregationResult result, final AggregationMetrics metrics,
+      final TagFilter tagFilter) throws IOException {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
@@ -1575,8 +1593,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
         if (tagMatch == BlockMatchResult.FAST_PATH
             && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
-          final long blockMinBucket = Math.floorDiv(entry.minTimestamp, bucketIntervalMs) * bucketIntervalMs;
-          final long blockMaxBucket = Math.floorDiv(entry.maxTimestamp, bucketIntervalMs) * bucketIntervalMs;
+          final long blockMinBucket = TimeBucketGrid.bucketStart(entry.minTimestamp, bucketIntervalMs, bucketOffsetMs);
+          final long blockMaxBucket = TimeBucketGrid.bucketStart(entry.maxTimestamp, bucketIntervalMs, bucketOffsetMs);
 
           // A legacy block (written before issue #7089) whose column summed over a NaN sample declares neither a
           // usable sum nor a count of its real samples, so every request over that column but COUNT has to come
@@ -1675,7 +1693,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             for (int i = rangeStart; i < rangeEnd; i++) {
               if (!matchesTagConditions(tagCols, filterConditions, i))
                 continue;
-              final long bucketTs = Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs;
+              final long bucketTs = TimeBucketGrid.bucketStart(timestamps[i], bucketIntervalMs, bucketOffsetMs);
               for (int r = 0; r < reqCount; r++) {
                 if (isCount[r])
                   result.accumulateSingleStat(bucketTs, r, 1.0, 1);
@@ -1691,7 +1709,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
             int segStart = rangeStart;
             while (segStart < rangeEnd) {
-              final long bucketTs = Math.floorDiv(timestamps[segStart], bucketIntervalMs) * bucketIntervalMs;
+              final long bucketTs = TimeBucketGrid.bucketStart(timestamps[segStart], bucketIntervalMs, bucketOffsetMs);
               final long nextBucketTs = bucketTs + bucketIntervalMs;
 
               // Find end of this bucket's segment
@@ -1844,6 +1862,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+    downsampleBlocks(cutoffTs, granularityMs, 0L, tsColIdx, tagColIndices, numericColIndices);
+  }
+
+  /**
+   * Same as above on a bucket grid shifted by {@code gridOffsetMs} from the epoch (issue #8798), as
+   * {@link TimeBucketGrid#normalizeOffset} returns it.
+   */
+  public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
+      final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     directoryLock.writeLock().lock();
     try {
 
@@ -1908,7 +1935,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Group samples by (tagValues list, bucketTs)
       for (int i = 0; i < timestamps.length; i++) {
-        final long bucketTs = Math.floorDiv(timestamps[i], granularityMs) * granularityMs;
+        final long bucketTs = TimeBucketGrid.bucketStart(timestamps[i], granularityMs, gridOffsetMs);
 
         // Build tag key as a List to avoid ambiguity with null bytes in tag values. Each element is the value
         // CANONICALISED the way its column stores it, so two rows that would be written identically are one
@@ -2030,6 +2057,303 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
     downsampleEpoch++;
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * What {@link #prepareMerge} wrote to {@code .ts.sealed.tmp} and {@link #commitMerge} installs (issue #8794).
+   *
+   * @param newDirectory     the block directory of the temp file
+   * @param directoryVersion the {@link #directoryVersion} the temp file was derived from: the commit installs it only
+   *                         if the live directory still is that one
+   * @param blocksBefore     blocks in the live directory when the plan was made
+   */
+  record MergePlan(List<BlockEntry> newDirectory, int directoryVersion, int blocksBefore) {
+  }
+
+  /**
+   * Plans which runs of adjacent blocks {@link #prepareMerge} folds together, as {@code [from, to)} index pairs into
+   * {@code blocks} (issue #8794).
+   * <p>
+   * A run is made of blocks that are NOT full, in directory (minTimestamp) order, whose samples together fit one block
+   * of {@code targetSamples}. A block joins a run only if it was downsampled to the same granularity (the marker is a
+   * per-block property that the rewrite carries) and, when the type aligns its compaction to a bucket interval, if the
+   * run still sits inside one bucket: those type options exist so that a block never straddles a boundary, and the
+   * merge must not undo that. A run of one block is not a merge and is not reported.
+   */
+  static List<int[]> planMergeGroups(final List<BlockEntry> blocks, final int targetSamples, final long bucketIntervalMs) {
+    final List<int[]> groups = new ArrayList<>();
+    int start = -1;
+    long samples = 0;
+    long groupMin = 0;
+    long groupMax = 0;
+    long granularity = 0;
+    for (int i = 0, size = blocks.size(); i < size; i++) {
+      final BlockEntry b = blocks.get(i);
+      final boolean eligible = b.sampleCount < targetSamples
+          && (bucketIntervalMs <= 0 || Math.floorDiv(b.minTimestamp, bucketIntervalMs) == Math.floorDiv(b.maxTimestamp, bucketIntervalMs));
+      if (!eligible) {
+        if (start >= 0 && i - start >= 2)
+          groups.add(new int[] { start, i });
+        start = -1;
+        continue;
+      }
+
+      if (start >= 0 && samples + b.sampleCount <= targetSamples && b.downsampledGranularityMs == granularity
+          && (bucketIntervalMs <= 0 || Math.floorDiv(Math.min(groupMin, b.minTimestamp), bucketIntervalMs) == Math.floorDiv(
+          Math.max(groupMax, b.maxTimestamp), bucketIntervalMs))) {
+        samples += b.sampleCount;
+        groupMin = Math.min(groupMin, b.minTimestamp);
+        groupMax = Math.max(groupMax, b.maxTimestamp);
+        continue;
+      }
+
+      if (start >= 0 && i - start >= 2)
+        groups.add(new int[] { start, i });
+      start = i;
+      samples = b.sampleCount;
+      groupMin = b.minTimestamp;
+      groupMax = b.maxTimestamp;
+      granularity = b.downsampledGranularityMs;
+    }
+    if (start >= 0 && blocks.size() - start >= 2)
+      groups.add(new int[] { start, blocks.size() });
+    return groups;
+  }
+
+  /**
+   * Lock-free phase of merging small blocks (issue #8794): writes a copy of the sealed file to
+   * {@code .ts.sealed.tmp} in which every run {@link #planMergeGroups} found is ONE block, and returns what
+   * {@link #commitMerge} needs to install it, or {@code null} when there is nothing to merge.
+   * <p>
+   * Lossless by construction: the rows of a run are decoded through the codec each column was written with, ordered by
+   * timestamp (stably, so equal timestamps keep their block order) and encoded again, and the block's statistics and
+   * declared tag values are recomputed from those rows with the same helpers the compaction and the downsample use.
+   * A run that would need more distinct values than a dictionary can hold is left as it is.
+   * <p>
+   * Blocks the merge does not touch are copied byte for byte, as every rewrite of this file does, so the cost of a pass
+   * is the size of the file plus the re-encoding of the runs - which are at most one block each, since the target is
+   * the block size. The directory lock is held one block at a time, and only to read it: the caller holds no lock
+   * that appends need while the file is written. If anything rewrote the store meanwhile, the next read notices the
+   * version moved and the whole pass is dropped, to be retried by the next maintenance tick.
+   * <p>
+   * The caller must serialise this with every other user of the temp file ({@code TimeSeriesShard.compactionMutex}).
+   */
+  MergePlan prepareMerge(final int targetSamples, final long bucketIntervalMs) throws IOException {
+    final List<BlockEntry> snapshot;
+    final int version;
+    directoryLock.readLock().lock();
+    try {
+      snapshot = new ArrayList<>(blockDirectory);
+      version = directoryVersion;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    final List<int[]> groups = planMergeGroups(snapshot, targetSamples, bucketIntervalMs);
+    if (groups.isEmpty())
+      return null;
+
+    final int colCount = columns.size();
+    final int tsColIdx = findTimestampColumnIndex();
+    final String tempPath = basePath + ".ts.sealed.tmp";
+    final List<BlockEntry> newDirectory = new ArrayList<>(snapshot.size());
+    boolean complete = false;
+    try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
+      tempFile.setLength(0);
+      final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
+      headerBuf.putInt(MAGIC_VALUE);
+      headerBuf.put((byte) CURRENT_VERSION);
+      headerBuf.putShort((short) colCount);
+      headerBuf.putInt(0);
+      headerBuf.putLong(Long.MAX_VALUE);
+      headerBuf.putLong(Long.MIN_VALUE);
+      headerBuf.flip();
+      tempFile.getChannel().write(headerBuf);
+
+      int groupIdx = 0;
+      int i = 0;
+      while (i < snapshot.size()) {
+        if (groupIdx < groups.size() && groups.get(groupIdx)[0] == i) {
+          final int[] group = groups.get(groupIdx++);
+          final List<BlockEntry> run = snapshot.subList(group[0], group[1]);
+          final List<byte[][]> runBytes = new ArrayList<>(run.size());
+          for (final BlockEntry entry : run) {
+            final byte[][] bytes = readBlockColumnsIfUnchanged(entry, version);
+            if (bytes == null)
+              return null;
+            runBytes.add(bytes);
+          }
+          if (!writeMergedRun(tempFile, run, runBytes, tsColIdx, newDirectory))
+            // too many distinct values for one dictionary: keep the blocks of this run as they are
+            for (int r = 0; r < run.size(); r++)
+              newDirectory.add(writeRetainedBlock(tempFile, run.get(r), runBytes.get(r), colCount));
+          i = group[1];
+        } else {
+          final BlockEntry entry = snapshot.get(i++);
+          final byte[][] bytes = readBlockColumnsIfUnchanged(entry, version);
+          if (bytes == null)
+            return null;
+          newDirectory.add(writeRetainedBlock(tempFile, entry, bytes, colCount));
+        }
+      }
+      complete = true;
+    } finally {
+      if (!complete)
+        deleteTempFileIfExists();
+    }
+    return new MergePlan(newDirectory, version, snapshot.size());
+  }
+
+  /**
+   * The compressed columns of one block, read under the directory read lock and only if the directory still is the one
+   * the merge was planned against; {@code null} when it moved. The block is CRC-checked first: a merge decodes and
+   * re-encodes, and a re-encoded block carries a fresh, valid CRC, so a damaged block that went through unchecked
+   * would be laundered into a healthy-looking one.
+   */
+  private byte[][] readBlockColumnsIfUnchanged(final BlockEntry entry, final int version) throws IOException {
+    directoryLock.readLock().lock();
+    try {
+      if (directoryVersion != version)
+        return null;
+      validateBlockCRC(entry);
+      final int colCount = columns.size();
+      final byte[][] cols = new byte[colCount][];
+      for (int c = 0; c < colCount; c++)
+        cols[c] = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      return cols;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Decodes the blocks of one run, writes them as a single block to the temp file and adds its entry to
+   * {@code target}. Returns {@code false}, writing nothing, when the rows do not fit one block.
+   */
+  private boolean writeMergedRun(final RandomAccessFile tempFile, final List<BlockEntry> run, final List<byte[][]> runBytes,
+      final int tsColIdx, final List<BlockEntry> target) throws IOException {
+    final int colCount = columns.size();
+    int total = 0;
+    for (final BlockEntry entry : run)
+      total += entry.sampleCount;
+
+    long[] ts = new long[total];
+    Object[][] values = new Object[colCount][];
+    for (int c = 0; c < colCount; c++)
+      if (c != tsColIdx)
+        values[c] = new Object[total];
+
+    int offset = 0;
+    for (int r = 0; r < run.size(); r++) {
+      final BlockEntry entry = run.get(r);
+      final byte[][] bytes = runBytes.get(r);
+      final long[] blockTs = DeltaOfDeltaCodec.decode(bytes[tsColIdx]);
+      if (blockTs.length != entry.sampleCount)
+        throw new IOException("Sealed block at offset " + entry.blockStartOffset + " declares " + entry.sampleCount
+            + " sample(s) but its timestamps decode to " + blockTs.length);
+      System.arraycopy(blockTs, 0, ts, offset, blockTs.length);
+      for (int c = 0; c < colCount; c++) {
+        if (c == tsColIdx)
+          continue;
+        final Object[] decoded = decodeColumn(columns.get(c), bytes[c]);
+        if (decoded.length != entry.sampleCount)
+          throw new IOException("Sealed block at offset " + entry.blockStartOffset + " declares " + entry.sampleCount
+              + " sample(s) but column '" + columns.get(c).getName() + "' decodes to " + decoded.length);
+        System.arraycopy(decoded, 0, values[c], offset, decoded.length);
+      }
+      offset += blockTs.length;
+    }
+
+    boolean sorted = true;
+    for (int i = 1; i < total && sorted; i++)
+      sorted = ts[i - 1] <= ts[i];
+    if (!sorted) {
+      final int[] order = TimeSeriesShard.sortIndices(ts);
+      ts = TimeSeriesShard.applyOrder(ts, order);
+      for (int c = 0; c < colCount; c++)
+        if (c != tsColIdx)
+          values[c] = TimeSeriesShard.applyOrderObjects(values[c], order);
+    }
+
+    // The distinct values as the write path declares them, and the ONE instance of each: the strings are drawn from
+    // the declarations of the blocks being merged, so the merged block shares them with its neighbours (issue #8793)
+    final Map<String, String> canonical = new HashMap<>();
+    for (final BlockEntry entry : run)
+      if (entry.tagDistinctValues != null)
+        for (final String[] declared : entry.tagDistinctValues)
+          if (declared != null)
+            for (final String v : declared)
+              canonical.putIfAbsent(v, v);
+
+    final byte[][] compressedCols = new byte[colCount][];
+    final double[] mins = new double[colCount];
+    final double[] maxs = new double[colCount];
+    final double[] sums = new double[colCount];
+    final long[] counts = new long[colCount];
+    Arrays.fill(mins, Double.NaN);
+    Arrays.fill(maxs, Double.NaN);
+    Arrays.fill(sums, Double.NaN);
+    final String[][] tagDistinctValues = new String[colCount][];
+    for (int c = 0; c < colCount; c++) {
+      final ColumnDefinition column = columns.get(c);
+      if (c == tsColIdx) {
+        compressedCols[c] = DeltaOfDeltaCodec.encode(ts);
+        continue;
+      }
+      if (column.getCompressionHint() == TimeSeriesCodec.DICTIONARY) {
+        final HashSet<Object> distinct = new HashSet<>();
+        for (final Object v : values[c])
+          distinct.add(v != null ? v : "");
+        if (distinct.size() > DictionaryCodec.MAX_DICTIONARY_SIZE)
+          return false;
+      }
+      compressedCols[c] = compressColumn(column, values[c]);
+      if (hasNumericStats(c)) {
+        final double[] stats = reduceNumericStats(column, values[c]);
+        mins[c] = stats[0];
+        maxs[c] = stats[1];
+        sums[c] = stats[2];
+        counts[c] = (long) stats[3];
+      }
+      if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
+        final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
+        for (final Object v : values[c]) {
+          final String text = v != null ? v.toString() : "";
+          final String shared = canonical.get(text);
+          distinctSet.add(shared != null ? shared : text);
+        }
+        tagDistinctValues[c] = distinctSet.toArray(new String[0]);
+      }
+    }
+
+    final BlockEntry merged = writeNewBlockToFile(tempFile, total, ts[0], ts[total - 1], compressedCols,
+        new BlockStats(mins, maxs, sums, counts), colCount, tagDistinctValues, newBlockId());
+    merged.downsampledGranularityMs = run.getFirst().downsampledGranularityMs;
+    target.add(merged);
+    return true;
+  }
+
+  /**
+   * Installs the temp file {@link #prepareMerge} wrote, if the store still is the one it was derived from; otherwise
+   * drops it and answers {@code false} (issue #8794). Same swap as a compaction's, plus the mark a walk in flight reads
+   * to tell "merged away" from "retired" (see {@link #mergeEpoch}).
+   * <p>
+   * Caller holds the shard's compaction write lock, which keeps appenders and the HA install out for the duration of
+   * the swap.
+   */
+  boolean commitMerge(final MergePlan plan) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      if (directoryVersion != plan.directoryVersion()) {
+        deleteTempFileIfExists();
+        return false;
+      }
+      commitTempCompactionFile(plan.newDirectory());
+      ++mergeEpoch;
+      return true;
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -3680,6 +4004,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private void loadDirectory() throws IOException {
+    // One canonical instance per distinct tag value, and per distinct declared array, for the whole directory
+    // (issue #8793). A low-rate feed seals a small block per pass and every block declares the same few thousand
+    // values, so decoding each one into a fresh String kept blocks x values copies alive for the life of the
+    // process: 188 MB for 1.3M samples. Local to the load, so nothing outlives it and a value that retention later
+    // drops cannot be pinned by a pool.
+    final Map<String, String> canonicalValues = new HashMap<>();
+    final Map<List<String>, String[]> canonicalArrays = new HashMap<>();
     final ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_SIZE);
     indexChannel.read(headerBuf, 0);
     headerBuf.flip();
@@ -3828,7 +4159,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final int distinctCount = dcBuf.getShort() & 0xFFFF;
           tagEndPos += 2;
 
-          blockTagDistinctValues[c] = new String[distinctCount];
+          final String[] distinctValues = new String[distinctCount];
           for (int v = 0; v < distinctCount; v++) {
             final ByteBuffer lenBuf = ByteBuffer.allocate(2);
             indexChannel.read(lenBuf, tagEndPos);
@@ -3840,9 +4171,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             final byte[] valBytes = new byte[valLen];
             final ByteBuffer valBuf = ByteBuffer.wrap(valBytes);
             indexChannel.read(valBuf, tagEndPos);
-            blockTagDistinctValues[c][v] = new String(valBytes, StandardCharsets.UTF_8);
+            final String value = new String(valBytes, StandardCharsets.UTF_8);
+            distinctValues[v] = canonicalValues.computeIfAbsent(value, k -> k);
             tagEndPos += valLen;
           }
+          // Blocks of one series very often declare the very same set, in the same order: share the array too
+          blockTagDistinctValues[c] = canonicalArrays.computeIfAbsent(Arrays.asList(distinctValues), k -> distinctValues);
           tagIdx++;
         }
       }

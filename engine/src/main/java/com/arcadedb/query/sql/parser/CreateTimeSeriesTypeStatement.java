@@ -212,7 +212,8 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
       builder.append(" DOWNSAMPLING POLICY");
       for (final DownsamplingTier tier : tiers)
         builder.append(" AFTER ").append(renderDuration(tier.afterMs()))
-            .append(" GRANULARITY ").append(renderDuration(tier.granularityMs()));
+            .append(" GRANULARITY ").append(renderDuration(tier.granularityMs()))
+            .append(renderTierOffset(tier.offsetMs()));
     }
   }
 

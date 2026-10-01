@@ -51,6 +51,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   private final long                               toTs;
   private final List<MultiColumnAggregationRequest> requests;
   private final long                               bucketIntervalMs;
+  private final long                               bucketOffsetMs;
   private final String                             timeBucketAlias;
   private final Map<String, String>                requestAliasToOutputAlias;
   private final TagFilter                          tagFilter;
@@ -67,12 +68,24 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
   public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final String timeBucketAlias,
       final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter, final CommandContext context) {
+    this(tsType, fromTs, toTs, requests, bucketIntervalMs, 0L, timeBucketAlias, requestAliasToOutputAlias, tagFilter, context);
+  }
+
+  /**
+   * @param bucketOffsetMs where the bucket grid starts, as {@code TimeBucketGrid.normalizeOffset} returns it (issue
+   *                       #8798); {@code 0} for the epoch-aligned grid
+   */
+  public AggregateFromTimeSeriesStep(final LocalTimeSeriesType tsType, final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs, final long bucketOffsetMs,
+      final String timeBucketAlias, final Map<String, String> requestAliasToOutputAlias, final TagFilter tagFilter,
+      final CommandContext context) {
     super(context);
     this.tsType = tsType;
     this.fromTs = fromTs;
     this.toTs = toTs;
     this.requests = requests;
     this.bucketIntervalMs = bucketIntervalMs;
+    this.bucketOffsetMs = bucketOffsetMs;
     this.timeBucketAlias = timeBucketAlias;
     this.requestAliasToOutputAlias = requestAliasToOutputAlias;
     this.tagFilter = tagFilter;
@@ -97,8 +110,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
           final OperationHeapLimit limit = OperationHeapLimit.of(context, "buckets", "time series aggregation");
           // A NON-POSITIVE CAP MEANS NO LIMIT, WHICH IS ALSO WHAT A CEILING OF 0 MEANS TO THE ENGINE
           final int ceiling = (int) Math.min(Math.max(limit.getMaxElements(), 0L), Integer.MAX_VALUE);
-          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter,
-              aggregationMetrics, ceiling);
+          final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs,
+              tagFilter, aggregationMetrics, ceiling);
           // THE SCAN STOPS ONE BLOCK PAST THE CEILING AT MOST, AND WHAT COMES BACK OVER IT IS REFUSED HERE
           limit.check(aggResult.getUsedBucketCount());
 
@@ -185,6 +198,8 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
     final StringBuilder sb = new StringBuilder();
     sb.append(spaces).append("+ AGGREGATE FROM TIMESERIES ").append(tsType.getName());
     sb.append(" [").append(fromTs).append(" - ").append(toTs).append("] bucket=").append(bucketIntervalMs).append("ms");
+    if (bucketOffsetMs != 0)
+      sb.append(" offset=").append(bucketOffsetMs).append("ms");
     sb.append("\n").append(spaces).append("    ");
     for (int i = 0; i < requests.size(); i++) {
       if (i > 0)
@@ -209,7 +224,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, timeBucketAlias,
+    return new AggregateFromTimeSeriesStep(tsType, fromTs, toTs, requests, bucketIntervalMs, bucketOffsetMs, timeBucketAlias,
         requestAliasToOutputAlias, tagFilter, context);
   }
 }

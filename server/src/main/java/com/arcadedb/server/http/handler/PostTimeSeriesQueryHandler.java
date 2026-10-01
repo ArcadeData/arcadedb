@@ -242,6 +242,7 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
       final long toTs, final TagFilter tagFilter) throws Exception {
 
     final long bucketInterval;
+    final long bucketOffset;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final JSONArray aggNames = new JSONArray();
 
@@ -259,6 +260,8 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
       bucketInterval = TimeSeriesGateway.requireBucketInterval(
           TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", "aggregation.bucketInterval"),
           "aggregation.bucketInterval");
+      // Where the grid starts, so weeks can begin on a Monday and days at a local midnight (issue #8798)
+      bucketOffset = TimeSeriesHandlerUtils.optBucketOffset(aggJson, bucketInterval, "aggregation");
       final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", "aggregation.requests");
       // An empty array is not an aggregation of nothing: it used to answer a bucket per interval whose 'values'
       // array was empty, a shape no client has anything to do with (issue #7675).
@@ -310,7 +313,7 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
     final MultiColumnAggregationResult aggResult;
     try {
-      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics, maxResultRows);
+      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, bucketOffset, tagFilter, readMetrics, maxResultRows);
     } finally {
       TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_TS_QUERY);
     }
