@@ -4595,19 +4595,9 @@ public class SelectExecutionPlanner {
   }
 
   /**
-   * given a flat AND block and a set of indexes, returns the best index to be used to process it,
-   * with the complete description on how to use it
-   *
-   * @param context
-   * @param indexes
-   * @param block
-   *
-   * @return
-   */
-  /**
    * Snapshot of the indexes of a type that can be planned on. DDL on the same type runs concurrently: an index being created is
    * already registered before its per-bucket sub-indexes exist (it has no type yet) and one being dropped stays registered after
-   * it was invalidated, neither is a candidate for a query that does not name it (issue #8855).
+   * it was invalidated, neither is a candidate for a query that does not name it.
    */
   private static List<TypeIndex> plannableIndexes(final Collection<TypeIndex> indexes) {
     final List<TypeIndex> result = new ArrayList<>(indexes.size());
@@ -4622,6 +4612,16 @@ public class SelectExecutionPlanner {
     return result;
   }
 
+  /**
+   * given a flat AND block and a set of indexes, returns the best index to be used to process it,
+   * with the complete description on how to use it
+   *
+   * @param context
+   * @param indexes
+   * @param block
+   *
+   * @return
+   */
   private IndexSearchDescriptor findBestIndexFor(final CommandContext context, final Collection<TypeIndex> allIndexes,
       final AndBlock block, final DocumentType clazz) {
     final List<TypeIndex> indexes = plannableIndexes(allIndexes);
@@ -4781,6 +4781,16 @@ public class SelectExecutionPlanner {
     return result;
   }
 
+  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltextSafely(final CommandContext context, final TypeIndex index,
+      final AndBlock block, final DocumentType clazz) {
+    try {
+      return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
+    } catch (final IndexException e) {
+      // Dropped or rebuilt after plannableIndexes()
+      return null;
+    }
+  }
+
   /**
    * given a full text index and a flat AND block, returns a descriptor on how to process it with an
    * index (index, index key and additional filters to apply after index fetch
@@ -4808,16 +4818,6 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltextSafely(final CommandContext context, final TypeIndex index,
-      final AndBlock block, final DocumentType clazz) {
-    try {
-      return index.getType() == FULL_TEXT ? buildIndexSearchDescriptorForFulltext(context, index, block, clazz) : null;
-    } catch (final IndexException e) {
-      // Dropped or rebuilt after plannableIndexes() (issue #8855)
-      return null;
-    }
-  }
-
   private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext context, final Index index,
       final AndBlock block, final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
@@ -4871,7 +4871,7 @@ public class SelectExecutionPlanner {
     try {
       return buildIndexSearchDescriptorInternal(context, index, block, clazz);
     } catch (final IndexException e) {
-      // Dropped or rebuilt between plannableIndexes() and here (issue #8855): not a candidate for this plan
+      // Dropped or rebuilt between plannableIndexes() and here: not a candidate for this plan
       return null;
     }
   }
@@ -4885,7 +4885,7 @@ public class SelectExecutionPlanner {
     // wrong in both directions; a recheck could remove the extra rows but never bring back the missing ones. CONTAINSTEXT
     // reaches a FULL_TEXT index through buildIndexSearchDescriptorForFulltext instead (issues #8435, #8438).
     final Schema.INDEX_TYPE indexType = index.getType();
-    // null: sub-indexes emptied by a concurrent drop or rebuild after plannableIndexes() (issue #8855)
+    // null: sub-indexes emptied by a concurrent drop or rebuild after plannableIndexes()
     if (indexType == null || !indexType.isExactKeyLookup())
       return null;
 
