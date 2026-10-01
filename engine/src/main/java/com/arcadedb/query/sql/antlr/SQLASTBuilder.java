@@ -3142,7 +3142,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * <p>
    * Negates the ALREADY-PARSED value rather than re-parsing a {@code "-"}-prefixed text, so the folded literal keeps
    * exactly the numeric type {@code 0 - X} used to produce ({@code -2147483648} stays a {@code Long}, an
-   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}) and the sign lands
+   * {@code L}-suffixed literal stays a {@code Long}, a suffix-less decimal stays a {@code Double}, or a {@code BigDecimal} when it has more digits than a double holds) and the sign lands
    * correctly on every literal shape the visitors accept, not only on plain decimal.
    * <p>
    * A literal carrying a MODIFIER is left alone: a suffix binds tighter than the sign, so {@code -1.toString()} is
@@ -3165,7 +3165,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     else if (value instanceof final BigDecimal bd)
       negated = bd.negate();
     else
-      // A magnitude the visitors could not represent as one of the four above has no folded form that is certainly
+      // A magnitude the visitors could not represent as one of the five above has no folded form that is certainly
       // equivalent, so leave it to the arithmetic.
       return null;
 
@@ -3400,16 +3400,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return baseExpr;
   }
 
+  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
+
   /**
-   * A literal a double represents exactly (at most 15 significant digits always round-trip) stays a {@link Double}. One
-   * with more digits than that is kept as a {@link BigDecimal} when the double would not print back as the same number,
-   * so a DECIMAL target or comparison sees what the user typed (issue #8872).
+   * A literal a double represents exactly stays a {@link Double}. A decimal one longer than 15 characters (a cheap
+   * pre-filter: 15 significant digits always round-trip) is kept as a {@link BigDecimal} when the double would not
+   * print back as the same number, so a DECIMAL target or comparison sees what the user typed (issue #8872). Hex
+   * floats, values outside the double range and exponents beyond {@link #MAX_EXACT_DECIMAL_SCALE} stay doubles, so
+   * a huge exponent cannot be turned into a BigDecimal whose arithmetic expands about a billion digits.
    */
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
-    if (text.length() > 15) {
+    if (text.length() > 15 && !Double.isInfinite(d) && !text.startsWith("0x") && !text.startsWith("0X")) {
       final BigDecimal exact = new BigDecimal(text);
-      if (Double.isInfinite(d) || exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
+      if (Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
         return exact;
     }
     return d;
