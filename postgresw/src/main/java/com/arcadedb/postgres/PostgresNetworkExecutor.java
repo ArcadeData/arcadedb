@@ -248,15 +248,6 @@ public class PostgresNetworkExecutor extends Thread {
     void write() throws IOException;
   }
 
-  public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database) throws IOException {
-    this(server, socket, database, null);
-  }
-
-  public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database,
-      final PreAuthConnectionGate.Ticket preAuthTicket) throws IOException {
-    this(server, socket, database, preAuthTicket, PostgresSslHelper.disabled());
-  }
-
   public PostgresNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database,
       final PreAuthConnectionGate.Ticket preAuthTicket, final PostgresSslHelper sslHelper) throws IOException {
     setName(Constants.PRODUCT + "-postgres/" + socket.getInetAddress());
@@ -3663,9 +3654,9 @@ public class PostgresNetworkExecutor extends Thread {
     try {
       channel = new ChannelBinaryServer(sslHelper.wrapWithTls(channel.socket), configuration);
     } catch (final IOException e) {
-      // Nothing else says why a client could not get a session (an untrusted or unsupported-version peer, a scanner),
-      // and the caller only logs the closed connection at FINE.
-      LogManager.instance().log(this, Level.INFO, "PSQL: TLS handshake with %s failed: %s", channel.socket.getRemoteSocketAddress(),
+      // FINE like the closed connection the caller logs: a scanner or a health probe controls what reaches this line
+      // before authenticating, so it must not be able to fill the log at the default level.
+      LogManager.instance().log(this, Level.FINE, "PSQL: TLS handshake with %s failed: %s", channel.socket.getRemoteSocketAddress(),
           e.getMessage());
       throw e;
     }

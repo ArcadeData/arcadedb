@@ -23,6 +23,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import org.junit.jupiter.api.Test;
 
+import javax.net.ssl.SSLContext;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -33,6 +36,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SslUtilsServerContextTest {
+
+  @Test
+  void validStoresBuildAContextThatServes() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE, "src/test/resources/keystore.pkcs12");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD, "sos0nmzWniR0");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE, "src/test/resources/truststore.jks");
+    configuration.setValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD, "nphgDK7ugjGR");
+
+    final SSLContext context = SslUtils.createServerSslContext(configuration, "Postgres");
+
+    assertThat(context.getProtocol()).startsWith("TLS");
+    assertThat(context.getServerSocketFactory()).isNotNull();
+  }
 
   @Test
   void missingKeyStorePathNamesTheProtocolAndTheSetting() {

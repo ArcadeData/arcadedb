@@ -115,7 +115,8 @@ abstract class PostgresTlsTestBase extends PostgresWireProtocolTestBase {
   @AfterEach
   @Override
   public void endTest() {
-    GlobalConfiguration.POSTGRES_SSL.setValue("DISABLED");
+    GlobalConfiguration.POSTGRES_SSL.reset();
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.reset();
     super.endTest();
   }
 
