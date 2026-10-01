@@ -1833,12 +1833,17 @@ public class ArcadeDBServer {
         // every caller, underSnapshotRecovery included: a successful install never meets the marker, because its swap
         // moved it out with the old files, and a rolled-back one restores it with them and stays closed.
         final File databaseDirectory = new File(path);
-        if (refusesUnverifiedClosedCopy(databaseDirectory))
+        if (refusesUnverifiedClosedCopy(databaseDirectory)) {
+          // Re-verified in the background; the refusal only brings the next attempt forward (issue #8606).
+          final HAServerPlugin ha = haServer;
+          if (ha != null)
+            ha.onUnverifiedClosedCopyRefused(databaseName);
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available on this node: it "
               + "was closed here and the last HA resync could not verify its copy, because the leader did not hold it. "
               + "It may be behind the cluster, so it is not reopened on a follower. It is reinstalled by the next resync "
-              + "that finds the leader holding it; open it on the leader, or remove this node's copy (or its '"
-              + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
+              + "that finds the leader holding it, which this node checks periodically; open it on the leader, or "
+              + "remove this node's copy (or its '" + UNVERIFIED_CLOSED_COPY_FILE + "' marker, to accept it as it is)");
+        }
         // On the leader the copy becomes the cluster's, so it is reopened only once its peers have said none of them
         // holds a newer one (issue #8605) - which the check before the lock established, or this node was not the
         // leader yet when it ran.

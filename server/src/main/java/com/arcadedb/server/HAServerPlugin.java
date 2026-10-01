@@ -98,6 +98,16 @@ public interface HAServerPlugin extends ServerPlugin {
     return "this HA implementation cannot compare the copy with the other servers' copies";
   }
 
+  /**
+   * Told by {@code ArcadeDBServer.getDatabase} when it refused, on a follower, to reopen a closed copy carrying the
+   * {@code ArcadeDBServer.UNVERIFIED_CLOSED_COPY_FILE} marker (issue #8606): someone wants the database now, so an
+   * implementation that re-verifies such copies in the background should not wait out a long backoff before asking the
+   * leader again. Called on the request path with the server registry lock held: it must return at once, never dial
+   * and never take a lock.
+   */
+  default void onUnverifiedClosedCopyRefused(final String databaseName) {
+  }
+
   String getLeaderName();
 
   /**
