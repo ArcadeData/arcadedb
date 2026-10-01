@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLSocket;
@@ -40,6 +41,13 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
     return "OPTIONAL";
   }
 
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    // The stalled-handshake test waits for this pre-authentication timeout to close the connection.
+    GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(1500);
+  }
+
   @Test
   void jdbcSslmodeRequireIsServed() throws Exception {
     try (final Connection connection = connect(true)) {
@@ -56,7 +64,7 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
 
   @Test
   void serverAnswersSAndTheStartupRunsInsideTls() throws Exception {
-    try (final Socket socket = new Socket("localhost", getServerPostgresPort())) {
+    try (final Socket socket = newSocket()) {
       assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
 
       try (final SSLSocket tls = startClientTls(socket)) {
@@ -75,7 +83,7 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
 
   @Test
   void aSecondSslRequestInsideTlsClosesTheConnection() throws Exception {
-    try (final Socket socket = new Socket("localhost", getServerPostgresPort())) {
+    try (final Socket socket = newSocket()) {
       assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
 
       try (final SSLSocket tls = startClientTls(socket)) {
@@ -85,6 +93,48 @@ class PostgresTlsOptionalIT extends PostgresTlsTestBase {
         out.flush();
         assertThat(tls.getInputStream().read()).isEqualTo(-1);
       }
+    }
+  }
+
+  @Test
+  void bytesPipelinedBehindTheSslRequestAreRefusedWithoutAnswering() throws Exception {
+    try (final Socket socket = newSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      // THE SSLREQUEST AND FOUR MORE BYTES IN ONE WRITE: THE CLIENT DID NOT WAIT FOR THE ANSWER
+      out.writeInt(8);
+      out.writeInt(SSL_REQUEST_CODE);
+      out.writeInt(0x16030100);
+      out.flush();
+      assertThat(readOrClosed(socket.getInputStream())).isEqualTo(-1);
+    }
+    assertServerStillServes();
+  }
+
+  @Test
+  void aHandshakeFailureClosesTheConnectionAndTheServerKeepsServing() throws Exception {
+    try (final Socket socket = newSocket()) {
+      assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      out.write(new byte[] { 'n', 'o', 't', ' ', 't', 'l', 's', '!', 0, 0, 0, 0, 0, 0, 0, 0 });
+      out.flush();
+      assertThat(readOrClosed(socket.getInputStream())).isNotEqualTo('S');
+    }
+    assertServerStillServes();
+  }
+
+  @Test
+  void aClientThatStallsAfterSIsClosedByThePreAuthTimeout() throws Exception {
+    try (final Socket socket = newSocket()) {
+      assertThat(sslRequestAnswer(socket)).isEqualTo((byte) 'S');
+      // NO CLIENTHELLO: THE SERVER MUST GIVE UP ON ITS OWN
+      assertThat(readOrClosed(socket.getInputStream())).isEqualTo(-1);
+    }
+    assertServerStillServes();
+  }
+
+  private void assertServerStillServes() throws Exception {
+    try (final Connection connection = connect(true)) {
+      assertThat(selectOne(connection)).isEqualTo(1);
     }
   }
 }

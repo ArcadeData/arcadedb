@@ -3663,7 +3663,7 @@ public class PostgresNetworkExecutor extends Thread {
     tlsActive = true;
   }
 
-  private boolean readStartupMessage(final boolean no2ssl) {
+  private boolean readStartupMessage(final boolean firstPacket) {
     try {
       final long len = channel.readUnsignedInt();
       // The declared length used to be read and then ignored, so the parameter loop below ran until the
@@ -3678,7 +3678,7 @@ public class PostgresNetworkExecutor extends Thread {
       if (protocolVersion == 80877103) {
         // REQUEST FOR SSL. Only the first request of a connection is honored: a second one, or one inside TLS, is a
         // protocol violation.
-        if (!no2ssl)
+        if (!firstPacket)
           throw new PostgresProtocolException("Unexpected SSL request");
 
         if (sslHelper.getTlsMode() == PostgresSslHelper.TlsMode.DISABLED) {
@@ -3689,6 +3689,12 @@ public class PostgresNetworkExecutor extends Thread {
               "PSQL: received an SSL connection request but TLS is not enabled (" + GlobalConfiguration.POSTGRES_SSL.getKey()
                   + "). Telling the client to continue in plaintext");
         } else {
+          // A client sends nothing before it has read the answer: bytes already buffered behind the SSLRequest were
+          // sent in plaintext by someone who did not wait for it, and are refused rather than dropped silently or
+          // replayed into the session (the class of attack of CVE-2021-23222).
+          if (channel.inputHasData())
+            throw new PostgresProtocolException("Unexpected data after SSL request");
+
           channel.writeByte((byte) 'S');
           channel.flush();
           upgradeToTls();
