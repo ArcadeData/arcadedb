@@ -911,8 +911,17 @@ public class TimeSeriesEngine implements AutoCloseable {
    * per pass. Lossless, and a no-op on a store with nothing to merge.
    */
   public void mergeSmallBlocks() throws IOException {
+    mergeSmallBlocks(1);
+  }
+
+  /**
+   * Same, but a shard is rewritten only when the pass removes at least {@code minBlocksSaved} blocks: a pass copies the
+   * whole sealed file and, under HA, ships it, so the maintenance scheduler lets a handful of small blocks accumulate
+   * instead of rewriting a large store every minute to fold two of them.
+   */
+  public void mergeSmallBlocks(final int minBlocksSaved) throws IOException {
     for (final TimeSeriesShard shard : shards)
-      shard.mergeSmallBlocks();
+      shard.mergeSmallBlocks(minBlocksSaved);
   }
 
   /**

@@ -46,6 +46,13 @@ public class TimeSeriesMaintenanceScheduler {
 
   private static final long DEFAULT_CHECK_INTERVAL_MS = 60_000; // 1 minute
 
+  /**
+   * A merge of small sealed blocks rewrites the whole sealed file, so a pass is only run once it removes at least this
+   * many blocks (issue #8794). Bounds the small blocks a shard carries to about this many per shard, and the rewrite to
+   * once per that many maintenance passes of a slow feed.
+   */
+  static final int MERGE_MIN_BLOCKS_SAVED = 8;
+
   private final ScheduledExecutorService executor;
   private final Map<String, ScheduledFuture<?>> tasks = new ConcurrentHashMap<>();
 
@@ -138,7 +145,7 @@ public class TimeSeriesMaintenanceScheduler {
       // A feed slower than a block per pass seals a small block per pass; fold them into full ones (issue #8794).
       // Its own guard: a store that cannot be merged must not take retention and downsampling down with it.
       try {
-        engine.mergeSmallBlocks();
+        engine.mergeSmallBlocks(MERGE_MIN_BLOCKS_SAVED);
       } catch (final Exception e) {
         LogManager.instance().log(TimeSeriesMaintenanceScheduler.class, Level.WARNING,
             "Error merging small sealed blocks of TimeSeries type '%s'", e, typeName);

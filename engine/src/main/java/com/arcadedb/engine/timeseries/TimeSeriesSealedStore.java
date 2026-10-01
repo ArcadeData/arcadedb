@@ -148,6 +148,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public static final String FILE_EXTENSION = ".ts.sealed";
 
+  /**
+   * The temp file a merge of small blocks writes (issue #8794). Not the compaction's {@code .ts.sealed.tmp}: retention
+   * and downsampling write that one under the compaction write lock and not under the shard's compaction mutex, so a
+   * merge sharing it could have its half-written file moved into place by one of them. Like it, excluded from
+   * {@link #listSealedFiles} by the exact suffix match.
+   */
+  static final String MERGE_TEMP_SUFFIX = ".ts.sealed.merge.tmp";
+
   private static final File[] EMPTY_FILES = new File[0];
 
   private final String               basePath;
@@ -186,6 +194,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * answering short would be silent. The snapshot stamps the SUM of the two counters.
    */
   private          long             mergeEpoch;
+  // (kept apart from downsampleEpoch because getDownsampleRewriteCount() counts downsamples only, and the idempotency tests read it)
   /**
    * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
    * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
@@ -286,7 +295,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double[] columnMaxs;   // per-column max
     final double[] columnSums;   // per-column sum of the REAL (non-NaN) samples, NaN when there is none
     final long[]   columnCounts; // per-column count of the REAL (non-NaN) samples, or COUNT_UNKNOWN (see below)
-    String[][]     tagDistinctValues; // indexed by schema column index, null for non-TAG columns
+    // indexed by schema column index, null for non-TAG columns. IMMUTABLE: loadDirectory shares one array between every
+    // block that declares the same values (issue #8793), so nothing may write into it
+    String[][]     tagDistinctValues;
 
     /**
      * The count a legacy ("TSBL") block declares for a column whose sum it accumulated over a NaN sample (issue
@@ -421,6 +432,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File tmpFile = new File(basePath + ".ts.sealed.tmp");
     if (tmpFile.exists() && !tmpFile.delete())
       throw new IOException("Failed to delete stale temporary file: " + tmpFile.getAbsolutePath());
+
+    final File mergeTmpFile = new File(basePath + MERGE_TEMP_SUFFIX);
+    if (mergeTmpFile.exists() && !mergeTmpFile.delete())
+      throw new IOException("Failed to delete stale temporary file: " + mergeTmpFile.getAbsolutePath());
 
     // Clean up a stale .incoming file left by an HA sealed-blob install that crashed before the
     // atomic move (issue #4382). The live .ts.sealed below is authoritative; the Raft entry that
@@ -2125,7 +2140,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Lock-free phase of merging small blocks (issue #8794): writes a copy of the sealed file to
-   * {@code .ts.sealed.tmp} in which every run {@link #planMergeGroups} found is ONE block, and returns what
+   * {@code .ts.sealed.merge.tmp} in which every run {@link #planMergeGroups} found is ONE block, and returns what
    * {@link #commitMerge} needs to install it, or {@code null} when there is nothing to merge.
    * <p>
    * Lossless by construction: the rows of a run are decoded through the codec each column was written with, ordered by
@@ -2139,9 +2154,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * that appends need while the file is written. If anything rewrote the store meanwhile, the next read notices the
    * version moved and the whole pass is dropped, to be retried by the next maintenance tick.
    * <p>
-   * The caller must serialise this with every other user of the temp file ({@code TimeSeriesShard.compactionMutex}).
+   *The temp file is the merge's own, so it needs no serialisation against retention or downsampling; the caller serialises merges
+   * with each other and with compaction ({@code TimeSeriesShard.compactionMutex}).
    */
-  MergePlan prepareMerge(final int targetSamples, final long bucketIntervalMs) throws IOException {
+  MergePlan prepareMerge(final int targetSamples, final long bucketIntervalMs, final int minBlocksSaved) throws IOException {
     final List<BlockEntry> snapshot;
     final int version;
     directoryLock.readLock().lock();
@@ -2153,12 +2169,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     final List<int[]> groups = planMergeGroups(snapshot, targetSamples, bucketIntervalMs);
-    if (groups.isEmpty())
+    // A pass copies the whole file and, under HA, ships it: only worth it when it removes enough blocks
+    int blocksSaved = 0;
+    for (final int[] group : groups)
+      blocksSaved += group[1] - group[0] - 1;
+    if (groups.isEmpty() || blocksSaved < Math.max(1, minBlocksSaved))
       return null;
 
     final int colCount = columns.size();
     final int tsColIdx = findTimestampColumnIndex();
-    final String tempPath = basePath + ".ts.sealed.tmp";
+    final String tempPath = basePath + MERGE_TEMP_SUFFIX;
     final List<BlockEntry> newDirectory = new ArrayList<>(snapshot.size());
     boolean complete = false;
     try (final RandomAccessFile tempFile = new RandomAccessFile(tempPath, "rw")) {
@@ -2202,7 +2222,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       complete = true;
     } finally {
       if (!complete)
-        deleteTempFileIfExists();
+        deleteMergeTempFileIfExists();
     }
     return new MergePlan(newDirectory, version, snapshot.size());
   }
@@ -2348,10 +2368,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     directoryLock.writeLock().lock();
     try {
       if (directoryVersion != plan.directoryVersion()) {
-        deleteTempFileIfExists();
+        deleteMergeTempFileIfExists();
         return false;
       }
-      commitTempCompactionFile(plan.newDirectory());
+      commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX);
       ++mergeEpoch;
       return true;
     } finally {
@@ -2655,6 +2675,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param newBlockDirectory the block entries returned by {@link #writeTempCompactionFile}
    */
   void commitTempCompactionFile(final List<BlockEntry> newBlockDirectory) throws IOException {
+    commitTempFile(newBlockDirectory, basePath + ".ts.sealed.tmp");
+  }
+
+  /** {@link #commitTempCompactionFile} for the temp file at {@code tempPath}. */
+  private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
     directoryLock.writeLock().lock();
     try {
       // Atomic file swap: close handles first (required on Windows), then atomically replace.
@@ -2663,7 +2688,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile.close();
 
       final File sealedFile = new File(basePath + ".ts.sealed");
-      final File tmpFile = new File(basePath + ".ts.sealed.tmp");
+      final File tmpFile = new File(tempPath);
       try {
         Files.move(tmpFile.toPath(), sealedFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       } catch (final IOException moveEx) {
@@ -2768,6 +2793,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Deletes the temp compaction file ({@code .ts.sealed.tmp}) if it exists.
    * Called from error-recovery paths to leave a clean state.
    */
+  void deleteMergeTempFileIfExists() {
+    final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
+    if (tmp.exists() && !tmp.delete())
+      LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+  }
+
   void deleteTempFileIfExists() {
     final File tmp = new File(basePath + ".ts.sealed.tmp");
     if (tmp.exists() && !tmp.delete())

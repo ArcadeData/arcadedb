@@ -864,12 +864,14 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * The file is written without any lock appenders wait on; only the swap runs under the compaction write lock.
    *
+   * @param minBlocksSaved the least number of blocks the pass must remove to be worth a rewrite of the whole file (and,
+   *                       under HA, its replication); {@code 1} merges whenever it can
    * @return whether the store was rewritten
    */
-  public boolean mergeSmallBlocks() throws IOException {
+  public boolean mergeSmallBlocks(final int minBlocksSaved) throws IOException {
     compactionMutex.lock();
     try {
-      return database.getWrappedDatabaseInstance().runWithCompactionReplication(this::mergeSmallBlocksInternal);
+      return database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> mergeSmallBlocksInternal(minBlocksSaved));
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IOException("Merge of small blocks interrupted for shard " + shardIndex, e);
@@ -878,8 +880,9 @@ public class TimeSeriesShard implements AutoCloseable {
     }
   }
 
-  private boolean mergeSmallBlocksInternal() throws IOException {
-    final TimeSeriesSealedStore.MergePlan plan = sealedStore.prepareMerge(SEALED_BLOCK_SIZE, compactionBucketIntervalMs);
+  private boolean mergeSmallBlocksInternal(final int minBlocksSaved) throws IOException {
+    final TimeSeriesSealedStore.MergePlan plan = sealedStore.prepareMerge(SEALED_BLOCK_SIZE, compactionBucketIntervalMs,
+        minBlocksSaved);
     if (plan == null)
       return false;
 
@@ -891,7 +894,7 @@ public class TimeSeriesShard implements AutoCloseable {
       db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
       return true;
     } catch (final IOException | RuntimeException e) {
-      sealedStore.deleteTempFileIfExists();
+      sealedStore.deleteMergeTempFileIfExists();
       throw e;
     } finally {
       compactionLock.writeLock().unlock();

@@ -3443,7 +3443,7 @@ public class SelectExecutionPlanner {
         if (funcCall.getParams().size() == 3) {
           try {
             bucketOptions = funcCall.getParams().get(2).execute((Identifiable) null, context);
-          } catch (final RuntimeException e) {
+          } catch (final CommandExecutionException | IllegalArgumentException e) {
             return false;
           }
         }

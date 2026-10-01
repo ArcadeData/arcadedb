@@ -276,4 +276,49 @@ class Issue8794MergeSmallSealedBlocksTest extends TestHelper {
     assertThat(sealedBlocks(engine)).isEqualTo(blocks);
     assertThat(sealed.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst().blockId).isEqualTo(firstId);
   }
+
+  @Test
+  void theSchedulerWaitsUntilAMergeIsWorthAFileRewrite() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("Slow");
+    final TimeSeriesEngine engine = type.getEngine();
+    feedAndCompact(engine, 5, 15, 1_000L);
+
+    TimeSeriesMaintenanceScheduler.runMaintenance(database, type, "Slow");
+    assertThat(sealedBlocks(engine)).as("5 blocks to save 4 is below the scheduler's threshold").isEqualTo(5);
+
+    engine.mergeSmallBlocks(4);
+    assertThat(sealedBlocks(engine)).isEqualTo(1);
+  }
+
+  @Test
+  void aMergeAndARetentionPassRunningTogetherLeaveAConsistentStore() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Slow TIMESTAMP ts TAGS (id STRING) FIELDS (v DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = engine("Slow");
+    feedAndCompact(engine, 40, 25, 1_000L);
+    final long cutoff = T0 + 10 * 25 * 1_000L;
+
+    final Thread retention = new Thread(() -> {
+      try {
+        for (int i = 0; i < 20; i++)
+          engine.applyRetention(cutoff);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+    retention.start();
+    for (int i = 0; i < 20; i++)
+      engine.mergeSmallBlocks();
+    retention.join();
+    engine.mergeSmallBlocks();
+
+    // retention drops whole blocks, so how many rows survive depends on how far the merge got: never more than were
+    // fed, never fewer than those at or after the cutoff
+    final List<Object[]> rows = allRows(engine);
+    assertThat(rows.size()).isBetween(750, 1_000);
+    final int survivors = rows.size();
+    assertThat(engine.checkIntegrity().problems()).isEmpty();
+    reopenDatabase();
+    assertThat(allRows(engine("Slow"))).hasSize(survivors);
+  }
 }
