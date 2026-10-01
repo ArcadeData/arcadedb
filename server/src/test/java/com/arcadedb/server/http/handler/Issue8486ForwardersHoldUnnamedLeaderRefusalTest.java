@@ -224,6 +224,34 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
     assertThat(view.readsAfterRefusal()).isZero();
   }
 
+  /**
+   * Issue #8709: leadership blinked while the leader's address was being resolved, so the two reads of the leader id do
+   * not agree and no stable id is named. The node dialled is still the one that refused, and this node's view names it
+   * again afterwards: the refusal is held on the id read before the dial, not relayed at once.
+   */
+  @Test
+  void aForwardWhoseLeaderIdBlinkedDuringTheDialIsStillHeld() throws Exception {
+    leader.answer(503, UNNAMED_REFUSAL);
+    view.blinkDuringTheDial();
+    view.moveAfterReads(3);
+    final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(20_000L)));
+
+    final ExecutionResponse response = forwarder.forwardIfReplica(exchange("/api/v1/server"), user("root"),
+        "/api/v1/server", "{}");
+
+    assertThat(response.getCode()).isEqualTo(503);
+    assertThat(view.moved()).isTrue();
+    assertThat(view.readsAfterRefusal()).isGreaterThanOrEqualTo(4);
+  }
+
+  @Test
+  void theHoldKeyFallsBackToTheIdReadBeforeTheDial() {
+    assertThat(LeaderForwardContext.holdLeaderId("stable", "before")).isEqualTo("stable");
+    assertThat(LeaderForwardContext.holdLeaderId(null, "before")).isEqualTo("before");
+    assertThat(LeaderForwardContext.holdLeaderId(null, null)).isNull();
+    assertThat(LeaderForwardContext.holdLeaderId(null, " ")).isNull();
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // PostBatchHandler
   // ---------------------------------------------------------------------------------------------------------------
@@ -428,6 +456,8 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
     private final    AtomicInteger readsAfterRefusal = new AtomicInteger();
     private volatile int           movesAfterReads   = Integer.MAX_VALUE;
     private volatile boolean       noLeaderId;
+    private volatile boolean       blinkDuringTheDial;
+    private final    AtomicInteger reads             = new AtomicInteger();
     private volatile boolean       moved;
 
     LeaderView(final StubLeader leader) {
@@ -446,8 +476,15 @@ class Issue8486ForwardersHoldUnnamedLeaderRefusalTest {
       noLeaderId = true;
     }
 
+    /** The second read - the one after the address was resolved - finds an election in progress. */
+    void blinkDuringTheDial() {
+      blinkDuringTheDial = true;
+    }
+
     String read() {
       if (noLeaderId)
+        return null;
+      if (blinkDuringTheDial && reads.incrementAndGet() == 2)
         return null;
       if (leader.answered() == 0)
         return EX_LEADER;

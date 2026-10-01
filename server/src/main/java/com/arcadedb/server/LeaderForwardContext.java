@@ -173,6 +173,21 @@ public final class LeaderForwardContext {
   }
 
   /**
+   * The leader id a forward's refusal hold is keyed on (issue #8709): {@code stableLeaderId} when there is one, else the
+   * id read before the dial. The stable id governs what a forward NAMES in {@link #FORWARDED_LEADER_ID_HEADER} - saying
+   * nothing about a node it is unsure of - but the hold only asks the view to move away from the node that refused, and
+   * the id read before the dial is that node whether or not leadership changed during the resolution. When it did, the
+   * view has already moved and {@link #awaitLeaderViewMovedFrom} returns at once.
+   *
+   * @return the id to hold on, or null when the forward had no leader to dial
+   */
+  public static String holdLeaderId(final String stableLeaderId, final String leaderIdBeforeDial) {
+    if (stableLeaderId != null)
+      return stableLeaderId;
+    return leaderIdBeforeDial == null || leaderIdBeforeDial.isBlank() ? null : leaderIdBeforeDial;
+  }
+
+  /**
    * Waits until {@code leaderIdProbe} stops naming {@code refusingLeaderId} - it names a different leader, or none while
    * an election runs - or {@code timeoutMs} elapses (issue #8486). The {@code server}-module counterpart of the wait
    * {@code RaftReplicatedDatabase} gives a SQL write (issue #8480), for the forwarders that cannot see Raft types: a

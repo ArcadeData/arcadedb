@@ -64,6 +64,7 @@ import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLSession;
@@ -395,6 +396,48 @@ public class RemoteHttpComponent extends RWLockContext {
       final Callback callback,
       final String errorOperation,
       final boolean replayable) {
+    return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
+        callback, errorOperation, replayable, null);
+  }
+
+  /**
+   * How a {@code /server/*} control-plane request (issue #8710) differs from a command: its body is sent as it is
+   * rather than wrapped in a command document, {@code 201} is a success as well as {@code 200}, an empty answer is an
+   * empty document, and {@code urlGuard} vets the URL of every attempt - failover changes the host a request reaches.
+   *
+   * @param body     the request body, or null for none
+   * @param urlGuard called with each URL before the request is sent, or null
+   */
+  record ControlPlaneRequest(JSONObject body, Consumer<String> urlGuard) {
+  }
+
+  /**
+   * Sends a {@code /server/*} control-plane request ({@code /server/users}, {@code /server/groups},
+   * {@code /server/api-tokens}) through the {@link #httpCommand} loop, so it gets the election retry, the failover and
+   * the replay guard every other server command has (issue #8710). Routed to the leader when known.
+   *
+   * @param path the route and query string, relative to {@code /api/v<n>/}
+   *
+   * @return the parsed answer, an empty document when the route answered with none
+   */
+  JSONObject controlPlaneRequest(final String method, final String path, final JSONObject body, final String operation,
+      final Consumer<String> urlGuard) {
+    return (JSONObject) httpCommand(method, null, path, null, null, null, true, true, (response, json) -> json, operation,
+        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard));
+  }
+
+  private Object httpCommand(final String method,
+      final String extendedURL,
+      final String operation,
+      final String language,
+      final String payloadCommand,
+      final Map<String, Object> params,
+      final boolean leaderIsPreferable,
+      final boolean autoReconnect,
+      final Callback callback,
+      final String errorOperation,
+      final boolean replayable,
+      final ControlPlaneRequest controlPlane) {
 
     Exception lastException = null;
 
@@ -437,6 +480,9 @@ public class RemoteHttpComponent extends RWLockContext {
         url += "/" + extendedURL;
 
       try {
+        if (controlPlane != null && controlPlane.urlGuard() != null)
+          controlPlane.urlGuard().accept(url);
+
         HttpRequest.Builder requestBuilder = createRequestBuilder(method, url);
 
         // Inject HA read-consistency headers when used from a RemoteDatabase.
@@ -452,7 +498,15 @@ public class RemoteHttpComponent extends RWLockContext {
 
         HttpRequest request;
 
-        if (payloadCommand != null) {
+        if (controlPlane != null) {
+          if (controlPlane.body() != null)
+            request = requestBuilder.method(method, HttpRequest.BodyPublishers.ofString(getRequestPayload(controlPlane.body())))
+                .header("Content-Type", "application/json").build();
+          else if ("GET".equalsIgnoreCase(method))
+            request = requestBuilder.GET().build();
+          else
+            request = requestBuilder.method(method, HttpRequest.BodyPublishers.noBody()).build();
+        } else if (payloadCommand != null) {
           if ("GET".equalsIgnoreCase(method))
             throw new IllegalArgumentException("Cannot execute a HTTP GET request with a payload");
 
@@ -493,7 +547,8 @@ public class RemoteHttpComponent extends RWLockContext {
         if (this instanceof RemoteDatabase remoteDb)
           remoteDb.captureResponseHeaders(response);
 
-        if (response.statusCode() != 200) {
+        // POST /server/users and POST /server/api-tokens answer 201, every other control-plane route 200
+        if (response.statusCode() != 200 && !(controlPlane != null && response.statusCode() == 201)) {
           lastException = manageException(response, errorOperation);
           if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())) {
             LogManager.instance()
@@ -509,7 +564,9 @@ public class RemoteHttpComponent extends RWLockContext {
         // so it is not confused with a network failure or buried as a generic error.
         final JSONObject jsonResponse;
         try {
-          jsonResponse = new JSONObject(response.body());
+          jsonResponse = controlPlane != null && (response.body() == null || response.body().isBlank()) ?
+              new JSONObject() :
+              new JSONObject(response.body());
         } catch (final JSONException e) {
           throw new RemoteException("Malformed server response for operation '" + operation + "'", e);
         }

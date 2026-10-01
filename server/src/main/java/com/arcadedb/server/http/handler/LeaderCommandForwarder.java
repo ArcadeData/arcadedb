@@ -392,7 +392,8 @@ public final class LeaderCommandForwarder {
     final ExecutionResponse response = relayEventStream && isEventStreamRequested(exchange) ?
         transport.stream(dial.client(), request, dial.address(), longRunningCommand, streamTargetFactory.apply(exchange)) :
         transport.send(dial.client(), request, dial.address(), longRunningCommand);
-    return holdUnnamedNotTheLeaderRefusal(response, ha, intendedLeaderId, httpServer.getServer().getConfiguration());
+    return holdUnnamedNotTheLeaderRefusal(response, ha, LeaderForwardContext.holdLeaderId(intendedLeaderId, leaderIdBeforeDial),
+        httpServer.getServer().getConfiguration());
   }
 
   /**
@@ -409,7 +410,7 @@ public final class LeaderCommandForwarder {
    * <p>
    * Every other answer is returned at once: a refusal that names the leader tells the client where to go, and no other
    * status says anything about who leads. So is a forward without a stable {@code intendedLeaderId}, which cannot say
-   * which node the view has to move away from. Shared by this class and {@link PostBatchHandler}, the two forwarders
+   * which node the view has to move away from (the callers fall back to the id read before the dial, issue #8709). Shared by this class and {@link PostBatchHandler}, the two forwarders
    * of this module.
    *
    * @param intendedLeaderId the Raft peer id the forward was dialled for, or null when it has none
