@@ -150,6 +150,7 @@ import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.planner.CypherEagernessAnalyzer;
 import com.arcadedb.query.opencypher.optimizer.CypherOptimizer;
+import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -5372,9 +5373,11 @@ public class CypherExecutionPlan {
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
       return null;
     final MatchClause matchClause = statement.getMatchClauses().getFirst();
-    if (matchClause.isOptional() || matchClause.hasWhereClause() || statement.getWhereClause() != null
+    // A WHERE is taken only as a range of the aggregated property (issue #8812), checked below once the property is known
+    if (matchClause.isOptional() || (matchClause.hasWhereClause() && statement.getWhereClause() != null)
         || !matchClause.hasPathPatterns() || matchClause.getPathPatterns().size() != 1)
       return null;
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : statement.getWhereClause();
     final PathPattern pathPattern = matchClause.getPathPatterns().getFirst();
     if (!pathPattern.isSingleNode())
       return null;
@@ -5418,7 +5421,70 @@ public class CypherExecutionPlan {
         || index.getMetadata().isCaseInsensitive(0))
       return null;
 
-    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
+    if (whereClause == null)
+      return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), context);
+
+    final BooleanExpression condition = whereClause.getConditionExpression();
+    final List<RangePredicate> range = new ArrayList<>(2);
+    if (condition == null || !collectRangeOn(condition, nodePattern.getVariable(), propertyName, range) || range.isEmpty())
+      return null;
+    return new IndexMinMaxStep(typeName, propertyName, max, returnItem.getOutputName(), nodePattern.getVariable(), range,
+        condition, context);
+  }
+
+  /**
+   * Collects the bounds of a WHERE that is nothing but {@code variable.property <, <=, >, >= literal-or-parameter}, joined
+   * by AND (the comparison may be written the other way round, {@code 5 < v.a}).
+   *
+   * @return false when any part of the condition is something else
+   */
+  private static boolean collectRangeOn(final BooleanExpression condition, final String variable, final String property,
+      final List<RangePredicate> range) {
+    if (condition instanceof LogicalExpression logical)
+      return logical.getOperator() == LogicalExpression.Operator.AND && logical.getRight() != null
+          && collectRangeOn(logical.getLeft(), variable, property, range)
+          && collectRangeOn(logical.getRight(), variable, property, range);
+    if (!(condition instanceof ComparisonExpression comparison))
+      return false;
+
+    ComparisonExpression.Operator operator = comparison.getOperator();
+    final Expression propertySide;
+    final Expression valueSide;
+    if (isPropertyOf(comparison.getLeft(), variable, property)) {
+      propertySide = comparison.getLeft();
+      valueSide = comparison.getRight();
+    } else if (isPropertyOf(comparison.getRight(), variable, property)) {
+      propertySide = comparison.getRight();
+      valueSide = comparison.getLeft();
+      operator = switch (operator) {
+        case LESS_THAN -> ComparisonExpression.Operator.GREATER_THAN;
+        case GREATER_THAN -> ComparisonExpression.Operator.LESS_THAN;
+        case LESS_THAN_OR_EQUAL -> ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+        case GREATER_THAN_OR_EQUAL -> ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+        default -> operator;
+      };
+    } else
+      return false;
+    if (propertySide == null)
+      return false;
+
+    if (operator != ComparisonExpression.Operator.LESS_THAN && operator != ComparisonExpression.Operator.GREATER_THAN
+        && operator != ComparisonExpression.Operator.LESS_THAN_OR_EQUAL
+        && operator != ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL)
+      return false;
+
+    if (valueSide instanceof LiteralExpression literal && literal.getValue() != null)
+      range.add(new RangePredicate(property, operator, literal.getValue(), false));
+    else if (valueSide instanceof ParameterExpression parameter)
+      range.add(new RangePredicate(property, operator, parameter.getParameterName(), true));
+    else
+      return false;
+    return true;
+  }
+
+  private static boolean isPropertyOf(final Expression expression, final String variable, final String property) {
+    return expression instanceof PropertyAccessExpression access && variable.equals(access.getVariableName())
+        && property.equals(access.getPropertyName());
   }
 
   /**

@@ -1,0 +1,149 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.executor;
+
+import com.arcadedb.TestHelper;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression for issue #8812: {@code SELECT min(a) FROM V WHERE a > x} (and {@code max} with {@code <}) read every
+ * record of the range instead of the first entry of the index on {@code a}. The answer has to stay the one the scan
+ * gives, and the plan has to stop at one index entry.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue8812RangeMinMaxIndexTest extends TestHelper {
+
+  @BeforeEach
+  void load() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V");
+      database.command("sql", "CREATE PROPERTY V.a LONG");
+      database.command("sql", "CREATE PROPERTY V.b LONG");
+      database.command("sql", "CREATE INDEX ON V (a) NOTUNIQUE");
+      for (int i = 0; i < 2_000; i++)
+        database.command("sql", "CREATE VERTEX V SET a = " + (i * 2) + ", b = " + (i % 7));
+      // a vertex with no value: a range must never return it
+      database.command("sql", "CREATE VERTEX V SET b = 1");
+    });
+  }
+
+  @Test
+  void minOverLowerBoundUsesTheIndex() {
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a > 1001", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 1001", 1002L);
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a >= 1002", "SELECT min(a + 0) AS c FROM V WHERE a + 0 >= 1002", 1002L);
+    assertUsesOrderedIndexFetch("SELECT min(a) AS c FROM V WHERE a > 1001");
+  }
+
+  @Test
+  void maxOverUpperBoundUsesTheIndex() {
+    assertAnswer("SELECT max(a) AS c FROM V WHERE a < 1001", "SELECT max(a + 0) AS c FROM V WHERE a + 0 < 1001", 1000L);
+    assertAnswer("SELECT max(a) AS c FROM V WHERE a <= 1000", "SELECT max(a + 0) AS c FROM V WHERE a + 0 <= 1000", 1000L);
+    assertUsesOrderedIndexFetch("SELECT max(a) AS c FROM V WHERE a < 1001");
+  }
+
+  @Test
+  void minAndMaxOverBothBounds() {
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a > 100 AND a < 200", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 100 AND a + 0 < 200",
+        102L);
+    assertAnswer("SELECT max(a) AS c FROM V WHERE a > 100 AND a < 200", "SELECT max(a + 0) AS c FROM V WHERE a + 0 > 100 AND a + 0 < 200",
+        198L);
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a BETWEEN 101 AND 200", "SELECT min(a + 0) AS c FROM V WHERE a + 0 BETWEEN 101 AND 200",
+        102L);
+    assertAnswer("SELECT max(a) AS c FROM V WHERE a BETWEEN 101 AND 199", "SELECT max(a + 0) AS c FROM V WHERE a + 0 BETWEEN 101 AND 199",
+        198L);
+  }
+
+  @Test
+  void minOverTheOppositeBoundAndMaxOverTheSameBound() {
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a < 1001", "SELECT min(a + 0) AS c FROM V WHERE a + 0 < 1001", 0L);
+    assertAnswer("SELECT max(a) AS c FROM V WHERE a > 1001", "SELECT max(a + 0) AS c FROM V WHERE a + 0 > 1001", 3998L);
+  }
+
+  @Test
+  void emptyRangeStillAnswersOneNullRow() {
+    try (final ResultSet rs = database.query("sql", "SELECT min(a) AS c FROM V WHERE a > 999999")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("c")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT max(a) FROM V WHERE a < 0")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("max(a)")).isNull();
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void columnNameIsTheOneTheStatementAsked() {
+    try (final ResultSet rs = database.query("sql", "SELECT max(a) FROM V WHERE a < 100")) {
+      final Result row = rs.next();
+      assertThat(row.getPropertyNames()).containsExactly("max(a)");
+      assertThat(row.<Long>getProperty("max(a)")).isEqualTo(98L);
+    }
+  }
+
+  @Test
+  void parametersAreReadAtEachExecution() {
+    final String sql = "SELECT min(a) AS c FROM V WHERE a > :lo";
+    for (final long lo : new long[] { 10, 1001, 3000 }) {
+      try (final ResultSet rs = database.query("sql", sql, Map.of("lo", lo))) {
+        final Object value = rs.next().getProperty("c");
+        try (final ResultSet scan = database.query("sql", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > :lo", Map.of("lo", lo))) {
+          assertThat(value).isEqualTo(scan.next().getProperty("c"));
+        }
+      }
+    }
+  }
+
+  @Test
+  void otherShapesStillAggregate() {
+    // a condition on another property, or an equality, is not a range of the aggregated property
+    assertAnswer("SELECT min(a) AS c FROM V WHERE a > 100 AND b = 3", "SELECT min(a + 0) AS c FROM V WHERE a + 0 > 100 AND b = 3", null);
+    assertAnswer("SELECT min(b) AS c FROM V WHERE a > 100", "SELECT min(b + 0) AS c FROM V WHERE a + 0 > 100", null);
+  }
+
+  private void assertAnswer(final String sql, final String checkSql, final Object expected) {
+    final Object actual;
+    final Object check;
+    try (final ResultSet rs = database.query("sql", sql)) {
+      actual = rs.next().getProperty("c");
+    }
+    try (final ResultSet rs = database.query("sql", checkSql)) {
+      check = rs.next().getProperty("c");
+    }
+    assertThat(actual).as(sql).isEqualTo(check);
+    if (expected != null)
+      assertThat(actual).as(sql).isEqualTo(expected);
+  }
+
+  private void assertUsesOrderedIndexFetch(final String sql) {
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql)) {
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      assertThat(plan).contains("FETCH FROM INDEX").contains("LIMIT 1").contains("FIRST ROW VALUE");
+      assertThat(plan).doesNotContain("AGGREGAT");
+    }
+  }
+}

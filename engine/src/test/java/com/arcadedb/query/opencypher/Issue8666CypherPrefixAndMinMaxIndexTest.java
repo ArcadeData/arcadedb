@@ -196,9 +196,12 @@ class Issue8666CypherPrefixAndMinMaxIndexTest extends TestHelper {
   }
 
   @Test
-  void minAndMaxWithAFilterOrAnUnindexedKeyKeepTheScan() {
+  void minAndMaxWithAnotherFilterOrAnUnindexedKeyKeepTheScan() {
     assertThat(scalar("MATCH (d:D) WHERE d.x > 200 RETURN min(d.x) AS v", Map.of(), "v")).isEqualTo(201);
-    assertThat(profile("MATCH (d:D) WHERE d.x > 200 RETURN min(d.x) AS v", Map.of())).doesNotContain("MIN FROM INDEX");
+    // a range of the same property is answered from the index too, since #8812; anything else in the WHERE keeps the scan
+    assertThat(scalar("MATCH (d:D) WHERE d.x > 200 AND d.u <> 'zz' RETURN min(d.x) AS v", Map.of(), "v")).isEqualTo(201);
+    assertThat(profile("MATCH (d:D) WHERE d.x > 200 AND d.u <> 'zz' RETURN min(d.x) AS v", Map.of())).doesNotContain("MIN FROM INDEX");
+    assertThat(profile("MATCH (d:D) WHERE d.x = 200 RETURN min(d.x) AS v", Map.of())).doesNotContain("MIN FROM INDEX");
     assertThat(profile("MATCH (d:D) RETURN min(d.u) AS v", Map.of())).doesNotContain("MIN FROM INDEX");
     assertThat(scalar("MATCH (d:D) RETURN min(d.u) AS v", Map.of(), "v")).isEqualTo("v0");
     assertThat(profile("MATCH (d:D) RETURN min(d.x) AS lo, count(*) AS n", Map.of())).doesNotContain("MIN FROM INDEX");
