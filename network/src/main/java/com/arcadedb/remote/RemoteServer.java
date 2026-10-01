@@ -307,7 +307,8 @@ public class RemoteServer extends RemoteHttpComponent {
    * route answered with none.
    * <p>
    * It goes through {@link #controlPlaneRequest}, the {@code httpCommand} loop every server command uses, so a node
-   * that is down or mid-election is waited out or replaced exactly as for {@code createUser} (issue #8710), and a write
+   * that is mid-election is waited out, and one that is down is replaced when {@code NETWORK_SAME_SERVER_ERROR_RETRIES}
+   * allows more than one attempt, exactly as for {@code createUser} (issue #8710), and a write
    * whose answer was lost is not sent again. The leader is preferred; the {@code /server/users} routes forward to it
    * themselves (issue #7380) and the group and API-token routes submit a Raft entry, so reaching a follower still works.
    *
