@@ -5577,6 +5577,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       lifecycleExecutor.submit(() -> {
         try {
           reverifyUnverifiedClosedCopiesNow();
+        } catch (final RuntimeException e) {
+          // The executor would swallow it: said here, and counted, so a round that keeps failing is neither silent nor
+          // retried at the short end of the ladder.
+          unverifiedCopyReverifyFailures.incrementAndGet();
+          LogManager.instance().log(this, Level.WARNING,
+              "Re-verification of unverified closed copies failed: %s. The next health check retries it", e,
+              e.getMessage());
         } finally {
           unverifiedCopyReverifyInFlight.set(false);
         }
@@ -5592,7 +5599,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Restarts the re-verification ladder of {@link #reverifyUnverifiedClosedCopies()}: the next health tick runs a round
    * once {@link #UNVERIFIED_COPY_REVERIFY_INTERVAL_MS} has passed since the previous one. Called when this node refused a
    * request for a marked copy (issue #8606): someone wants the database now, so the wait is no longer the long end of
-   * the ladder. Cheap and bounded however often it is called: it never starts a round itself.
+   * the ladder. Cheap and bounded however often it is called: it never starts a round itself. Under steady demand for a
+   * database the leader still does not serve, it deliberately holds the short interval: one listing and one small
+   * request per marked copy every {@link #UNVERIFIED_COPY_REVERIFY_INTERVAL_MS}.
    */
   public void restartUnverifiedClosedCopyReverification() {
     unverifiedCopyReverifyFailures.set(0);

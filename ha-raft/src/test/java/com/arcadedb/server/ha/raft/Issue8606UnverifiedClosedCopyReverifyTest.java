@@ -303,6 +303,20 @@ class Issue8606UnverifiedClosedCopyReverifyTest {
     assertThat(failures()).isEqualTo(2);
   }
 
+  /** A round that throws is counted as a failed one and releases the in-flight guard, rather than vanishing. */
+  @Test
+  void aRoundThatThrowsIsCountedAndReleasesTheGuard() throws Exception {
+    // The tick reads the leader once, the round once more: the round's read throws.
+    when(raft.getLeaderId()).thenReturn(LEADER).thenThrow(new IllegalStateException("boom")).thenReturn(LEADER);
+
+    reverifyRound();
+
+    assertThat(failures()).isEqualTo(1);
+    assertThat(probes.get()).isZero();
+    reverifyRound();
+    assertThat(probes.get()).as("the guard was released, so the next round runs").isEqualTo(1);
+  }
+
   /** A new leader may hold what the previous one did not: it is asked at the next tick, whatever the backoff. */
   @Test
   void aNewLeaderIsAskedAtTheNextTick() throws Exception {
