@@ -119,7 +119,12 @@ public class OtlpMetricsPlugin implements ServerPlugin {
       final String path = uri.getRawPath();
       if (uri.getHost() != null && (path == null || path.isEmpty() || "/".equals(path))) {
         final String base = endpoint.trim();
-        final int cut = base.indexOf('?') >= 0 ? base.indexOf('?') : base.length();
+        int cut = base.length();
+        for (final char delimiter : new char[] { '?', '#' }) {
+          final int pos = base.indexOf(delimiter);
+          if (pos >= 0 && pos < cut)
+            cut = pos;
+        }
         final String head = base.substring(0, cut);
         return (head.endsWith("/") ? head.substring(0, head.length() - 1) : head) + "/v1/metrics" + base.substring(cut);
       }
