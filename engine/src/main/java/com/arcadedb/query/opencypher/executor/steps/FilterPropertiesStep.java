@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
@@ -41,7 +42,7 @@ import java.util.regex.Pattern;
  * Phase 3: Simple property comparison (n.prop > value)
  * TODO: Full expression evaluation in later phases
  */
-public class FilterPropertiesStep extends AbstractExecutionStep {
+public class FilterPropertiesStep extends AbstractExecutionStep implements ParallelRowSource {
   private final WhereClause whereClause;
 
   // Simple pattern for basic property comparisons: variable.property operator value
@@ -122,6 +123,26 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
         FilterPropertiesStep.this.close();
       }
     };
+  }
+
+  /**
+   * A filter the workers can take over only as a condition of the new expression framework: the legacy string
+   * fallback of {@link #evaluateCondition} stays on the calling thread.
+   */
+  @Override
+  public String parallelVariable() {
+    return whereClause != null && whereClause.getConditionExpression() != null && prev instanceof ParallelRowSource source ?
+        source.parallelVariable() : null;
+  }
+
+  @Override
+  public ParallelRecordScan planParallelRows(final CommandContext context, final List<BooleanExpression> filters) {
+    if (parallelVariable() == null)
+      return null;
+    final List<BooleanExpression> all = new ArrayList<>(filters.size() + 1);
+    all.addAll(filters);
+    all.add(whereClause.getConditionExpression());
+    return ((ParallelRowSource) prev).planParallelRows(context, all);
   }
 
   /**

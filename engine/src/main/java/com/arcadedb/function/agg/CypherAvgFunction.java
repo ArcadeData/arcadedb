@@ -68,6 +68,18 @@ public class CypherAvgFunction implements StatelessFunction {
   }
 
   @Override
+  public boolean canMergePartials() {
+    return true;
+  }
+
+  @Override
+  public void mergePartial(final StatelessFunction other) {
+    final CypherAvgFunction that = (CypherAvgFunction) other;
+    sum += that.sum;
+    count += that.count;
+  }
+
+  @Override
   public Object getAggregatedResult() {
     if (count == 0)
       return null;

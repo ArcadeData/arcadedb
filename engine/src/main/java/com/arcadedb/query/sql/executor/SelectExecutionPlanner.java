@@ -173,6 +173,8 @@ public class SelectExecutionPlanner {
     // now carried by the command deadline, which every guard reads and no statement kind can miss (issue #6304).
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
 
+    rewriteDistinctAsGroupBy(context);
+
     // A filter that keeps every record (WHERE 1=1, WHERE true) says nothing the statement did not already say, so it
     // is dropped here rather than pushed into the fetch: everything downstream - the projected properties computed
     // just below, the choice between FetchFromTypeWithFilterStep and FetchFromTypeExecutionStep, the hardwired
@@ -378,6 +380,36 @@ public class SelectExecutionPlanner {
     }
     info.fetchExecutionPlan = null;
     info.planCreated = true;
+  }
+
+  /**
+   * A plain {@code SELECT DISTINCT a, b FROM T} is the same set of rows as {@code SELECT a, b FROM T GROUP BY a, b}, and the GROUP BY is
+   * the one that aggregates in the parallel workers of a scan (issue #8799). Rewritten here, so that the dedup runs per worker and the
+   * partial results are merged at the end, instead of one {@code DistinctKey} per row on the consuming thread. The groups come out in
+   * the order of their first row, as the rows of a DISTINCT do.
+   * <p>
+   * Left as a DISTINCT when it cannot be the same plan: an aggregate, a GROUP BY, an ORDER BY (the dedup sees the sorted rows), expand()
+   * or UNWIND, a wildcard, excluded or nested items; and under a LIMIT, where DISTINCT stops reading as soon as it has enough rows while a
+   * GROUP BY has to read them all.
+   */
+  private void rewriteDistinctAsGroupBy(final CommandContext context) {
+    if (!info.distinct || info.groupBy != null || info.orderBy != null || info.unwind != null || info.limit != null
+        || info.projection.isExpand())
+      return;
+
+    final List<ProjectionItem> items = info.projection.getItems();
+    if (items == null || items.isEmpty())
+      return;
+
+    final GroupBy groupBy = new GroupBy();
+    for (final ProjectionItem item : items) {
+      if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null || item.isAggregate(context))
+        return;
+      groupBy.getItems().add(item.getExpression().copy());
+    }
+
+    info.groupBy = groupBy;
+    info.distinct = false;
   }
 
   /**
@@ -988,7 +1020,15 @@ public class SelectExecutionPlanner {
     final Projection postAggregate = new Projection();
     postAggregate.setItems(new ArrayList<>());
 
+    // A GROUP BY on a computed expression (GROUP BY a % 10) needs the split even with no aggregate in the projection: the unsplit path
+    // evaluates the projected expression on the aggregated row, where it does not exist, and answered null for it
     boolean isSplitted = false;
+    if (info.groupBy != null && info.groupBy.getItems() != null)
+      for (final Expression exp : info.groupBy.getItems())
+        if (!exp.isBaseIdentifier()) {
+          isSplitted = true;
+          break;
+        }
 
     //split for aggregate projections
     final AggregateProjectionSplit result = new AggregateProjectionSplit();
