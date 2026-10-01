@@ -68,7 +68,6 @@ public class SQLFunctionLibraryDefinition implements FunctionLibraryDefinition<S
     json.put("language", getLanguage());
 
     final JSONObject functionsJSON = new JSONObject();
-    // Name order, like every map in the schema file: see LocalSchema.toJSON().
     for (final SQLFunctionDefinition f : new TreeMap<>(functions).values()) {
       final JSONObject fJSON = new JSONObject();
       fJSON.put("code", f.getImplementation());

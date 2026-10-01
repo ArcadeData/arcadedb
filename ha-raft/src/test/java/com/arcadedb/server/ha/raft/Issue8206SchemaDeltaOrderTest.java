@@ -67,6 +67,21 @@ class Issue8206SchemaDeltaOrderTest {
   }
 
   @Test
+  void twoSectionsMovingTogetherWithARemovalInTheMiddleKeepTheLeadersOrder() {
+    final JSONObject base = schema(1, "A", "B", "C", "D");
+    base.getJSONObject("triggers").put("t1", new JSONObject().put("name", "t1")).put("t3", new JSONObject().put("name", "t3"));
+
+    final JSONObject updated = schema(2, "A", "AB", "C", "D");
+    updated.getJSONObject("triggers").put("t1", new JSONObject().put("name", "t1")).put("t2", new JSONObject().put("name", "t2"))
+        .put("t3", new JSONObject().put("name", "t3"));
+
+    final JSONObject merged = SchemaDelta.apply(base, SchemaDelta.compute(base, updated));
+
+    assertThat(merged.getJSONObject("types").keySet()).as("B, unlisted by the leader, is dropped").doesNotContain("B");
+    assertThat(merged.toString()).isEqualTo(updated.toString());
+  }
+
+  @Test
   void aRootSectionAddedBeforeAnExistingOneKeepsTheLeadersPosition() {
     final JSONObject base = schema(1, "V1");
     final JSONObject updated = new JSONObject();

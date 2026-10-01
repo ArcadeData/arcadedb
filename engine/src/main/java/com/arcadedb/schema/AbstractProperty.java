@@ -339,7 +339,6 @@ public abstract class AbstractProperty implements Property {
     if (regexp != null)
       json.put("regexp", regexp);
 
-    // Name order, like every map in the schema file: see LocalSchema.toJSON().
     json.put("custom", new JSONObject(new TreeMap<>(custom)));
 
     return json;
