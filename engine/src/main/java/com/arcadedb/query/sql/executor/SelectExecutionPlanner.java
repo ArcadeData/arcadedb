@@ -63,6 +63,7 @@ import com.arcadedb.query.sql.parser.JsonItem;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LetClause;
 import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
@@ -137,6 +138,12 @@ public class SelectExecutionPlanner {
    * search are computed from it), and so must not be reused for another set of parameters.
    */
   private              boolean           planDependsOnInputParameters;
+  /**
+   * Set when {@link #rewriteRangeMinMaxAsOrderedFetch} turned {@code SELECT min(a) FROM T WHERE a > ?} into an ordered
+   * fetch of {@code a} limited to one row: the column the fetch publishes, and the one the statement asked for.
+   */
+  private              String            rangeMinMaxSource;
+  private              String            rangeMinMaxAlias;
 
   public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
@@ -145,6 +152,8 @@ public class SelectExecutionPlanner {
   private void init(final CommandContext context) {
     //copying the content, so that it can be manipulated and optimized
     info = new QueryPlanningInfo();
+    rangeMinMaxSource = null;
+    rangeMinMaxAlias = null;
     info.projection = this.statement.getProjection() == null ? null : this.statement.getProjection().copy();
     info.projection = translateDistinct(info.projection);
     info.distinct = info.projection != null && info.projection.isDistinct();
@@ -215,6 +224,9 @@ public class SelectExecutionPlanner {
     // read off the clauses as the statement wrote them, before optimizeQuery() rearranges them into index searches.
     final String emptyReason = emptyByConstructionReason(context);
 
+    if (emptyReason == null)
+      rewriteRangeMinMaxAsOrderedFetch(context);
+
     optimizeQuery(info, context);
 
     if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
@@ -253,6 +265,9 @@ public class SelectExecutionPlanner {
       buildExecutionPlan(selectExecutionPlan, info);
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
+
+      if (rangeMinMaxSource != null)
+        selectExecutionPlan.chain(new FirstRowValueStep(rangeMinMaxSource, rangeMinMaxAlias, context));
 
       chainTimeout(selectExecutionPlan, info, context);
     }
@@ -664,6 +679,117 @@ public class SelectExecutionPlanner {
     result.chain(new MaxMinFromIndexStep(index, info.projection.getAllAliases().getFirst(), maxMinInfo.isMax, context));
     handleSkipAndLimitAfterHardwired(result, info, context);
     return true;
+  }
+
+  /**
+   * Answers {@code SELECT min(a) FROM T WHERE a > ?} (and {@code max}, and {@code <}, {@code >=}, {@code <=},
+   * {@code BETWEEN}) from the first entry of the matching range of the index on {@code a}, the way
+   * {@link #handleHardwiredMaxMinOnIndex} already does for the whole type (issue #8812). Left alone, the aggregate reads
+   * every record of the range.
+   * <p>
+   * The statement is rewritten, before the planner looks at it, into {@code SELECT a FROM T WHERE ... ORDER BY a
+   * ASC|DESC LIMIT 1}: the planner already knows how to seek an index range, to keep the index order instead of sorting
+   * and to stop after one row, and doing it through the same path keeps every rule about the bounds (type narrowing,
+   * incomparable bounds, case-insensitive keys) in one place. A {@link FirstRowValueStep} then gives back the one row
+   * the aggregate has to produce, a null value when the range is empty.
+   * <p>
+   * Only the shape where the rewrite is the same query is taken: one {@code min}/{@code max} of a plain property that
+   * has an ordered index, nothing but a conjunction of range comparisons of that very property against values that need
+   * no record, and none of the clauses that would see the difference (GROUP BY, ORDER BY, SKIP, LIMIT, LET, UNWIND,
+   * DISTINCT, TIMEOUT). A range excludes null by itself, which is why no null can come first, as it would for an
+   * unranged {@code ORDER BY}.
+   */
+  private void rewriteRangeMinMaxAsOrderedFetch(final CommandContext context) {
+    if (info.whereClause == null || info.projection == null || info.target == null || info.distinct || info.expand
+        || info.groupBy != null || info.orderBy != null || info.skip != null || info.limit != null || info.unwind != null
+        || info.perRecordLetClause != null || info.timeout != null || statement.getLetClause() != null)
+      return;
+
+    final Identifier targetClass = info.target.getItem().getIdentifier();
+    if (targetClass == null || info.target.getItem().getIndex() != null || info.target.getItem().getInputParam() != null)
+      return;
+
+    if (info.projection.getItems() == null || info.projection.getItems().size() != 1)
+      return;
+    final ProjectionItem item = info.projection.getItems().getFirst();
+    if (item.isAll() || item.exclude || item.nestedProjection != null || item.getExpression() == null
+        || !(item.getExpression().getMathExpression() instanceof BaseExpression base) || base.getModifier() != null
+        || base.getIdentifier() == null || base.getIdentifier().getLevelZero() == null)
+      return;
+    final FunctionCall functionCall = base.getIdentifier().getLevelZero().getFunctionCall();
+    if (functionCall == null || functionCall.getParams() == null || functionCall.getParams().size() != 1)
+      return;
+
+    final boolean max;
+    final String functionName = functionCall.getName().getStringValue().toLowerCase(Locale.ROOT);
+    if ("max".equals(functionName))
+      max = true;
+    else if ("min".equals(functionName))
+      max = false;
+    else
+      return;
+
+    final Expression argument = functionCall.getParams().getFirst();
+    if (!argument.isBaseIdentifier())
+      return;
+    final String propertyName = argument.toString().trim();
+
+    final DocumentType type = context.getDatabase().getSchema().existsType(targetClass.getStringValue()) ?
+        context.getDatabase().getSchema().getType(targetClass.getStringValue()) :
+        null;
+    if (type == null || !type.existsProperty(propertyName) || findIndexForProperty(type, propertyName) == null)
+      return;
+
+    final List<AndBlock> flattened = info.whereClause.flatten();
+    if (flattened == null || flattened.size() != 1)
+      return;
+    for (final BooleanExpression condition : flattened.getFirst().getSubBlocks())
+      if (!isRangeConditionOn(condition, propertyName, context))
+        return;
+
+    final String alias = item.getProjectionAliasAsString();
+
+    final OrderByItem orderByItem = new OrderByItem();
+    orderByItem.setAlias(propertyName);
+    orderByItem.setType(max ? OrderByItem.DESC : OrderByItem.ASC);
+    final OrderBy orderBy = new OrderBy();
+    orderBy.setItems(new ArrayList<>(List.of(orderByItem)));
+    final PInteger one = new PInteger();
+    one.setValue(1, "1");
+    final Limit limit = new Limit();
+    limit.num = one;
+
+    // the property goes out under its own name, so that the ORDER BY resolves against it and keeps the index order; the
+    // name the statement asked for is given back by the FirstRowValueStep
+    final Projection projection = new Projection();
+    projection.setItems(new ArrayList<>(List.of(projectionFromAlias(new Identifier(propertyName)))));
+
+    info.projection = projection;
+    info.orderBy = orderBy;
+    info.limit = limit;
+    rangeMinMaxSource = propertyName;
+    rangeMinMaxAlias = alias;
+  }
+
+  /**
+   * True for {@code prop > x}, {@code >=}, {@code <}, {@code <=} and {@code prop BETWEEN x AND y}, where {@code x} and
+   * {@code y} need no record.
+   */
+  private static boolean isRangeConditionOn(final BooleanExpression condition, final String propertyName,
+      final CommandContext context) {
+    if (condition instanceof BinaryCondition binary) {
+      final BinaryCompareOperator operator = binary.getOperator();
+      return (operator instanceof GtOperator || operator instanceof GeOperator || operator instanceof LtOperator
+          || operator instanceof LeOperator) && binary.getLeft() != null && binary.getLeft().isBaseIdentifier()
+          && propertyName.equals(binary.getLeft().toString().trim()) && binary.getRight() != null
+          && binary.getRight().isEarlyCalculated(context);
+    }
+    if (condition instanceof BetweenCondition between)
+      return between.getFirst() != null && between.getFirst().isBaseIdentifier()
+          && propertyName.equals(between.getFirst().toString().trim()) && between.getSecond() != null
+          && between.getSecond().isEarlyCalculated(context) && between.getThird() != null
+          && between.getThird().isEarlyCalculated(context);
+    return false;
   }
 
   /**

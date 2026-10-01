@@ -1648,8 +1648,7 @@ public class HashIndexBucket extends PaginatedComponent {
    * For non-unique index: removes a specific RID from an entry. Returns 1 if removed, 0 otherwise.
    * If the entry has only one RID left, removes the entire entry.
    */
-  private int removeRIDFromEntry(final MutablePage page, int entryCount, final int pos,
-      final RID targetRID) {
+  private int removeRIDFromEntry(final MutablePage page, final int entryCount, final int pos, final RID targetRID) {
     final int entryStart = readSlot(page, pos);
     final int keyLen = computeKeyLengthFromPage(page, entryStart);
     final int offset = entryStart + keyLen;
@@ -1697,17 +1696,8 @@ public class HashIndexBucket extends PaginatedComponent {
           System.arraycopy(oldEntry, ridsAfterStart, newEntry,
               keyLen + newRidCountBytes.length + ridsBeforeLen, ridsAfterLen);
 
-        // Check if there's space to write at dataEnd
-        int availableSpace = freeSpace(page, entryCount);
-        if (newEntrySize > availableSpace) {
-          entryCount = compactPage(page, entryCount);
-        }
-
-        // Write new entry at dataEnd, update slot
-        final int dataEnd = page.readShort(BUCKET_DATA_END) & 0xFFFF;
-        page.writeByteArray(dataEnd, newEntry);
-        page.writeShort(BUCKET_DATA_END, (short) (dataEnd + newEntrySize));
-        writeSlot(page, pos, dataEnd);
+        // Shorter than the old entry, so it fits in place; the tail is dead space reclaimed by the next compaction
+        page.writeByteArray(entryStart, newEntry);
 
         return 1;
       }

@@ -530,6 +530,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
+      // A comparison with null is never true (issue #8812): a null range bound matches nothing, it must not read as "no bound"
+      // (the other endpoint of a prefix range is shorter than the range slot, and may end with such an equality null)
+      final int rangeKeySize = Math.max(fromKey.getExpressions().size(), toKey.getExpressions().size());
+      if (isRangeCondition() && (endsWithNull(convertedFrom, rangeKeySize) || endsWithNull(convertedTo, rangeKeySize)))
+        continue;
+
       if (!valuesConvertToIndexKeyTypes(convertedFrom) || !valuesConvertToIndexKeyTypes(convertedTo))
         // This combination's bound has no defined ordering against the index's declared key type: it matches no
         // indexed row, consistent with the row-scan operators (#5900). Skip it rather than aborting the whole scan.
@@ -566,6 +572,29 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  private static boolean endsWithNull(final Object[] key, final int rangeKeySize) {
+    return key != null && key.length == rangeKeySize && key[key.length - 1] == null;
+  }
+
+  /**
+   * Whether the last key position is bounded by {@code <}, {@code <=}, {@code >}, {@code >=} or {@code BETWEEN}, as opposed
+   * to being matched exactly.
+   */
+  private boolean isRangeCondition() {
+    if (additionalRangeCondition != null)
+      return true;
+    if (!(condition instanceof AndBlock andBlock) || andBlock.getSubBlocks().isEmpty())
+      return false;
+    final BooleanExpression last = andBlock.getSubBlocks().getLast();
+    if (last instanceof BetweenCondition)
+      return true;
+    if (!(last instanceof BinaryCondition binary))
+      return false;
+    final BinaryCompareOperator operator = binary.getOperator();
+    return operator instanceof GtOperator || operator instanceof GeOperator || operator instanceof LtOperator
+        || operator instanceof LeOperator;
   }
 
   /**
