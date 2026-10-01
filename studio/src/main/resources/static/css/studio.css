@@ -4242,6 +4242,69 @@ body.col-resizing * {
   font-family: monospace;
 }
 
+.support-reg-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.support-reg-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  background: var(--bg-reference);
+  color: var(--color-brand);
+}
+
+.support-reg-kicker {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.support-reg-plan {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.support-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px 28px;
+  margin: 0 0 14px;
+}
+
+.support-grid dt {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.support-grid dd {
+  margin: 0;
+  font-size: 0.88rem;
+  word-break: break-all;
+}
+
+.support-reg-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
 .support-timeline-entry {
   border-left: 3px solid var(--border-ddd);
   padding: 4px 0 4px 12px;

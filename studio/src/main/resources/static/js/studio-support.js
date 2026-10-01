@@ -292,41 +292,58 @@ function renderSupportOverview() {
     html += "</div>";
   } else {
     var plan = s.plan;
-    html += '<div class="support-card">';
-    html += '<div class="d-flex justify-content-between align-items-start">';
-    html += "<h6><i class='fa fa-headset'></i> Registered with the ArcadeData customer portal</h6>";
-    html +=
-      '<button class="btn btn-sm btn-outline-danger" id="supportUnregisterBtn" onclick="supportUnregister()"' +
-      (s.fromSettings ? ' disabled title="Configured through the settings arcadedb.support.clientId and arcadedb.support.clientKey"' : "") +
-      '><i class="fa fa-unlink"></i> Unregister</button>';
-    html += "</div>";
-    html += '<table class="support-table mb-2" style="max-width: 640px;"><tbody>';
-    html += "<tr><th style='width: 160px;'>Workspace</th><td>" + supportEsc(s.workspaceName || "") + "</td></tr>";
-    html += "<tr><th>Client ID</th><td class='support-mono'>" + supportEsc(s.clientId) + "</td></tr>";
-    html +=
-      "<tr><th>Client key</th><td class='support-mono'>" +
-      supportEsc(s.keyHint) +
-      (s.keyLabel ? ' <span class="support-hint">(' + supportEsc(s.keyLabel) + ")</span>" : "") +
-      "</td></tr>";
-    if (s.scopes && s.scopes.length) html += "<tr><th>Scopes</th><td>" + supportEsc(s.scopes.join(", ")) + "</td></tr>";
-    html += "<tr><th>Portal</th><td class='support-mono'>" + supportEsc(s.portalUrl) + "</td></tr>";
+    html += '<div class="support-card support-reg">';
+    html += '<div class="support-reg-head">';
+    html += '<div class="support-reg-icon"><i class="fa fa-headset"></i></div>';
+    html += '<div class="support-reg-title">';
+    html += '<div class="support-reg-kicker">Registered with the ArcadeData customer portal</div>';
     if (plan) {
       html +=
-        "<tr><th>Plan</th><td>" +
-        supportEsc(plan.label || "") +
-        (plan.units ? " x " + supportEsc(plan.units) : "") +
+        '<div class="support-reg-plan">' +
+        supportEsc(plan.label || "Support") +
+        (plan.units ? " &times; " + supportEsc(plan.units) : "") +
         ' <span class="support-badge ' +
         (plan.entitled ? "ok" : "bad") +
         '">' +
         (plan.entitled ? "Active" : "Not active") +
-        "</span>" +
-        (plan.endsOn ? ' <span class="support-hint">' + (plan.entitled ? "until " : "ended ") + supportEsc(supportFormatDate(plan.endsOn)) + "</span>" : "") +
-        "</td></tr>";
-    }
-    html += "<tr><th>Instance ID</th><td class='support-mono'>" + supportEsc(s.instanceId) + "</td></tr>";
-    html += "</tbody></table>";
+        "</span></div>";
+      html +=
+        '<div class="support-hint">' +
+        (plan.endsOn
+          ? (plan.entitled ? "Until " : "Ended ") + supportEsc(supportFormatDate(plan.endsOn))
+          : plan.entitled
+            ? "No end date"
+            : "") +
+        "</div>";
+    } else html += '<div class="support-reg-plan">' + supportEsc(s.workspaceName || "Registered") + "</div>";
+    html += "</div>";
+    if (plan && plan.entitled)
+      html +=
+        '<button class="btn btn-primary support-goto ms-auto" data-support-view="issue"><i class="fa fa-plus"></i> Open an issue</button>';
+    html += "</div>";
+
+    html += '<dl class="support-grid">';
+    html += "<div><dt>Workspace</dt><dd>" + supportEsc(s.workspaceName || "") + "</dd></div>";
+    html +=
+      "<div><dt>Client key</dt><dd class='support-mono'>" +
+      supportEsc(s.keyHint) +
+      (s.keyLabel ? ' <span class="support-hint">(' + supportEsc(s.keyLabel) + ")</span>" : "") +
+      "</dd></div>";
+    html += "<div><dt>Client ID</dt><dd class='support-mono'>" + supportEsc(s.clientId) + "</dd></div>";
+    html += "<div><dt>Instance ID</dt><dd class='support-mono'>" + supportEsc(s.instanceId) + "</dd></div>";
+    html += "<div><dt>Portal</dt><dd class='support-mono'>" + supportEsc(s.portalUrl) + "</dd></div>";
+    if (s.scopes && s.scopes.length) html += "<div><dt>Scopes</dt><dd>" + supportEsc(s.scopes.join(", ")) + "</dd></div>";
+    html += "</dl>";
+
+    html += '<div class="support-reg-foot">';
     if (s.fromSettings)
-      html += '<div class="support-hint">Registered through the server settings: change or remove them in the server configuration.</div>';
+      html += '<span class="support-hint">Registered through the server settings: change or remove them in the server configuration.</span>';
+    else html += '<span class="support-hint">The key is stored on this server only.</span>';
+    html +=
+      '<button class="btn btn-sm btn-outline-danger ms-auto" id="supportUnregisterBtn" onclick="supportUnregister()"' +
+      (s.fromSettings ? ' disabled title="Configured through the settings arcadedb.support.clientId and arcadedb.support.clientKey"' : "") +
+      '><i class="fa fa-unlink"></i> Unregister</button>';
+    html += "</div>";
     html += "</div>";
 
     if (s.portalError) html += supportAlertHtml({ code: s.portalError.error, message: s.portalError.message });
