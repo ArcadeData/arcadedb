@@ -183,8 +183,9 @@ public class HttpServer implements ServerPlugin {
    * did not even reach the caller: the server reported a clean stop while holding the forwarder's HTTP client,
    * its connection pool and its selector thread for the life of the JVM.
    * <p>
-   * Order is unchanged and still matters: the forwarder's client is released last, once nothing is left that
-   * could ask it for a forward.
+   * Order matters: both forward clients are released after {@code undertow.stop()}, so no new request can reach
+   * them - the {@code /batch} handler's own client first (issue #8024), then the forwarder's client last, once
+   * nothing is left that could ask it for a forward.
    * <p>
    * The guards log the throwable ({@code logException = true}) rather than the message alone, because this
    * catch is now the last one a failure here meets: before, a throw propagated to {@code stopInternal()}, and
