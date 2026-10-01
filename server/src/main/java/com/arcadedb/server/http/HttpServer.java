@@ -130,6 +130,9 @@ public class HttpServer implements ServerPlugin {
   private final    HttpAuthSessionManager authSessionManager;
   private final    ClusterAuthSessionResolver clusterAuthSessionResolver;
   private final    LeaderCommandForwarder leaderCommandForwarder;
+  // Kept so stopService() can release the HttpClient the /batch handler forwards to the leader on (issue #8024).
+  // Built per startService() by setupRoutes(), like every other route handler, so there is one per start.
+  private volatile PostBatchHandler       postBatchHandler;
   private final    WebSocketEventBus      webSocketEventBus;
   private final    WebSocketInsertSessionManager  insertSessionManager;
   private final    WebSocketInsertProtocol        insertProtocol;
@@ -207,6 +210,9 @@ public class HttpServer implements ServerPlugin {
 
     CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
     CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
+    final PostBatchHandler batchHandler = postBatchHandler;
+    if (batchHandler != null)
+      CodeUtils.executeIgnoringExceptions(batchHandler::close, "Error on releasing the batch handler's HTTP client", true);
     CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
         "Error on releasing the leader command forwarder's HTTP client", true);
   }
@@ -252,6 +258,19 @@ public class HttpServer implements ServerPlugin {
     handleServerStartFailure(httpPortRange);
   }
 
+  /**
+   * Builds the {@code /api/v1/batch} handler and keeps it, so {@link #stopService()} can release the HTTP client it
+   * owns (issue #8024). A previous one - from a {@code startService()} that is being repeated - is released first
+   * rather than overwritten, since an overwritten one could never be released at all.
+   */
+  private PostBatchHandler newPostBatchHandler() {
+    final PostBatchHandler previous = postBatchHandler;
+    if (previous != null)
+      CodeUtils.executeIgnoringExceptions(previous::close, "Error on releasing the batch handler's HTTP client", true);
+    postBatchHandler = new PostBatchHandler(this);
+    return postBatchHandler;
+  }
+
   private int[] getHttpsPortRange(final ContextConfiguration configuration) {
     final Object configuredHTTPSPort = configuration.getValue(GlobalConfiguration.SERVER_HTTPS_INCOMING_PORT);
     return configuredHTTPSPort != null && !configuredHTTPSPort.toString().isEmpty() ? extractPortRange(configuredHTTPSPort) : null;
@@ -272,7 +291,7 @@ public class HttpServer implements ServerPlugin {
 
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
-        .post("/batch/{database}", new PostBatchHandler(this))
+        .post("/batch/{database}", newPostBatchHandler())
         .post("/begin/{database}", new PostBeginHandler(this))
         .post("/command/{database}", new PostCommandHandler(this))
         .post("/commit/{database}", new PostCommitHandler(this))
