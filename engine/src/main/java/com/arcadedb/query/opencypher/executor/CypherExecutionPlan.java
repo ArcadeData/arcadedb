@@ -1486,6 +1486,7 @@ public class CypherExecutionPlan {
           final WithClause withClause = entry.getTypedClause();
           currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
           currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          markDrainOnZeroLimit(currentStep, withClause, eagerness);
           if (withClause.hasAggregations())
             eagerness.observeAggregationBoundary();
           applyProjectionToScope(withClause.getItems(), optimizerBoundVariables);
@@ -1838,6 +1839,7 @@ public class CypherExecutionPlan {
         final WithClause withClause = entry.getTypedClause();
         currentStep = withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
+        markDrainOnZeroLimit(currentStep, withClause, eagerness);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
         // A WITH boundary starts a new segment (issue #6631) - but a WITH that plainly forwards a
@@ -3334,7 +3336,9 @@ public class CypherExecutionPlan {
    * Plants the barrier a {@code LIMIT} needs when a write is pending ahead of it, and does nothing otherwise: a LIMIT stops
    * pulling, so without it the write would run only for the rows the pull-model batches had already carried past it (issues
    * #8826, #8827). When no step behind the barrier can drop a row (no WHERE, no DISTINCT) the barrier keeps only the first
-   * {@code skip + limit} rows and discards the rest after the writes ran for them, so the memory stays O(limit).
+   * {@code skip + limit} rows and discards the rest after the writes ran for them, so the memory stays O(limit). A WITH that
+   * filters (WHERE) or de-duplicates (DISTINCT) after the barrier, or a SKIP that already ran before it, keeps more rows, up to
+   * every row, bounded by the operation heap limit.
    */
   private static AbstractExecutionStep withLimitBarrier(final AbstractExecutionStep currentStep, final CommandContext context,
       final CypherEagernessAnalyzer eagerness, final CypherFunctionFactory functionFactory, final WithClause withClause) {
@@ -3355,6 +3359,16 @@ public class CypherExecutionPlan {
     final boolean dropsRows = returnClause != null && returnClause.isDistinct();
     return withEagerBarrier(currentStep, context, eagerness,
         keepFirst(functionFactory, context, dropsRows, statement.getSkip(), statement.getLimit()));
+  }
+
+  /**
+   * A {@code WITH ... LIMIT 0} reads nothing, so it never pulls the barrier planted behind an earlier LIMIT; when a write
+   * precedes it, it drains its input instead so those writes still run. A read-only query keeps the free LIMIT 0.
+   */
+  private static void markDrainOnZeroLimit(final AbstractExecutionStep step, final WithClause withClause,
+      final CypherEagernessAnalyzer eagerness) {
+    if (step instanceof WithStep withStep && withClause.getLimit() != null && eagerness.hasObservedWrite())
+      withStep.setDrainOnZeroLimit(true);
   }
 
   private static long keepFirst(final CypherFunctionFactory functionFactory, final CommandContext context, final boolean dropsRows,
