@@ -28,7 +28,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -124,32 +124,20 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
    * close fires once per connection, so that session was then orphaned until the idle sweep, which is the exact
    * symptom this test class exists for, on microseconds instead of on an arbitrarily delayed frame.
    * <p>
-   * Driven through the manager's post-claim hook rather than by timing (issue #7975). An earlier version launched
-   * the close from inside the claim and waited for it to block on the claimed map bin, expecting it to be first in
-   * line once the claim was released. A JVM monitor gives no such guarantee: the starting thread keeps running when
-   * it leaves the bin, and on a loaded runner it often reached its own re-read of the claim before the parked closer
-   * was even scheduled. The close then landed AFTER the registration - a legitimate ordering the close handles by
-   * rolling the session back - so {@code start} returned normally and the assertion below went red, about once in a
-   * hundred runs. The hook runs the close to completion inside the window, on a thread of its own as the close
-   * handler's worker task would, so this test now drives the window on every run.
+   * Driven through the manager's post-claim hook rather than by timing (issue #7975): the close runs to completion
+   * in the window on every run, so the claim re-read is the only thing that can notice it.
    */
   @Test
-  void aCloseLandingBetweenTheClaimAndTheRegistrationLeavesNothingOrphaned() throws Exception {
+  void aCloseLandingBetweenTheClaimAndTheRegistrationLeavesNothingOrphaned() {
     final WebSocketInsertSessionManager manager = getServer(0).getHttpServer().getInsertSessionManager();
     final UUID channelId = UUID.randomUUID();
     final WebSocketChannel channel = openChannel();
 
-    final AtomicReference<Thread> closer = new AtomicReference<>();
+    final AtomicBoolean closed = new AtomicBoolean();
+    // The claim's map bin is already released when the hook runs, so the close can run on this very thread.
     manager.afterChannelClaimForTesting = () -> {
-      final Thread thread = new Thread(() -> manager.closeChannelSessions(channel, channelId), "issue7471-closer");
-      closer.set(thread);
-      thread.start();
-      try {
-        thread.join(30_000);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException(e);
-      }
+      manager.closeChannelSessions(channel, channelId);
+      closed.set(true);
     };
 
     try {
@@ -163,8 +151,7 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
       manager.afterChannelClaimForTesting = null;
     }
 
-    assertThat(closer.get()).as("the close must have run inside the window").isNotNull();
-    assertThat(closer.get().isAlive()).as("the close must have completed inside the window").isFalse();
+    assertThat(closed.get()).as("the close must have run inside the window").isTrue();
     assertThat(manager.getOpenSessionCount())
         .as("no session may be left registered, and none may be left holding a transaction").isZero();
   }
