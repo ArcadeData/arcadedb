@@ -48,6 +48,14 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   private static final int READERS = 6;
   private static final int ROUNDS  = 120;
 
+  // WHERE with an index, ORDER BY served by an index, min/max served by an index, and a CONTAINSTEXT that may meet a full-text index
+  private static final String[] QUERIES = {
+      "SELECT count(*) AS c FROM Person WHERE id < ?",
+      "SELECT id FROM Person WHERE id > ? ORDER BY id LIMIT 5",
+      "SELECT id FROM Person WHERE id >= ? ORDER BY id DESC LIMIT 5",
+      "SELECT min(id) AS m, max(id) AS x FROM Person WHERE id >= ?",
+      "SELECT count(*) AS c FROM Person WHERE id < ? AND name CONTAINSTEXT 'x'" };
+
   @Test
   @Timeout(value = 5, unit = TimeUnit.MINUTES)
   void queriesDoNotFailWhileAnotherThreadCreatesAndDropsIndexes() throws Exception {
@@ -73,6 +81,7 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
   private void runRace(final String indexKind) throws Exception {
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE PROPERTY Person.name STRING");
     database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
     database.transaction(() -> {
       for (long i = 0; i < 2_000; i++)
@@ -87,8 +96,9 @@ class SelectPlanningDuringIndexDdlTest extends TestHelper {
       final Random random = new Random(t);
       final Thread thread = new Thread(() -> {
         while (!stop.get()) {
-          try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Person WHERE id < ?", (long) random.nextInt(2_000))) {
-            rs.next();
+          try (final ResultSet rs = database.query("sql", QUERIES[random.nextInt(QUERIES.length)], (long) random.nextInt(2_000))) {
+            while (rs.hasNext())
+              rs.next();
             answered.incrementAndGet();
           } catch (final Exception e) {
             failures.computeIfAbsent(e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()).split("\n")[0],
