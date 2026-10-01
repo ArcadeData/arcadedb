@@ -42,7 +42,6 @@ class PostgresSslHelperTest {
   @Test
   void disabledNeedsNoKeyStore() {
     assertThat(new PostgresSslHelper(modeOf("disabled")).getTlsMode()).isEqualTo(PostgresSslHelper.TlsMode.DISABLED);
-    assertThat(PostgresSslHelper.disabled().getTlsMode()).isEqualTo(PostgresSslHelper.TlsMode.DISABLED);
   }
 
   @Test

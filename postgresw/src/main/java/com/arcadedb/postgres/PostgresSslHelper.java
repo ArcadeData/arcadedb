@@ -42,15 +42,8 @@ public class PostgresSslHelper {
     DISABLED, OPTIONAL, REQUIRED
   }
 
-  private static final PostgresSslHelper DISABLED_INSTANCE = new PostgresSslHelper();
-
   private final TlsMode    tlsMode;
   private final SSLContext sslContext;
-
-  private PostgresSslHelper() {
-    this.tlsMode = TlsMode.DISABLED;
-    this.sslContext = null;
-  }
 
   public PostgresSslHelper(final ContextConfiguration configuration) {
     final String modeString = configuration.getValueAsString(GlobalConfiguration.POSTGRES_SSL);
@@ -62,13 +55,6 @@ public class PostgresSslHelper {
     }
 
     this.sslContext = tlsMode == TlsMode.DISABLED ? null : SslUtils.createServerSslContext(configuration, "Postgres");
-  }
-
-  /**
-   * A helper that never negotiates TLS, for a caller that has no TLS configuration (unit tests).
-   */
-  public static PostgresSslHelper disabled() {
-    return DISABLED_INSTANCE;
   }
 
   public TlsMode getTlsMode() {
