@@ -41,6 +41,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.ResultSetTooLargeException;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
@@ -367,14 +368,15 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.WARNING, "Error while streaming the result of a query on database '%s'",
             e, database != null ? database.getName() : null);
-        stream.writeError(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        writeClassifiedError(stream, e, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
         return new SerializationOutcome(returned, false);
       }
 
       if (ceilingLowered && truncated) {
         // What the buffered path answers 413 for. A 200 is already on the wire, so the refusal goes in band and
         // the stats trailer is withheld - which is exactly how a consumer tells this from a complete stream.
-        stream.writeError(resultSetTooLarge(maxResultRows).getMessage());
+        final ResultSetTooLargeException tooLarge = resultSetTooLarge(maxResultRows);
+        writeClassifiedError(stream, tooLarge, tooLarge.getMessage());
         return new SerializationOutcome(returned, true);
       }
 
@@ -385,6 +387,21 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       stream.writeStats(statedLimit, returned, truncated);
       return new SerializationOutcome(returned, truncated);
     }
+  }
+
+  /**
+   * Writes the in-band {@code error} line of a stream whose 200 is already on the wire, carrying the status, the
+   * reported exception class and the {@code exceptionArgs} the buffered encoding would have answered the same failure
+   * with (issue #8235). Decided by {@link #classifyError}, the one classifier every handler answers with, so the two
+   * encodings cannot disagree about what a failure is. {@code message} is kept as it always was, so a consumer that
+   * reads only that member sees no change.
+   */
+  private void writeClassifiedError(final NdJsonResultStream stream, final Throwable failure, final String message)
+      throws IOException {
+    final ErrorClassification classification = classifyError(failure);
+    final Throwable reported = classification.reported();
+    stream.writeError(message, classification.status(), reported != null ? reported.getClass().getName() : null,
+        classification.exceptionArgs());
   }
 
   /**
