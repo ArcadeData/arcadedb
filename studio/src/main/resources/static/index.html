@@ -184,6 +184,7 @@
     <script src="js/studio-record-editor.js"></script>
     <script src="js/studio-timeseries.js"></script>
     <script src="js/studio-vector.js"></script>
+    <script src="js/studio-chart.js"></script>
     <script src="dist/js/marked.min.js"></script>
     <script src="js/studio-ai.js"></script>
   </head>
@@ -209,22 +210,6 @@
                   <center>
                     <i class="fa fa-database" style="font-size: 1.5rem;"></i>
                     <div class="nav-label">Database</div>
-                  </center>
-                </a>
-              </li>
-              <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-timeseries" class="vertical-tab nav-link" id="tab-timeseries-sel" title="TimeSeries">
-                  <center>
-                    <i class="fa fa-chart-line" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">TimeSeries</div>
-                  </center>
-                </a>
-              </li>
-              <li class="nav-item">
-                <a data-bs-toggle="tab" href="#tab-vector" class="vertical-tab nav-link" id="tab-vector-sel" title="Vector Search">
-                  <center>
-                    <i class="fa fa-braille" style="font-size: 1.5rem;"></i>
-                    <div class="nav-label">Vector</div>
                   </center>
                 </a>
               </li>
@@ -345,7 +330,7 @@
               <div id="quickStartOverlay"></div>
             </div>
             <div class="tab-content" id="mainTabContent">
-              ${include:query.html} ${include:database.html} ${include:timeseries.html} ${include:vector.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:support.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
+              ${include:query.html} ${include:database.html} ${include:server.html} ${include:profiler.html} ${include:security.html} ${include:cluster.html} ${include:support.html} ${include:api.html} ${include:resources.html} ${include:settings.html}
             </div>
           </div>
         </div>
@@ -422,7 +407,7 @@
           }
 
           // Tabs that require a database - show quick start if none exists
-          var databaseTabs = ["tab-query-sel", "tab-database-sel", "tab-timeseries-sel", "tab-vector-sel"];
+          var databaseTabs = ["tab-query-sel", "tab-database-sel"];
           if (databaseTabs.indexOf(activeTab) >= 0 && !getCurrentDatabase()) {
             $("#mainTabContent").hide();
             showQuickStart();
@@ -431,12 +416,6 @@
           if (activeTab == "tab-query-sel") {
             studioCurrentTab = "query";
             editorFocus();
-          } else if (activeTab == "tab-timeseries-sel") {
-            studioCurrentTab = "timeseries";
-            initTimeSeries();
-          } else if (activeTab == "tab-vector-sel") {
-            studioCurrentTab = "vector";
-            initVector();
           } else if (activeTab == "tab-server-sel") {
             studioCurrentTab = "server";
             updateServer();
@@ -466,8 +445,6 @@
         // Initialize searchable database selectors
         initSearchableDbSelect("queryDbSelectContainer");
         initSearchableDbSelect("schemaDbSelectContainer");
-        initSearchableDbSelect("tsDbSelectContainer");
-        initSearchableDbSelect("vecDbSelectContainer");
 
         // Check for existing session in localStorage
         if (initSessionFromStorage()) {

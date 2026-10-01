@@ -330,3 +330,69 @@ test("the properties excerpt drops record metadata and is bounded", () => {
   assert.equal(long.length, 50);
   assert.ok(long.endsWith("..."));
 });
+
+// The Vector, Hybrid and Full-text entries of the Query panel's language dropdown: the form is the editor's content
+// as JSON, so history, saved queries and replay work like for any language.
+
+test("only the three search languages map to a search mode", () => {
+  assert.equal(ctx.vecModeForLanguage("vector"), "search");
+  assert.equal(ctx.vecModeForLanguage("hybrid"), "hybrid");
+  assert.equal(ctx.vecModeForLanguage("fulltext"), "fulltext");
+  assert.equal(ctx.vecModeForLanguage("sql"), null);
+  assert.equal(ctx.vecModeForLanguage("opencypher"), null);
+  assert.equal(ctx.vecModeForLanguage(undefined), null);
+});
+
+test("the form round-trips through the editor text and drops blank fields", () => {
+  const form = { indexName: "Doc[embedding]", k: "5", queryVector: "[1, 0, 0]", filter: "", expand: false, efSearch: "  " };
+  const text = ctx.vecFormToCommand(form);
+  assert.deepEqual(plain(JSON.parse(text)), { indexName: "Doc[embedding]", k: "5", queryVector: "[1, 0, 0]" });
+  assert.deepEqual(plain(ctx.vecCommandToForm(text)), { indexName: "Doc[embedding]", k: "5", queryVector: "[1, 0, 0]" });
+  assert.equal(ctx.vecFormToCommand({ expand: true }), '{"expand":true}');
+  assert.equal(ctx.vecFormToCommand({}), "");
+});
+
+test("an empty or unparseable editor text yields an empty form instead of throwing", () => {
+  assert.deepEqual(plain(ctx.vecCommandToForm("")), {});
+  assert.deepEqual(plain(ctx.vecCommandToForm("select from V")), {});
+  assert.deepEqual(plain(ctx.vecCommandToForm("[1,2]")), {});
+  assert.deepEqual(plain(ctx.vecCommandToForm(null)), {});
+});
+
+test("hits become table records: metadata first, the ranking value named after what the hit carries, no overwrite", () => {
+  const response = {
+    results: [
+      { rid: "#4:0", distance: 0.0, properties: { "@type": "Doc", "@rid": "#4:0", title: "a", distance: "user prop" } },
+      { rid: "#4:1", score: 1.5, sources: ["vector", "fulltext"], depth: 1, properties: { "@type": "Doc", title: "b" } }
+    ]
+  };
+  const records = plain(ctx.vecHitsToRecords("hybrid", response));
+  assert.equal(records.length, 2);
+  assert.deepEqual(Object.keys(records[0]).slice(0, 4), ["@rid", "@type", "distance", "sources"]);
+  assert.equal(records[0]["@rid"], "#4:0");
+  assert.equal(records[0]["@type"], "Doc");
+  assert.equal(records[0].distance, 0);
+  assert.equal(records[0].title, "a");
+  assert.equal(records[1].score, 1.5);
+  assert.deepEqual(records[1].sources, ["vector", "fulltext"]);
+  assert.equal(records[1].depth, 1);
+
+  const dense = plain(ctx.vecHitsToRecords("search", { results: [{ rid: "#4:2", distance: 0.3, properties: { "@type": "Doc" } }] }));
+  assert.equal("sources" in dense[0], false);
+  assert.deepEqual(plain(ctx.vecHitsToRecords("search", {})), []);
+});
+
+test("the response summary lines go to the Explain tab as text", () => {
+  const text = ctx.vecSummaryText("search", { indexName: "I", scoring: "distance_lower_is_better:COSINE", count: 2, truncated: true, results: [{}, {}] });
+  assert.match(text, /Index: I/);
+  assert.match(text, /distance, lower is better \(COSINE\)/);
+  assert.match(text, /Truncated/);
+});
+
+test("the stored form keeps only the fields of the active mode, so a mode switch leaves no stale fields in history", () => {
+  const form = { indexName: "i", queryVector: "1,0", k: "3", fulltextQuery: "x", queryText: "doc1", limit: "5", expand: true };
+  assert.deepEqual(plain(ctx.vecFormForMode("fulltext", form)), { indexName: "i", queryText: "doc1", limit: "5" });
+  assert.deepEqual(plain(ctx.vecFormForMode("search", form)), { indexName: "i", queryVector: "1,0", k: "3" });
+  assert.deepEqual(plain(ctx.vecFormForMode("hybrid", form)), { indexName: "i", queryVector: "1,0", k: "3", fulltextQuery: "x", expand: true });
+  assert.deepEqual(plain(ctx.vecFormForMode("unknown", form)), {});
+});

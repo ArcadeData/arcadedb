@@ -75,6 +75,19 @@ function getEditorMode() {
   return "mode-for-" + languageValue;
 }
 
+// THE INDEX SEARCH FORM (studio-vector.js) IS NOT UNDER TEST HERE: ONLY ORDINARY QUERY LANGUAGES ARE LOADED
+function vecLanguageChanged() {}
+
+function vecModeForLanguage() {
+  return null;
+}
+
+function chartLanguageChanged() {}
+
+function chartIsPromQL() {
+  return false;
+}
+
 function globalActivateTab(tab) {
   activatedTab = tab;
 }

@@ -17,7 +17,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Vector tab (issue #7312): a front end for POST /api/v1/vector/{database}/search, /hybrid and /fulltext.
+// Vector, Hybrid and Full-text search (issue #7312): a front end for POST /api/v1/vector/{database}/search, /hybrid and
+// /fulltext, offered as three entries of the Query panel's language dropdown. Selecting one swaps the editor for the
+// form below; the form is mirrored into the (hidden) editor as JSON, so history, saved queries and replay work like for
+// any language, and the hits are rendered by the Query panel's own Table and Json tabs.
 //
 // Two things here are deliberately NOT written down in this file:
 // - the argument bounds (k, efSearch, limit, maxDepth) and the closed value sets (fusionStrategy, expand.direction)
@@ -32,8 +35,8 @@
 
 var vecIndexes = { vector: [], fulltext: [] };
 var vecBounds = null;
-var vecMode = "search";
-var vecLastResponse = null;
+var vecSyncing = false;
+var vecWasSearching = false;
 
 // The route suffix of each mode: POST api/v1/vector/{database}/<path>.
 var VEC_MODES = {
@@ -42,7 +45,94 @@ var VEC_MODES = {
   fulltext: { path: "fulltext" }
 };
 
+// The language dropdown value of each search mode.
+var VEC_LANGUAGES = { vector: "search", hybrid: "hybrid", fulltext: "fulltext" };
+
 // ===== Pure functions =====
+
+/** The search mode a language dropdown value selects, or null for an ordinary query language. */
+function vecModeForLanguage(language) {
+  return Object.prototype.hasOwnProperty.call(VEC_LANGUAGES, language) ? VEC_LANGUAGES[language] : null;
+}
+
+// The request fields each mode reads; anything else in the form belongs to another mode.
+var VEC_MODE_FIELDS = {
+  search: ["indexName", "queryVector", "queryIndices", "k", "efSearch", "filter"],
+  hybrid: ["indexName", "queryVector", "queryIndices", "k", "efSearch", "filter", "fulltextIndexName", "fulltextQuery", "fusionStrategy",
+    "vectorWeight", "fulltextWeight", "expand", "edgeTypes", "direction", "maxDepth", "expandWeight"],
+  fulltext: ["indexName", "queryText", "limit"]
+};
+
+/** The part of a form that the given mode reads. */
+function vecFormForMode(mode, form) {
+  var kept = {};
+  var fields = VEC_MODE_FIELDS[mode] || [];
+  for (var i = 0; i < fields.length; i++)
+    if (form && Object.prototype.hasOwnProperty.call(form, fields[i])) kept[fields[i]] = form[fields[i]];
+  return kept;
+}
+
+/** The editor text for a form: the non-blank fields as JSON, or "" when the form is empty. */
+function vecFormToCommand(form) {
+  var kept = {};
+  var any = false;
+  for (var key in form || {}) {
+    var value = form[key];
+    if (value === false || value == null || String(value).trim() === "") continue;
+    kept[key] = value;
+    any = true;
+  }
+  return any ? JSON.stringify(kept) : "";
+}
+
+/** The form an editor text describes. Anything that is not a JSON object (a stale SQL text, say) is an empty form. */
+function vecCommandToForm(text) {
+  if (text == null || String(text).trim() === "") return {};
+  try {
+    var parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
+ * The hits as records for the Query panel's table: record metadata first, then the ranking value under the name the hit
+ * carries it by (and, for hybrid, where it came from), then the properties. A property never overwrites a column above.
+ */
+function vecHitsToRecords(mode, response) {
+  var results = (response && response.results) || [];
+  var records = [];
+  for (var i = 0; i < results.length; i++) {
+    var hit = results[i];
+    var props = hit.properties || {};
+    var record = { "@rid": hit.rid, "@type": props["@type"] };
+    var score = vecHitScore(hit);
+    if (score.label) record[score.label] = score.value;
+    if (mode === "hybrid") {
+      record.sources = hit.sources || [];
+      if (hit.depth != null) record.depth = hit.depth;
+    }
+    for (var key in props)
+      if (Object.prototype.hasOwnProperty.call(props, key) && key.charAt(0) !== "@" && !Object.prototype.hasOwnProperty.call(record, key))
+        record[key] = props[key];
+    records.push(record);
+  }
+  return records;
+}
+
+/** The response description as plain text lines, for the Explain tab. */
+function vecSummaryText(mode, response) {
+  var summary = vecDescribeResponse(mode, response);
+  var lines = [];
+  if (summary.indexName) lines.push("Index: " + summary.indexName);
+  if (summary.scoring) lines.push("Ranking: " + summary.scoring);
+  lines.push("Results: " + summary.count);
+  if (summary.candidateLimit != null) lines.push("Candidate window: " + summary.candidateLimit);
+  if (summary.truncated === true) lines.push("Truncated: the result window was filled, so more matches may exist. Raise 'k' to see them.");
+  else if (summary.truncated === false) lines.push("Complete: every match the search found is shown.");
+  return lines.concat(summary.notes).join("\n");
+}
 
 /**
  * Splits the rows of `SELECT FROM schema:types` into the indexes each endpoint can search: LSM_VECTOR and
@@ -402,11 +492,36 @@ function vecPropertiesExcerpt(properties, maxLength) {
 
 // ===== DOM handlers =====
 
-function initVector() {
-  if (!$("#vecDbSelectContainer").children().length) initSearchableDbSelect("vecDbSelectContainer");
-  vecSetMode(vecMode);
+/** The search mode selected in the Query panel's language dropdown, or null. */
+function vecCurrentMode() {
+  return vecModeForLanguage($("#inputLanguage").val());
+}
+
+/**
+ * Called whenever the language dropdown changes (also programmatically, through setEditorLanguage): swaps the editor
+ * for the search form, or back, and loads what the form needs.
+ */
+function vecLanguageChanged() {
+  var mode = vecCurrentMode();
+  var searching = mode != null;
+  // The editor holds the form as JSON while searching and the user's query otherwise: neither may leak into the other
+  // (a SQL text sent to history as a vector search, or a JSON form left behind as a SQL query).
+  if (searching !== vecWasSearching) {
+    if (!searching || Object.keys(vecCommandToForm(editor.getValue())).length === 0) editor.setValue("");
+    vecWasSearching = searching;
+  }
+  $("#queryEditorTextArea").toggle(!searching);
+  $("#searchFormArea").toggle(searching);
+  $("#inputLimit").closest("label").toggle(!searching);
+  if (!searching) return;
+  $(".vec-only-vector").toggle(mode !== "fulltext");
+  $(".vec-only-hybrid").toggle(mode === "hybrid");
+  $(".vec-only-fulltext").toggle(mode === "fulltext");
   vecLoadBounds();
   vecLoadIndexes();
+  vecApplyBounds();
+  vecIndexChanged();
+  vecLoadFormFromEditor();
 }
 
 function vecLoadBounds() {
@@ -423,11 +538,8 @@ function vecLoadBounds() {
       if (typeof spec === "string") spec = JSON.parse(spec);
       vecBounds = vecBoundsFromOpenApi(spec);
       vecApplyBounds();
-    })
-    .fail(function () {
-      // Without the document the form checks no bound; the server still enforces every one of them.
-      $("#vecBoundsNote").text("Argument bounds unavailable: the server will validate them.");
     });
+  // Without the document the form checks no bound; the server still enforces every one of them.
 }
 
 function vecApplyBounds() {
@@ -440,7 +552,7 @@ function vecApplyBounds() {
     var range = (bound.min != null ? bound.min : "") + " - " + (bound.max != null ? bound.max : "");
     $input.attr("title", "Accepted by the server: " + range);
   };
-  var modeBounds = vecBounds[vecMode] || {};
+  var modeBounds = vecBounds[vecCurrentMode()] || {};
   setBound($("#vecK"), modeBounds.k);
   setBound($("#vecEfSearch"), modeBounds.efSearch);
   setBound($("#vecLimit"), vecBounds.fulltext.limit);
@@ -454,52 +566,20 @@ function vecApplyBounds() {
   };
   fillSelect($("#vecFusionStrategy"), vecBounds.hybrid.fusionStrategies, "(server default)");
   fillSelect($("#vecDirection"), vecBounds.hybrid.directions, "(server default)");
+  vecLoadFormFromEditor();
 }
 
 function vecLoadIndexes() {
-  var db = getCurrentDatabase();
-  if (!db) return;
-  jQuery
-    .ajax({
-      type: "POST",
-      url: "api/v1/query/" + encodeDatabaseName(db),
-      data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:types" }),
-      contentType: "application/json",
-      beforeSend: function (xhr) {
-        xhr.setRequestHeader("Authorization", globalCredentials);
-      }
-    })
-    .done(function (data) {
-      vecIndexes = vecSearchableIndexes(data.result || []);
-      vecRenderIndexes();
-    })
-    .fail(function (jqXHR) {
-      globalNotifyError(jqXHR.responseText);
-    });
+  if (!getCurrentDatabase()) return;
+  fetchSchemaTypes(function (types) {
+    vecIndexes = vecSearchableIndexes(types || []);
+    vecFillIndexSelects();
+  });
 }
 
-function vecRenderIndexes() {
-  var $tbody = $("#vecIndexesTable tbody").empty();
-  var all = vecIndexes.vector.concat(vecIndexes.fulltext);
-  $("#vecIndexesEmpty").toggle(all.length === 0);
-  $("#vecIndexesTable").toggle(all.length > 0);
-  for (var i = 0; i < all.length; i++) {
-    var idx = all[i];
-    var kind = idx.indexType === "FULL_TEXT" ? "full-text" : idx.sparse ? "sparse" : "dense";
-    var dims = idx.dimensions == null ? "-" : idx.dimensions === 0 && idx.sparse ? "inferred" : idx.dimensions;
-    var scoring = idx.indexType === "FULL_TEXT" ? "score, higher is better" : vecDescribeScoring(idx.scoring);
-    $tbody.append(
-      "<tr data-index='" + escapeHtml(idx.name) + "'>" +
-        "<td class='vec-index-name'>" + escapeHtml(idx.name) + "</td>" +
-        "<td>" + escapeHtml(idx.typeName) + "</td>" +
-        "<td>" + escapeHtml((idx.properties || []).join(", ")) + "</td>" +
-        "<td>" + kind + "</td>" +
-        "<td class='vec-index-dims'>" + escapeHtml(dims) + "</td>" +
-        "<td>" + escapeHtml(scoring) + "</td>" +
-      "</tr>"
-    );
-  }
-
+function vecFillIndexSelects() {
+  var empty = vecIndexes.vector.length + vecIndexes.fulltext.length === 0;
+  $("#vecNoIndexes").toggle(empty);
   var fillSelect = function ($select, list) {
     var current = $select.val();
     $select.empty().append($("<option>").val("").text("-- select index --"));
@@ -509,23 +589,13 @@ function vecRenderIndexes() {
   fillSelect($("#vecIndexName"), vecIndexes.vector);
   fillSelect($("#vecFulltextIndexName"), vecIndexes.fulltext);
   fillSelect($("#vecFtIndexName"), vecIndexes.fulltext);
-  vecIndexChanged();
-}
-
-function vecSetMode(mode) {
-  vecMode = mode;
-  $(".vec-mode-btn").removeClass("active");
-  $(".vec-mode-btn[data-mode='" + mode + "']").addClass("active");
-  $(".vec-only-vector").toggle(mode !== "fulltext");
-  $(".vec-only-hybrid").toggle(mode === "hybrid");
-  $(".vec-only-fulltext").toggle(mode === "fulltext");
-  vecApplyBounds();
-  vecIndexChanged();
+  vecLoadFormFromEditor();
 }
 
 /** Shows the selected index's dimension count next to the vector input, and the inputs that apply to it. */
 function vecIndexChanged() {
   var index = vecSelectedVectorIndex();
+  var mode = vecCurrentMode();
   var hint = "";
   if (index) {
     hint = index.sparse ? "sparse" : "dense";
@@ -533,8 +603,8 @@ function vecIndexChanged() {
     if (index.scoring) hint += ", " + vecDescribeScoring(index.scoring);
   }
   $("#vecIndexHint").text(hint);
-  $(".vec-only-sparse").toggle(index != null && index.sparse === true && vecMode !== "fulltext");
-  $(".vec-only-dense").toggle(index != null && index.sparse !== true && vecMode !== "fulltext");
+  $(".vec-only-sparse").toggle(index != null && index.sparse === true && mode !== "fulltext");
+  $(".vec-only-dense").toggle(index != null && index.sparse !== true && mode !== "fulltext");
 }
 
 /** The selected vector index's entry from vecIndexes, or null. */
@@ -544,54 +614,95 @@ function vecSelectedVectorIndex() {
   return null;
 }
 
+// The form fields by request field name. A checkbox is read and written as a boolean, everything else as a string.
+var VEC_FIELDS = {
+  queryVector: "#vecQueryVector",
+  queryIndices: "#vecQueryIndices",
+  k: "#vecK",
+  efSearch: "#vecEfSearch",
+  filter: "#vecFilter",
+  fulltextIndexName: "#vecFulltextIndexName",
+  fulltextQuery: "#vecFulltextQuery",
+  fusionStrategy: "#vecFusionStrategy",
+  vectorWeight: "#vecVectorWeight",
+  fulltextWeight: "#vecFulltextWeight",
+  expand: "#vecExpand",
+  edgeTypes: "#vecEdgeTypes",
+  direction: "#vecDirection",
+  maxDepth: "#vecMaxDepth",
+  expandWeight: "#vecExpandWeight",
+  queryText: "#vecQueryText",
+  limit: "#vecLimit"
+};
+
 function vecCollectForm() {
   // queryIndices and efSearch are collected by the selected index's kind, not by which input happens to be visible,
   // so a hidden input left filled from a previously selected index can never reach the request.
   var index = vecSelectedVectorIndex();
   var sparse = index != null && index.sparse === true;
-  return {
-    indexName: vecMode === "fulltext" ? $("#vecFtIndexName").val() : $("#vecIndexName").val(),
-    queryVector: $("#vecQueryVector").val(),
-    queryIndices: sparse ? $("#vecQueryIndices").val() : "",
-    k: $("#vecK").val(),
-    efSearch: index != null && !sparse ? $("#vecEfSearch").val() : "",
-    filter: $("#vecFilter").val(),
-    fulltextIndexName: $("#vecFulltextIndexName").val(),
-    fulltextQuery: $("#vecFulltextQuery").val(),
-    fusionStrategy: $("#vecFusionStrategy").val(),
-    vectorWeight: $("#vecVectorWeight").val(),
-    fulltextWeight: $("#vecFulltextWeight").val(),
-    expand: $("#vecExpand").is(":checked"),
-    edgeTypes: $("#vecEdgeTypes").val(),
-    direction: $("#vecDirection").val(),
-    maxDepth: $("#vecMaxDepth").val(),
-    expandWeight: $("#vecExpandWeight").val(),
-    queryText: $("#vecQueryText").val(),
-    limit: $("#vecLimit").val()
-  };
+  var form = { indexName: vecCurrentMode() === "fulltext" ? $("#vecFtIndexName").val() : $("#vecIndexName").val() };
+  for (var field in VEC_FIELDS) {
+    var $input = $(VEC_FIELDS[field]);
+    form[field] = $input.is(":checkbox") ? $input.is(":checked") : $input.val();
+  }
+  if (!sparse) form.queryIndices = "";
+  if (index == null || sparse) form.efSearch = "";
+  return form;
+}
+
+/** Mirrors the form into the hidden editor, which is what history, saved queries and the Run button read. */
+function vecSyncEditor() {
+  if (vecSyncing || vecCurrentMode() == null) return;
+  vecSyncing = true;
+  try {
+    editor.setValue(vecFormToCommand(vecFormForMode(vecCurrentMode(), vecCollectForm())));
+  } finally {
+    vecSyncing = false;
+  }
+}
+
+/** The opposite direction: fills the form from the editor text, after history, a saved query or a replay set it. */
+function vecLoadFormFromEditor() {
+  if (vecSyncing || vecCurrentMode() == null) return;
+  var form = vecCommandToForm(editor.getValue());
+  vecSyncing = true;
+  try {
+    var mode = vecCurrentMode();
+    $("#vecIndexName").val(mode !== "fulltext" ? form.indexName || "" : "");
+    $("#vecFtIndexName").val(mode === "fulltext" ? form.indexName || "" : "");
+    for (var field in VEC_FIELDS) {
+      var $input = $(VEC_FIELDS[field]);
+      if ($input.is(":checkbox")) $input.prop("checked", form[field] === true);
+      else $input.val(form[field] == null ? "" : form[field]);
+    }
+  } finally {
+    vecSyncing = false;
+  }
+  vecIndexChanged();
 }
 
 function vecShowError(message) {
   $("#vecError").text(message).toggle(!!message);
 }
 
-function vecExecute() {
-  var db = getCurrentDatabase();
-  if (!db) return;
+/** Runs the search the form describes, through the endpoint of the selected mode, and renders the hits in the Query panel. */
+function executeSearchCommand() {
+  var database = getCurrentDatabase();
+  var mode = vecCurrentMode();
+  if (!database || mode == null) return;
   vecShowError("");
-  var request = vecBuildRequest(vecMode, vecCollectForm(), vecIndexes, vecBounds);
+  var request = vecBuildRequest(mode, vecCollectForm(), vecIndexes, vecBounds);
   if (request.error) {
     vecShowError(request.error);
     return;
   }
 
-  var mode = vecMode;
-  var started = Date.now();
-  $("#vecExecuteBtn").prop("disabled", true);
+  var beginTime = new Date();
+  $("#executeSpinner").show();
   jQuery
     .ajax({
       type: "POST",
-      url: "api/v1/vector/" + encodeDatabaseName(db) + "/" + request.path,
+      url: "api/v1/vector/" + encodeDatabaseName(database) + "/" + request.path,
       data: JSON.stringify(request.body),
       contentType: "application/json",
       beforeSend: function (xhr) {
@@ -599,8 +710,17 @@ function vecExecute() {
       }
     })
     .done(function (data) {
-      vecLastResponse = data;
-      vecRenderResults(mode, data, Date.now() - started);
+      $("#result-elapsed").html(new Date() - beginTime);
+      var records = vecHitsToRecords(mode, data);
+      renderResultCount({ truncated: data.truncated === true }, records.length);
+      $("#resultJson").val(JSON.stringify(data, null, 2));
+      $("#resultExplain").val(vecSummaryText(mode, data));
+      globalExplainPlan = null;
+      renderFlameGraph(null, null);
+      globalResultset = { records: records, vertices: [], edges: [] };
+      globalCy = null;
+      if ($("#tabs-command .active").attr("id") == "tab-graph-sel") globalActivateTab("tab-table");
+      renderTable();
     })
     .fail(function (jqXHR) {
       var message = jqXHR.responseText;
@@ -614,69 +734,15 @@ function vecExecute() {
       vecShowError(message || "Search failed");
     })
     .always(function () {
-      $("#vecExecuteBtn").prop("disabled", false);
+      $("#executeSpinner").hide();
     });
 }
 
-function vecRenderResults(mode, response, elapsedMs) {
-  var summary = vecDescribeResponse(mode, response);
-  var head = [];
-  if (summary.indexName) head.push("<span>Index <b>" + escapeHtml(summary.indexName) + "</b></span>");
-  if (summary.scoring) head.push("<span class='vec-scoring'>" + escapeHtml(summary.scoring) + "</span>");
-  head.push("<span id='vecResultCount'>" + summary.count + " result" + (summary.count === 1 ? "" : "s") + "</span>");
-  if (summary.candidateLimit != null) head.push("<span>candidate window " + summary.candidateLimit + "</span>");
-  head.push("<span>" + elapsedMs + " ms</span>");
-  $("#vecSummary").html(head.join(" &middot; "));
-
-  var $truncated = $("#vecTruncated");
-  if (summary.truncated === true) {
-    $truncated
-      .removeClass("text-bg-secondary")
-      .addClass("text-bg-warning")
-      .text("Truncated: the result window was filled, so more matches may exist. Raise 'k' to see them.")
-      .show();
-  } else if (summary.truncated === false) {
-    $truncated
-      .removeClass("text-bg-warning")
-      .addClass("text-bg-secondary")
-      .text("Complete: every match the search found is shown.")
-      .show();
-  } else {
-    $truncated.hide();
-  }
-
-  var $notes = $("#vecNotes").empty();
-  for (var n = 0; n < summary.notes.length; n++) $notes.append($("<div>").text(summary.notes[n]));
-
-  var hybrid = mode === "hybrid";
-  var $thead = $("#vecResultsTable thead").empty();
-  $thead.append(
-    "<tr><th>#</th><th>RID</th><th class='vec-score-header'>" + escapeHtml(summary.scoreLabel) + "</th>" +
-      (hybrid ? "<th>Sources</th><th>Depth</th>" : "") +
-      "<th>Type</th><th>Properties</th></tr>"
-  );
-  var $tbody = $("#vecResultsTable tbody").empty();
-  var results = response.results || [];
-  for (var i = 0; i < results.length; i++) {
-    var hit = results[i];
-    var score = vecHitScore(hit);
-    var props = hit.properties || {};
-    $tbody.append(
-      "<tr class='vec-result-row'>" +
-        "<td>" + (i + 1) + "</td>" +
-        "<td class='vec-rid'>" + escapeHtml(hit.rid) + "</td>" +
-        "<td class='vec-score' data-score-label='" + escapeHtml(score.label) + "'>" + (score.value == null ? "" : escapeHtml(score.value)) + "</td>" +
-        (hybrid
-          ? "<td>" + escapeHtml((hit.sources || []).join(", ")) + "</td><td>" + (hit.depth == null ? "" : escapeHtml(hit.depth)) + "</td>"
-          : "") +
-        "<td>" + escapeHtml(props["@type"] || "") + "</td>" +
-        "<td class='vec-props'><code>" + escapeHtml(vecPropertiesExcerpt(props, 200)) + "</code></td>" +
-      "</tr>"
-    );
-  }
-  $("#vecResultsPanel").show();
-}
+$(document).on("input change", "#searchFormArea :input", function () {
+  vecSyncEditor();
+});
+$(document).on("change", "#vecIndexName", vecIndexChanged);
 
 $(document).on("databaseChanged", function () {
-  if (typeof studioCurrentTab !== "undefined" && studioCurrentTab === "vector") vecLoadIndexes();
+  if (vecCurrentMode() != null) vecLoadIndexes();
 });
