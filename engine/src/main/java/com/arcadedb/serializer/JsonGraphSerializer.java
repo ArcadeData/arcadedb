@@ -96,6 +96,9 @@ public class JsonGraphSerializer extends JsonSerializer {
           for (Object o : collection) {
             if (o instanceof Document document1)
               o = serializeGraphElement(document1, new JSONObject());
+            else
+              // same as the scalar case below: a non-finite item would otherwise be rewritten to 0 by JSONArray.put(Number)
+              o = NonFiniteNumbers.encode(o);
             list.add(o);
           }
           value = list;
