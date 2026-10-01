@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.server.ArcadeDBServer;
@@ -264,8 +263,10 @@ class Issue7519BootstrapWindowGateTest {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(stubbedServer(configuration()));
 
+    // Sampled from the settled copy (issue #8177): setUp's commit may still be in flight to the disk, and a sample
+    // taken before the flush lands hashes different bytes than the state machine's recomputation after it.
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(
-        DB_NAME, BootstrapFingerprint.compute(new File(DB_PATH)), localDb.getLastTransactionId());
+        DB_NAME, SettledBootstrapFingerprint.of(localDb), localDb.getLastTransactionId());
 
     assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encoded), 7L));
 

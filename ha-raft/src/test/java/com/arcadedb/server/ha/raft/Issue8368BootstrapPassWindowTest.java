@@ -20,7 +20,6 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.ProtocolContext;
@@ -124,7 +123,8 @@ class Issue8368BootstrapPassWindowTest {
 
   /** The baseline this node's own copy produces: it matches, so the apply bootstraps locally and installs nothing. */
   private RaftLogEntryCodec.DecodedEntry matchingBaseline() throws Exception {
-    final String fingerprint = BootstrapFingerprint.compute(new File(localDb.getDatabasePath()));
+    // Sampled from the settled copy (issue #8177): setUp's commit may still be in flight to the disk.
+    final String fingerprint = SettledBootstrapFingerprint.of(localDb);
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB_NAME, fingerprint,
         localDb.getLastTransactionId());
     return RaftLogEntryCodec.decode(encoded);
