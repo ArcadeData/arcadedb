@@ -88,7 +88,7 @@ public class CypherPointFunction implements StatelessFunction {
       result.put("x", x);
       result.put("y", y);
       result.put("crs", "WGS-84");
-      result.put("srid", 4326);
+      result.put("srid", SRID_WGS84_2D);
       return result;
     }
 
@@ -118,7 +118,7 @@ public class CypherPointFunction implements StatelessFunction {
       if (result.containsKey("z"))
         result.put("height", result.get("z"));
       result.put("crs", result.containsKey("z") ? "WGS-84-3D" : "WGS-84");
-      result.put("srid", result.containsKey("z") ? 4979 : 4326);
+      result.put("srid", result.containsKey("z") ? SRID_WGS84_3D : SRID_WGS84_2D);
     } else if (map.containsKey("x") || map.containsKey("y")) {
       // Cartesian coordinate system
       final Object xv = map.get("x");
@@ -142,6 +142,13 @@ public class CypherPointFunction implements StatelessFunction {
       }
       String crs = crsObj != null ? crsObj.toString() : null;
       // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
+      // An explicit crs and srid that disagree are a client error, as in Neo4j.
+      if (srid != null && crs != null) {
+        final Integer crsSrid = sridOfCrs(crs);
+        if (crsSrid != null && !crsSrid.equals(srid))
+          throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
+      }
+      // An unknown crs name is kept as given, without an srid, as before.
       if (srid == null)
         srid = crs != null ? sridOfCrs(crs) : result.containsKey("z") ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
       if (crs == null)

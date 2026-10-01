@@ -19,12 +19,14 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #3993: Cypher {@code point()} must expose the SRID Neo4j reports for every
@@ -81,5 +83,18 @@ class Issue3993PointSridTest extends TestHelper {
     assertThat(point("point({x: 1, y: 2, crs: 'wgs-84'})").get("srid")).isEqualTo(4326);
     assertThat(point("point({x: 1, y: 2, z: 3, crs: 'wgs-84-3d'})").get("srid")).isEqualTo(4979);
     assertThat(point("point({x: 1, y: 2, z: 3, crs: 'cartesian-3d'})").get("srid")).isEqualTo(9157);
+  }
+
+  @Test
+  void mismatchedCrsAndSridIsRejected() {
+    assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'WGS-84', srid: 7203})")).isInstanceOf(CommandSemanticException.class);
+    assertThat(point("point({x: 1, y: 2, crs: 'WGS-84', srid: 4326})").get("srid")).isEqualTo(4326);
+  }
+
+  @Test
+  void unknownSridFallsBackToCartesianName() {
+    final Map<?, ?> p = point("point({x: 1, y: 2, srid: 9999})");
+    assertThat(p.get("srid")).isEqualTo(9999);
+    assertThat(p.get("crs")).isEqualTo("cartesian");
   }
 }
