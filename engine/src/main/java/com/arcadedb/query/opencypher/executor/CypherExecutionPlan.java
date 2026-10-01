@@ -1828,6 +1828,10 @@ public class CypherExecutionPlan {
 
       case WITH:
         final WithClause withClause = entry.getTypedClause();
+        // A LIMIT stops pulling: the writes ahead of it must have run for every row first (issues #8826, #8827)
+        if (currentStep != null && withClause.getLimit() != null && withClause.getOrderByClause() == null
+            && !withClause.hasAggregations() && eagerness.needsBarrierBeforeLimit())
+          currentStep = withEagerBarrier(currentStep, context, eagerness);
         currentStep = buildWithStep(withClause, currentStep, context, functionFactory);
         // An explicit WITH resets the scope to its own output variables; WITH * forwards the incoming one
         applyProjectionToScope(withClause.getItems(), boundVariables);
@@ -1856,6 +1860,7 @@ public class CypherExecutionPlan {
         }
         currentStep = mergeStep;
         eagerness.observeWrite(mergeClause);
+        eagerness.observeWriteClause();
         break;
 
       case CREATE:
@@ -1868,14 +1873,17 @@ public class CypherExecutionPlan {
             createStep.setPrevious(currentStep);
           }
           currentStep = createStep;
+          eagerness.observeWriteClause();
         }
         break;
 
       case SET:
         final SetClause setClause = entry.getTypedClause();
         // A SET a MERGE/CREATE absorbs still writes, so it is observed either way
-        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause))
+        if (!setClause.isEmpty() && currentStep != null && absorbsSet(currentStep, setClause)) {
           eagerness.observeWrite(setClause);
+          eagerness.observeWriteClause();
+        }
         if (!setClause.isEmpty() && currentStep != null && !absorbsSet(currentStep, setClause)) {
           if (eagerness.needsBarrier(setClause))
             currentStep = withEagerBarrier(currentStep, context, eagerness);
@@ -1884,6 +1892,7 @@ public class CypherExecutionPlan {
           setStep.setPrevious(currentStep);
           currentStep = setStep;
           eagerness.observeWrite(setClause);
+          eagerness.observeWriteClause();
         }
         break;
 
@@ -1897,6 +1906,7 @@ public class CypherExecutionPlan {
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
+          eagerness.observeWriteClause();
         }
         break;
 
@@ -1908,6 +1918,7 @@ public class CypherExecutionPlan {
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
+          eagerness.observeWriteClause();
         }
         break;
 
@@ -1922,8 +1933,10 @@ public class CypherExecutionPlan {
         if (currentStep != null && eagerness.needsBarrierForWriteProcedure()
             && SimpleCypherStatement.isWriteProcedureCall(callClause))
           currentStep = withEagerBarrier(currentStep, context, eagerness);
-        if (SimpleCypherStatement.isWriteProcedureCall(callClause))
+        if (SimpleCypherStatement.isWriteProcedureCall(callClause)) {
           eagerness.observeWriteProcedure();
+          eagerness.observeWriteClause();
+        }
         final CallStep callStep =
             new CallStep(callClause, context, functionFactory);
         if (currentStep != null) {
@@ -1958,6 +1971,7 @@ public class CypherExecutionPlan {
           foreachStep.setPrevious(currentStep);
         }
         currentStep = foreachStep;
+        eagerness.observeWriteClause();
         break;
 
       case SUBQUERY:
@@ -1968,6 +1982,8 @@ public class CypherExecutionPlan {
           subqueryStep.setPrevious(currentStep);
         }
         currentStep = subqueryStep;
+        if (!subqueryClause.getInnerStatement().isReadOnly())
+          eagerness.observeWriteClause();
         // What the subquery returns joins the outer scope, exactly as a CALL's YIELD names do, so a following
         // MATCH can push a predicate that reads one of them into its scan instead of filtering behind it.
         collectSubqueryOutputVariables(subqueryClause, boundVariables);
@@ -2047,6 +2063,10 @@ public class CypherExecutionPlan {
 
     // LIMIT
     if (statement.getLimit() != null && currentStep != null) {
+      // The final LIMIT cuts the pull too: the writes ahead of it must have run for every row first (issues #8826, #8827)
+      if (statement.getOrderByClause() == null
+          && (statement.getReturnClause() == null || !statement.getReturnClause().hasAggregations()) && eagerness.needsBarrierBeforeLimit())
+        currentStep = withEagerBarrier(currentStep, context, eagerness);
       final Integer limitVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
           new ResultInternal(), context);
       final LimitStep limitStep = new LimitStep(limitVal, context);
