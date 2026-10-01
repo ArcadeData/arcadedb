@@ -497,6 +497,8 @@ final class ParallelTypeScan {
             break;
           }
           consumerBatch = null;
+          // NO BATCH LEFT, NO FILTER: A TRANSACTION CONTEXT REUSED AFTER commit()/rollback() IS NEVER CONSULTED FOR A BATCH IT DID NOT FILTER
+          filterTx = null;
 
           if (consumerUnit >= channels.length) {
             stopDedicatedReader();
@@ -526,7 +528,7 @@ final class ParallelTypeScan {
           // A WORKER HAS TAKEN THE UNIT: THE GRACE OF THE NEXT ONE STARTS FROM ZERO
           if (nextUnit.get() != consumerUnit)
             unitWaitSince = 0;
-          if (nextUnit.get() == consumerUnit && callerMayClaimNow() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
+          if (nextUnit.get() == consumerUnit && startOrCheckGrace() && nextUnit.compareAndSet(consumerUnit, consumerUnit + 1)) {
             unitWaitSince = 0;
             if (database.isTransactionActive()) {
               // INSIDE A TRANSACTION THE CALLER DOES NOT READ THE UNIT: IT WOULD SEE THE TRANSACTION'S WRITES, AND THE WORKERS'
@@ -655,7 +657,7 @@ final class ParallelTypeScan {
    * nothing, so at once. Inside one it costs a reader thread, so it first gives the workers a moment to start: right
    * after the scan is submitted none has run yet, and that is not saturation.
    */
-  private boolean callerMayClaimNow() {
+  private boolean startOrCheckGrace() {
     // ONCE THE READER EXISTS SATURATION IS ESTABLISHED: NO MORE GRACE. IT THEN TAKES THE UNITS ONE AFTER THE OTHER, EVEN IF
     // THE POOL RECOVERS: A SIMPLE RULE OVER A FASTER SCAN IN A RARE CASE
     if (!database.isTransactionActive() || readerUnits != null)

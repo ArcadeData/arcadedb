@@ -19,9 +19,11 @@
 package com.arcadedb.query;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DedicatedThreadPool;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * JVM-wide dedicated executor for the BLOCKING producer tasks of parallel bucket scans
@@ -77,6 +79,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ParallelScanProducerPool extends DedicatedThreadPool {
   private static final AtomicInteger DEDICATED_READERS = new AtomicInteger();
+  // DEDICATED READERS RUNNING AT ONCE ABOVE WHICH ONE WARNING IS LOGGED, EACH TIME THE COUNT CROSSES IT UPWARDS (#8775)
+  private static final int           DEDICATED_READERS_WARN_THRESHOLD = 64;
 
   private static final class Holder {
     static final ParallelScanProducerPool INSTANCE = new ParallelScanProducerPool();
@@ -100,7 +104,10 @@ public final class ParallelScanProducerPool extends DedicatedThreadPool {
    */
   public static Thread newDedicatedProducerThread(final Runnable target, final String name) {
     final Thread thread = new ProducerThread(() -> {
-      DEDICATED_READERS.incrementAndGet();
+      if (DEDICATED_READERS.incrementAndGet() == DEDICATED_READERS_WARN_THRESHOLD)
+        LogManager.instance().log(ParallelScanProducerPool.class, Level.WARNING,
+            "%d parallel-scan dedicated readers are running at once: the producer pool is saturated by result sets left open inside transactions (see %s)",
+            DEDICATED_READERS_WARN_THRESHOLD, GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT.getKey());
       try {
         target.run();
       } finally {
