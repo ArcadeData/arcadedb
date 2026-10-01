@@ -155,6 +155,11 @@ public final class CypherEagernessAnalyzer {
     writeSeen = true;
   }
 
+  /** True when a clause that changes the graph was planned ahead of the current one, whether or not a barrier drained it since. */
+  public boolean hasObservedWrite() {
+    return writeSeen;
+  }
+
   /**
    * True when a {@code LIMIT} placed here (not behind an ORDER BY or an aggregation) would stop pulling before the writes ahead of it have run for every row.
    * openCypher runs each clause to completion before the next one starts, so a {@code WITH ... LIMIT n} (or a final
@@ -165,11 +170,6 @@ public final class CypherEagernessAnalyzer {
    * The barrier drains every row but the planner asks it to keep only the first {@code skip + limit} of them when no later
    * step can drop a row, so the memory stays O(limit).
    */
-  /** True when a clause that changes the graph was planned ahead of the current one, whether or not a barrier drained it since. */
-  public boolean hasObservedWrite() {
-    return writeSeen;
-  }
-
   public boolean needsBarrierBeforeLimit(final boolean hasOrderBy, final boolean hasAggregations) {
     // ORDER BY and an aggregation already drain their whole input
     return writePending && !hasOrderBy && !hasAggregations;
