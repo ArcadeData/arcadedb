@@ -403,6 +403,10 @@ class SupportEndpointsTest extends BaseGraphServerTest {
     assertThat(diagnostics.getJSONObject("runtime").getString("container")).isIn("none", "docker", "kubernetes", "unknown");
     final JSONObject configuration = diagnostics.getJSONObject("configuration");
     assertThat(configuration.getJSONArray("nonDefault")).isNotNull();
+    assertThat(configuration.getJSONArray("computed")).isNotNull();
+    // the server adds AutoBackupSchedulerPlugin to its own plugin list at startup: that is not the operator's choice
+    for (final Object entry : configuration.getJSONArray("nonDefault").toList())
+      assertThat(String.valueOf(entry)).doesNotContain(GlobalConfiguration.SERVER_PLUGINS.getKey());
     // the root password of the test server is set, so it is listed as masked and its value is nowhere
     assertThat(configuration.getJSONArray("masked").toList()).contains("arcadedb.server.rootPassword");
     for (final Object entry : configuration.getJSONArray("nonDefault").toList())
