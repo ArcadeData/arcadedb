@@ -41,8 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
 
-  private static final long T0 = 1_790_812_800_000L;
-
   private void load() {
     database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE, n LONG)");
     database.command("sql", "CREATE DOCUMENT TYPE D");
@@ -194,6 +192,17 @@ class Issue8915TimeSeriesWhereAndCountPushDownTest extends TestHelper {
         try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + t + " WHERE ts >= ? OR host = ?", 3000L, "a")) {
           assertThat(((Number) rs.next().getProperty("c")).longValue()).as(t).isEqualTo(3L);
         }
+    });
+  }
+
+  @Test
+  void aContradictoryRangeOrAnUnderstoodTimePredicateStaysExactOnThePushDown() {
+    forEachState(() -> {
+      for (final String w : new String[] { "ts > 3000 AND ts < 2000", "ts != 2000", "ts IN [1000, 2000]", "ts > 1000 AND host = n",
+          "host = n" })
+        assertThat(groupedCount("T", w)).as(w).isEqualTo(groupedCount("D", w));
+      assertThat(plan("SELECT ts.timeBucket('1h', ts) AS b, count(*) AS c FROM T WHERE ts != 2000 GROUP BY b"))
+          .doesNotContain("AGGREGATE FROM TIMESERIES");
     });
   }
 

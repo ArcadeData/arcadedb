@@ -151,7 +151,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
                 // samples behind it - an undefined TOTAL, which IEEE keeps and so do we - while an absent bucket
                 // is NaN with nothing behind it. Only the second is NULL (CodeRabbit on PR #7747).
                 if (req.type() == AggregationType.COUNT)
-                  // a Long, as SQLFunctionCount answers on the generic path (issue #8915); an empty bucket counts 0, never null
+                  // a Long, as SQLFunctionCount answers on the generic path (issue #8915)
                   row.setProperty(outputAlias, (long) value);
                 else
                   row.setProperty(outputAlias,
