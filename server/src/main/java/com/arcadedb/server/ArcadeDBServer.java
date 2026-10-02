@@ -93,6 +93,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -317,6 +318,8 @@ public class ArcadeDBServer {
   // the field used to be commented out here, so none of its checks ran. Issue #7160 turned it back on, behind
   // arcadedb.server.healthCheck.enabled. Written under the lifecycle lock, read by stopInternal.
   private volatile    ServerMonitor                         serverMonitor;
+  // key -> "file" | "runtime": the settings the operator supplied beyond -D and the environment (getOperatorSettingSource)
+  private final        Map<String, String>                   operatorSettings = new ConcurrentHashMap<>();
 
   static {
     // must be called before any Logger method is used.
@@ -330,6 +333,9 @@ public class ArcadeDBServer {
     serverRootPath = ServerPathUtils.setRootPath(configuration);
     serverConfigPath = resolveConfigPath(configuration, serverRootPath);
     loadConfiguration();
+    // Right after the file load and before init() adds its own keys: what is in the context now came from the file
+    for (final String key : configuration.getContextKeys())
+      operatorSettings.put(key, "file");
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.replicationLifecycleEventsEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
     init();
@@ -337,6 +343,9 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
+    // The embedder handed these in: they are the operator's, as opposed to what the server puts in later
+    for (final String key : configuration.getContextKeys())
+      operatorSettings.put(key, "file");
     serverRootPath = ServerPathUtils.setRootPath(configuration);
     serverConfigPath = resolveConfigPath(configuration, serverRootPath);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
@@ -346,6 +355,22 @@ public class ArcadeDBServer {
 
   public static void main(final String[] args) {
     new ArcadeDBServer().start();
+  }
+
+  /**
+   * Where the operator supplied a setting that is NOT a system property or an environment variable: {@code "file"} (the
+   * server configuration file, or the configuration an embedder passed in) or {@code "runtime"} (SET SERVER SETTING), else
+   * null. It is what tells a setting the operator chose from one the server computed or put in its own configuration at
+   * startup (support diagnostics report only the former as customised).
+   */
+  public String getOperatorSettingSource(final String key) {
+    return operatorSettings.get(key);
+  }
+
+  /** Records that the operator set {@code key} while the server runs (SET SERVER SETTING). */
+  public void markOperatorSetting(final String key) {
+    if (key != null)
+      operatorSettings.put(key, "runtime");
   }
 
   public ContextConfiguration getConfiguration() {

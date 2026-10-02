@@ -54,6 +54,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -122,10 +123,21 @@ public class SupportDiagnostics {
   }
 
   private JSONObject buildConfiguration(final SupportRedactor.Session redaction) {
-    final ContextConfiguration configuration = server.getConfiguration();
-    final Set<String> contextKeys = configuration.getContextKeys();
+    return buildConfiguration(server.getConfiguration(), server::getOperatorSettingSource, System::getenv, redaction);
+  }
 
+  /**
+   * The settings that differ from their default, in two lists: {@code nonDefault} is what the OPERATOR supplied (a system
+   * property, an environment variable, the server configuration file, a SET SERVER SETTING: {@code source} says which),
+   * {@code computed} is what the server worked out itself (a default fitted to the heap or the cores, a key it puts in
+   * its own configuration at startup). Without the split a vanilla server looks customised in the portal. The origin is
+   * not guessed from the value: the server records the keys the operator supplied (see
+   * {@link ArcadeDBServer#getOperatorSettingSource(String)}).
+   */
+  static JSONObject buildConfiguration(final ContextConfiguration configuration, final Function<String, String> operatorSource,
+      final Function<String, String> environment, final SupportRedactor.Session redaction) {
     final JSONArray nonDefault = new JSONArray();
+    final JSONArray computed = new JSONArray();
     final JSONArray masked = new JSONArray();
 
     for (final GlobalConfiguration cfg : GlobalConfiguration.values()) {
@@ -137,14 +149,11 @@ public class SupportDiagnostics {
         continue;
 
       final boolean jvm = System.getProperty(cfg.getKey()) != null;
-      final boolean env = System.getenv(cfg.getKey()) != null || System.getenv(cfg.getKey().replace('.', '_').toUpperCase(Locale.ROOT)) != null;
-      final boolean file = contextKeys.contains(cfg.getKey());
+      final boolean env = environment.apply(cfg.getKey()) != null || environment.apply(cfg.getKey().replace('.', '_').toUpperCase(Locale.ROOT)) != null;
+      final String operator = operatorSource.apply(cfg.getKey());
       // A default written as a template ("${arcadedb.server.rootPath}/databases") always differs from its resolved value
-      if (defaultText.contains("${") && !jvm && !env && !file)
+      if (defaultText.contains("${") && !jvm && !env && operator == null)
         continue;
-
-      // Set some other way (programmatically, or a default that changed with another setting): say so rather than guess
-      final String source = jvm ? "jvm" : env ? "env" : file ? "file" : "unknown";
 
       if (cfg.isHidden()) {
         // The name says it is set; the value is never read into the bundle
@@ -153,10 +162,13 @@ public class SupportDiagnostics {
       }
 
       final Object publishable = cfg.publishableValue(effective);
-      final String value = redaction.redact(String.valueOf(publishable));
-      nonDefault.put(new JSONObject().put("key", cfg.getKey()).put("value", value).put("source", source));
+      final JSONObject entry = new JSONObject().put("key", cfg.getKey()).put("value", redaction.redact(String.valueOf(publishable)));
+      if (jvm || env || operator != null)
+        nonDefault.put(entry.put("source", jvm ? "jvm" : env ? "env" : operator));
+      else
+        computed.put(entry);
     }
-    return new JSONObject().put("nonDefault", nonDefault).put("masked", masked);
+    return new JSONObject().put("nonDefault", nonDefault).put("computed", computed).put("masked", masked);
   }
 
   /** The plugins that are running, by the names the portal knows. */

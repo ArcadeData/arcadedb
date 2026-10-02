@@ -996,6 +996,9 @@ public class ServerControlPlane {
 
   public void setServerSetting(final String key, final String value) {
     applySetting(server.getConfiguration(), key, value);
+    final String name = FileUtils.getStringContent(key.trim());
+    final GlobalConfiguration setting = GlobalConfiguration.findByKey(name);
+    server.markOperatorSetting(setting != null ? setting.getKey() : name);
   }
 
   /**
