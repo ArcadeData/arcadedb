@@ -107,6 +107,15 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
   }
 
   @Test
+  void expressionDerivedFromThePropertyIsNotConverted() {
+    database.command("sql", "CREATE DOCUMENT TYPE E");
+    database.command("sql", "CREATE PROPERTY E.s STRING");
+    database.transaction(() -> database.newDocument("E").set("s", "7").save());
+    assertThat(count("SELECT FROM E WHERE s.toUpperCase() IN [?]", 7.0)).isEqualTo(0);
+    assertThat(count("SELECT FROM E WHERE s.toUpperCase() NOT IN [?]", 7.0)).isEqualTo(1);
+  }
+
+  @Test
   void literalOnTheLeftStillConverts() {
     database.command("sql", "CREATE DOCUMENT TYPE V");
     database.transaction(() -> database.newDocument("V").save());
