@@ -728,8 +728,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public boolean isReadyForQueries() {
     if (!valid)
       return false;
-    final IndexInternal first = firstOrNull();
-    return first != null && first.getType() != null;
+    try {
+      final IndexInternal first = firstOrNull();
+      return first != null && first.getType() != null;
+    } catch (final IndexException e) {
+      return false;
+    }
   }
 
   /**

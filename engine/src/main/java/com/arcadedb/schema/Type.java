@@ -1632,7 +1632,8 @@ public enum Type {
    * True when one operand is a {@code Float} and the other a {@code Double} or {@code BigDecimal} that narrows to it: the pair
    * {@link #numbersEqual} calls equal and the index, which converts a bound to its FLOAT key, finds together (issue #8882).
    * The ordering operators ask it first, so a value is never equal to a bound and less than it at once (issue #8919). Allocates
-   * nothing.
+   * nothing. Equality through narrowing is not transitive (0.1f equals the double 0.1 but is below 0.10000000149011612), so this
+   * is for comparing a value with a bound, never for sorting.
    */
   public static boolean floatNarrowsToOperand(final Number left, final Number right) {
     if (left instanceof Float f)

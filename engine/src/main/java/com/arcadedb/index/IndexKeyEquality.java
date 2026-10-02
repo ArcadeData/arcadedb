@@ -100,8 +100,25 @@ public final class IndexKeyEquality {
       return Double.hashCode(d + 0.0d);
     if (element instanceof Float f)
       return Float.hashCode(f + 0.0f);
-    if (element.getClass().isArray())
-      return Arrays.deepHashCode(new Object[] { element }) - 31;
+    // the content hash of an array element, as Arrays.deepHashCode computes it, without allocating a wrapper
+    if (element instanceof byte[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof float[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof double[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof int[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof long[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof short[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof char[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof boolean[] a)
+      return Arrays.hashCode(a);
+    if (element instanceof Object[] a)
+      return Arrays.deepHashCode(a);
     return element.hashCode();
   }
 }

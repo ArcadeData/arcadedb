@@ -99,6 +99,20 @@ class Issue8919FloatRangeBoundTest extends TestHelper {
     }
   }
 
+  @Test
+  void lossyIntegerBoundsInBetweenAndInAgreeBetweenIndexAndScan() {
+    for (final String type : new String[] { "I", "N" }) {
+      assertThat(sql("SELECT id FROM " + type + " WHERE d IN [9007199254740993]")).as(type + " IN").isEmpty();
+      assertThat(sql("SELECT id FROM " + type + " WHERE d IN [9007199254740993, 5]")).as(type + " IN 2").containsExactly(3);
+      assertThat(sql("SELECT id FROM " + type + " WHERE v IN [16777217]")).as(type + " FLOAT IN").isEmpty();
+    }
+    // BETWEEN: the indexed type answers as the unindexed one does
+    assertThat(sql("SELECT id FROM I WHERE d BETWEEN 9007199254740993 AND 9007199254740995"))
+        .isEqualTo(sql("SELECT id FROM N WHERE d BETWEEN 9007199254740993 AND 9007199254740995"));
+    assertThat(sql("SELECT id FROM I WHERE v BETWEEN 16777217 AND 16777219"))
+        .isEqualTo(sql("SELECT id FROM N WHERE v BETWEEN 16777217 AND 16777219"));
+  }
+
   private List<Integer> sql(final String statement) {
     return ids(database.query("sql", statement + " ORDER BY id"));
   }

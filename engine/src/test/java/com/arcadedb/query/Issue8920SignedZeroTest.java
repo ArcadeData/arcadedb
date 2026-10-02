@@ -20,6 +20,7 @@ package com.arcadedb.query;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -108,6 +109,38 @@ class Issue8920SignedZeroTest extends TestHelper {
     });
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO U SET v = ?", -0.0d)))
         .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void indexKeyEqualityTreatsTheZerosAsOneKey() {
+    assertThat(IndexKeyEquality.sameTuple(new Object[] { 0.0d, "a" }, new Object[] { -0.0d, "a" })).isTrue();
+    assertThat(IndexKeyEquality.sameTuple(new Object[] { 0.0f }, new Object[] { -0.0f })).isTrue();
+    assertThat(IndexKeyEquality.sameTuple(new Object[] { 0.0d }, new Object[] { 1.0d })).isFalse();
+    assertThat(IndexKeyEquality.hashTuple(new Object[] { 0.0d, "a" })).isEqualTo(IndexKeyEquality.hashTuple(new Object[] { -0.0d, "a" }));
+    assertThat(IndexKeyEquality.hashTuple(new Object[] { 0.0f })).isEqualTo(IndexKeyEquality.hashTuple(new Object[] { -0.0f }));
+    assertThat(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } }))
+        .isEqualTo(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } }));
+    assertThat(IndexKeyEquality.hashTuple(new Object[] { new byte[] { 1, 2 } })).isEqualTo(java.util.Arrays.deepHashCode(new Object[] { new byte[] { 1, 2 } }));
+  }
+
+  @Test
+  void zerosStayEqualAfterTheIndexIsCompacted() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE C");
+      database.command("sql", "CREATE PROPERTY C.id INTEGER");
+      database.command("sql", "CREATE PROPERTY C.v DOUBLE");
+      database.command("sql", "CREATE INDEX ON C (v) NOTUNIQUE");
+      database.command("sql", "INSERT INTO C SET id = 1, v = 0.0");
+      database.command("sql", "INSERT INTO C SET id = 2, v = ?", -0.0d);
+    });
+    for (final var index : database.getSchema().getType("C").getAllIndexes(false))
+      try {
+        ((com.arcadedb.index.IndexInternal) index).compact();
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    assertThat(sql("SELECT id FROM C WHERE v = 0.0")).containsExactly(1, 2);
+    assertThat(sql("SELECT id FROM C WHERE v = -0.0")).containsExactly(1, 2);
   }
 
   private List<Integer> sql(final String statement) {

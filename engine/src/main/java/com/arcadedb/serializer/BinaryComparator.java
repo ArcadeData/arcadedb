@@ -855,6 +855,28 @@ public class BinaryComparator {
   }
 
   /**
+   * The key with every floating-point zero turned into negative zero, or null when it has none. A series compacted before
+   * negative zero was canonicalised (issue #8920) hashed such a key under its negative spelling in the bloom filter, so a
+   * lookup probes that spelling too.
+   */
+  public static Object[] withNegativeZeros(final Object[] keys) {
+    Object[] negated = null;
+    for (int i = 0; i < keys.length; i++) {
+      final Object zero;
+      if (keys[i] instanceof Double d && d == 0.0d)
+        zero = -0.0d;
+      else if (keys[i] instanceof Float f && f == 0.0f)
+        zero = -0.0f;
+      else
+        continue;
+      if (negated == null)
+        negated = keys.clone();
+      negated[i] = zero;
+    }
+    return negated;
+  }
+
+  /**
    * The array form of {@link #canonicalizeForByteEquality(Object)}, for a composite key.
    *
    * @return {@code keys} ITSELF when no component needed rewriting - which is every index that has no DECIMAL
