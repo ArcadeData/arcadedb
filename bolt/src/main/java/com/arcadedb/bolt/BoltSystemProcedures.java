@@ -96,8 +96,8 @@ final class BoltSystemProcedures {
     // Only a statement that opens with the call IS the introspection query (a single call, or the combined UNION
     // form Neo4j Desktop sends, which also opens with one). A name found deeper in the text - a CALL subquery
     // branch, a string literal, a comment - belongs to a larger statement the engine has to run (issue #8908).
-    return normalized.startsWith(CALL_PREFIX + LABELS) || normalized.startsWith(CALL_PREFIX + RELATIONSHIPS)
-        || normalized.startsWith(CALL_PREFIX + PROPERTY_KEYS);
+    return isStandaloneCall(normalized, LABELS) || isStandaloneCall(normalized, RELATIONSHIPS)
+        || isStandaloneCall(normalized, PROPERTY_KEYS);
   }
 
   /**
@@ -111,7 +111,11 @@ final class BoltSystemProcedures {
    * @return true if the statement opens with {@code CALL <procedureName>}
    */
   static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    return normalized.startsWith(CALL_PREFIX + procedureName);
+    if (!normalized.startsWith(CALL_PREFIX + procedureName))
+      return false;
+    // A token boundary: db.ping must not claim db.pingAll
+    final int end = CALL_PREFIX.length() + procedureName.length();
+    return end == normalized.length() || normalized.charAt(end) == '(' || normalized.charAt(end) == ' ';
   }
 
   /**
@@ -141,11 +145,15 @@ final class BoltSystemProcedures {
       if ((labels ? 1 : 0) + (relationships ? 1 : 0) + (propertyKeys ? 1 : 0) > 1)
         return null;
 
-      if (labels)
+      // A single call that continues into further clauses is a larger statement: the engine runs it.
+      if (continuesIntoOtherClauses(normalized))
+        return null;
+
+      if (labels && isStandaloneCall(normalized, LABELS))
         return serveOne(database, normalized, LABELS);
-      if (relationships)
+      if (relationships && isStandaloneCall(normalized, RELATIONSHIPS))
         return serveOne(database, normalized, RELATIONSHIPS);
-      if (propertyKeys)
+      if (propertyKeys && isStandaloneCall(normalized, PROPERTY_KEYS))
         return serveOne(database, normalized, PROPERTY_KEYS);
     } catch (final Exception e) {
       // The Bolt executor calls its system-query interception before the try/catch that classifies query
@@ -159,9 +167,8 @@ final class BoltSystemProcedures {
       return null;
     }
 
-    // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which tests the same three
-    // substrings, so no name can be missing. Kept so the two ever diverging declines the query rather than
-    // answering it with nothing.
+    // Defensive: the caller reaches here only through isSchemaProcedureQuery(), which anchors the same three
+    // names. Kept so the two ever diverging declines the query rather than answering it with nothing.
     return null;
   }
 
@@ -206,6 +213,11 @@ final class BoltSystemProcedures {
       }
     }
     return new Served(fields, rows);
+  }
+
+  private static boolean continuesIntoOtherClauses(final String normalized) {
+    return normalized.contains(" match ") || normalized.contains(" with ") || normalized.contains(" unwind ")
+        || normalized.contains(" call ") || normalized.contains(" union ") || normalized.contains(" load ");
   }
 
   /**

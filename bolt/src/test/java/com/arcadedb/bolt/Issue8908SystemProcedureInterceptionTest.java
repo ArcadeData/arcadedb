@@ -70,4 +70,23 @@ class Issue8908SystemProcedureInterceptionTest {
             + "UNION CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS result "
             + "UNION CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS result"))).isTrue();
   }
+
+  @Test
+  void theNameMustEndAtATokenBoundary() {
+    assertThat(BoltSystemProcedures.isStandaloneCall("call db.pingall()", "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isStandaloneCall("call dbms.infofoo()", "dbms.info")).isFalse();
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery("call db.labelsextended()")).isFalse();
+    assertThat(BoltSystemProcedures.isStandaloneCall("call db.ping", "db.ping")).isTrue();
+  }
+
+  @Test
+  void aCallThatContinuesIntoOtherClausesIsLeftToTheEngine() {
+    final String query = BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label MATCH (n) WHERE n.k = 'db.propertykeys' RETURN label");
+    assertThat(BoltSystemProcedures.serveSchemaProcedure(null, query)).isNull();
+    assertThat(BoltSystemProcedures.serveSchemaProcedure(null,
+        BoltSystemProcedures.normalize("CALL db.labels() YIELD label WITH label RETURN label"))).isNull();
+    assertThat(BoltSystemProcedures.serveSchemaProcedure(null,
+        BoltSystemProcedures.normalize("CALL db.labels() YIELD label"))).isNotNull();
+  }
 }

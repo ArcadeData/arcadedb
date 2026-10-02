@@ -29,14 +29,15 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #8908: a variable exported by a scoped {@code CALL (*) { ... UNION ... }} was reported as undefined once a
- * {@code WITH x, row} followed a {@code LOAD CSV}.
+ * Issue #8908: the engine and HTTP always ran this query correctly; the reported failure was the Bolt executor
+ * answering it itself. This guards the engine side of that parity (the Bolt fix is covered in the bolt module).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -48,7 +49,7 @@ class CypherCallUnionLoadCsvScopeIssue8908Test {
   void setUp() throws IOException {
     final File csv = new File("./target/databases/cypher-8908/arcade-load.csv");
     csv.getParentFile().mkdirs();
-    try (final PrintWriter writer = new PrintWriter(csv, "UTF-8")) {
+    try (final PrintWriter writer = new PrintWriter(csv, StandardCharsets.UTF_8)) {
       writer.println("value");
       writer.println("a");
       writer.println("b");
@@ -104,7 +105,7 @@ class CypherCallUnionLoadCsvScopeIssue8908Test {
   }
 
   @Test
-  void sameQueryThroughCommandAsBoltDoesForWrites() {
+  void sameQueryThroughCommandAnswersTheSameRows() {
     assertThat(runCommand("""
         CALL (*) {
           RETURN null AS x
