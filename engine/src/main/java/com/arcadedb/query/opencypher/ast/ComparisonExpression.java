@@ -235,8 +235,10 @@ public class ComparisonExpression implements BooleanExpression {
       // 0.05 - which Cypher reads as a 64-bit float. Neo4j has no 32-bit float to disagree with (issue #7609).
       if ((operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) && (left instanceof Float || right instanceof Float)) {
         // a FLOAT also equals the double that narrows to it, as the index key does (issue #8882)
-        // (Cypher reads 0 and -0 as equal, which numbersEqual does not)
-        final boolean equal = toComparableDouble((Number) left) == toComparableDouble((Number) right) || Type.numbersEqual((Number) left, (Number) right);
+        // Cypher reads 0 and -0 as equal and NaN as equal to nothing, which numbersEqual does not
+        final double l = toComparableDouble((Number) left);
+        final double r = toComparableDouble((Number) right);
+        final boolean equal = l == r || (!Double.isNaN(l) && !Double.isNaN(r) && Type.numbersEqual((Number) left, (Number) right));
         return operator == Operator.EQUALS == equal;
       }
       final double leftNum = toComparableDouble((Number) left);

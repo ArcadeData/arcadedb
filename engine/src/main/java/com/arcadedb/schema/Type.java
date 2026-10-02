@@ -1574,6 +1574,10 @@ public enum Type {
    * DOUBLE holding 0.1 equals the BigDecimal 0.10000000000000001. That is the rule an index applies to its key
    * ({@code Type.convert} to the key type), so a lookup answers the same with and without the index (issue #8882).
    * Ordering is untouched: it keeps the decimal reading of {@link #widenFloat}.
+   * <p>
+   * The relation is not transitive (0.1f equals both 0.1 and 0.10000000149011612, which differ) and the Double/BigDecimal
+   * rule is as loose as the double's ulp, as the index's is: never use it for hashing or grouping. NaN equals NaN here, as
+   * {@code Double.equals} says; a caller needing the IEEE answer (Cypher) guards for it.
    *
    * @param left  the first operand
    * @param right the second operand
@@ -1581,6 +1585,10 @@ public enum Type {
    * @return {@code true} when the two numbers are equal
    */
   public static boolean numbersEqual(final Number left, final Number right) {
+    // a BigDecimal is always finite, and the promotion below cannot read NaN or an infinity as one
+    if ((right instanceof BigDecimal && !isFinite(left)) || (left instanceof BigDecimal && !isFinite(right)))
+      return false;
+
     final Number[] pair = castComparableNumber(left, right);
     if (pair[0].equals(pair[1]))
       return true;

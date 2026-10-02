@@ -75,8 +75,18 @@ public final class InListMembership {
   private final Set<Object> keys;
   private final int         kind;
   private final boolean     containsNull;
+  /** The list holds a Float / a Double: a miss for the other one is not final, see {@link #evaluate}. */
+  private final boolean     hasFloat;
+  private final boolean     hasDouble;
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull) {
+    this(rightValue, keys, kind, containsNull, false, false);
+  }
+
+  private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
+      final boolean hasFloat, final boolean hasDouble) {
+    this.hasFloat = hasFloat;
+    this.hasDouble = hasDouble;
     this.rightValue = rightValue;
     this.keys = keys;
     this.kind = kind;
@@ -97,6 +107,8 @@ public final class InListMembership {
 
     int kind = KIND_NONE;
     boolean containsNull = false;
+    boolean hasFloat = false;
+    boolean hasDouble = false;
     final Set<Object> keys = new HashSet<>();
 
     for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
@@ -117,13 +129,15 @@ public final class InListMembership {
 
       kind = itemKind;
       keys.add(key);
+      hasFloat |= item instanceof Float;
+      hasDouble |= item instanceof Double;
     }
 
     if (kind == KIND_NONE)
       // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
       return new InListMembership(rightValue, null, KIND_NONE, containsNull);
 
-    return new InListMembership(rightValue, keys, kind, containsNull);
+    return new InListMembership(rightValue, keys, kind, containsNull, hasFloat, hasDouble);
   }
 
   /**
@@ -138,6 +152,10 @@ public final class InListMembership {
         if (key != null) {
           if (keys.contains(key))
             return Boolean.TRUE;
+          // A FLOAT also equals the double that narrows to it (Type.numbersEqual, issue #8882), a relation no hash key
+          // reproduces, so a miss between the two is settled by the linear evaluator
+          if ((left instanceof Float && hasDouble) || (left instanceof Double && hasFloat))
+            return InCondition.evaluateExpressionThreeValued(left, rightValue);
           return containsNull ? null : Boolean.FALSE;
         }
       }
