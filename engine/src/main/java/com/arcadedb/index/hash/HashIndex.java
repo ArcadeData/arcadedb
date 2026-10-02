@@ -170,7 +170,13 @@ public class HashIndex implements IndexInternal {
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
     checkIsValid();
-    final Object[] convertedKeys = convertKeys(keys);
+    final Object[] convertedKeys;
+    try {
+      convertedKeys = convertKeys(keys);
+    } catch (final NumberFormatException e) {
+      // a lookup key the declared numeric type cannot read equals no indexed key: no row, as without the index (issue #8888)
+      return EMPTY_CURSOR;
+    }
 
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;

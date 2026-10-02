@@ -76,9 +76,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   /**
    * The key type of a {@code BY ITEM} index over a LIST: the declared {@code OF} item type when it is a plain scalar, so
    * a lookup by a number of another Java type ({@code CONTAINS 7} against a {@code LIST OF DOUBLE} holding {@code 7.0})
-   * is converted to the stored type the way a scan compares it (issue #8890). A list with no declared item type, one of
-   * non-scalar items (links, embedded documents, nested collections), BOOLEAN (a lookup by the text 'true' cannot be read as a boolean key) and a FULL_TEXT index, which tokenizes text, keep
-   * STRING, since lists can hold heterogeneous values.
+   * is converted to the stored type the way a scan compares it (issue #8890). STRING is kept for:
+   * <ul>
+   *   <li>a list with no declared item type, since lists can hold heterogeneous values;</li>
+   *   <li>non-scalar items (links, embedded documents, nested collections);</li>
+   *   <li>BOOLEAN, since a lookup by the text 'true' cannot be read as a boolean key;</li>
+   *   <li>a FULL_TEXT index, which tokenizes text.</li>
+   * </ul>
    */
   static Type listItemKeyType(final Property property, final Schema.INDEX_TYPE indexType) {
     if (indexType == Schema.INDEX_TYPE.FULL_TEXT)

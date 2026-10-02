@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -117,6 +118,25 @@ class Issue8888CypherLongPrecisionTest extends TestHelper {
     assertThat(cypher("i", 7.0)).isEqualTo(1);
     assertThat(cypher("i", new BigDecimal("7.0"))).isEqualTo(1);
     assertThat(cypher("j", 7.5)).isEqualTo(0);
+  }
+
+  @Test
+  void hashIndexedIntegerLookedUpByAnUnreadableStringAnswersNoRow() {
+    database.command("sql", "CREATE VERTEX TYPE H");
+    database.command("sql", "CREATE PROPERTY H.i INTEGER");
+    database.getSchema().getType("H").createTypeIndex(Schema.INDEX_TYPE.HASH, false, "i");
+    database.transaction(() -> database.newVertex("H").set("i", 7).save());
+    assertThat(database.query("opencypher", "MATCH (n:H) WHERE n.i = $v RETURN n", Map.of("v", "7.0")).stream().count()).isZero();
+    assertThat(database.query("sql", "SELECT FROM H WHERE i = ?", "7.0").stream().count()).isZero();
+    assertThat(database.query("sql", "SELECT FROM H WHERE i = ?", 7).stream().count()).isEqualTo(1);
+  }
+
+  @Test
+  void aBigDecimalAtTwoPow53PlusOneIsNotTheDouble() {
+    final var row = database.query("opencypher", "RETURN $d = $v AS eq, $l = $dl AS maxEq",
+        Map.of("d", new BigDecimal("9007199254740993"), "v", 9007199254740992.0d, "l", Long.MAX_VALUE, "dl", 9.223372036854775807E18)).next();
+    assertThat(row.<Boolean>getProperty("eq")).isTrue();
+    assertThat(row.<Boolean>getProperty("maxEq")).isFalse();
   }
 
   @Test
