@@ -452,7 +452,7 @@ public class PostgresNetworkExecutor extends Thread {
         // or a JDBC executeBatch() sent fails HERE. It escaped to the main loop, which answered nothing - no
         // ErrorResponse, no ReadyForQuery - and the client waited for the Sync's answer until it timed out. Reported
         // first, then the block is discarded, as PostgreSQL does for a commit that fails at Sync (issue #8264).
-        writeError(ERROR_SEVERITY.ERROR, "Error on committing transaction: " + e.getMessage(), sqlStateFor(e));
+        writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on committing transaction: " + e.getMessage()), sqlStateFor(e));
         if (!abortOrCloseConnection(() -> {
           rollbackActiveTransaction();
           sessionSettings.rollback();
@@ -584,12 +584,13 @@ public class PostgresNetworkExecutor extends Thread {
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
           // reached the server log only and the client waited for a RowDescription that never came.
           setExtendedProtocolError();
-          writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
+          writeError(ERROR_SEVERITY.ERROR,
+          clientMessage("Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())), sqlStateFor(e));
         } catch (final PostgresProtocolException e) {
           throw e;
         } catch (final Exception e) {
           setExtendedProtocolError();
-          writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
+          writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on executing query: " + e.getMessage()), sqlStateFor(e));
         }
       } else if (portal.isExpectingResult && portal.columns != null) {
         // Already materialized: a synthetic answer fixed at PARSE (SHOW/system/catalog), or a portal a
@@ -914,10 +915,11 @@ public class PostgresNetworkExecutor extends Thread {
       // CommandParsingException ever wraps a non-parse cause here, sqlStateFor reports that cause - correctly, and
       // clients branch on the SQLSTATE - while this text would still read "Syntax error".
       setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
+      writeError(ERROR_SEVERITY.ERROR,
+          clientMessage("Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())), sqlStateFor(e));
     } catch (final Exception e) {
       setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
+      writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on executing query: " + e.getMessage()), sqlStateFor(e));
     } finally {
       if (portal != null)
         recordPostgresProfile(profile, portal.language, portal.query);
@@ -1168,10 +1170,10 @@ public class PostgresNetworkExecutor extends Thread {
       failSimpleQuery(e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // See the note on the same arm in executeCommand about the "Syntax error" wording.
-      failSimpleQuery("Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()),
+      failSimpleQuery(clientMessage("Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())),
           sqlStateFor(e));
     } catch (final Exception e) {
-      failSimpleQuery("Error on executing query: " + e.getMessage(), sqlStateFor(e));
+      failSimpleQuery(clientMessage("Error on executing query: " + e.getMessage()), sqlStateFor(e));
     } finally {
       if (!explicitTransactionStarted)
         // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
@@ -2978,7 +2980,7 @@ public class PostgresNetworkExecutor extends Thread {
         drainedCleanly = false;
       }
       setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), sqlStateFor(e));
+      writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on parsing bind message: " + e.getMessage()), sqlStateFor(e));
       if (!drainedCleanly)
         shutdown = true;
     }
@@ -3254,10 +3256,11 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
+      writeError(ERROR_SEVERITY.ERROR,
+          clientMessage("Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage())), sqlStateFor(e));
     } catch (final Exception e) {
       setExtendedProtocolError();
-      writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), sqlStateFor(e));
+      writeError(ERROR_SEVERITY.ERROR, clientMessage("Error on parsing query: " + e.getMessage()), sqlStateFor(e));
     }
   }
 
@@ -3846,6 +3849,17 @@ public class PostgresNetworkExecutor extends Thread {
         "22003";    // numeric_value_out_of_range
   }
 
+  /**
+   * The text a client is told for a failure the ENGINE raised: the message itself, or, in production mode, the one
+   * placeholder every surface uses ({@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}). The SQLSTATE sent alongside is
+   * the bounded part a driver acts on and stays. Without it the {@code M} field carried the raw exception text, which
+   * for a duplicated key holds the customer's stored values (issue #8931). Errors the protocol layer itself words
+   * ({@link PostgresProtocolException}) are bounded text and do not go through here.
+   */
+  private String clientMessage(final String message) {
+    return server.isProductionMode() ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : message;
+  }
+
   private void writeError(final ERROR_SEVERITY severity, final String errorMessage, final String errorCode) {
     try {
       final String sev = severity.toString();
@@ -4268,8 +4282,8 @@ public class PostgresNetworkExecutor extends Thread {
       return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "PSQL: cannot roll back the transaction after an error, closing the connection", e);
-      writeError(ERROR_SEVERITY.FATAL, "Cannot roll back the transaction after an error, closing the connection: " + e.getMessage(),
-          "XX000");
+      writeError(ERROR_SEVERITY.FATAL,
+          clientMessage("Cannot roll back the transaction after an error, closing the connection: " + e.getMessage()), "XX000");
       fatalErrorSent = true;
       shutdown = true;
       return false;

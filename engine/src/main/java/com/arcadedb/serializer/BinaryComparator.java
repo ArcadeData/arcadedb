@@ -200,8 +200,11 @@ public class BinaryComparator {
       if (type2 == BinaryTypes.TYPE_BOOLEAN || value2 instanceof Boolean)
         throw unsupportedPair(type1, type2);
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
-      final long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
-      final long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
+      final Long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
+      final Long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
+      // A value the conversion has no case for answers null: refuse the pair instead of NPE-ing on the unboxing (issue #8921)
+      if (v1 == null || v2 == null)
+        throw unsupportedPair(type1, type2);
       return Long.compare(v1, v2);
     }
 
