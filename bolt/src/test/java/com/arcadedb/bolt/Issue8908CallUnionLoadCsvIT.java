@@ -98,6 +98,7 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
       assertThat(rows.getFirst().get("name").asString()).isEqualTo("Neo4j Kernel");
 
       assertThat(session.run("// probe\nCALL db.ping()").list()).hasSize(1);
+      assertThat(session.run("// x\nCALL dbms.components() YIELD name WHERE name = 'Neo4j Kernel'").list()).hasSize(1);
     }
   }
 

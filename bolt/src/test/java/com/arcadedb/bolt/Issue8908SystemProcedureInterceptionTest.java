@@ -161,4 +161,19 @@ class Issue8908SystemProcedureInterceptionTest {
   void anUnterminatedLeadingCommentLeavesNothingToServe() {
     assertThat(BoltSystemProcedures.normalize("/* never closed CALL db.ping()")).isEmpty();
   }
+
+  @Test
+  void anEscapedQuoteCannotHideAClauseInTheTail() {
+    final String query = "CALL db.ping() YIELD success WHERE success = 'a\\' ' CREATE (:X {a: 'z'})";
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(query), "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL db.ping() YIELD success WHERE success = 'it\\'s create'"), "db.ping")).isTrue();
+  }
+
+  @Test
+  void unionAllCombinedFormGoesToTheEngine() {
+    assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
+        "CALL db.labels() YIELD label RETURN label UNION ALL CALL db.relationshipTypes() YIELD relationshipType "
+            + "RETURN relationshipType UNION ALL CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"))).isFalse();
+  }
 }

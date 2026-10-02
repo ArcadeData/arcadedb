@@ -54,9 +54,9 @@ final class BoltSystemProcedures {
   private static final Object[] NO_ARGS       = new Object[0];
   private static final String   CALL_PREFIX   = "call ";
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
-  private static final Pattern  QUOTED        = Pattern.compile("'[^']*'|\"[^\"]*\"");
+  private static final Pattern  QUOTED        = Pattern.compile("'(?:[^'\\\\]|\\\\.)*'|\"(?:[^\"\\\\]|\\\\.)*\"");
   private static final Pattern  WHITESPACE    = Pattern.compile("\\s+");
-  private static final Pattern  FOREIGN_CLAUSE  = Pattern.compile(
+  private static final Pattern  FOREIGN_CLAUSE = Pattern.compile(
       "(?<![\\w$.])(?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional|union|use|finish|insert)\\b");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
