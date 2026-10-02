@@ -55,7 +55,7 @@ final class BoltSystemProcedures {
   private static final String   CALL_PREFIX   = "call ";
   private static final String   ITEM          = "(?:collect\\(\\w+\\)|\\w+)(?: as \\w+)?";
   private static final Pattern  WRITE_TAIL    = Pattern.compile(
-      " (?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional) ");
+      " (?:create|merge|set|delete|detach|remove|foreach|call|load|match|optional)\\b");
   private static final Pattern  CALL_TAIL     = Pattern.compile(
       " ?(?:\\( ?\\))?(?: yield (?:\\*|" + ITEM + "(?:, ?" + ITEM + ")*))?(?: return " + ITEM + "(?:, ?" + ITEM + ")*)? ?;?");
   private static final String   LABELS        = DbLabels.NAME.toLowerCase(Locale.ROOT);
@@ -158,7 +158,10 @@ final class BoltSystemProcedures {
    * {@code db.ping}). Unlike the schema procedures these exist nowhere but in the Bolt interception, so a statement
    * declined here would fail in the engine as an unknown procedure; what follows the call is therefore left to the
    * tail handling (YIELD / WHERE / UNWIND, as Neo4j Browser sends it). Only the anchoring and the token boundary are
-   * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name elsewhere in a larger statement out (issue #8908).
+   * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name
+   * elsewhere in a larger statement out (issue #8908). The tail check is a deny-list on a family with no engine
+   * fallback, so a string literal in the tail that holds such a keyword is declined too. An {@code EXPLAIN} or
+   * {@code PROFILE} prefix, or a comment between {@code CALL} and the name, reaches the engine.
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
     final int end = endOfCallName(normalized, procedureName);
