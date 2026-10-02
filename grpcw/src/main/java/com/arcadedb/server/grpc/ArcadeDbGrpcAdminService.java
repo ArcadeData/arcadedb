@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
@@ -568,11 +569,17 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * "unknown, carry on" but "nothing vouched for this connection". That way removing the interceptor
    * stops tokens being minted rather than stopping them being protected.
    */
-  private void requireTransportSafeForSecrets() throws StatusException {
+  static void requireTransportSafeForSecrets() throws StatusException {
+    // Names the trusted-proxy setting because an operator behind a TLS-terminating proxy is reading this
+    // message to find out why the mint is refused, and the proxy is the one thing they cannot fix by
+    // reconnecting (issue #7821).
     if (!Boolean.TRUE.equals(GrpcTransportSecurityInterceptor.SECRET_SAFE_TRANSPORT_KEY.get()))
       throw Status.FAILED_PRECONDITION.withDescription(
               "Refusing to return API token material over an unprotected transport. Enable gRPC TLS "
-                  + "(arcadedb.grpc.tls.enabled), or issue the token from a client on the loopback interface.")
+                  + "(arcadedb.grpc.tls.enabled), issue the token from a client on the loopback interface, or list "
+                  + "the reverse proxy that terminates TLS in front of this server in "
+                  + GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey()
+                  + " and have it send the x-forwarded-proto metadata.")
           .asException();
   }
 
