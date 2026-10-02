@@ -167,11 +167,36 @@ function supportReqTable(records, nodeName, limit) {
 }
 
 /** The node(s) a request is run on: "current", "all", or the name of one node. The user's choice, else what support asked for. */
+/**
+ * What a request's `nodes` asks for: {kind:"current"} (the node Studio talks to), {kind:"all"}, {kind:"node", name} for
+ * "node:<server name>", or {kind:"unknown"} for anything this Studio does not understand. An unknown value is never run on
+ * the local node "because that is probably what was meant": it is refused with a message and the client decides.
+ */
+function supportReqParseNodes(value) {
+  if (value === undefined || value === null || value === "" || value === "current") return { kind: "current" };
+  if (value === "all") return { kind: "all" };
+  if (typeof value === "string" && value.indexOf("node:") === 0 && value.length > 5 && value.length <= 105) return { kind: "node", name: value.slice(5) };
+  return { kind: "unknown" };
+}
+
+/** The node(s) a request is run on, canonical: "current", "all", "node:<name>" or "unknown". The user's choice, else what support asked for. */
 function supportReqTarget(request, s) {
-  var wanted = s && s.nodes ? s.nodes : request.nodes;
-  if (wanted === "all") return "all";
-  if (typeof wanted === "string" && wanted && wanted !== "current") return wanted;
-  return "current";
+  var parsed = supportReqParseNodes(s && s.nodes ? s.nodes : request.nodes);
+  if (parsed.kind === "node") return "node:" + parsed.name;
+  return parsed.kind;
+}
+
+/**
+ * Why a request cannot run on `target` here, or "" when it can. A named node must be this server or a current member of its
+ * cluster; otherwise nothing runs and the client chooses (never a silent run somewhere else).
+ */
+function supportReqTargetProblem(target) {
+  if (target === "unknown") return "Studio does not understand where support wants this request to run, so it did not run it.";
+  if (target.indexOf("node:") !== 0) return "";
+  var name = target.slice(5);
+  if (!supportReqNode || !supportReqPeers.loaded) return "Studio is still checking which node this is. Try again in a moment.";
+  if (name === supportReqNode || (supportReqPeers.ha && supportReqPeers.peers.indexOf(name) >= 0)) return "";
+  return "Support asked for the node " + name + ", which is not a member of this cluster" + (supportReqPeers.ha ? "" : " (this server is not in a cluster)") + ". Nothing was run: choose where to run it.";
 }
 
 /**
@@ -400,6 +425,7 @@ function supportRequestsHtml(entry) {
     html += '<span class="badge text-bg-' + status[0] + '">' + status[1] + "</span>";
     html += '<span class="badge text-bg-light border">' + (request.language === "opencypher" ? "OpenCypher" : "SQL") + "</span>";
     if (request.nodes === "all") html += '<span class="badge text-bg-info">Every node</span>';
+    else if (supportReqParseNodes(request.nodes).kind === "node") html += '<span class="badge text-bg-info">Node ' + supportEsc(supportReqParseNodes(request.nodes).name) + "</span>";
     html += "</div>";
     html += '<pre class="support-request-statement">' + supportEsc(request.statement) + "</pre>";
     if (request.status === "open") html += '<div class="support-request-body" id="spRq_' + supportEsc(request.id) + '">' + supportRequestBodyHtml(request) + "</div>";
@@ -412,12 +438,15 @@ function supportRequestBodyHtml(request) {
   var s = supportReqStateFor(request);
   var html = "";
   var wantedNodes = supportReqTarget(request, s);
-  if (wantedNodes !== "current" && supportReqPeers.loaded && !supportReqPeers.ha)
-    html += '<div class="support-hint mb-2">Support asked for ' + (wantedNodes === "all" ? "every node of the cluster" : "the node <b>" + supportEsc(wantedNodes) + "</b>") + ", but this server is not part of a cluster, so it runs on this server only" + (supportReqNode ? " (<b>" + supportEsc(supportReqNode) + "</b>)" : "") + ".</div>";
+  var problem = supportReqTargetProblem(wantedNodes);
+  if (problem && (supportReqPeers.loaded && supportReqNode || wantedNodes === "unknown"))
+    html += '<div class="alert alert-warning py-2" style="font-size: 0.84rem;">' + supportEsc(problem) + ' <button class="btn btn-sm btn-outline-secondary sp-rq-here" data-rq="' + supportEsc(request.id) + '">Run on this server instead</button></div>';
+  else if (wantedNodes === "all" && supportReqPeers.loaded && !supportReqPeers.ha)
+    html += '<div class="support-hint mb-2">Support asked for every node of the cluster, but this server is not part of a cluster, so it runs on this server only' + (supportReqNode ? " (<b>" + supportEsc(supportReqNode) + "</b>)" : "") + ".</div>";
   else if (wantedNodes === "all")
     html += '<div class="support-hint mb-2">Support asked for every node of the cluster: it runs on this server and is asked of the other nodes by this server, and the answers come back in one table.</div>';
-  else if (wantedNodes !== "current")
-    html += '<div class="support-hint mb-2">Support asked for the node <b>' + supportEsc(wantedNodes) + "</b>.</div>";
+  else if (wantedNodes.indexOf("node:") === 0)
+    html += '<div class="support-hint mb-2">Support asked for the node <b>' + supportEsc(wantedNodes.slice(5)) + "</b>.</div>";
   var check = supportReqValidate(request.language, request.statement);
   if (!check.ok) {
     html += '<div class="alert alert-warning py-2" style="font-size: 0.84rem;">Studio will not run this statement: ' + supportEsc(check.message) + ". Nothing was run.</div>";
@@ -456,10 +485,13 @@ html += '<button class="btn btn-sm btn-primary sp-rq-run" data-rq="' + supportEs
 function supportReqNodeSelectHtml(request, s) {
   if (!supportReqPeers.ha) return "";
   var chosen = supportReqTarget(request, s);
+  if (chosen === "node:" + supportReqNode) chosen = "current";
   var self = supportReqNode || "this server";
   var options = [["current", "This node (" + self + ")"], ["all", "All nodes"]];
-  supportReqPeers.peers.forEach(function (name) { options.push([name, name]); });
-  if (chosen !== "current" && chosen !== "all" && supportReqPeers.peers.indexOf(chosen) < 0 && chosen !== supportReqNode) options.push([chosen, chosen + " (not in this cluster)"]);
+  supportReqPeers.peers.forEach(function (name) { options.push(["node:" + name, name]); });
+  // Support's own choice is shown even when it is not a member: the card above says so, and Run refuses until it is changed.
+  if (chosen !== "current" && chosen !== "all" && !options.some(function (o) { return o[0] === chosen; }))
+    options.push([chosen, (chosen === "unknown" ? "(not understood)" : chosen.slice(5)) + " (not in this cluster)"]);
   var html = '<select class="form-select form-select-sm sp-rq-nodes" style="max-width: 16rem;" data-rq="' + supportEsc(request.id) + '" title="Where to run it">';
   options.forEach(function (o) {
     html += '<option value="' + supportEsc(o[0]) + '"' + (o[0] === chosen ? " selected" : "") + ">" + supportEsc(o[1]) + "</option>";
@@ -591,17 +623,25 @@ function supportReqRun(request, done) {
   supportReqRefresh(request);
   var began = Date.now();
   var target = supportReqTarget(request, s);
+  var targetProblem = supportReqTargetProblem(target);
+  if (targetProblem) {
+    s.status = "idle";
+    supportReqRefresh(request);
+    supportShowError({ status: 400, responseText: JSON.stringify({ error: "bad_request", message: targetProblem }) }, "#spRqAlert_" + request.id);
+    return done && done();
+  }
   var inCluster = supportReqPeers.ha;
   var self = supportReqNode || "this server";
+  var named = target.indexOf("node:") === 0 ? target.slice(5) : "";
   // This node runs it itself unless a named OTHER node was asked for; the other nodes are asked only inside a cluster.
-  var runLocal = target === "current" || target === "all" || target === supportReqNode || !inCluster;
-  var askPeers = inCluster && target !== "current" && (target === "all" || target !== supportReqNode);
+  var runLocal = target === "current" || target === "all" || named === supportReqNode || !inCluster;
+  var askPeers = inCluster && target !== "current" && (target === "all" || named !== supportReqNode);
   var parts = [];
   var pending = (runLocal ? 1 : 0) + (askPeers ? 1 : 0);
 
   function finish() {
     if (--pending > 0) return;
-    s.table = target === "current" ? parts[0].table : supportReqMergeTables(parts, SUPPORT_REQ_MAX_ROWS);
+    s.table = target === "current" || (named !== "" && named === supportReqNode) ? parts[0].table : supportReqMergeTables(parts, SUPPORT_REQ_MAX_ROWS);
     s.mask = supportReqInitialMask(s.table, supportReqRemembered());
     s.durationMs = Date.now() - began;
     s.status = "done";
@@ -632,13 +672,13 @@ function supportReqRun(request, done) {
       .fail(function (jqXHR) {
         var body = supportParse(jqXHR && jqXHR.responseText);
         var message = (body && (body.detail || body.error || body.message)) || "The query failed (HTTP " + (jqXHR ? jqXHR.status : "?") + ").";
-        if (target === "current") return failAll(message);
+        if (target === "current" || named === supportReqNode) return failAll(message);
         parts.unshift({ node: self, error: message });
         finish();
       });
 
   if (askPeers)
-    supportApi("POST", "/peer-query", { database: s.database, language: request.language, statement: check.statement, nodes: target === "all" ? "all" : target })
+    supportApi("POST", "/peer-query", { database: s.database, language: request.language, statement: check.statement, nodes: target === "all" ? "all" : named })
       .done(function (text) {
         var data = supportParse(text) || {};
         (Array.isArray(data.nodes) ? data.nodes : []).forEach(function (n) {
@@ -760,6 +800,13 @@ $(document).on("change", ".sp-rq-db", function () {
 $(document).on("change", ".sp-rq-nodes", function () {
   var request = supportReqOf(this);
   if (request) supportReqStateFor(request).nodes = String($(this).val() || "current");
+});
+
+$(document).on("click", ".sp-rq-here", function () {
+  var request = supportReqOf(this);
+  if (!request) return;
+  supportReqStateFor(request).nodes = "current";
+  supportReqRefresh(request);
 });
 
 $(document).on("click", ".sp-rq-run", function () {
