@@ -168,7 +168,7 @@ class RaftPropertiesBuilderTest {
   @Test
   void jvmPauseCloseThresholdIsOutOfReachByDefault() {
     final RaftProperties props = RaftPropertiesBuilder.build(new ContextConfiguration());
-    assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.DAYS)).isGreaterThanOrEqualTo(365L);
+    assertThat(RaftServerConfigKeys.closeThreshold(props)).isEqualTo(RaftPropertiesBuilder.JVM_PAUSE_CLOSE_DISABLED);
   }
 
   @Test
@@ -177,7 +177,7 @@ class RaftPropertiesBuilderTest {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.HA_JVM_PAUSE_CLOSE_THRESHOLD_MS, value);
       final RaftProperties props = RaftPropertiesBuilder.build(config);
-      assertThat(RaftServerConfigKeys.closeThreshold(props).toLong(TimeUnit.DAYS)).isGreaterThanOrEqualTo(365L);
+      assertThat(RaftServerConfigKeys.closeThreshold(props)).isEqualTo(RaftPropertiesBuilder.JVM_PAUSE_CLOSE_DISABLED);
     }
   }
 
