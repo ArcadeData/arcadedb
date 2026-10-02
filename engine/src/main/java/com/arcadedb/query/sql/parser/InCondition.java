@@ -209,7 +209,8 @@ public class InCondition extends BooleanExpression {
   /**
    * Whether the left side is a searched value: an expression that needs no record (literal, parameter, record-free
    * function call). Only then may the operand be converted to the item type of the right side ({@code ? IN typedList}).
-   * A record property is compared without converting the right-hand operands, like {@code =} and an index (#8913).
+   * A record property is compared without converting the right-hand operands, like {@code =} and an index. Anything derived from the
+   * record (nested property, method call or arithmetic on a property) counts as a record property.
    * <p>
    * The answer can depend on the execution context (script variables, bound parameters), and statements are cached and
    * reused, so it is memoized per execution in the context, never on the node.
@@ -249,19 +250,19 @@ public class InCondition extends BooleanExpression {
         || left instanceof EmbeddedDocument || item instanceof EmbeddedDocument);
   }
 
+  /** Converting variant, for callers whose left side is not a record property (e.g. the element of a list filter). */
+  protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight) {
+    return evaluateExpressionThreeValued(iLeft, iRight, true);
+  }
+
   /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
    * @return {@code Boolean.TRUE} on a definite match, {@code Boolean.FALSE} on a definite
    * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
+   * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
    */
-  // Defaults to converting: the callers without a record property on the left (e.g. RightBinaryCondition's list filter, whose
-  // element is not a record property) want the #8895 behavior
-  protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight) {
-    return evaluateExpressionThreeValued(iLeft, iRight, true);
-  }
-
   protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
     if (iLeft instanceof Result r && !r.isElement()) {
       final Set<String> names = r.getPropertyNames();
@@ -278,7 +279,6 @@ public class InCondition extends BooleanExpression {
         // taken as homogeneous (judged by its first item), so a big same-class set stays one hash probe
         if (convertOperand && iLeft != null && mayMatchByConversion(iLeft, firstItem(set)))
           for (final Object o : set)
-            // convertOperand is known true here (see the enclosing if)
             if (o != null && equalsEitherWay(iLeft, o, true))
               return Boolean.TRUE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.

@@ -160,7 +160,7 @@ public final class InListMembership {
     return evaluate(left, true);
   }
 
-  /** @param convertOperand false when {@code left} is a record property, which is never converted to the item type (#8913) */
+  /** @param convertOperand false when {@code left} is a record property, which is never converted to the item type */
   public Boolean evaluate(final Object left, final boolean convertOperand) {
     if (keys != null && left != null) {
       final int leftKind = kindOf(left);
