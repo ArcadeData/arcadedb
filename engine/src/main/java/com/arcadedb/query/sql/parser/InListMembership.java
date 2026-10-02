@@ -156,10 +156,6 @@ public final class InListMembership {
    * SQL three-valued membership test of {@code left} against this right-hand side, with the same contract as
    * {@link InCondition#evaluateExpressionThreeValued}.
    */
-  public Boolean evaluate(final Object left) {
-    return evaluate(left, true);
-  }
-
   /** @param convertOperand false when {@code left} is a record property, which is never converted to the item type */
   public Boolean evaluate(final Object left, final boolean convertOperand) {
     if (keys != null && left != null) {

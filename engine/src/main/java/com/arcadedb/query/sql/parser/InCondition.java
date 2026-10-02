@@ -209,11 +209,13 @@ public class InCondition extends BooleanExpression {
   /**
    * Whether the left side is a searched value: an expression that needs no record (literal, parameter, record-free
    * function call). Only then may the operand be converted to the item type of the right side ({@code ? IN typedList}).
-   * A record property is compared without converting the right-hand operands, like {@code =} and an index. Anything derived from the
-   * record (nested property, method call or arithmetic on a property) counts as a record property.
+   * A record property is compared without converting the right-hand operands, like {@code =} and an index. A nested property, a method call or
+   * arithmetic on a property is also record-derived. A context variable (e.g. {@code LET $x = ...}) is treated as a searched value
+   * whatever it was computed from, because the context does not track where it came from.
    * <p>
    * The answer can depend on the execution context (script variables, bound parameters), and statements are cached and
-   * reused, so it is memoized per execution in the context, never on the node.
+   * reused, so it is memoized per execution in the context, never on the node. It is decided on the first row and kept for the
+   * rest of the execution.
    */
   private boolean operandIsSearched(final CommandContext context) {
     String key = searchedKey;
