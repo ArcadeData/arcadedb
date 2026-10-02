@@ -452,6 +452,11 @@ public class ComparisonExpression implements BooleanExpression {
     };
   }
 
+  /**
+   * Whether the pair must be compared as decimals because double precision cannot tell its members apart. The answer is
+   * deliberately not transitive across types, as in SQL: a Double is read through its shortest decimal form, so
+   * {@code 2^53 + 1} (long) differs from {@code 2^53.0} (double) while {@code 0.1d} equals the decimal {@code 0.1}.
+   */
   private static boolean needsExactComparison(final Number left, final Number right) {
     if (!isFinite(left) || !isFinite(right))
       return false;

@@ -19,12 +19,14 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -199,6 +201,29 @@ class Issue8889CountDistinctTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT list(DISTINCT b) AS l FROM P")) {
       assertThat(rs.next().<List<Object>>getProperty("l")).hasSize(3);
     }
+  }
+
+  @Test
+  void collectionsAreOneValueWhateverTheirNumbersAreTypedAs() {
+    database.command("sql", "CREATE DOCUMENT TYPE C");
+    database.transaction(() -> {
+      database.newDocument("C").set("v", new ArrayList<>(List.of(1, 2))).save();
+      database.newDocument("C").set("v", new ArrayList<>(List.of(1.0, 2L))).save();
+      database.newDocument("C").set("v", new ArrayList<>(List.of(2, 1))).save();
+    });
+    try (final ResultSet rs = database.query("sql", "SELECT count(DISTINCT v) AS n FROM C")) {
+      assertThat(rs.next().<Long>getProperty("n")).isEqualTo(2L);
+    }
+  }
+
+  @Test
+  void distinctAndPlainCallsDoNotCollide() {
+    load();
+    final var statement = ((DatabaseInternal) database).getStatementCache().get("SELECT count(DISTINCT b) AS n, count(b) AS m FROM P");
+    assertThat(statement.toString()).contains("count(DISTINCT b)").contains("count(b)");
+    assertThat(statement.copy().toString()).isEqualTo(statement.toString());
+    assertThat(((DatabaseInternal) database).getStatementCache().get("SELECT count(DISTINCT b) FROM P"))
+        .isNotEqualTo(((DatabaseInternal) database).getStatementCache().get("SELECT count(b) FROM P"));
   }
 
   @Test

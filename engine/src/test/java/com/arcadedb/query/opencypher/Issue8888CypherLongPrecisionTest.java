@@ -99,6 +99,17 @@ class Issue8888CypherLongPrecisionTest extends TestHelper {
   }
 
   @Test
+  void nonFiniteNumbersNeverEqualALongPastTwoPow53() {
+    final Map<String, Object> params = Map.of("l", TWO_POW_53 + 1, "nan", Double.NaN, "inf", Double.POSITIVE_INFINITY, "f", 1.5f);
+    final var row = database.query("opencypher",
+        "RETURN $l = $nan AS a, $l < $inf AS b, $l > $f AS c, $l = $f AS d", params).next();
+    assertThat(row.<Boolean>getProperty("a")).isFalse();
+    assertThat(row.<Boolean>getProperty("b")).isTrue();
+    assertThat(row.<Boolean>getProperty("c")).isTrue();
+    assertThat(row.<Boolean>getProperty("d")).isFalse();
+  }
+
+  @Test
   void smallNumbersKeepTheirOrdinaryComparison() {
     load();
     assertThat(cypher("j", 7.0)).isEqualTo(1);
