@@ -2292,7 +2292,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           final LifeCycle.State afterClose = oldServer.getLifeCycleState();
           if (afterClose != LifeCycle.State.CLOSED)
             LogManager.instance().log(this, Level.WARNING,
-                "Old Ratis server is %s after close(); the leader may keep appending to it instead of the restarted one",
+                "Old Ratis server is %s after close(); restart proceeds anyway",
                 afterClose);
         }
       } catch (final Throwable t) {
