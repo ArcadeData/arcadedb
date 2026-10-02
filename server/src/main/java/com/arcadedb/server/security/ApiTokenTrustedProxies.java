@@ -119,9 +119,11 @@ public final class ApiTokenTrustedProxies {
   static String protosOfForwarded(final Iterable<String> lines) {
     final StringBuilder protos = new StringBuilder(16);
     final StringBuilder token = new StringBuilder(32);
-    boolean first = true;
+    // A flag rather than protos.length() > 0: an empty first entry (a hop that reported nothing) leaves protos empty
+    // yet still needs the separator before the next entry.
+    boolean noEntryYet = true;
     for (final String line : lines)
-      first = parseForwardedLine(line == null ? "" : line, protos, token, first);
+      noEntryYet = parseForwardedLine(line == null ? "" : line, protos, token, noEntryYet);
     return protos.toString();
   }
 
@@ -131,9 +133,9 @@ public final class ApiTokenTrustedProxies {
    * @return whether {@code protos} is still empty of entries, i.e. the next entry needs no leading comma
    */
   private static boolean parseForwardedLine(final String line, final StringBuilder protos, final StringBuilder token,
-      final boolean firstEntry) {
+      final boolean noEntryBefore) {
     token.setLength(0);
-    boolean first = firstEntry;
+    boolean noEntryYet = noEntryBefore;
     String name = null;
     String proto = null;
     boolean malformed = false;
@@ -159,7 +161,7 @@ public final class ApiTokenTrustedProxies {
       switch (c) {
       case '"' -> {
         // A quoted string is only legal as a whole value: not as a name, not after a token or another quoted string.
-        if (name == null || quoted || !token.toString().isBlank())
+        if (name == null || quoted || !isBlank(token))
           malformed = true;
         else {
           token.setLength(0);
@@ -184,7 +186,7 @@ public final class ApiTokenTrustedProxies {
 
         if (name == null) {
           // A bare token is not a pair; an empty pair (a stray ';') carries nothing either way.
-          if (!token.toString().isBlank())
+          if (!isBlank(token))
             malformed = true;
         } else if (name.isEmpty())
           malformed = true;
@@ -199,9 +201,9 @@ public final class ApiTokenTrustedProxies {
         token.setLength(0);
 
         if (c == ',') {
-          if (!first)
+          if (!noEntryYet)
             protos.append(',');
-          first = false;
+          noEntryYet = false;
           if (!malformed && proto != null && isUriScheme(proto))
             protos.append(proto);
           proto = null;
@@ -216,7 +218,7 @@ public final class ApiTokenTrustedProxies {
       }
       }
     }
-    return first;
+    return noEntryYet;
   }
 
   /**
@@ -232,6 +234,17 @@ public final class ApiTokenTrustedProxies {
       if (i == 0 ? !alpha : !(alpha || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'))
         return false;
     }
+    return true;
+  }
+
+  /**
+   * {@link String#isBlank()} without materializing the builder: the parse runs on every cleartext gRPC call from a
+   * listed proxy that carries a {@code forwarded} key, not only on mints.
+   */
+  private static boolean isBlank(final CharSequence value) {
+    for (int i = 0; i < value.length(); i++)
+      if (!Character.isWhitespace(value.charAt(i)))
+        return false;
     return true;
   }
 

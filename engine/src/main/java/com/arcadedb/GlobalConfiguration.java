@@ -1955,6 +1955,9 @@ public enum GlobalConfiguration {
       and by listing the proxy they state where their trust boundary is. A peer that is not on the list can send the \
       same headers and gain nothing: they are otherwise ignored, because the caller asking for a token is exactly \
       the caller who would forge it. \
+      That rule fails closed: a Forwarded header carrying an element without proto= refuses the mint even when \
+      X-Forwarded-Proto reports https, so a proxy that appends Forwarded must include proto=, and one that does not \
+      use Forwarded should strip any it receives. \
       Entries must be literal addresses - a hostname is rejected rather than resolved, since a DNS answer is not a \
       trust decision. An unparseable list is treated as empty, so a typo denies rather than opening the gate \
       (issues #7804, #7821, #7822)""",
