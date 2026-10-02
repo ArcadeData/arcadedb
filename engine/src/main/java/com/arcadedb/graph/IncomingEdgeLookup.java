@@ -333,8 +333,9 @@ public final class IncomingEdgeLookup {
    * through Gremlin alike: a SQL {@code MATCH} or a Cypher pattern asks which edges end in a vertex, a function call
    * asks what the vertex holds. Only the hops of a {@code MATCH} are pattern walks: an {@code in()} written inside a
    * {@code where:} or {@code while:} condition is an expression, and answers as the function does anywhere else. A
-   * {@code GraphTraversalProvider} (an analytical view) answers the incoming side in both cases, its reverse index being
-   * built from the outgoing lists.
+   * {@code GraphTraversalProvider} (an analytical view) only accelerates them: its reverse index holds the incoming
+   * side, so a function called on its own does not use it for that side and answers the same rows with and without a
+   * view (issue #8939), while a pattern walk answers the incoming side either way.
    */
   public static <T> T walkingPattern(final Supplier<T> walk) {
     final int[] depth = PATTERN_WALKS.get();

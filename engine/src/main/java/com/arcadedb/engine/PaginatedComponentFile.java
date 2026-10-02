@@ -87,6 +87,9 @@ public class PaginatedComponentFile extends ComponentFile {
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "totalPages");
 
   /** Nothing happened to the file since its last successful fsync: forcing it would persist nothing (issue #8626). */
+  /** Reopen-and-retry rounds of a read whose channel was closed under it (an interrupt landing again during the retry). */
+  private static final int READ_REOPEN_ATTEMPTS = 5;
+
   static final int SYNC_CLEAN    = 0;
   /** A page was written since the last successful fsync: the data has to be forced, the metadata does not. */
   static final int SYNC_DATA     = 1;
@@ -512,12 +515,31 @@ public class PaginatedComponentFile extends ComponentFile {
           pos += r;
         }
       } catch (final ClosedChannelException e) {
+        readAfterReopen(page, pageNumber);
+      }
+    } finally {
+      channelLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Re-reads a page after its channel was found closed. Another thread's interrupt closes the channel for every reader
+   * (ClosedByInterruptException), and this thread's OWN interrupt (a cancelled parallel scan) can land during the retry
+   * itself, closing the freshly reopened channel again. So the retry repeats, a bounded number of times, instead of
+   * trying once and surfacing a closed channel that the caller would take for a failing disk (#8944).
+   * Must be called with the channel read lock held.
+   */
+  private void readAfterReopen(final CachedPage page, final int pageNumber) throws IOException {
+    // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+    // is not immediately closed again, then restore it so callers are notified.
+    boolean wasInterrupted = false;
+    try {
+      for (int attempt = 1; ; attempt++) {
         logReopen("read");
-        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
-        // is not immediately closed again, then restore it so callers are notified.
-        final boolean wasInterrupted = Thread.interrupted();
+        wasInterrupted |= Thread.interrupted();
         try {
           reopenChannelUnderWriteLock();
+          final ByteBuffer buffer = page.getByteBuffer();
           buffer.clear();
           long pos = page.getPhysicalSize() * (long) pageNumber;
           while (buffer.hasRemaining()) {
@@ -526,13 +548,15 @@ public class PaginatedComponentFile extends ComponentFile {
               throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
             pos += r;
           }
-        } finally {
-          if (wasInterrupted)
-            Thread.currentThread().interrupt();
+          return;
+        } catch (final ClosedChannelException e) {
+          if (attempt >= READ_REOPEN_ATTEMPTS)
+            throw e;
         }
       }
     } finally {
-      channelLock.readLock().unlock();
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
     }
   }
 

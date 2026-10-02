@@ -6770,6 +6770,20 @@ public class CypherExecutionPlan {
     return false;
   }
 
+  /** Whether two positions of the path bind the same node variable, i.e. the path closes on a vertex it already visited. */
+  private static boolean repeatsNodeVariable(final PathPattern pathPattern) {
+    final int nodeCount = pathPattern.getRelationshipCount() + 1;
+    for (int i = 0; i < nodeCount; i++) {
+      final String variable = pathPattern.getNode(i).getVariable();
+      if (variable == null || variable.isEmpty())
+        continue;
+      for (int j = i + 1; j < nodeCount; j++)
+        if (variable.equals(pathPattern.getNode(j).getVariable()))
+          return true;
+    }
+    return false;
+  }
+
   private CountOp tryDetectChainCountStar(final Database db, final SeedCorrelation correlation) {
     // Exactly one MATCH clause
     if (statement.getMatchClauses() == null || statement.getMatchClauses().size() != 1)
@@ -6834,6 +6848,11 @@ public class CypherExecutionPlan {
       else
         directions[i] = Vertex.DIRECTION.BOTH;
     }
+
+    // A node variable named twice is one vertex, a constraint the operator cannot express: it counts the chain as if
+    // every position were free, so (x)-[:K]->(x) would count every K edge instead of the self-loops (issue #8941)
+    if (repeatsNodeVariable(pathPattern))
+      return null;
 
     // Resolve inequality variable positions in the chain
     int inequalityIdxA = -1;
@@ -7119,6 +7138,12 @@ public class CypherExecutionPlan {
 
         if (centralNodeIdx < 0)
           return null;
+
+        // The arm walks from ONE position of the central node, so the same variable at a second position of the
+        // arm (a path closing on the central vertex) is a constraint the degree product drops (issue #8941)
+        for (int i = centralNodeIdx + 1; i <= pathPattern.getRelationshipCount(); i++)
+          if (centralVar.equals(pathPattern.getNode(i).getVariable()))
+            return null;
 
         final int totalHops = pathPattern.getRelationshipCount();
 

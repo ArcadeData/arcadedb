@@ -71,7 +71,13 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       final Document rec = (Document) iRecord.getRecord();
       if (rec instanceof Vertex vertex) {
         final Database database = vertex.getDatabase();
-        final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, iLabels);
+        // A VIEW ONLY ACCELERATES: ITS REVERSE INDEX HOLDS THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE, WHICH A FUNCTION
+        // CALLED ON ITS OWN MUST NOT ANSWER, OR in()/both() WOULD RETURN DIFFERENT ROWS WITH AND WITHOUT A VIEW AND
+        // DISAGREE WITH inE() AND THE VERTEX API (ISSUE #8939). A PATTERN WALK ANSWERS IT, VIEW OR NOT (ISSUE #8625)
+        final boolean storedSideOnly = iDirection != Vertex.DIRECTION.OUT && !IncomingEdgeLookup.isWalkingPattern()
+            && IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), iLabels != null ? iLabels : new String[0]);
+        final GraphTraversalProvider provider =
+            storedSideOnly ? null : GraphTraversalProviderRegistry.findProvider(database, iLabels);
         if (provider != null) {
           final int nodeId = provider.getNodeId(vertex.getIdentity());
           if (nodeId >= 0) {
