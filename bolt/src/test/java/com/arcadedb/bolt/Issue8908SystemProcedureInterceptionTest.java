@@ -230,4 +230,12 @@ class Issue8908SystemProcedureInterceptionTest {
     assertThat(BoltSystemProcedures.isSchemaProcedureQuery(BoltSystemProcedures.normalize(
         "CALL db.labels() YIELD label RETURN label"))).isTrue();
   }
+
+  @Test
+  void aLineCommentWithAnApostropheCannotHideAClause() {
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL db.ping() // it's\nCREATE (:X {a:'b'})"), "db.ping")).isFalse();
+    assertThat(BoltSystemProcedures.isSystemCall(BoltSystemProcedures.normalize(
+        "CALL dbms.listDatabases() YIELD name WHERE name = 'a//b'"), "dbms.listdatabases")).isTrue();
+  }
 }

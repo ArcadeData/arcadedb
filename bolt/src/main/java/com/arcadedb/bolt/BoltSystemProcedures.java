@@ -207,7 +207,9 @@ final class BoltSystemProcedures {
     // those here would drop them silently, whereas the engine refuses them loudly.
     // Quoted literals and block comments are blanked first: a keyword inside either is not a clause
     final String tail = QUOTED_OR_COMMENT.matcher(normalized.substring(end)).replaceAll(" ");
-    return !FOREIGN_CLAUSE.matcher(tail).find();
+    // A line comment survives the blanking (normalize has already folded its newline away, so what it hides cannot be
+    // told apart from the statement): such a tail is the engine's to refuse.
+    return !tail.contains("//") && !FOREIGN_CLAUSE.matcher(tail).find();
   }
 
   /**
