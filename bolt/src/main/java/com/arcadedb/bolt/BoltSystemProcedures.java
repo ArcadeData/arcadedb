@@ -137,9 +137,18 @@ final class BoltSystemProcedures {
    * @return true if the statement is just {@code CALL <procedureName>} with an optional plain YIELD/RETURN
    */
   static boolean isStandaloneCall(final String normalized, final String procedureName) {
-    final int end = CALL_PREFIX.length() + procedureName.length();
-    return normalized.startsWith(CALL_PREFIX) && normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0,
-        procedureName.length()) && CALL_TAIL.matcher(normalized).region(end, normalized.length()).matches();
+    final int end = endOfCallName(normalized, procedureName);
+    return end >= 0 && CALL_TAIL.matcher(normalized).region(end, normalized.length()).matches();
+  }
+
+  /**
+   * @return the offset just past {@code CALL <procedureName>} when the statement opens with it, else -1
+   */
+  private static int endOfCallName(final String normalized, final String procedureName) {
+    if (!normalized.startsWith(CALL_PREFIX)
+        || !normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0, procedureName.length()))
+      return -1;
+    return CALL_PREFIX.length() + procedureName.length();
   }
 
   /**
@@ -150,9 +159,8 @@ final class BoltSystemProcedures {
    * required, which is what keeps a mere mention of the name elsewhere in a larger statement out (issue #8908).
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
-    final int end = CALL_PREFIX.length() + procedureName.length();
-    if (!normalized.startsWith(CALL_PREFIX) || !normalized.regionMatches(CALL_PREFIX.length(), procedureName, 0,
-        procedureName.length()))
+    final int end = endOfCallName(normalized, procedureName);
+    if (end < 0)
       return false;
     return end == normalized.length() || normalized.charAt(end) == '(' || normalized.charAt(end) == ' '
         || normalized.charAt(end) == ';';

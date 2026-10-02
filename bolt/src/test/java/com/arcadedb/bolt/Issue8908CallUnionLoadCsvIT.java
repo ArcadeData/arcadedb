@@ -100,4 +100,17 @@ public class Issue8908CallUnionLoadCsvIT extends BaseBoltServerTest {
       assertThat(session.run("// probe\nCALL db.ping()").list()).hasSize(1);
     }
   }
+
+  @Test
+  void aMentionOfAShowCommandInALargerStatementReachesTheEngine() {
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder().withoutEncryption().build()); final Session session = driver.session()) {
+      final List<Record> rows = session.run("RETURN 'show current user dbms.components db.ping' AS s").list();
+      assertThat(rows).hasSize(1);
+      assertThat(rows.getFirst().get("s").asString()).isEqualTo("show current user dbms.components db.ping");
+
+      // Shapes the engine now answers for the schema procedures
+      assertThat(session.run("CALL db.labels() YIELD label RETURN label ORDER BY label").list()).isNotNull();
+    }
+  }
 }
