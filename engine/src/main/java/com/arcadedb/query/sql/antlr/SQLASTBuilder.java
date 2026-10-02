@@ -315,9 +315,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private static final String NO_TARGET_ALIAS = "";
   /** significant digits a double can carry: a literal with no more than this stays a double (issue #8872) */
   private static final int MAX_DOUBLE_DIGITS          = 17;
-  /** bounds on the digits (precision) and the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
-  private static final int MAX_EXACT_DECIMAL_PRECISION = 1_000;
-  private static final int MAX_EXACT_DECIMAL_SCALE     = 400;
+  /** bound on the decimal places or exponent (scale) of a literal kept as an exact BigDecimal rather than a double (issue #8872) */
+  private static final int MAX_EXACT_DECIMAL_SCALE = 400;
 
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
@@ -3414,9 +3413,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * is kept as an exact {@link BigDecimal} so a DECIMAL target or comparison sees what the user typed. Accepted
    * limitation: a 16 or 17 digit literal on a DECIMAL property still goes through the double.
    * <p>
-   * Hex floats, values outside the double range, and a scale beyond {@link #MAX_EXACT_DECIMAL_SCALE} or a precision
-   * beyond {@link #MAX_EXACT_DECIMAL_PRECISION} stay doubles, so a hostile exponent cannot become a BigDecimal whose
-   * arithmetic expands about a billion digits. Text of 15 characters or fewer is always a double (cheap pre-filter).
+   * Hex floats, values outside the double range and a scale beyond {@link #MAX_EXACT_DECIMAL_SCALE} stay doubles, so a
+   * hostile exponent cannot become a BigDecimal whose arithmetic expands about a billion digits (a finite double bounds
+   * the precision too). Text of 15 characters or fewer is always a double (cheap pre-filter).
    */
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
@@ -3426,7 +3425,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final int precision = exact.precision();
         // up to 17 significant digits is what a double carries (the `printf("%.17g")` round-trip form): such a literal IS
         // the double, and turning it into a BigDecimal would stop it matching the stored double in an unindexed scan
-        if (precision > MAX_DOUBLE_DIGITS && precision <= MAX_EXACT_DECIMAL_PRECISION && Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE
+        if (precision > MAX_DOUBLE_DIGITS && Math.abs(exact.scale()) <= MAX_EXACT_DECIMAL_SCALE
             && exact.compareTo(new BigDecimal(Double.toString(d))) != 0)
           return exact;
       } catch (final NumberFormatException ignore) {

@@ -121,10 +121,23 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
   }
 
   @Test
-  void oversizedPrecisionStaysDouble() {
-    final String digits = "1".repeat(1_050) + ".5";
-    try (final ResultSet rs = database.query("sql", "SELECT " + digits + " AS a")) {
+  void oversizedScaleStaysDouble() {
+    final String literal = "0." + "0".repeat(449) + "1234567890123456789";
+    try (final ResultSet rs = database.query("sql", "SELECT " + literal + " AS a")) {
       assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
+  void commonFunctionsAcceptLongLiterals() {
+    try (final ResultSet rs = database.query("sql",
+        "SELECT pow(2.12345678901234567890, 2) AS r, abs(-1.2345678901234567890) AS a, sqrt(2.2345678901234567890) AS s,"
+            + " geo.point(12.12345678901234567890, 41.1234567890123456789) AS p")) {
+      final Result r = rs.next();
+      assertThat(r.<Object>getProperty("r")).isNotNull();
+      assertThat(r.<Object>getProperty("a")).isNotNull();
+      assertThat(r.<Object>getProperty("s")).isNotNull();
+      assertThat(r.<Object>getProperty("p")).isNotNull();
     }
   }
 
