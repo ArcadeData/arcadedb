@@ -173,8 +173,9 @@ public class HashIndex implements IndexInternal {
     final Object[] convertedKeys;
     try {
       convertedKeys = convertKeys(keys);
-    } catch (final NumberFormatException e) {
-      // a lookup key the declared numeric type cannot read equals no indexed key: no row, as without the index (issue #8888)
+    } catch (final IllegalArgumentException e) {
+      // a lookup key the declared type cannot read equals no indexed key: no row, as without the index (issue #8888)
+      LogManager.instance().log(this, Level.FINE, "Lookup key cannot be read as the key types of index '%s': no row", e, getName());
       return EMPTY_CURSOR;
     }
 
