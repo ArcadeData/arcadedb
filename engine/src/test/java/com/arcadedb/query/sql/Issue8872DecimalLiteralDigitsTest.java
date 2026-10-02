@@ -121,6 +121,14 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
   }
 
   @Test
+  void oversizedPrecisionStaysDouble() {
+    final String digits = "1".repeat(10_050) + ".5";
+    try (final ResultSet rs = database.query("sql", "SELECT " + digits + " AS a")) {
+      assertThat(rs.next().<Object>getProperty("a")).isInstanceOf(Double.class);
+    }
+  }
+
+  @Test
   void hexAndExtremeExponentsStayDoubles() {
     try (final ResultSet rs = database.query("sql", "SELECT 0x1.0000000000000p0 AS a, 1e999999999 AS b, 1e-999999999 AS c")) {
       final Result r = rs.next();
@@ -211,6 +219,8 @@ class Issue8872DecimalLiteralDigitsTest extends TestHelper {
       assertThat(keys("SELECT k FROM X WHERE idx " + op + " " + literal)).as("idx " + op)
           .isEqualTo(keys("SELECT k FROM X WHERE plain " + op + " " + literal));
     }
+    assertThat(keys("SELECT k FROM X WHERE idx IN [1.5000000000000000000001]")).isEqualTo(keys("SELECT k FROM X WHERE plain IN [1.5000000000000000000001]"));
+    assertThat(keys("SELECT k FROM X WHERE idx IN [1.5000000000000000000001]")).isEmpty();
     assertThat(keys("SELECT k FROM X WHERE idx >= 1.5000000000000000000001")).isEmpty();
     assertThat(keys("SELECT k FROM X WHERE idx <= 1.5000000000000000000001")).containsExactly("row");
     assertThat(keys("SELECT k FROM X WHERE idx BETWEEN 1.4000000000000000000001 AND 1.5000000000000000000001")).containsExactly("row");

@@ -3408,11 +3408,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * A literal a double represents exactly, or with at most 17 significant digits, stays a {@link Double}. A decimal one
-   * longer than 15 characters (a cheap pre-filter) with more digits than that is kept as a {@link BigDecimal} when the
-   * double would not print back as the same number, so a DECIMAL target or comparison sees what the user typed (issue #8872). Hex
-   * floats, values outside the double range and scales beyond {@link #MAX_EXACT_DECIMAL_SCALE} or precisions beyond {@link #MAX_EXACT_DECIMAL_PRECISION} stay doubles, so
-   * a huge exponent cannot be turned into a BigDecimal whose arithmetic expands about a billion digits.
+   * Parses a suffix-less decimal literal (issue #8872). It stays a {@link Double} when a double holds it: at most 17
+   * significant digits (the {@code printf("%.17g"} round-trip form, which must keep matching the stored double), or a
+   * value the double prints back as the same number. A literal with more digits than that, which a double would truncate,
+   * is kept as an exact {@link BigDecimal} so a DECIMAL target or comparison sees what the user typed. Accepted
+   * limitation: a 16 or 17 digit literal on a DECIMAL property still goes through the double.
+   * <p>
+   * Hex floats, values outside the double range, and a scale beyond {@link #MAX_EXACT_DECIMAL_SCALE} or a precision
+   * beyond {@link #MAX_EXACT_DECIMAL_PRECISION} stay doubles, so a hostile exponent cannot become a BigDecimal whose
+   * arithmetic expands about a billion digits. Text of 15 characters or fewer is always a double (cheap pre-filter).
    */
   private static Number parseSuffixlessDecimal(final String text) {
     final double d = Double.parseDouble(text);
