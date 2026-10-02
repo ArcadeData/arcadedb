@@ -1670,13 +1670,10 @@ public class TransactionManager {
         } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
         }
+        // Out of the pool as soon as it is handled, so an unchecked exception from a later file cannot leave an
+        // already-dropped file behind for the next pass to drop again.
+        inactiveWALFilePool.remove(file);
       }
-
-      // Nobody can add to the pool while this monitor is held, so the files selected above are still all in it.
-      if (removable.size() == inactiveWALFilePool.size())
-        inactiveWALFilePool.clear();
-      else
-        inactiveWALFilePool.removeAll(removable);
     }
 
     // Runtime WAL rotation (uniquely identified by syncDataOnDrop; the clean-close path persists the

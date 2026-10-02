@@ -25,9 +25,16 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.util.Timer;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mockingDetails;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * Regression test for issue #8923: the runtime WAL rotation pass ({@code cleanWALFiles(true, false, true)}, the call
@@ -76,6 +83,21 @@ class Issue8923WALDropAfterSingleFsyncTest extends TestHelper {
     public synchronized void drop() throws IOException {
       onDrop.run();
       super.drop();
+    }
+  }
+
+  @Override
+  protected void beginTest() {
+    // The once-a-second housekeeping timer runs the same pass on the same pool: stop it so it cannot drop the files
+    // seeded below between the test's own passes.
+    try {
+      final Field taskField = TransactionManager.class.getDeclaredField("task");
+      taskField.setAccessible(true);
+      final Timer task = (Timer) taskField.get(((DatabaseInternal) database).getTransactionManager());
+      if (task != null)
+        task.cancel();
+    } catch (final ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
     }
   }
 
@@ -148,5 +170,73 @@ class Issue8923WALDropAfterSingleFsyncTest extends TestHelper {
     assertThat(tm.cleanWALFilesForTesting(true, true, true)).isTrue();
     assertThat(fileA.exists()).isFalse();
     assertThat(fileB.exists()).isFalse();
+  }
+
+  @Test
+  void onePassFsyncsOnceAndBeforeTheFirstDrop() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final TransactionManager tm = db.getTransactionManager();
+    final File dir = new File(database.getDatabasePath());
+
+    final FileManager original = db.getFileManager();
+    final FileManager spyFileManager = spy(original);
+    swapFileManager(db, spyFileManager);
+    try {
+      final AtomicInteger syncsSeenAtFirstDrop = new AtomicInteger(-1);
+      final Runnable recordSyncs = () -> syncsSeenAtFirstDrop.compareAndSet(-1, syncCalls(spyFileManager));
+
+      final File[] files = new File[3];
+      for (int i = 0; i < files.length; i++) {
+        files[i] = new File(dir, "issue8923-" + i + ".wal");
+        tm.addInactiveWALFileForTesting(new DropHookWALFile(files[i].getAbsolutePath(), recordSyncs));
+      }
+
+      assertThat(tm.cleanWALFilesForTesting(true, false, true)).isTrue();
+
+      assertThat(syncsSeenAtFirstDrop.get()).as("the data files are fsync'd before the first WAL is dropped").isEqualTo(1);
+      verify(spyFileManager, times(1)).syncFiles();
+      for (final File f : files)
+        assertThat(f.exists()).isFalse();
+    } finally {
+      swapFileManager(db, original);
+    }
+  }
+
+  @Test
+  void aFailedFsyncDropsNothing() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final TransactionManager tm = db.getTransactionManager();
+    final File dir = new File(database.getDatabasePath());
+
+    final FileManager original = db.getFileManager();
+    final FileManager spyFileManager = spy(original);
+    doReturn(false).when(spyFileManager).syncFiles();
+    swapFileManager(db, spyFileManager);
+    try {
+      final File fileA = new File(dir, "issue8923-a.wal");
+      final File fileB = new File(dir, "issue8923-b.wal");
+      tm.addInactiveWALFileForTesting(new PendingWALFile(fileA.getAbsolutePath(), 0));
+      tm.addInactiveWALFileForTesting(new PendingWALFile(fileB.getAbsolutePath(), 0));
+
+      assertThat(tm.cleanWALFilesForTesting(true, false, true)).as("a failed fsync aborts the pass (#4934)").isFalse();
+      assertThat(fileA.exists()).isTrue();
+      assertThat(fileB.exists()).isTrue();
+    } finally {
+      swapFileManager(db, original);
+    }
+
+    // With a working fsync the retained files go on the next pass.
+    assertThat(tm.cleanWALFilesForTesting(true, false, true)).isTrue();
+  }
+
+  private static int syncCalls(final FileManager spyFileManager) {
+    return (int) mockingDetails(spyFileManager).getInvocations().stream()
+        .filter(i -> i.getMethod().getName().equals("syncFiles")).count();
+  }
+
+  private static void swapFileManager(final DatabaseInternal db, final FileManager fileManager) throws Exception {
+    final Field f = db.getClass().getDeclaredField("fileManager");
+    f.setAccessible(true);
+    f.set(db, fileManager);
   }
 }
