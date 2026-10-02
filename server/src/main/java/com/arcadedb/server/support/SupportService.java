@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.support;
 
+import java.net.http.HttpClient;
+import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
@@ -84,6 +86,8 @@ public class SupportService implements AutoCloseable {
   private volatile CachedWhoami  whoami;
   private volatile CachedFailure failure;
   private final     Semaphore   previewSlot = new Semaphore(1);
+  private           SupportPeerQuery peerQuery;
+  private           HttpClient       peerClient;
 
   public SupportService(final ArcadeDBServer server, final Path configDirectory) {
     this(server, new SupportConfiguration(configDirectory, server.getConfiguration()), new SupportBundleManager(),
@@ -127,6 +131,20 @@ public class SupportService implements AutoCloseable {
     return connector;
   }
 
+  /** The fan-out of a support request over the other nodes of the cluster (see {@link SupportPeerQuery}). */
+  public synchronized SupportPeerQuery getPeerQuery() {
+    if (peerQuery == null) {
+      peerClient = LeaderDial.newConnectTimeoutBoundedClient(server.getConfiguration());
+      peerQuery = new SupportPeerQuery(SupportPeerQuery.clusterOf(server, () -> peerClient));
+    }
+    return peerQuery;
+  }
+
+  /** For tests: stands the cluster in with something else. */
+  synchronized void setPeerQuery(final SupportPeerQuery peerQuery) {
+    this.peerQuery = peerQuery;
+  }
+
   /**
    * Starts the daemon that registers this server as an installation without Studio (see {@link SupportAutoRegistration}), if it
    * is registered with a key and {@code arcadedb.support.autoRegister} is not turned off. Never throws: a server must start
@@ -164,6 +182,13 @@ public class SupportService implements AutoCloseable {
       auto.close();
     connector.close();
     bundles.close();
+    final HttpClient client;
+    synchronized (this) {
+      client = peerClient;
+      peerClient = null;
+      peerQuery = null;
+    }
+    LeaderDial.releaseBounded(client);
   }
 
   // ---------------------------------------------------------------------------------------------- registration

@@ -326,6 +326,8 @@ public class HttpServer implements ServerPlugin {
         .post("/server/support/connect", new SupportHandler(this, SupportHandler.Action.CONNECT_START))
         .get("/server/support/connect", new SupportHandler(this, SupportHandler.Action.CONNECT_STATUS))
         .delete("/server/support/connect", new SupportHandler(this, SupportHandler.Action.CONNECT_CANCEL))
+        .get("/server/support/peers", new SupportHandler(this, SupportHandler.Action.PEERS))
+        .post("/server/support/peer-query", new SupportHandler(this, SupportHandler.Action.PEER_QUERY))
         .post("/server/support/preview", new SupportHandler(this, SupportHandler.Action.PREVIEW))
         .post("/server/support/bundle", new SupportHandler(this, SupportHandler.Action.BUNDLE))
         .get("/server/support/issues", new SupportHandler(this, SupportHandler.Action.LIST_ISSUES))

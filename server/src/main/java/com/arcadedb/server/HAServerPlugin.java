@@ -483,6 +483,24 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Another member of the cluster, as a caller that must reach it over HTTP may dial it. {@code httpAddress} is the GUARDED
+   * address (one that identifies this peer on its own and is not this node's own); when there is none, it is {@code null} and
+   * {@code refusal} says why, so the peer is reported as unreachable rather than dialled at a guess. {@code httpsAddress} is
+   * the encrypted endpoint to prefer when SSL is on, or {@code null}. {@code name} is the server name the peer calls itself.
+   */
+  record ClusterPeer(String id, String name, String httpAddress, String httpsAddress, String refusal) {
+  }
+
+  /**
+   * The other members of the cluster (never this node), each with the address it may be dialled on. Empty when this server is
+   * not part of a cluster, or when the implementation cannot say. Peer addresses come ONLY from the HA configuration, never
+   * from a request: a caller that fans out over them can reach cluster members and nothing else.
+   */
+  default List<ClusterPeer> getClusterPeers() {
+    return List.of();
+  }
+
+  /**
    * A client-facing wire protocol a routing view can be built for. Each names a per-peer endpoint a client
    * dials directly, which is never the Raft address the cluster uses to talk to itself, nor - for anything
    * but a homogeneous deployment - derivable from it. The name of a constant, lowercased, is also the field
