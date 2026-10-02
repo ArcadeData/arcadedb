@@ -225,7 +225,8 @@ public class SelectIterator<T extends Document> implements Iterator<T>, AutoClos
       final Pair<String, Boolean> orderBy = executor.select.orderBy.get(0);
       final SelectExecutor.IndexInfo usedIndex = executor.usedIndexes.get(0);
 
-      if (orderBy.getFirst().equals(usedIndex.property) &&//
+      // A FOLDED (COLLATE ci) INDEX ITERATES IN THE ORDER OF ITS FOLDED KEYS, NOT OF THE VALUES: THE SORT MUST RUN (#8937)
+      if (!usedIndex.foldsKeys && orderBy.getFirst().equals(usedIndex.property) &&//
           orderBy.getSecond() == usedIndex.order)
         // ORDER BY THE INDEX USED, RESULTSET IS ALREADY ORDERED
         return;

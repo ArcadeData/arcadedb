@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -86,12 +87,23 @@ public class SelectExecutor {
     public final Index   index;
     public final String  property;
     public final boolean order;
+    /**
+     * True when the index holds folded keys (COLLATE ci): its iteration order is the order of the folded keys, not of the
+     * values, so it never satisfies an ORDER BY (#8937).
+     */
+    public final boolean foldsKeys;
 
     IndexInfo(final Index index, final String property, final boolean order) {
       this.index = index;
       this.property = property;
       this.order = order;
+      this.foldsKeys = foldsKeys(index);
     }
+  }
+
+  static boolean foldsKeys(final Index index) {
+    final IndexMetadata metadata = index instanceof IndexInternal internal ? internal.getMetadata() : null;
+    return metadata != null && metadata.hasAnyCaseInsensitive();
   }
 
   public SelectExecutor(final Select select) {
@@ -326,7 +338,7 @@ public class SelectExecutor {
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
-      iterator = select.database.iterateBucket(select.fromBuckets.get(0).getName());
+      iterator = select.database.iterateBucket(select.fromBuckets.getFirst().getName());
     else {
       final MultiIterator<? extends Identifiable> multiIterator = new MultiIterator<>();
       for (Bucket b : select.fromBuckets)
@@ -501,13 +513,13 @@ public class SelectExecutor {
     }
 
     final boolean orderByElided = select.orderBy != null && select.orderBy.size() == 1 && trailingProperty != null
-        && select.orderBy.get(0).getFirst().equals(trailingProperty);
+        && select.orderBy.getFirst().getFirst().equals(trailingProperty) && !foldsKeys(bestIndex);
 
     // A KEY SHORTER THAN THE INDEX'S FULL ARITY IS A PREFIX, NOT AN EXACT KEY: get() PERFORMS A SINGLE POSITIONAL
     // LOOKUP AND ONLY RETURNS EVERY MATCH WHEN THE KEY'S ARITY MATCHES THE INDEX'S OWN EXACTLY, SO A PREFIX MUST GO
     // THROUGH range() WITH EQUAL (INCLUSIVE) BEGIN/END BOUNDS INSTEAD - SEE LSMTreeIndexCompacted's "PARTIAL KEY
     // COMPARISON...MATCHES BY PREFIX" (PURPOSE=2).
-    final boolean ascendingOrder = orderByElided ? select.orderBy.get(0).getSecond() : true;
+    final boolean ascendingOrder = orderByElided ? select.orderBy.getFirst().getSecond() : true;
     final IndexCursor cursor = fullKeyMatch ? bestIndex.get(keys) : bestIndex.range(ascendingOrder, keys, true, keys, true);
 
     if (cursor == null)
@@ -662,9 +674,9 @@ public class SelectExecutor {
   private boolean isOrderBySafeForCap(final SelectTreeNode leaf) {
     if (select.orderBy == null)
       return true;
-    if (leaf == null || select.orderBy.size() != 1)
+    if (leaf == null || select.orderBy.size() != 1 || foldsKeys(leaf.index))
       return false;
-    final Pair<String, Boolean> orderBy = select.orderBy.get(0);
+    final Pair<String, Boolean> orderBy = select.orderBy.getFirst();
     // UNCHECKED CAST IS SAFE: leaf CAME FROM soleExactLeaf(), WHICH ONLY EVER RETURNS A NODE WHOSE node.index IS
     // NON-null - AND isTheNodeFullyIndexed() ONLY EVER SETS node.index AFTER THIS EXACT SAME CAST ON node.left
     // ALREADY SUCCEEDED

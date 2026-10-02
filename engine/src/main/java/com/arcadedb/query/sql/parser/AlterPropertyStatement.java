@@ -21,8 +21,10 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -31,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 
@@ -46,7 +49,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   /**
-   * Batchable into a DDL script's bulk schema scope (issue #6990). Altering a property rewrites the type's definition. Existing records are not revisited or revalidated.
+   * Batchable into a DDL script's bulk schema scope (issue #6990). Altering a property rewrites the type's definition. Adding MANDATORY or NOTNULL revalidates the existing records (#8943); every other attribute leaves them alone.
    */
   @Override
   public boolean isBulkSchemaScopeSafe(final DatabaseInternal database) {
@@ -98,9 +101,13 @@ public class AlterPropertyStatement extends DDLStatement {
         property.setReadonly((boolean) finalValue);
       } else if ("mandatory".equalsIgnoreCase(setting)) {
         oldValue = property.isMandatory();
+        if ((boolean) finalValue && !property.isMandatory())
+          requireExistingRecordsConform(db, typez, property, true);
         property.setMandatory((boolean) finalValue);
       } else if ("notnull".equalsIgnoreCase(setting)) {
         oldValue = property.isNotNull();
+        if ((boolean) finalValue && !property.isNotNull())
+          requireExistingRecordsConform(db, typez, property, false);
         property.setNotNull((boolean) finalValue);
       } else if ("hidden".equalsIgnoreCase(setting)) {
         oldValue = property.isHidden();
@@ -140,6 +147,29 @@ public class AlterPropertyStatement extends DDLStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * Refuses to add an existence constraint over records that already violate it (#8943). A record written before the
+   * constraint that has no value for the property stays legal and stays out of any index on it, yet the planners trust
+   * MANDATORY + NOTNULL to mean "the index holds every record", so such a record would silently vanish from an
+   * index-ordered read. The scan stops at the first offender and names its RID.
+   */
+  private static void requireExistingRecordsConform(final Database db, final DocumentType type, final Property property,
+      final boolean mandatory) {
+    final String name = property.getName();
+    final Iterator<Record> records = db.iterateType(type.getName(), true);
+    while (records.hasNext()) {
+      if (!(records.next() instanceof Document document))
+        continue;
+      final boolean violates = mandatory ? !document.has(name) : document.has(name) && document.get(name) == null;
+      if (violates)
+        throw new CommandExecutionException(
+            "Cannot set " + (mandatory ? "MANDATORY" : "NOTNULL") + " on property '" + type.getName() + "." + name + "': record "
+                + document.getIdentity() + (mandatory ? " has no value for it (property '" + type.getName() + "." + name
+                + "' is mandatory, but was never set)" : " holds a null (property '" + type.getName() + "." + name
+                + "' cannot be null)") + ". Fix or delete the non-conforming records first");
+    }
   }
 
   @Override
