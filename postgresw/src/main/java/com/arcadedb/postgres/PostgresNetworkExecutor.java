@@ -3860,8 +3860,12 @@ public class PostgresNetworkExecutor extends Thread {
     if (!server.isProductionMode())
       return message;
     // The client no longer sees the text, so the server log is the only copy the operator has. A routine, client-driven
-    // failure (syntax error, duplicated key) is not an incident: the message alone, no stack trace
-    LogManager.instance().log(this, Level.INFO, "PSQL: %s", null, message);
+    // failure (syntax error, duplicated key, ...) is not an incident: the message alone, no stack trace. Anything the
+    // classifier cannot attribute to the client is a server fault and keeps its severity and its stack trace
+    if (ErrorCategory.of(cause) == ErrorCategory.SERVER)
+      LogManager.instance().log(this, Level.SEVERE, "PSQL: %s", cause, message);
+    else
+      LogManager.instance().log(this, Level.INFO, "PSQL: %s", null, message);
     return ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
   }
 
