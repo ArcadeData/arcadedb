@@ -226,7 +226,8 @@ public class InCondition extends BooleanExpression {
     }
     Boolean searched = (Boolean) context.getCachedValue(key);
     if (searched == null) {
-      searched = left.isEarlyCalculated(context);
+      // A bare name without '$' is always a record property, even when a context variable has the same name
+      searched = !(left.isBaseIdentifier() && !left.toString().startsWith("$")) && left.isEarlyCalculated(context);
       context.setCachedValue(key, searched);
     }
     return searched;

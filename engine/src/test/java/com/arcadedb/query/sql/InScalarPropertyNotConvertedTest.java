@@ -116,6 +116,15 @@ class InScalarPropertyNotConvertedTest extends TestHelper {
   }
 
   @Test
+  void propertyIsNotMistakenForASameNamedLetVariable() {
+    database.command("sql", "CREATE DOCUMENT TYPE L");
+    database.command("sql", "CREATE PROPERTY L.s STRING");
+    database.transaction(() -> database.newDocument("L").set("s", "7").save());
+    assertThat(count("SELECT FROM L LET $s = 'unused' WHERE s = 7.0")).isEqualTo(0);
+    assertThat(count("SELECT FROM L LET $s = 'unused' WHERE s IN [7.0]")).isEqualTo(0);
+  }
+
+  @Test
   void literalOnTheLeftStillConverts() {
     database.command("sql", "CREATE DOCUMENT TYPE V");
     database.transaction(() -> database.newDocument("V").save());
