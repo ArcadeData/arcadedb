@@ -20,11 +20,8 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.schema.EdgeType;
 
-import java.util.HashSet;
 import java.util.NoSuchElementException;
-import java.util.Set;
 
 /**
  * Iterator that returns connected vertex RIDs from edge segments, filtered by edge type,
@@ -33,22 +30,12 @@ import java.util.Set;
  * neighbor enumeration where only RIDs are needed.
  */
 public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
-  private final Set<Integer> validBuckets;
-  private RID next;
+  private final EdgeBucketMask validBuckets;
+  private       RID            next;
 
   public RIDIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
     super(database, current);
-
-    validBuckets = new HashSet<>();
-    for (final String e : edgeTypes) {
-      if (!database.getSchema().existsType(e))
-        continue;
-      // A vertex or document type sharing the name of the requested edge type cannot match any edge:
-      // skip it like a non-existent type instead of failing with a ClassCastException (issue #5194)
-      if (!(database.getSchema().getType(e) instanceof EdgeType type))
-        continue;
-      validBuckets.addAll(type.getBucketIds(true));
-    }
+    validBuckets = EdgeBucketMask.of(database, edgeTypes);
   }
 
   @Override
@@ -56,18 +43,20 @@ public class RIDIteratorFilter extends ResettableIteratorBase<RID> {
     if (next != null)
       return true;
 
-    if (currentContainer == null || validBuckets.isEmpty())
+    if (currentContainer == null || validBuckets == null)
       return false;
 
     while (true) {
-      if (currentPosition.get() < currentContainer.getUsed()) {
-        final RID edgeRID = currentContainer.getRID(currentPosition);
-        final RID vertexRID = currentContainer.getRID(currentPosition);
+      final int used = currentContainer.getUsed();
+      int position = currentPosition.get();
+      if (position < used)
+        // SKIP THE ENTRIES OF THE OTHER EDGE TYPES ON THEIR RAW BUCKET NUMBER, WITHOUT DECODING THEM (#8417)
+        position = currentContainer.nextEntryInBuckets(position, validBuckets);
 
-        if (!validBuckets.contains(edgeRID.getBucketId()))
-          continue;
-
-        next = vertexRID;
+      if (position < used) {
+        currentPosition.set(position);
+        currentContainer.skipRID(currentPosition); // THE EDGE: ITS BUCKET ALREADY MATCHED, NOTHING ELSE OF IT IS NEEDED
+        next = currentContainer.getRID(currentPosition);
         return true;
       } else {
         // Guarded hop: a chunk whose previous pointer names itself ends the walk instead of looping (issue #8568)
