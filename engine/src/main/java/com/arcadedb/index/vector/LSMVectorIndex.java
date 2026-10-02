@@ -3245,6 +3245,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // that swapped it - re-publishing an identical copy below would only reopen the window it closed (issue #5568).
     // Not when records were just left out: rewriting the data file from the collapsed set would erase the losers'
     // entries from the pages, and with them the only evidence of how two records came to share an id.
+    if (compactDataFile && leftRecordsOut)
+      LogManager.instance().log(this, Level.WARNING,
+          "Compaction of index %s did not rewrite its data file: records were left out for sharing a vector id, and "
+              + "rewriting would erase them from the pages. Run CHECK DATABASE FIX to rebuild the index",
+          indexName);
     final boolean locationIndexAlreadyPublished = compactDataFile && !leftRecordsOut && rewriteDataFileWithLiveEntries(
         ridToLatestVector.values());
 
