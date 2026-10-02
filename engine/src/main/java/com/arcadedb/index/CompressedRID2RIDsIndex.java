@@ -209,7 +209,7 @@ public class CompressedRID2RIDsIndex {
     while (true) {
       final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
-      if (BinaryComparator.equals(slotKey, key)) {
+      if (BinaryComparator.equalsExact(slotKey, key)) {
         // FOUND KEY, COLLECT ALL THE VALUE IN THE LINKED LIST
         final List<Pair<RID, RID>> list = new ArrayList<>();
 
@@ -295,7 +295,7 @@ public class CompressedRID2RIDsIndex {
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
-        if (BinaryComparator.equals(slotKey, key)) {
+        if (BinaryComparator.equalsExact(slotKey, key)) {
           // FOUND THE KEY, GET PREVIOUS ITEM
           final int previousEntryOffset = chunk.position() + Binary.INT_SERIALIZED_SIZE; // SKIP NEXT KEY
           final int previousEntryPos = chunk.getInt(previousEntryOffset);

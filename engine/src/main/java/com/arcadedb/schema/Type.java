@@ -1613,7 +1613,7 @@ public enum Type {
   // Deliberately as loose as the index key: Type.convert narrows the operand, so 1e-50 reads as 0.0f and finds it (#8882)
   private static boolean floatEqualsDouble(final float f, final double d) {
     // same answer as the castComparableNumber path: the decimal reading of f, else the double that narrows to f
-    return Double.valueOf(widenFloat(f)).equals(d) || narrowsTo(f, d);
+    return Double.compare(widenFloat(f), d) == 0 || narrowsTo(f, d);
   }
 
   private static boolean narrowsTo(final float f, final Number other) {

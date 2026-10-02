@@ -23,6 +23,7 @@ import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
@@ -80,15 +81,15 @@ public final class InListMembership {
    * narrows to it ({@code Type.numbersEqual}, issue #8882), a relation the decimal keys cannot hold, so a Float probe
    * checks the first set and a Double probe the second. {@code null} when the list has no Double / no Float.
    */
-  private final Set<Float>  narrowedDoubles;
-  private final Set<Float>  floats;
+  private final float[]    narrowedDoubles;
+  private final float[]    floats;
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull) {
     this(rightValue, keys, kind, containsNull, null, null);
   }
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
-      final Set<Float> narrowedDoubles, final Set<Float> floats) {
+      final float[] narrowedDoubles, final float[] floats) {
     this.narrowedDoubles = narrowedDoubles;
     this.floats = floats;
     this.rightValue = rightValue;
@@ -148,7 +149,7 @@ public final class InListMembership {
       // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
       return new InListMembership(rightValue, null, KIND_NONE, containsNull);
 
-    return new InListMembership(rightValue, keys, kind, containsNull, narrowedDoubles, floats);
+    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats));
   }
 
   /**
@@ -172,11 +173,22 @@ public final class InListMembership {
     return InCondition.evaluateExpressionThreeValued(left, rightValue);
   }
 
+  private static float[] sortedFloats(final Set<Float> set) {
+    if (set == null)
+      return null;
+    final float[] sorted = new float[set.size()];
+    int i = 0;
+    for (final Float f : set)
+      sorted[i++] = f;
+    Arrays.sort(sorted);
+    return sorted;
+  }
+
   private boolean narrowsToAnItem(final Object left) {
     if (left instanceof Float f)
-      return narrowedDoubles != null && Float.isFinite(f) && narrowedDoubles.contains(f);
+      return narrowedDoubles != null && Float.isFinite(f) && Arrays.binarySearch(narrowedDoubles, f) >= 0;
     if (left instanceof Double d)
-      return floats != null && Double.isFinite(d) && floats.contains((float) (double) d);
+      return floats != null && Double.isFinite(d) && Arrays.binarySearch(floats, (float) (double) d) >= 0;
     return false;
   }
 
